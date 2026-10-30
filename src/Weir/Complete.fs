@@ -10,8 +10,7 @@ open Weir.Types
 // for the parked match-lambda sugar; the foreign control-flow words
 // (PLAN-dx-review D4) exist only to teach weir's spelling — none of
 // them can ever parse.
-let unsuggestedKeywords =
-    Set [ "rec"; "mutable"; "function"; "while"; "return" ]
+let unsuggestedKeywords = Set [ "rec"; "mutable"; "function"; "while"; "return" ]
 
 let private keywords = Weir.Parser.keywords - unsuggestedKeywords |> Set.toList
 
@@ -87,25 +86,47 @@ let interpHoleStart (text: string) : int option =
 //
 // Each entry carries its #help lines, so the list `#help` prints, the
 // dispatch's did-you-mean and completion are the one table
-let sessionDirectiveHelp: (string * string list) list =
-    [ "help",
-      [ "#help                 // this list"
-        "#help <name>          // documentation for a module or member" ]
-      "keys", [ "#keys                 // the editor's key bindings" ]
-      "find", [ "#find [query]         // fuzzy-search modules and members (fzf + live preview)" ]
-      "echo",
-      [ "#echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;"
-        "                      //   all = no cap — an infinite seq will hang (Ctrl+C)" ]
-      "types", [ "#types [on | off]     // show the echo's types (default off; config \"types\"); bare reports" ]
-      "infer",
-      [ "#infer [<src>] from <json|jsonl|yaml|table> as <Name|_>"
+let sessionDirectiveHelp: (string * string list) list = [
+    "help",
+    [
+        "#help                 // this list"
+        "#help <name>          // documentation for a module or member"
+    ]
+    "keys", [ "#keys                 // the editor's key bindings" ]
+    "find",
+    [
+        "#find [query]         // fuzzy-search modules and members (fzf + live preview)"
+    ]
+    "echo",
+    [
+        "#echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;"
+        "                      //   all = no cap — an infinite seq will hang (Ctrl+C)"
+    ]
+    "types",
+    [
+        "#types [on | off]     // show the echo's types (default off; config \"types\"); bare reports"
+    ]
+    "infer",
+    [
+        "#infer [<src>] from <json|jsonl|yaml|table> as <Name|_>"
         "                      //   draft named types from a sample (src defaults to 'it'; _ auto-names)"
         "#infer let <x> = <src> |> from <fmt> as <Name|_>"
-        "                      //   one shot: draft the types and bind the parsed value (runs once)" ]
-      "save", [ "#save <path>          // dump the session's accepted lines to a runnable .weir" ]
-      "history", [ "#history [<n>]        // show history (bare = all, <n> = last n); prints the file path" ]
-      "alias", [ "#alias [name = cmd …] // bare lists; a command-head alias (init.weir is canonical)" ]
-      "quit", [ "#quit                 // leave the REPL (Ctrl+D works too)" ] ]
+        "                      //   one shot: draft the types and bind the parsed value (runs once)"
+    ]
+    "save",
+    [
+        "#save <path>          // dump the session's accepted lines to a runnable .weir"
+    ]
+    "history",
+    [
+        "#history [<n>]        // show history (bare = all, <n> = last n); prints the file path"
+    ]
+    "alias",
+    [
+        "#alias [name = cmd …] // bare lists; a command-head alias (init.weir is canonical)"
+    ]
+    "quit", [ "#quit                 // leave the REPL (Ctrl+D works too)" ]
+]
 
 let sessionDirectives = sessionDirectiveHelp |> List.map fst
 
@@ -119,10 +140,11 @@ let sessionDirectives = sessionDirectiveHelp |> List.map fst
 // members via `#help Module.member`; the qualified names live in the
 // slot itself, keyed off env.Modules.
 let helpNames (env: TypeEnv) : string list =
-    List.concat
-        [ Map.keys env.Modules |> List.ofSeq
-          Map.keys env.Values |> Seq.filter Types.isUserName |> List.ofSeq
-          Map.keys env.Types |> List.ofSeq ]
+    List.concat [
+        Map.keys env.Modules |> List.ofSeq
+        Map.keys env.Values |> Seq.filter Types.isUserName |> List.ofSeq
+        Map.keys env.Types |> List.ofSeq
+    ]
     |> List.distinct
 
 // an anonymous record's def may live only in the mid-statement table
@@ -160,9 +182,10 @@ let private withHoles (env: TypeEnv) (e: Weir.Ast.Expr) : TypeEnv =
     holeNames env e
     |> List.mapi (fun i n -> n, mono (TVar $"__hole{i}"))
     |> List.fold
-        (fun (te: TypeEnv) (n, sch) ->
-            { te with
-                Values = Map.add n sch te.Values })
+        (fun (te: TypeEnv) (n, sch) -> {
+            te with
+                Values = Map.add n sch te.Values
+        })
         env
 
 // the type flowing into this position: the type of the value the pipe
@@ -199,6 +222,7 @@ let private pipelineElemTy (env: TypeEnv) (bareStage: bool) (text: string) : Ty 
     | i ->
         let prefix =
             let p = text.Substring(0, i).Trim()
+
             let m =
                 try
                     pipeSourceLead.Match p
@@ -233,7 +257,11 @@ let bareStageBefore (before: string) : bool = before.TrimEnd().EndsWith "|>"
 let private filesystemComplete (word: string) : string list =
     let expanded =
         if word.StartsWith "~" then
-            (try Builtins.homeDir () with _ -> "~") + word.Substring 1
+            (try
+                Builtins.homeDir ()
+             with _ ->
+                 "~")
+            + word.Substring 1
         else
             word
 
@@ -283,8 +311,7 @@ let private filesystemComplete (word: string) : string list =
                 shaped)
         |> Array.sort
         |> Array.toList
-    with _ ->
-        []
+    with _ -> []
 
 // a completed path spelled for where it lands [D:repl-path-quote]. Inside
 // an open literal it is escaped for that literal's kind (`@"` doubles a
@@ -375,17 +402,16 @@ let private letRhsCut (stmt: string) : string option =
     else
         let names =
             match
-                m.Value.TrimEnd([| '='; ' '; '\t' |]).Split([| ' '; '\t'; '('; ')' |], System.StringSplitOptions.RemoveEmptyEntries)
+                m.Value
+                    .TrimEnd([| '='; ' '; '\t' |])
+                    .Split([| ' '; '\t'; '('; ')' |], System.StringSplitOptions.RemoveEmptyEntries)
                 |> Array.toList
             with
             | "let" :: "pure" :: (_ :: _ as rest) -> rest
             | "let" :: rest -> rest
             | _ -> []
 
-        if
-            not names.IsEmpty
-            && names |> List.forall (Weir.Parser.keywords.Contains >> not)
-        then
+        if not names.IsEmpty && names |> List.forall (Weir.Parser.keywords.Contains >> not) then
             Some(stmt.Substring m.Length)
         else
             None
@@ -411,9 +437,7 @@ type HeadSlot =
 // leading `NAME=value ` words ride before a command head [D:env-prefix]:
 // the head slot looks through them (a quoted value may hold spaces)
 let private envPrefixRx =
-    System.Text.RegularExpressions.Regex(
-        "^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:[^\"\\\\]|\\\\.)*\"|'[^']*'|\\S*)\\s+)+"
-    )
+    System.Text.RegularExpressions.Regex("^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:[^\"\\\\]|\\\\.)*\"|'[^']*'|\\S*)\\s+)+")
 
 let stripEnvPrefixes (s: string) : string =
     let m = envPrefixRx.Match s
@@ -433,8 +457,10 @@ let lastStage (stmt: string) : (string * bool) option =
         let c = stmt[i]
 
         if quote <> ' ' then
-            if c = '\\' && quote = '"' then i <- i + 1
-            elif c = quote then quote <- ' '
+            if c = '\\' && quote = '"' then
+                i <- i + 1
+            elif c = quote then
+                quote <- ' '
         elif c = '"' || c = '\'' then
             quote <- c
         elif c = '(' then
@@ -442,9 +468,12 @@ let lastStage (stmt: string) : (string * bool) option =
         elif c = ')' then
             depth <- max 0 (depth - 1)
         elif c = '|' && depth = 0 then
-            if i + 1 < stmt.Length && (stmt[i + 1] = '>' || stmt[i + 1] = '|') then i <- i + 1
-            elif i > 0 && stmt[i - 1] = '|' then ()
-            else last <- i
+            if i + 1 < stmt.Length && (stmt[i + 1] = '>' || stmt[i + 1] = '|') then
+                i <- i + 1
+            elif i > 0 && stmt[i - 1] = '|' then
+                ()
+            else
+                last <- i
 
         i <- i + 1
 
@@ -459,8 +488,10 @@ let lastStage (stmt: string) : (string * bool) option =
         let rest = stmt.Substring(last + 1).TrimStart()
         let m = System.Text.RegularExpressions.Regex.Match(rest, "^(and|or)(\\s+|$)")
 
-        if m.Success then Some(rest.Substring m.Length, false)
-        else Some(rest, true)
+        if m.Success then
+            Some(rest.Substring m.Length, false)
+        else
+            Some(rest, true)
 
 /// the slot verdict for the word starting right after `before`
 /// [D:let-rhs-head]. Statement head = an empty statement prefix,
@@ -582,7 +613,11 @@ let commandArgvAt (env: TypeEnv) (before: string) : (string * string) option =
             None
         else
             let head = s.Substring(0, headEnd)
-            if head.TrimStart '^' = "" then None else Some(head, s.Substring headEnd)
+
+            if head.TrimStart '^' = "" then
+                None
+            else
+                Some(head, s.Substring headEnd)
 
 // a word at a path parameter position [D:path-param-completion]:
 // cd is a builtin, so the argv gate correctly does not apply — the
@@ -633,8 +668,9 @@ let private pathParamAt (before: string) : bool =
 // scrutinee offers nothing (a wrong suggestion is worse than none, the
 // D5 rule) while a mid-edit param keeps the high-signal union
 let private lexicallyBound (name: string) (text: string) : bool =
-    let re (pat: string) =
-        [ for m in System.Text.RegularExpressions.Regex.Matches(text, pat) -> m.Groups[1].Value ]
+    let re (pat: string) = [
+        for m in System.Text.RegularExpressions.Regex.Matches(text, pat) -> m.Groups[1].Value
+    ]
 
     let funParams =
         re @"\bfun\s+([A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*)"
@@ -654,7 +690,11 @@ let private lexicallyBound (name: string) (text: string) : bool =
 
 // the `$` / `$@` sigil right before the completion word, if any
 let private spliceSigil (text: string) (wordStart: int) : string option =
-    if wordStart >= 2 && wordStart <= text.Length && text.Substring(wordStart - 2, 2) = "$@" then
+    if
+        wordStart >= 2
+        && wordStart <= text.Length
+        && text.Substring(wordStart - 2, 2) = "$@"
+    then
         Some "$@"
     elif wordStart >= 1 && wordStart <= text.Length && text[wordStart - 1] = '$' then
         Some "$"
@@ -673,8 +713,10 @@ let private spliceSegment (pre: string) : string =
     let cut =
         Weir.Scan.foldOutsideStrings
             (fun cut i c ->
-                if (c = '$' && i + 1 < pre.Length && pre[i + 1] = '(')
-                   || (c = '-' && i + 1 < pre.Length && pre[i + 1] = '>') then
+                if
+                    (c = '$' && i + 1 < pre.Length && pre[i + 1] = '(')
+                    || (c = '-' && i + 1 < pre.Length && pre[i + 1] = '>')
+                then
                     i + 2
                 elif kwAt i "then" || kwAt i "else" then
                     i + 4
@@ -694,7 +736,10 @@ let private spliceSegment (pre: string) : string =
 // never bare. Candidates are bare: the sigil is already typed
 let private splicePool (env: TypeEnv) (sigil: string) (word: string) : string list =
     let admits (ty: Ty) =
-        if sigil = "$@" then ty = TSeq TStr else Weir.Check.argvSpliceable ty
+        if sigil = "$@" then
+            ty = TSeq TStr
+        else
+            Weir.Check.argvSpliceable ty
 
     if word.Contains '.' then
         let segs = word.Split '.'
@@ -828,625 +873,635 @@ let rec suggestScopedWith
         suggestScopedWith aliasHeads env stmt stmt (wordStart - off)
     | _ ->
 
-    // a cursor inside a `$"{ … }` hole completes the hole's interior as an
-    // ordinary expression [D:interp-hole-complete] — otherwise the opaque
-    // `$"…"` makes the slot detector read `micro $"{Path.` as command-argv
-    // and try a filesystem completion of `Path.`. Strip to the interior
-    // and recurse (innermost hole, so this recurses at most once per hole).
-    match interpHoleStart text with
-    | Some off when wordStart >= off ->
-        let inner = text.Substring off
-        // the outer text stays the binder scope: a hole's head is
-        // bound outside it (`for p in … do print $"{p.`) [D:entry-complete]
-        suggestScopedWith aliasHeads env binderScope inner (wordStart - off)
-    | _ ->
-
-    let word =
-        if wordStart >= text.Length then
-            ""
-        else
-            text.Substring wordStart
-
-    let before = text.Substring(0, min wordStart text.Length).TrimEnd()
-
-    // the word butts against an open quote [D:repl-path-quote]: a
-    // completion word inside a string literal has no space before it —
-    // wordStartAt stops at the `"` (not a word char), so the char at
-    // wordStart-1 is the opening quote. `File.read "./w<TAB>` completes
-    // within the quotes; the path-quoting below must not add a second.
-    let insideOpenQuote =
-        wordStart > 0 && wordStart <= text.Length && text[wordStart - 1] = '"'
-
-    // session directives complete at a line-head '#' [D:repl-directives]:
-    // '#' is not a word char to the editor, so the word starts after it.
-    // Bare names are returned so the editor's replacement yields `#help`,
-    // never `##help`. The set mirrors Repl's dispatch (session directives
-    // only — #sig is a file directive and the unknown-directive
-    // teaching already routes it).
-    let directiveSlot =
-        let raw = text.Substring(0, min wordStart text.Length)
-        raw.TrimStart() = "#"
-
-    // the `#help <arg>` slot [D:help-arg-complete]: a sibling to
-    // directiveSlot — it fires when the text before the word is
-    // `#help` (completing `#help <TAB>`) or `#help <partial>`, and
-    // offers the #help documentable universe (helpNames — modules,
-    // types, user forms) bare, so the editor yields `#help Patatas`
-    // without doubling the `#help `. This fills the gap where an
-    // #infer'd type lives only in env.Types, which the general/head
-    // pool never surfaces — documentable but not completable.
-    // Qualified `#help Module.member` mirrors #help's dotted arm when
-    // a module prefix is typed. Scoped to this slot — the general pool
-    // is untouched.
-    let helpArgSlot =
-        // the whole line up to the cursor, trimmed of the word — must
-        // reduce to exactly `#help` (the directive owns the rest of its
-        // own line, so a sibling separator or newline earlier bars it)
-        let before = text.Substring(0, min wordStart text.Length)
-        before.TrimStart() = "#help "
-
-    if directiveSlot then
-        sessionDirectives |> List.filter (fun d -> d.StartsWith word) |> List.sort
-    elif helpArgSlot then
-        // a `Module.` prefix completes that module's members — the same
-        // qualified names `#help Module.member` documents
-        match word.Split '.' with
-        | [| head; _ |] when Map.containsKey head env.Modules ->
-            let memberPrefix = word.Substring(head.Length + 1)
-
-            let special =
-                Weir.Check.specialModuleMembers |> Map.tryFind head |> Option.defaultValue []
-
-            Seq.append (Map.keys env.Modules[head]) special
-            |> Seq.filter (fun m -> m.StartsWith memberPrefix)
-            |> Seq.distinct
-            |> Seq.map (fun m -> $"{head}.{m}")
-            |> Seq.sort
-            |> List.ofSeq
+        // a cursor inside a `$"{ … }` hole completes the hole's interior as an
+        // ordinary expression [D:interp-hole-complete] — otherwise the opaque
+        // `$"…"` makes the slot detector read `micro $"{Path.` as command-argv
+        // and try a filesystem completion of `Path.`. Strip to the interior
+        // and recurse (innermost hole, so this recurses at most once per hole).
+        match interpHoleStart text with
+        | Some off when wordStart >= off ->
+            let inner = text.Substring off
+            // the outer text stays the binder scope: a hole's head is
+            // bound outside it (`for p in … do print $"{p.`) [D:entry-complete]
+            suggestScopedWith aliasHeads env binderScope inner (wordStart - off)
         | _ ->
-            helpNames env
-            |> List.filter (fun n -> n.StartsWith word && n <> word)
-            |> List.distinct
-            |> List.sort
-    else
 
-
-        // the record-update `with` slot [D:with-slot]: after `{ source with `,
-        // the closed candidate set is the source's record fields — never the
-        // general pool (a keyword cannot appear in an expression fragment).
-        // The source is found by slicing back to each `{` and letting the
-        // parser validate the slice (no second quote machine [D:one-scanner]);
-        // `match x with` has no parsing brace-slice, so it falls through
-        // untouched.
-        // resolve `{ <source> ...` back to its record def: slice at each
-        // '{' and let the parser validate (the with-slot machinery, shared)
-        let sourceDefOf (upto: string) : RecordDef option =
-            [ for i in 0 .. upto.Length - 1 do
-                  if upto[i] = '{' then
-                      yield i ]
-            |> List.rev
-            |> List.tryPick (fun bi ->
-                let slice = upto.Substring(bi + 1).Trim()
-
-                if slice = "" then
-                    None
+            let word =
+                if wordStart >= text.Length then
+                    ""
                 else
-                    match Weir.Parser.parseExpr slice with
-                    | Error _ -> None
-                    | Ok e ->
-                        match Weir.Check.typecheck (withHoles env e) e with
-                        | Error _ -> None
-                        | Ok te ->
-                            match te.Ty with
-                            | TNamed(n, _) ->
-                                match Map.tryFind n env.Types with
-                                | Some(Record d) -> Some d
-                                | _ -> None
-                            | _ -> None)
+                    text.Substring wordStart
 
-        // the typed value slot [D:typed-value-slot]: `{ src with field =
-        // <prefix>` — the field's declared type is known, so the candidate
-        // set is closed where the type is: a union's cases, bool's two
-        // values (plus bool bindings), a unit type's module and bindings.
-        // Other types fall through to the general pool.
-        let valueSlotCandidates: string list option =
-            let b = before.TrimEnd()
+            let before = text.Substring(0, min wordStart text.Length).TrimEnd()
 
-            if not (b.EndsWith "=") || b.EndsWith "==" then
-                None
-            else
-                let beforeEq = b.Substring(0, b.Length - 1).TrimEnd()
+            // the word butts against an open quote [D:repl-path-quote]: a
+            // completion word inside a string literal has no space before it —
+            // wordStartAt stops at the `"` (not a word char), so the char at
+            // wordStart-1 is the opening quote. `File.read "./w<TAB>` completes
+            // within the quotes; the path-quoting below must not add a second.
+            let insideOpenQuote =
+                wordStart > 0 && wordStart <= text.Length && text[wordStart - 1] = '"'
 
-                let fieldStart =
-                    let mutable i = beforeEq.Length
+            // session directives complete at a line-head '#' [D:repl-directives]:
+            // '#' is not a word char to the editor, so the word starts after it.
+            // Bare names are returned so the editor's replacement yields `#help`,
+            // never `##help`. The set mirrors Repl's dispatch (session directives
+            // only — #sig is a file directive and the unknown-directive
+            // teaching already routes it).
+            let directiveSlot =
+                let raw = text.Substring(0, min wordStart text.Length)
+                raw.TrimStart() = "#"
 
-                    while i > 0 && (System.Char.IsLetterOrDigit beforeEq[i - 1] || beforeEq[i - 1] = '_') do
-                        i <- i - 1
+            // the `#help <arg>` slot [D:help-arg-complete]: a sibling to
+            // directiveSlot — it fires when the text before the word is
+            // `#help` (completing `#help <TAB>`) or `#help <partial>`, and
+            // offers the #help documentable universe (helpNames — modules,
+            // types, user forms) bare, so the editor yields `#help Patatas`
+            // without doubling the `#help `. This fills the gap where an
+            // #infer'd type lives only in env.Types, which the general/head
+            // pool never surfaces — documentable but not completable.
+            // Qualified `#help Module.member` mirrors #help's dotted arm when
+            // a module prefix is typed. Scoped to this slot — the general pool
+            // is untouched.
+            let helpArgSlot =
+                // the whole line up to the cursor, trimmed of the word — must
+                // reduce to exactly `#help` (the directive owns the rest of its
+                // own line, so a sibling separator or newline earlier bars it)
+                let before = text.Substring(0, min wordStart text.Length)
+                before.TrimStart() = "#help "
 
-                    i
+            if directiveSlot then
+                sessionDirectives |> List.filter (fun d -> d.StartsWith word) |> List.sort
+            elif helpArgSlot then
+                // a `Module.` prefix completes that module's members — the same
+                // qualified names `#help Module.member` documents
+                match word.Split '.' with
+                | [| head; _ |] when Map.containsKey head env.Modules ->
+                    let memberPrefix = word.Substring(head.Length + 1)
 
-                let field = beforeEq.Substring fieldStart
+                    let special =
+                        Weir.Check.specialModuleMembers |> Map.tryFind head |> Option.defaultValue []
 
-                if field = "" then
-                    None
-                else
-                    // the nearest preceding `with` keyword bounds the source
-                    let head = beforeEq.Substring(0, fieldStart)
-                    let wi = head.LastIndexOf "with"
-
-                    let isWordBounded =
-                        wi >= 0
-                        && (wi = 0 || not (System.Char.IsLetterOrDigit head[wi - 1] || head[wi - 1] = '_'))
-                        && (wi + 4 >= head.Length
-                            || not (System.Char.IsLetterOrDigit head[wi + 4] || head[wi + 4] = '_'))
-
-                    if not isWordBounded then
-                        None
-                    else
-                        sourceDefOf (head.Substring(0, wi))
-                        |> Option.bind (fun def -> def.Fields |> List.tryFind (fst >> (=) field))
-                        |> Option.bind (fun (_, fty) ->
-                            let typedBindings (t: Ty) =
-                                env.Values
-                                |> Map.toList
-                                |> List.choose (fun (n, sch) ->
-                                    if Types.isUserName n && sch.Forall.IsEmpty && sch.Ty = t then
-                                        Some n
-                                    else
-                                        None)
-
-                            match fty with
-                            | TBool -> Some([ "false"; "true" ] @ typedBindings TBool)
-                            | TNamed(n, []) ->
-                                match Map.tryFind n env.Types with
-                                | Some(Union u) -> Some(u.Cases |> List.map fst)
-                                | _ -> None
-                            | TDur -> Some("Duration" :: typedBindings TDur)
-                            | TSize -> Some("Size" :: typedBindings TSize)
-                            | TBytes -> Some("Bytes" :: typedBindings TBytes)
-                            | TSecret -> Some("Secret" :: typedBindings TSecret)
-                            | _ -> None)
-
-        let withSlotFields: string list option =
-            let endsWithWord (kw: string) (b: string) =
-                b.EndsWith kw
-                && (b.Length = kw.Length
-                    || not (
-                        System.Char.IsLetterOrDigit b[b.Length - kw.Length - 1]
-                        || b[b.Length - kw.Length - 1] = '_'
-                    ))
-
-            if not (endsWithWord "with" before) then
-                None
-            else
-                let uptoWith = before.Substring(0, before.Length - 4)
-
-                [ for i in 0 .. uptoWith.Length - 1 do
-                      if uptoWith[i] = '{' then
-                          yield i ]
-                |> List.rev
-                |> List.tryPick (fun bi ->
-                    let slice = uptoWith.Substring(bi + 1).Trim()
-
-                    if slice = "" then
-                        None
-                    else
-                        match Weir.Parser.parseExpr slice with
-                        | Error _ -> None
-                        | Ok e ->
-                            match Weir.Check.typecheck (withHoles env e) e with
-                            | Error _ -> None
-                            | Ok te ->
-                                match te.Ty with
-                                | TVar _ when
-                                    not (
-                                        System.Text.RegularExpressions.Regex.IsMatch(slice.Trim(), @"^[A-Za-z_]\w*$")
-                                        && not (lexicallyBound (slice.Trim()) binderScope)
-                                    )
-                                    ->
-                                    // unresolved source — the declared-fields
-                                    // fallback, as the dotted arm does;
-                                    // a bare unbound identifier source gets
-                                    // nothing instead [D:complete-argv]
-                                    env.Types
-                                    |> Map.toList
-                                    |> List.collect (fun (_, def) ->
-                                        match def with
-                                        | Record d -> d.Fields |> List.map fst
-                                        | Union _ -> [])
-                                    |> List.distinct
-                                    |> Some
-                                | TVar _ -> Some []
-                                | ty ->
-                                    match recordFields env ty with
-                                    | Some fields -> Some(fields |> List.map fst)
-                                    // a known non-record has no updatable
-                                    // fields — a closed set with no members
-                                    // beats the general pool (the nats pin's
-                                    // reasoning)
-                                    | None -> Some [])
-
-        // expression-position path completion quotes [D:repl-path-quote]:
-        // a bare filesystem path is not a valid weir expression, so
-        // `File.read ./x<TAB>` must yield `File.read "./x"` (a string
-        // literal parses; a bare path does not). The distinction is the
-        // slot's, reusing the existing head/argv machinery: a command-argv
-        // path stays bare (`cat ./x`, `ls ./dir`, `./script`), and a path a
-        // builtin's string parameter wants (File.read/cd/Path.*) — or one in
-        // plain expression furniture (after `=`, a `|>` stage, a `(`) — gets
-        // quoted. An already-open quote never doubles: the completion lands
-        // inside it. A directory keeps its trailing `/` inside the quotes.
-        let expressionSlot (before: string) : bool =
-            pathParamAt before
-            || (let stmt =
-                    let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
-                    (if i >= 0 then before.Substring(i + 1) else before)
-
-                stmt.Contains "|>"
-                || stmt.Contains " = "
-                || stmt.Contains '('
-                || stmt.Contains '[')
-
-        // `cd` heading a statement is the command form: its argument is
-        // an argv word, so a path completes bare like `cat ./x`
-        // [D:cd-bare-completion]; `let d = cd …`, `within cd …` and
-        // `(cd …)` are expressions and keep the quotes
-        let cdCommandArg (before: string) : bool =
-            let stmt =
-                let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
-                (if i >= 0 then before.Substring(i + 1) else before)
-
-            stmt.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries) = [| "cd" |]
-
-        let opener = openerAt text wordStart
-
-        let quoteFor (before: string) (candidates: string list) : string list =
-            if insideOpenQuote then
-                candidates |> List.map (escapeFor opener)
-            elif cdCommandArg before then
-                candidates |> List.map argvWord
-            elif expressionSlot before then
-                candidates |> List.map stringLiteral
-            else
-                candidates |> List.map argvWord
-
-        let argvPaths (candidates: string list) : string list =
-            if insideOpenQuote then
-                candidates |> List.map (escapeFor opener)
-            else
-                candidates |> List.map argvWord
-
-        // a `$name` splice slot decides alone [D:argv-splice-complete]:
-        // inside a string the `$` is literal, glued to a word it is a
-        // word-join the parser refuses — nothing there; in a command's
-        // argv (any head, inside `$(…)` and if/for/match bodies) the
-        // checker's pool
-        let splice =
-            match spliceSigil text wordStart with
-            | Some sigil ->
-                let at = wordStart - sigil.Length
-                let pre = text.Substring(0, at)
-
-                if Weir.Scan.endsInsideString pre || Weir.Scan.commentAt pre >= 0 then
-                    Some []
-                elif at > 0 && not (pre[at - 1] = ' ' || pre[at - 1] = '\t') then
-                    Some []
-                elif commandArgvPosition env true (spliceSegment pre + sigil) then
-                    Some(splicePool env sigil word)
-                else
-                    None
-            | None -> None
-
-        if splice.IsSome then
-            splice.Value
-        elif word.StartsWith "~" || word.Contains '/' then
-            // an explicit path word — filesystem entries [D:repl-quality],
-            // quoted where the slot is an expression [D:repl-path-quote]
-            filesystemComplete word |> quoteFor before
-        elif headSlotAt before = HeadSlot.Stage then
-            // a pipeline stage head [D:cmd-chaining]: programs only — the
-            // expression pool is noise here — and right after the `|` the
-            // reifiers and the and/or chain words; an empty word offers
-            // just those, never the whole PATH
-            let direct =
-                match lastStage before with
-                | Some(_, true) -> Ast.reifierNames @ [ "and"; "or" ]
-                | _ -> []
-
-            let programs =
-                if word = "" then
-                    []
-                else
-                    (Extern.names () |> Set.toList)
-                    @ (Builtins.commandCallable |> Set.toList)
-                    @ (aliasHeads |> Set.toList)
-
-            direct @ programs
-            |> List.filter (fun n -> n.StartsWith word && n <> word)
-            |> List.distinct
-            |> List.sort
-        elif headSlotAt before = HeadSlot.Forced && word <> "" then
-            // the `^`-forced head [D:let-rhs-head]: the sigil skips
-            // bindings and the alias table, so the pool is exactly the
-            // PATH cache — bare (the word starts after the sigil), at
-            // the statement head and the let-RHS alike
-            Extern.names () |> Set.filter (fun n -> n.StartsWith word && n <> word) |> Set.toList
-        elif commandArgvPosition env false before then
-            // argv position [D:complete-argv]: paths, nothing else — the
-            // pool, fields, and members are expression furniture
-            filesystemComplete word |> argvPaths
-        elif pathParamAt before then
-            // a path position wants paths and string bindings — `cd
-            // target` applies the binding, so hard-removing identifiers
-            // would break documented weir; keywords and bare members
-            // cannot be arguments here [D:path-param-completion]
-            let stringBindings =
-                env.Values
-                |> Map.toList
-                |> List.choose (fun (n, sch) ->
-                    if Types.isUserName n && sch.Forall.IsEmpty && sch.Ty = TStr then
-                        Some n
-                    else
-                        None)
-
-            // this branch fires for a bare word (no `/`) at a builtin path
-            // param — it stays unquoted [D:repl-path-quote]: `cd w`/`File.copy
-            // … dst` complete the bare stem (the [D:path-param-completion]
-            // pins), and a string binding here is already a valid expression.
-            // An explicit path word (`File.read ./x`, with a `/` or `~`) took
-            // the quoting branch above before reaching here. A stem a bare
-            // word cannot spell (a space, a quote) still comes back quoted.
-            let paths =
-                filesystemComplete word
-                |> List.filter (fun c -> c.StartsWith word && c <> word)
-                |> argvPaths
-
-            (paths @ (stringBindings |> List.filter (fun c -> c.StartsWith word && c <> word)))
-            |> List.distinct
-            |> List.sort
-        elif word.Contains '.' then
-            let segments = word.Split '.'
-            let head = segments[0]
-            let path = segments[1 .. segments.Length - 2] |> Array.toList
-            let prefix = segments[segments.Length - 1]
-
-            let moduleMembers =
-                if not (Map.containsKey head env.Values) then
-                    Map.tryFind head env.Modules
-                else
-                    None
-
-            match moduleMembers with
-            | Some members ->
-                let prefix = word.Substring(head.Length + 1)
-
-                // bespoke arms (`Args.load`/`Env.load`) are not in the member
-                // map — offer them too, from the one source the checker uses
-                let special =
-                    Weir.Check.specialModuleMembers |> Map.tryFind head |> Option.defaultValue []
-
-                Seq.append (Map.keys members) special
-                |> Seq.filter (fun m -> m.StartsWith prefix)
-                |> Seq.distinct
-                |> Seq.sort
-                |> Seq.map (fun m -> $"{head}.{m}")
-                |> List.ofSeq
-            | None ->
-
-                let headTy =
-                    match Map.tryFind head env.Values with
-                    | Some sch -> Some sch.Ty
-                    | None ->
-                        pipelineElemTy
-                            env
-                            (head = "_" && bareStageBefore before)
-                            (text.Substring(0, wordStart))
-
-                let finalTy =
-                    path
-                    |> List.fold
-                        (fun acc seg ->
-                            acc
-                            |> Option.bind (recordFields env)
-                            |> Option.bind (List.tryFind (fst >> (=) seg))
-                            |> Option.map snd)
-                        headTy
-
-                let render (fields: string list) =
-                    let stem = word.Substring(0, word.Length - prefix.Length)
-
-                    fields
-                    |> List.filter (fun f -> f.StartsWith prefix)
-                    |> List.sort
-                    |> List.map (fun f -> stem + f)
-
-                match finalTy with
-                | Some ty ->
-                    // resolved head: fields if a record, nothing if a known
-                    // non-record (the nats pin — the fallback must not fire)
-                    match recordFields env ty with
-                    | Some fields -> render (fields |> List.map fst)
-                    | None -> []
-                | None when lexicallyBound head binderScope ->
-                    // unresolvable but lexically bound head (a lambda
-                    // param, a mid-edit binder): no typed tree, but the
-                    // nominal records keep the fallback high-signal —
-                    // every declared record's fields
-                    // [D:declared-fields-fallback]
-                    env.Types
-                    |> Map.toList
-                    |> List.collect (fun (_, def) ->
-                        match def with
-                        | Record d -> d.Fields |> List.map fst
-                        | Union _ -> [])
+                    Seq.append (Map.keys env.Modules[head]) special
+                    |> Seq.filter (fun m -> m.StartsWith memberPrefix)
+                    |> Seq.distinct
+                    |> Seq.map (fun m -> $"{head}.{m}")
+                    |> Seq.sort
+                    |> List.ofSeq
+                | _ ->
+                    helpNames env
+                    |> List.filter (fun n -> n.StartsWith word && n <> word)
                     |> List.distinct
-                    |> render
-                | None ->
-                    // unbound head: no binding, no type, no basis for any
-                    // candidate — nothing beats the union of everything
-                    // [D:complete-argv]
-                    []
-        elif valueSlotCandidates.IsSome then
-            valueSlotCandidates.Value
-            |> List.filter (fun c -> c.StartsWith word && c <> word)
-            |> List.distinct
-            |> List.sort
-        elif withSlotFields.IsSome then
-            withSlotFields.Value
-            |> List.filter (fun f -> f.StartsWith word && f <> word)
-            |> List.sort
-        elif
-            (let b = before.TrimEnd() in
-
-             b.EndsWith "within"
-             && (b.Length = "within".Length
-                 || not (System.Char.IsLetterOrDigit b[b.Length - 7] || b[b.Length - 7] = '_')))
-        then
-            // the within kind slot [D:within-kinds]: a closed set off the one
-            // table — the kinds and nothing else (an identifier cannot sit
-            // there); the schema= shape, its mechanism kin
-            Weir.Ast.withinKinds
-            // a standalone head (pure) is not a `within` kind [D:pure-stage1]
-            |> List.filter (fun k -> not k.Standalone)
-            |> List.map (fun k -> k.Name)
-            |> List.filter (fun k -> k.StartsWith word && k <> word)
-        elif
-            (let b = before.TrimEnd() in
-
-             (b.EndsWith "from" || b.EndsWith "to")
-             && (let kw = if b.EndsWith "from" then "from" else "to" in
-
-                 b.Length = kw.Length
-                 || not (
-                     System.Char.IsLetterOrDigit b[b.Length - kw.Length - 1]
-                     || b[b.Length - kw.Length - 1] = '_'
-                 )))
-        then
-            // the from/to adapter slot [D:form-word-hover]: direction-aware, off
-            // the one source (builtinDocs keys) — `to ` never offers a read-only
-            // adapter; a closed set, so nothing else completes here (the within
-            // and schema= slots' third sibling — closed-set slot completion)
-            let dir = if (before.TrimEnd()).EndsWith "from" then "from" else "to"
-
-            Weir.Builtins.adapterNames dir
-            |> List.filter (fun a -> a.StartsWith word && a <> word)
-        elif
-            before.EndsWith "schema="
-            && Weir.Parser.isYamlMarkerPiece (before.Substring(0, before.Length - 7).TrimEnd())
-        then
-            // the vendored schema names [D:yaml-schemas] — `schema` itself is
-            // marker-local, deliberately not a Parser.keywords member (that
-            // would reserve the identifier); the district marker context
-            // offers it and its completions instead
-            // the session cwd, as above — a bare `.` would be the startup dir
-            match Weir.Contracts.findWeirDir (Session.Cwd()) with
-            | Ok weirDir ->
-                let dir = System.IO.Path.Combine(weirDir, "schemas")
-
-                if System.IO.Directory.Exists dir then
-                    System.IO.Directory.GetFiles(dir, "*.json")
-                    |> Array.map System.IO.Path.GetFileNameWithoutExtension
-                    |> Array.filter (fun n -> n.StartsWith word && n <> word)
-                    |> Array.sort
-                    |> Array.toList
-                else
-                    []
-            | Error _ -> []
-        elif word = "" && Weir.Parser.isYamlMarkerPiece (before.TrimEnd()) then
-            [ "schema=" ]
-        elif before.EndsWith "to yaml" && "stream".StartsWith word && word <> "stream" then
-            // the write-side stream word [D:yaml-seq-doc] — the one thing
-            // that follows a to-adapter
-            [ "stream" ]
-        elif
-            before.EndsWith "from json"
-            || before.EndsWith "from jsonl"
-            || before.EndsWith "from yaml"
-            || before.EndsWith "from yaml stream"
-        then
-            // record names complete in the type slot; yaml's slot also
-            // offers the stream cardinality word [D:wire-unions]
-            let names =
-                env.Types
-                |> Map.toList
-                |> List.choose (fun (n, def) ->
-                    match def with
-                    | Record _ when n.StartsWith word -> Some n
-                    | _ -> None)
-                |> List.sort
-
-            if before.EndsWith "from yaml" && "stream".StartsWith word && word <> "stream" then
-                "stream" :: names
+                    |> List.sort
             else
-                names
-        elif word = "" && before = "" then
-            // an empty prompt at a statement head [D:empty-prompt-directives]:
-            // matching the whole pool (hundreds of PATH execs plus the
-            // modules/keywords/constructors universe) is unusable, so a
-            // fresh Tab teaches the REPL's affordances instead: the session
-            // directives, `#help` first (which itself lists the modules and
-            // members). The argv-position empty Tab is unaffected — its cwd
-            // listing is useful, and it keys on `before` being non-empty below.
-            sessionDirectives |> List.map (fun d -> "#" + d)
-        else
-            // command heads at a head slot (the statement head and the
-            // let-RHS, headSlotAt's verdict [D:let-rhs-head]): PATH
-            // executables + command-callable builtins join the name pool;
-            // in argv position cwd files join instead — the two
-            // interactive contexts [D:repl-quality]
-            let cwdEntries () =
-                try
-                    System.IO.Directory.GetFileSystemEntries(Session.Cwd())
-                    |> Array.map (fun e ->
-                        let n = System.IO.Path.GetFileName e
-                        if System.IO.Directory.Exists e then n + "/" else n)
-                    |> Array.toList
-                with _ ->
-                    []
 
-            let extra =
-                match headSlotAt before with
-                | (HeadSlot.Stmt | HeadSlot.LetRhs) when word <> "" ->
-                    // both head slots take the same pool [D:let-rhs-head]:
-                    // the statement head and the let-RHS — PATH, the
-                    // command-callable builtins, and the session's alias
-                    // heads [D:command-head-alias]. An empty word at the
-                    // let-RHS stays pool-only (the empty-prompt rationale
-                    // — never the whole-pool dump); the empty statement
-                    // head routed to the directive teaching above
-                    (Extern.names () |> Set.toList)
-                    @ (Builtins.commandCallable |> Set.toList)
-                    @ (aliasHeads |> Set.toList)
-                | _ when word <> "" -> cwdEntries ()
-                | _ -> []
 
-            // a union-case constructor never starts a statement
-            // [D:constructors-not-heads]: `WriteFile …`/`Bearer …` as a head
-            // is a discarded value (a check error). They pass isUserName, so
-            // the pool can't tell one from a function — subtract them at the
-            // statement head (before empty) only, derived from env.Types'
-            // Union cases (the one source). An expression/argument position
-            // (before non-empty — a list literal, a `let … in`) keeps them,
-            // where a constructor is valid.
-            let unionCases =
-                if before = "" then
-                    env.Types
-                    |> Map.toList
-                    |> List.collect (fun (_, def) ->
-                        match def with
-                        | Union u -> u.Cases |> List.map fst
-                        | Record _ -> [])
-                    |> Set.ofList
+                // the record-update `with` slot [D:with-slot]: after `{ source with `,
+                // the closed candidate set is the source's record fields — never the
+                // general pool (a keyword cannot appear in an expression fragment).
+                // The source is found by slicing back to each `{` and letting the
+                // parser validate the slice (no second quote machine [D:one-scanner]);
+                // `match x with` has no parsing brace-slice, so it falls through
+                // untouched.
+                // resolve `{ <source> ...` back to its record def: slice at each
+                // '{' and let the parser validate (the with-slot machinery, shared)
+                let sourceDefOf (upto: string) : RecordDef option =
+                    [
+                        for i in 0 .. upto.Length - 1 do
+                            if upto[i] = '{' then
+                                yield i
+                    ]
+                    |> List.rev
+                    |> List.tryPick (fun bi ->
+                        let slice = upto.Substring(bi + 1).Trim()
+
+                        if slice = "" then
+                            None
+                        else
+                            match Weir.Parser.parseExpr slice with
+                            | Error _ -> None
+                            | Ok e ->
+                                match Weir.Check.typecheck (withHoles env e) e with
+                                | Error _ -> None
+                                | Ok te ->
+                                    match te.Ty with
+                                    | TNamed(n, _) ->
+                                        match Map.tryFind n env.Types with
+                                        | Some(Record d) -> Some d
+                                        | _ -> None
+                                    | _ -> None)
+
+                // the typed value slot [D:typed-value-slot]: `{ src with field =
+                // <prefix>` — the field's declared type is known, so the candidate
+                // set is closed where the type is: a union's cases, bool's two
+                // values (plus bool bindings), a unit type's module and bindings.
+                // Other types fall through to the general pool.
+                let valueSlotCandidates: string list option =
+                    let b = before.TrimEnd()
+
+                    if not (b.EndsWith "=") || b.EndsWith "==" then
+                        None
+                    else
+                        let beforeEq = b.Substring(0, b.Length - 1).TrimEnd()
+
+                        let fieldStart =
+                            let mutable i = beforeEq.Length
+
+                            while i > 0 && (System.Char.IsLetterOrDigit beforeEq[i - 1] || beforeEq[i - 1] = '_') do
+                                i <- i - 1
+
+                            i
+
+                        let field = beforeEq.Substring fieldStart
+
+                        if field = "" then
+                            None
+                        else
+                            // the nearest preceding `with` keyword bounds the source
+                            let head = beforeEq.Substring(0, fieldStart)
+                            let wi = head.LastIndexOf "with"
+
+                            let isWordBounded =
+                                wi >= 0
+                                && (wi = 0 || not (System.Char.IsLetterOrDigit head[wi - 1] || head[wi - 1] = '_'))
+                                && (wi + 4 >= head.Length
+                                    || not (System.Char.IsLetterOrDigit head[wi + 4] || head[wi + 4] = '_'))
+
+                            if not isWordBounded then
+                                None
+                            else
+                                sourceDefOf (head.Substring(0, wi))
+                                |> Option.bind (fun def -> def.Fields |> List.tryFind (fst >> (=) field))
+                                |> Option.bind (fun (_, fty) ->
+                                    let typedBindings (t: Ty) =
+                                        env.Values
+                                        |> Map.toList
+                                        |> List.choose (fun (n, sch) ->
+                                            if Types.isUserName n && sch.Forall.IsEmpty && sch.Ty = t then
+                                                Some n
+                                            else
+                                                None)
+
+                                    match fty with
+                                    | TBool -> Some([ "false"; "true" ] @ typedBindings TBool)
+                                    | TNamed(n, []) ->
+                                        match Map.tryFind n env.Types with
+                                        | Some(Union u) -> Some(u.Cases |> List.map fst)
+                                        | _ -> None
+                                    | TDur -> Some("Duration" :: typedBindings TDur)
+                                    | TSize -> Some("Size" :: typedBindings TSize)
+                                    | TBytes -> Some("Bytes" :: typedBindings TBytes)
+                                    | TSecret -> Some("Secret" :: typedBindings TSecret)
+                                    | _ -> None)
+
+                let withSlotFields: string list option =
+                    let endsWithWord (kw: string) (b: string) =
+                        b.EndsWith kw
+                        && (b.Length = kw.Length
+                            || not (
+                                System.Char.IsLetterOrDigit b[b.Length - kw.Length - 1]
+                                || b[b.Length - kw.Length - 1] = '_'
+                            ))
+
+                    if not (endsWithWord "with" before) then
+                        None
+                    else
+                        let uptoWith = before.Substring(0, before.Length - 4)
+
+                        [
+                            for i in 0 .. uptoWith.Length - 1 do
+                                if uptoWith[i] = '{' then
+                                    yield i
+                        ]
+                        |> List.rev
+                        |> List.tryPick (fun bi ->
+                            let slice = uptoWith.Substring(bi + 1).Trim()
+
+                            if slice = "" then
+                                None
+                            else
+                                match Weir.Parser.parseExpr slice with
+                                | Error _ -> None
+                                | Ok e ->
+                                    match Weir.Check.typecheck (withHoles env e) e with
+                                    | Error _ -> None
+                                    | Ok te ->
+                                        match te.Ty with
+                                        | TVar _ when
+                                            not (
+                                                System.Text.RegularExpressions.Regex.IsMatch(
+                                                    slice.Trim(),
+                                                    @"^[A-Za-z_]\w*$"
+                                                )
+                                                && not (lexicallyBound (slice.Trim()) binderScope)
+                                            )
+                                            ->
+                                            // unresolved source — the declared-fields
+                                            // fallback, as the dotted arm does;
+                                            // a bare unbound identifier source gets
+                                            // nothing instead [D:complete-argv]
+                                            env.Types
+                                            |> Map.toList
+                                            |> List.collect (fun (_, def) ->
+                                                match def with
+                                                | Record d -> d.Fields |> List.map fst
+                                                | Union _ -> [])
+                                            |> List.distinct
+                                            |> Some
+                                        | TVar _ -> Some []
+                                        | ty ->
+                                            match recordFields env ty with
+                                            | Some fields -> Some(fields |> List.map fst)
+                                            // a known non-record has no updatable
+                                            // fields — a closed set with no members
+                                            // beats the general pool (the nats pin's
+                                            // reasoning)
+                                            | None -> Some [])
+
+                // expression-position path completion quotes [D:repl-path-quote]:
+                // a bare filesystem path is not a valid weir expression, so
+                // `File.read ./x<TAB>` must yield `File.read "./x"` (a string
+                // literal parses; a bare path does not). The distinction is the
+                // slot's, reusing the existing head/argv machinery: a command-argv
+                // path stays bare (`cat ./x`, `ls ./dir`, `./script`), and a path a
+                // builtin's string parameter wants (File.read/cd/Path.*) — or one in
+                // plain expression furniture (after `=`, a `|>` stage, a `(`) — gets
+                // quoted. An already-open quote never doubles: the completion lands
+                // inside it. A directory keeps its trailing `/` inside the quotes.
+                let expressionSlot (before: string) : bool =
+                    pathParamAt before
+                    || (let stmt =
+                            let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
+                            (if i >= 0 then before.Substring(i + 1) else before)
+
+                        stmt.Contains "|>"
+                        || stmt.Contains " = "
+                        || stmt.Contains '('
+                        || stmt.Contains '[')
+
+                // `cd` heading a statement is the command form: its argument is
+                // an argv word, so a path completes bare like `cat ./x`
+                // [D:cd-bare-completion]; `let d = cd …`, `within cd …` and
+                // `(cd …)` are expressions and keep the quotes
+                let cdCommandArg (before: string) : bool =
+                    let stmt =
+                        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
+                        (if i >= 0 then before.Substring(i + 1) else before)
+
+                    stmt.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries) = [| "cd" |]
+
+                let opener = openerAt text wordStart
+
+                let quoteFor (before: string) (candidates: string list) : string list =
+                    if insideOpenQuote then
+                        candidates |> List.map (escapeFor opener)
+                    elif cdCommandArg before then
+                        candidates |> List.map argvWord
+                    elif expressionSlot before then
+                        candidates |> List.map stringLiteral
+                    else
+                        candidates |> List.map argvWord
+
+                let argvPaths (candidates: string list) : string list =
+                    if insideOpenQuote then
+                        candidates |> List.map (escapeFor opener)
+                    else
+                        candidates |> List.map argvWord
+
+                // a `$name` splice slot decides alone [D:argv-splice-complete]:
+                // inside a string the `$` is literal, glued to a word it is a
+                // word-join the parser refuses — nothing there; in a command's
+                // argv (any head, inside `$(…)` and if/for/match bodies) the
+                // checker's pool
+                let splice =
+                    match spliceSigil text wordStart with
+                    | Some sigil ->
+                        let at = wordStart - sigil.Length
+                        let pre = text.Substring(0, at)
+
+                        if Weir.Scan.endsInsideString pre || Weir.Scan.commentAt pre >= 0 then
+                            Some []
+                        elif at > 0 && not (pre[at - 1] = ' ' || pre[at - 1] = '\t') then
+                            Some []
+                        elif commandArgvPosition env true (spliceSegment pre + sigil) then
+                            Some(splicePool env sigil word)
+                        else
+                            None
+                    | None -> None
+
+                if splice.IsSome then
+                    splice.Value
+                elif word.StartsWith "~" || word.Contains '/' then
+                    // an explicit path word — filesystem entries [D:repl-quality],
+                    // quoted where the slot is an expression [D:repl-path-quote]
+                    filesystemComplete word |> quoteFor before
+                elif headSlotAt before = HeadSlot.Stage then
+                    // a pipeline stage head [D:cmd-chaining]: programs only — the
+                    // expression pool is noise here — and right after the `|` the
+                    // reifiers and the and/or chain words; an empty word offers
+                    // just those, never the whole PATH
+                    let direct =
+                        match lastStage before with
+                        | Some(_, true) -> Ast.reifierNames @ [ "and"; "or" ]
+                        | _ -> []
+
+                    let programs =
+                        if word = "" then
+                            []
+                        else
+                            (Extern.names () |> Set.toList)
+                            @ (Builtins.commandCallable |> Set.toList)
+                            @ (aliasHeads |> Set.toList)
+
+                    direct @ programs
+                    |> List.filter (fun n -> n.StartsWith word && n <> word)
+                    |> List.distinct
+                    |> List.sort
+                elif headSlotAt before = HeadSlot.Forced && word <> "" then
+                    // the `^`-forced head [D:let-rhs-head]: the sigil skips
+                    // bindings and the alias table, so the pool is exactly the
+                    // PATH cache — bare (the word starts after the sigil), at
+                    // the statement head and the let-RHS alike
+                    Extern.names ()
+                    |> Set.filter (fun n -> n.StartsWith word && n <> word)
+                    |> Set.toList
+                elif commandArgvPosition env false before then
+                    // argv position [D:complete-argv]: paths, nothing else — the
+                    // pool, fields, and members are expression furniture
+                    filesystemComplete word |> argvPaths
+                elif pathParamAt before then
+                    // a path position wants paths and string bindings — `cd
+                    // target` applies the binding, so hard-removing identifiers
+                    // would break documented weir; keywords and bare members
+                    // cannot be arguments here [D:path-param-completion]
+                    let stringBindings =
+                        env.Values
+                        |> Map.toList
+                        |> List.choose (fun (n, sch) ->
+                            if Types.isUserName n && sch.Forall.IsEmpty && sch.Ty = TStr then
+                                Some n
+                            else
+                                None)
+
+                    // this branch fires for a bare word (no `/`) at a builtin path
+                    // param — it stays unquoted [D:repl-path-quote]: `cd w`/`File.copy
+                    // … dst` complete the bare stem (the [D:path-param-completion]
+                    // pins), and a string binding here is already a valid expression.
+                    // An explicit path word (`File.read ./x`, with a `/` or `~`) took
+                    // the quoting branch above before reaching here. A stem a bare
+                    // word cannot spell (a space, a quote) still comes back quoted.
+                    let paths =
+                        filesystemComplete word
+                        |> List.filter (fun c -> c.StartsWith word && c <> word)
+                        |> argvPaths
+
+                    (paths
+                     @ (stringBindings |> List.filter (fun c -> c.StartsWith word && c <> word)))
+                    |> List.distinct
+                    |> List.sort
+                elif word.Contains '.' then
+                    let segments = word.Split '.'
+                    let head = segments[0]
+                    let path = segments[1 .. segments.Length - 2] |> Array.toList
+                    let prefix = segments[segments.Length - 1]
+
+                    let moduleMembers =
+                        if not (Map.containsKey head env.Values) then
+                            Map.tryFind head env.Modules
+                        else
+                            None
+
+                    match moduleMembers with
+                    | Some members ->
+                        let prefix = word.Substring(head.Length + 1)
+
+                        // bespoke arms (`Args.load`/`Env.load`) are not in the member
+                        // map — offer them too, from the one source the checker uses
+                        let special =
+                            Weir.Check.specialModuleMembers |> Map.tryFind head |> Option.defaultValue []
+
+                        Seq.append (Map.keys members) special
+                        |> Seq.filter (fun m -> m.StartsWith prefix)
+                        |> Seq.distinct
+                        |> Seq.sort
+                        |> Seq.map (fun m -> $"{head}.{m}")
+                        |> List.ofSeq
+                    | None ->
+
+                        let headTy =
+                            match Map.tryFind head env.Values with
+                            | Some sch -> Some sch.Ty
+                            | None ->
+                                pipelineElemTy env (head = "_" && bareStageBefore before) (text.Substring(0, wordStart))
+
+                        let finalTy =
+                            path
+                            |> List.fold
+                                (fun acc seg ->
+                                    acc
+                                    |> Option.bind (recordFields env)
+                                    |> Option.bind (List.tryFind (fst >> (=) seg))
+                                    |> Option.map snd)
+                                headTy
+
+                        let render (fields: string list) =
+                            let stem = word.Substring(0, word.Length - prefix.Length)
+
+                            fields
+                            |> List.filter (fun f -> f.StartsWith prefix)
+                            |> List.sort
+                            |> List.map (fun f -> stem + f)
+
+                        match finalTy with
+                        | Some ty ->
+                            // resolved head: fields if a record, nothing if a known
+                            // non-record (the nats pin — the fallback must not fire)
+                            match recordFields env ty with
+                            | Some fields -> render (fields |> List.map fst)
+                            | None -> []
+                        | None when lexicallyBound head binderScope ->
+                            // unresolvable but lexically bound head (a lambda
+                            // param, a mid-edit binder): no typed tree, but the
+                            // nominal records keep the fallback high-signal —
+                            // every declared record's fields
+                            // [D:declared-fields-fallback]
+                            env.Types
+                            |> Map.toList
+                            |> List.collect (fun (_, def) ->
+                                match def with
+                                | Record d -> d.Fields |> List.map fst
+                                | Union _ -> [])
+                            |> List.distinct
+                            |> render
+                        | None ->
+                            // unbound head: no binding, no type, no basis for any
+                            // candidate — nothing beats the union of everything
+                            // [D:complete-argv]
+                            []
+                elif valueSlotCandidates.IsSome then
+                    valueSlotCandidates.Value
+                    |> List.filter (fun c -> c.StartsWith word && c <> word)
+                    |> List.distinct
+                    |> List.sort
+                elif withSlotFields.IsSome then
+                    withSlotFields.Value
+                    |> List.filter (fun f -> f.StartsWith word && f <> word)
+                    |> List.sort
+                elif
+                    (let b = before.TrimEnd() in
+
+                     b.EndsWith "within"
+                     && (b.Length = "within".Length
+                         || not (System.Char.IsLetterOrDigit b[b.Length - 7] || b[b.Length - 7] = '_')))
+                then
+                    // the within kind slot [D:within-kinds]: a closed set off the one
+                    // table — the kinds and nothing else (an identifier cannot sit
+                    // there); the schema= shape, its mechanism kin
+                    Weir.Ast.withinKinds
+                    // a standalone head (pure) is not a `within` kind [D:pure-stage1]
+                    |> List.filter (fun k -> not k.Standalone)
+                    |> List.map (fun k -> k.Name)
+                    |> List.filter (fun k -> k.StartsWith word && k <> word)
+                elif
+                    (let b = before.TrimEnd() in
+
+                     (b.EndsWith "from" || b.EndsWith "to")
+                     && (let kw = if b.EndsWith "from" then "from" else "to" in
+
+                         b.Length = kw.Length
+                         || not (
+                             System.Char.IsLetterOrDigit b[b.Length - kw.Length - 1]
+                             || b[b.Length - kw.Length - 1] = '_'
+                         )))
+                then
+                    // the from/to adapter slot [D:form-word-hover]: direction-aware, off
+                    // the one source (builtinDocs keys) — `to ` never offers a read-only
+                    // adapter; a closed set, so nothing else completes here (the within
+                    // and schema= slots' third sibling — closed-set slot completion)
+                    let dir = if (before.TrimEnd()).EndsWith "from" then "from" else "to"
+
+                    Weir.Builtins.adapterNames dir
+                    |> List.filter (fun a -> a.StartsWith word && a <> word)
+                elif
+                    before.EndsWith "schema="
+                    && Weir.Parser.isYamlMarkerPiece (before.Substring(0, before.Length - 7).TrimEnd())
+                then
+                    // the vendored schema names [D:yaml-schemas] — `schema` itself is
+                    // marker-local, deliberately not a Parser.keywords member (that
+                    // would reserve the identifier); the district marker context
+                    // offers it and its completions instead
+                    // the session cwd, as above — a bare `.` would be the startup dir
+                    match Weir.Contracts.findWeirDir (Session.Cwd()) with
+                    | Ok weirDir ->
+                        let dir = System.IO.Path.Combine(weirDir, "schemas")
+
+                        if System.IO.Directory.Exists dir then
+                            System.IO.Directory.GetFiles(dir, "*.json")
+                            |> Array.map System.IO.Path.GetFileNameWithoutExtension
+                            |> Array.filter (fun n -> n.StartsWith word && n <> word)
+                            |> Array.sort
+                            |> Array.toList
+                        else
+                            []
+                    | Error _ -> []
+                elif word = "" && Weir.Parser.isYamlMarkerPiece (before.TrimEnd()) then
+                    [ "schema=" ]
+                elif before.EndsWith "to yaml" && "stream".StartsWith word && word <> "stream" then
+                    // the write-side stream word [D:yaml-seq-doc] — the one thing
+                    // that follows a to-adapter
+                    [ "stream" ]
+                elif
+                    before.EndsWith "from json"
+                    || before.EndsWith "from jsonl"
+                    || before.EndsWith "from yaml"
+                    || before.EndsWith "from yaml stream"
+                then
+                    // record names complete in the type slot; yaml's slot also
+                    // offers the stream cardinality word [D:wire-unions]
+                    let names =
+                        env.Types
+                        |> Map.toList
+                        |> List.choose (fun (n, def) ->
+                            match def with
+                            | Record _ when n.StartsWith word -> Some n
+                            | _ -> None)
+                        |> List.sort
+
+                    if before.EndsWith "from yaml" && "stream".StartsWith word && word <> "stream" then
+                        "stream" :: names
+                    else
+                        names
+                elif word = "" && before = "" then
+                    // an empty prompt at a statement head [D:empty-prompt-directives]:
+                    // matching the whole pool (hundreds of PATH execs plus the
+                    // modules/keywords/constructors universe) is unusable, so a
+                    // fresh Tab teaches the REPL's affordances instead: the session
+                    // directives, `#help` first (which itself lists the modules and
+                    // members). The argv-position empty Tab is unaffected — its cwd
+                    // listing is useful, and it keys on `before` being non-empty below.
+                    sessionDirectives |> List.map (fun d -> "#" + d)
                 else
-                    Set.empty
+                    // command heads at a head slot (the statement head and the
+                    // let-RHS, headSlotAt's verdict [D:let-rhs-head]): PATH
+                    // executables + command-callable builtins join the name pool;
+                    // in argv position cwd files join instead — the two
+                    // interactive contexts [D:repl-quality]
+                    let cwdEntries () =
+                        try
+                            System.IO.Directory.GetFileSystemEntries(Session.Cwd())
+                            |> Array.map (fun e ->
+                                let n = System.IO.Path.GetFileName e
+                                if System.IO.Directory.Exists e then n + "/" else n)
+                            |> Array.toList
+                        with _ -> []
 
-            (List.ofSeq (Map.keys env.Values |> Seq.filter Types.isUserName |> Seq.filter (unionCases.Contains >> not))
-             @ List.ofSeq (Map.keys env.Modules)
-             @ keywords
-             @ extra)
-            |> List.filter (fun n -> n.StartsWith word && n <> word)
-            |> List.distinct
-            |> List.sort
+                    let extra =
+                        match headSlotAt before with
+                        | (HeadSlot.Stmt | HeadSlot.LetRhs) when word <> "" ->
+                            // both head slots take the same pool [D:let-rhs-head]:
+                            // the statement head and the let-RHS — PATH, the
+                            // command-callable builtins, and the session's alias
+                            // heads [D:command-head-alias]. An empty word at the
+                            // let-RHS stays pool-only (the empty-prompt rationale
+                            // — never the whole-pool dump); the empty statement
+                            // head routed to the directive teaching above
+                            (Extern.names () |> Set.toList)
+                            @ (Builtins.commandCallable |> Set.toList)
+                            @ (aliasHeads |> Set.toList)
+                        | _ when word <> "" -> cwdEntries ()
+                        | _ -> []
+
+                    // a union-case constructor never starts a statement
+                    // [D:constructors-not-heads]: `WriteFile …`/`Bearer …` as a head
+                    // is a discarded value (a check error). They pass isUserName, so
+                    // the pool can't tell one from a function — subtract them at the
+                    // statement head (before empty) only, derived from env.Types'
+                    // Union cases (the one source). An expression/argument position
+                    // (before non-empty — a list literal, a `let … in`) keeps them,
+                    // where a constructor is valid.
+                    let unionCases =
+                        if before = "" then
+                            env.Types
+                            |> Map.toList
+                            |> List.collect (fun (_, def) ->
+                                match def with
+                                | Union u -> u.Cases |> List.map fst
+                                | Record _ -> [])
+                            |> Set.ofList
+                        else
+                            Set.empty
+
+                    (List.ofSeq (
+                        Map.keys env.Values
+                        |> Seq.filter Types.isUserName
+                        |> Seq.filter (unionCases.Contains >> not)
+                     )
+                     @ List.ofSeq (Map.keys env.Modules)
+                     @ keywords
+                     @ extra)
+                    |> List.filter (fun n -> n.StartsWith word && n <> word)
+                    |> List.distinct
+                    |> List.sort
 
 /// the LSP's entry: no session aliases (scripts never see the table)
 let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart: int) : string list =
@@ -1478,8 +1533,7 @@ let private mapLookupHead =
     System.Text.RegularExpressions.Regex @"^(.*?)\s*\|>\s*Map\.(?:get|tryGet|has)$"
 
 let private valueKeySlot (values: Map<string, Weir.Eval.Value>) (text: string) (wordStart: int) : string list option =
-    let segStart =
-        max (text.LastIndexOf Weir.Parser.sibSep) (text.LastIndexOf '\n') + 1
+    let segStart = max (text.LastIndexOf Weir.Parser.sibSep) (text.LastIndexOf '\n') + 1
 
     let seg = text.Substring segStart
     let qi = seg.LastIndexOf '"'
@@ -1532,7 +1586,12 @@ let private valueKeySlot (values: Map<string, Weir.Eval.Value>) (text: string) (
                     []
 
             let literal = text.Substring(segStart + qi + 1)
-            let word = if wordStart >= text.Length then "" else text.Substring wordStart
+
+            let word =
+                if wordStart >= text.Length then
+                    ""
+                else
+                    text.Substring wordStart
             // the candidate must extend the typed word [D:complete-argv]:
             // the literal may reach left of the word (a space inside a
             // typed key) — strip that stem from each offered key
@@ -1583,7 +1642,9 @@ let rec private patBinderTy (env: TypeEnv) (head: string) (pat: Weir.Ast.Pattern
         |> Option.bind (fun fields ->
             fs
             |> List.tryPick (fun ((f, _), p) ->
-                fields |> List.tryFind (fst >> (=) f) |> Option.bind (fun (_, ft) -> patBinderTy env head p ft)))
+                fields
+                |> List.tryFind (fst >> (=) f)
+                |> Option.bind (fun (_, ft) -> patBinderTy env head p ft)))
     | _ -> None
 
 let private binderSiteTy (env: TypeEnv) (head: string) (te: Weir.Check.TypedExpr) : Ty option =

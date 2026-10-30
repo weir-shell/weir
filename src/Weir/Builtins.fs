@@ -10,43 +10,48 @@ let fileRow: RecordDef =
     // the stated surface [D:ls-truth]: what FileSystemInfo offers and
     // which parts are included live in the decision row; symlink is
     // excluded (Windows semantics unverifiable off-matrix)
-    { Name = "FileRow"
-      Params = []
-      Fields =
-        // declaration order is display order [D:record-order] — name
-        // leads (the ls-rider's ask), path trails (the widest column
-        // reads best at the edge)
-        [ "name", TStr
-          // kind, not isDirectory [D:filerow]: a fact, not an answer —
-          // and it extends (Symlink needed no new column). `type` is a
-          // keyword; `kind` is the fallback the plan named
-          "kind", TNamed("FileKind", [])
-          // the one fact no File.* query can answer [D:filerow]
-          "target", TNamed("Option", [ TStr ])
-          "bytes", TSize
-          // the file's own fact [D:instant] — unlike age (derived,
-          // snapshotted per pull, stale after binding)
-          "modified", TInstant
-          "hidden", TBool
-          "path", TStr ]
-      Attrs = Map.empty
-      OrdKey = []
-      Docs = Map.empty }
+    {
+        Name = "FileRow"
+        Params = []
+        Fields =
+            // declaration order is display order [D:record-order] — name
+            // leads (the ls-rider's ask), path trails (the widest column
+            // reads best at the edge)
+            [
+                "name", TStr
+                // kind, not isDirectory [D:filerow]: a fact, not an answer —
+                // and it extends (Symlink needed no new column). `type` is a
+                // keyword; `kind` is the fallback the plan named
+                "kind", TNamed("FileKind", [])
+                // the one fact no File.* query can answer [D:filerow]
+                "target", TNamed("Option", [ TStr ])
+                "bytes", TSize
+                // the file's own fact [D:instant] — unlike age (derived,
+                // snapshotted per pull, stale after binding)
+                "modified", TInstant
+                "hidden", TBool
+                "path", TStr
+            ]
+        Attrs = Map.empty
+        OrdKey = []
+        Docs = Map.empty
+    }
 
 // the row's kind axis [D:filerow]: module names are load-bearing
 // (`File`/`Dir` as cases would turn Dir.create into field access on a
 // union), so the cases are Regular (POSIX's own term), Directory,
 // Symlink
-let fileKind: UnionDef =
-    { Name = "FileKind"
-      Params = []
-      Cases = [ "Regular", None; "Directory", None; "Symlink", None ]
-      Tag = None
-      CaseWires = Map.empty
-      OtherCase = None
-      Validated = None
-      OrdKey = []
-      Docs = Map.empty }
+let fileKind: UnionDef = {
+    Name = "FileKind"
+    Params = []
+    Cases = [ "Regular", None; "Directory", None; "Symlink", None ]
+    Tag = None
+    CaseWires = Map.empty
+    OtherCase = None
+    Validated = None
+    OrdKey = []
+    Docs = Map.empty
+}
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
@@ -65,15 +70,15 @@ let file (name: string) (bytes: int64) (hidden: bool) : Value =
     // the cwd, modified at the epoch — real rows come from lsRow below
     // (readOnly retired with the row's reshape [D:filerow]; hidden is
     // the fixture's filterable bool now)
-    recordOf
-        fileRow
-        [ VStr name
-          VUnion("Regular", None)
-          VUnion("None", None)
-          VSize bytes
-          VInstant 0L
-          VBool hidden
-          VStr name ]
+    recordOf fileRow [
+        VStr name
+        VUnion("Regular", None)
+        VUnion("None", None)
+        VSize bytes
+        VInstant 0L
+        VBool hidden
+        VStr name
+    ]
 
 let private lsRow (info: FileSystemInfo) : Value =
     let isDir = info.Attributes.HasFlag FileAttributes.Directory
@@ -98,17 +103,17 @@ let private lsRow (info: FileSystemInfo) : Value =
         elif isDir then "Directory"
         else "Regular"
 
-    recordOf
-        fileRow
-        [ VStr info.Name
-          VUnion(kind, None)
-          (match info.LinkTarget with
-           | null -> VUnion("None", None)
-           | t -> VUnion("Some", Some(VStr t)))
-          VSize bytes
-          VInstant(System.DateTimeOffset(info.LastWriteTimeUtc, System.TimeSpan.Zero).ToUnixTimeMilliseconds())
-          VBool hidden
-          VStr info.FullName ]
+    recordOf fileRow [
+        VStr info.Name
+        VUnion(kind, None)
+        (match info.LinkTarget with
+         | null -> VUnion("None", None)
+         | t -> VUnion("Some", Some(VStr t)))
+        VSize bytes
+        VInstant(System.DateTimeOffset(info.LastWriteTimeUtc, System.TimeSpan.Zero).ToUnixTimeMilliseconds())
+        VBool hidden
+        VStr info.FullName
+    ]
 
 let private lsEnumerate (cwd: string) : seq<Value> =
     PlanMode.checkTree "ls" cwd
@@ -129,7 +134,8 @@ let private lsEnumerate (cwd: string) : seq<Value> =
 
 // cwd bound at construction — the `within cd` capture Eval's rebinder uses
 // [D:ambient-capture-within]; the directory read stays lazy inside the delay
-let private lsForCwd (cwd: string) : Value = VSeq(Seq.delay (fun () -> lsEnumerate cwd))
+let private lsForCwd (cwd: string) : Value =
+    VSeq(Seq.delay (fun () -> lsEnumerate cwd))
 
 // reads the cwd at force time — what `ls` is outside any `within cd`
 // [D:ambient-capture-within]
@@ -154,15 +160,17 @@ type private Step =
     | Stop
     | Splice of seq<Value>
 
-type private Stage =
-    { Step: Value -> Step
-      Prefix: Value list
-      Finish: unit -> Value list }
+type private Stage = {
+    Step: Value -> Step
+    Prefix: Value list
+    Finish: unit -> Value list
+}
 
-let private stage (step: Value -> Step) : Stage =
-    { Step = step
-      Prefix = []
-      Finish = fun () -> [] }
+let private stage (step: Value -> Step) : Stage = {
+    Step = step
+    Prefix = []
+    Finish = fun () -> []
+}
 
 type private Chain =
     | Leaf of seq<Value>
@@ -459,7 +467,11 @@ let private windowedImpl: Value =
                     // source is pulled; a short source yields the empty
                     // seq (F#'s rule — no partial final window). Windows
                     // are views over the same (memoized-once) elements.
-                    VSeq(items |> Seq.windowed (toIntArg "windowed" Amount n) |> Seq.map (fun w -> VSeq(Seq.ofArray w)))
+                    VSeq(
+                        items
+                        |> Seq.windowed (toIntArg "windowed" Amount n)
+                        |> Seq.map (fun w -> VSeq(Seq.ofArray w))
+                    )
             | _ -> unreachable "the checker rejects 'windowed' on these arguments"))
 
 // a materialised seq answers length and index in O(1) [D:seq-index-o1]:
@@ -479,7 +491,10 @@ let private lastImpl: Value =
     VBuiltin(fun v ->
         match v with
         | VSeq(Indexed l) ->
-            if l.Count = 0 then failwith "last: empty sequence" else l[l.Count - 1]
+            if l.Count = 0 then
+                failwith "last: empty sequence"
+            else
+                l[l.Count - 1]
         | VSeq items ->
             // asserts non-empty (the X/tryX rule); forces the whole
             // source by necessity
@@ -497,7 +512,10 @@ let private tryLastImpl: Value =
     VBuiltin(fun v ->
         match v with
         | VSeq(Indexed l) ->
-            if l.Count = 0 then VUnion("None", None) else VUnion("Some", Some l[l.Count - 1])
+            if l.Count = 0 then
+                VUnion("None", None)
+            else
+                VUnion("Some", Some l[l.Count - 1])
         | VSeq items ->
             let mutable acc = ValueNone
 
@@ -516,19 +534,25 @@ let private toListImpl: Value =
         | VSeq items -> VSeq(Seq.toArray items :> seq<Value>)
         | v -> unreachable $"the checker rejects 'freeze' on {formatValue v}")
 
-let completedDef: RecordDef =
-    { Name = "Completed"
-      Params = []
-      // ok leads [D:record-order], the verdict before the detail — it is
-      // exitCode == 0 exactly (`| succeeds`'s law), derived at the one
-      // construction funnel so no receipt can carry both [D:receipts-read-only]
-      Fields = [ "ok", TBool; "exitCode", TInt; "stdout", TSeq TStr; "stderr", TSeq TStr ]
-      Attrs = Map.empty
-      OrdKey = []
-      Docs = Map.empty }
+let completedDef: RecordDef = {
+    Name = "Completed"
+    Params = []
+    // ok leads [D:record-order], the verdict before the detail — it is
+    // exitCode == 0 exactly (`| succeeds`'s law), derived at the one
+    // construction funnel so no receipt can carry both [D:receipts-read-only]
+    Fields = [ "ok", TBool; "exitCode", TInt; "stdout", TSeq TStr; "stderr", TSeq TStr ]
+    Attrs = Map.empty
+    OrdKey = []
+    Docs = Map.empty
+}
 
 let completedOf (code: int) (stdout: seq<string>) (stderr: seq<string>) : Value =
-    recordOf completedDef [ VBool(code = 0); VInt(int64 code); VSeq(stdout |> Seq.map VStr); VSeq(stderr |> Seq.map VStr) ]
+    recordOf completedDef [
+        VBool(code = 0)
+        VInt(int64 code)
+        VSeq(stdout |> Seq.map VStr)
+        VSeq(stderr |> Seq.map VStr)
+    ]
 
 // completedWith is the shared body; completed is the empty overlay and
 // completedEnv the env-sigil desugar target — the cmd/cmdEnv pattern.
@@ -539,8 +563,7 @@ let private completedWith (overlay: (string * string) list) : Value =
             | VStr prog, VSeq args ->
                 let argv = argStrings args
 
-                let code, stdout, stderr =
-                    Proc.completeWith overlay (Proc.specProg prog) argv None
+                let code, stdout, stderr = Proc.completeWith overlay (Proc.specProg prog) argv None
 
                 // lazy views over the capture buffer [D:capture-buffer]
                 // — decode per pull, stable on re-enumeration
@@ -599,13 +622,14 @@ let private execedWith (overlay: (string * string) list) : Value =
         VBuiltin(fun argsV ->
             match progV, argsV with
             | VStr prog, VSeq args ->
-                Proc.exec
-                    { Prog = Proc.specProg prog
-                      Args = argStrings args
-                      Env = overlay
-                      Input = None
-                      Cwd = None
-                      Ambient = None }
+                Proc.exec {
+                    Prog = Proc.specProg prog
+                    Args = argStrings args
+                    Env = overlay
+                    Input = None
+                    Cwd = None
+                    Ambient = None
+                }
 
                 unreachable "exec returned — execve replaces the image or raises"
             | _ -> unreachable "the checker rejects 'exec' on these arguments"))
@@ -645,8 +669,7 @@ let private textedWith (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
             match progV, argsV with
-            | VStr prog, VSeq args ->
-                wholeText (Proc.linesWith overlay (Proc.specProg prog) (argStrings args) None)
+            | VStr prog, VSeq args -> wholeText (Proc.linesWith overlay (Proc.specProg prog) (argStrings args) None)
             | _ -> unreachable "the checker rejects 'text' on these arguments"))
 
 let private textedWithIn (overlay: (string * string) list) : Value =
@@ -713,13 +736,14 @@ let private exitCodedWithIn (overlay: (string * string) list) : Value =
                     let input = stdin |> Seq.map asString |> Eval.pinnedFeed
 
                     let code =
-                        Proc.streamCodeOf
-                            { Prog = Proc.specProg prog
-                              Args = argv
-                              Env = overlay
-                              Input = Some input
-                              Cwd = None
-                              Ambient = None }
+                        Proc.streamCodeOf {
+                            Prog = Proc.specProg prog
+                            Args = argv
+                            Env = overlay
+                            Input = Some input
+                            Cwd = None
+                            Ambient = None
+                        }
 
                     VInt(int64 code)
                 | _ -> unreachable "the checker rejects 'exitCodedIn' on these arguments")))
@@ -735,13 +759,14 @@ let private orFailedWithIn (overlay: (string * string) list) : Value =
                         let input = stdin |> Seq.map asString |> Eval.pinnedFeed
 
                         let code =
-                            Proc.streamCodeOf
-                                { Prog = Proc.specProg prog
-                                  Args = argv
-                                  Env = overlay
-                                  Input = Some input
-                                  Cwd = None
-                                  Ambient = None }
+                            Proc.streamCodeOf {
+                                Prog = Proc.specProg prog
+                                Args = argv
+                                Env = overlay
+                                Input = Some input
+                                Cwd = None
+                                Ambient = None
+                            }
 
                         if code <> 0 then
                             failwith $"{msg} (exit {code})"
@@ -859,7 +884,8 @@ let private parseReplacement (groups: int) (rep: string) : ReplPart list =
         parts.Add(RGroup g)
 
     let lone () =
-        failwith "rreplace: a '$' in the replacement starts a group — write $1 or ${1} for a group, $0 for the whole match, $$ for a literal '$'"
+        failwith
+            "rreplace: a '$' in the replacement starts a group — write $1 or ${1} for a group, $0 for the whole match, $$ for a literal '$'"
 
     let mutable i = 0
 
@@ -963,7 +989,12 @@ let private globClass (seg: string) (i: int) : (bool * (int * int) list * int) o
         j <- j + 1
 
     let start = j
-    let mutable k = if start < seg.Length && seg[start] = ']' then start + 1 else start
+
+    let mutable k =
+        if start < seg.Length && seg[start] = ']' then
+            start + 1
+        else
+            start
 
     while k < seg.Length && seg[k] <> ']' do
         k <- k + 1
@@ -973,16 +1004,17 @@ let private globClass (seg: string) (i: int) : (bool * (int * int) list * int) o
     else
         let body = seg.Substring(start, k - start)
 
-        let cps =
-            [ let mutable q = 0
+        let cps = [
+            let mutable q = 0
 
-              while q < body.Length do
-                  if System.Char.IsSurrogatePair(body, q) then
-                      yield System.Char.ConvertToUtf32(body, q)
-                      q <- q + 2
-                  else
-                      yield int body[q]
-                      q <- q + 1 ]
+            while q < body.Length do
+                if System.Char.IsSurrogatePair(body, q) then
+                    yield System.Char.ConvertToUtf32(body, q)
+                    q <- q + 2
+                else
+                    yield int body[q]
+                    q <- q + 1
+        ]
 
         let rec ranges acc cps =
             match cps with
@@ -1101,12 +1133,19 @@ let private globSegMatcher (seg: string) : string -> bool =
 let globSplit (windows: bool) (pattern: string) : (string * string) option * string list =
     let seps = if windows then [| '/'; '\\' |] else [| '/' |]
     let isSep c = Array.contains c seps
+
     let segsOf (s: string) =
         s.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) |> Array.toList
 
     let n = pattern.Length
 
-    if windows && n >= 3 && System.Char.IsAsciiLetter pattern[0] && pattern[1] = ':' && isSep pattern[2] then
+    if
+        windows
+        && n >= 3
+        && System.Char.IsAsciiLetter pattern[0]
+        && pattern[1] = ':'
+        && isSep pattern[2]
+    then
         let d = pattern.Substring(0, 2)
         Some(d + "\\", d + "/"), segsOf (pattern.Substring 3)
     else
@@ -1125,7 +1164,13 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
         // twice, so those walks dedupe: bash yields each path once
         let segs =
             split
-            |> List.fold (fun acc seg -> if seg = "**" && List.tryHead acc = Some "**" then acc else seg :: acc) []
+            |> List.fold
+                (fun acc seg ->
+                    if seg = "**" && List.tryHead acc = Some "**" then
+                        acc
+                    else
+                        seg :: acc)
+                []
             |> List.rev
 
         let once =
@@ -1146,8 +1191,7 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
                 |> Seq.map System.IO.Path.GetFileName
                 |> Seq.sort
                 |> List.ofSeq
-            with _ ->
-                []
+            with _ -> []
 
         let hasWild (seg: string) =
             seg |> Seq.exists (fun c -> c = '*' || c = '?' || c = '[')
@@ -1219,7 +1263,10 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
 
         // a trailing `/` matches directories only, each shown with its
         // slash — bash's law (`*/` is `a/`, never a file) [D:path-glob]
-        if pattern.Length > 1 && (pattern.EndsWith "/" || (windows && pattern.EndsWith "\\")) then
+        if
+            pattern.Length > 1
+            && (pattern.EndsWith "/" || (windows && pattern.EndsWith "\\"))
+        then
             for m in once (walk rootFs rootDisplay segs) do
                 if System.IO.Directory.Exists(System.IO.Path.Combine(rootFs, m)) then
                     yield m + "/"
@@ -1252,7 +1299,9 @@ let private globImpl: Value =
                     |> List.toArray
                     |> Array.takeWhile (fun seg -> not (seg |> Seq.exists (fun c -> c = '*' || c = '?' || c = '[')))
 
-                PlanMode.checkTree "Path.glob" (Session.resolveFs (System.IO.Path.Combine(Array.append [| rootOf () |] literal)))
+                PlanMode.checkTree
+                    "Path.glob"
+                    (Session.resolveFs (System.IO.Path.Combine(Array.append [| rootOf () |] literal)))
 
             VSeq(Seq.delay (fun () -> globWalk (rootOf ()) pat |> Seq.map VStr))
         | _ -> unreachable "the checker rejects 'glob' on this argument")
@@ -1477,7 +1526,8 @@ let private replaceImpl: Value =
         VBuiltin(fun rep ->
             VBuiltin(fun subject ->
                 match pat, rep, subject with
-                | VStr "", VStr _, VStr _ -> failwith "Str.replace: the text to replace is empty — there is nothing to find"
+                | VStr "", VStr _, VStr _ ->
+                    failwith "Str.replace: the text to replace is empty — there is nothing to find"
                 | VStr p, VStr r, VStr s -> VStr(guardStrBuild "Str.replace" (fun () -> s.Replace(p, r)))
                 | _ -> unreachable "the checker rejects 'replace' on these arguments")))
 
@@ -1777,11 +1827,7 @@ let private logTint (code: string) (label: string) =
 let private logAt (level: int) (code: string) (label: string) (msg: string) =
     if level >= logThreshold then
         // the message is data bound for stderr [D:tty-sink-sanitize]
-        System.Console.Error.WriteLine(
-            logTint code label
-            + " "
-            + sanitizeIfTty System.Console.IsErrorRedirected msg
-        )
+        System.Console.Error.WriteLine(logTint code label + " " + sanitizeIfTty System.Console.IsErrorRedirected msg)
 
 
 let private parallelCeiling = 64
@@ -1932,8 +1978,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     Session.setParallelDepth (depth + 1)
 
     try
-        let tasks =
-            startWorkers "a pmap arm" workers worker (fun e -> stop e)
+        let tasks = startWorkers "a pmap arm" workers worker (fun e -> stop e)
 
         Session.waitTask (Task.WhenAll(tasks: Task[]))
     finally
@@ -2085,8 +2130,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
                 outcome.Task.Result
             with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
-                raise ae.InnerExceptions[0])
-            ()
+                raise ae.InnerExceptions[0]) ()
     finally
         Session.closeNode raceNode
 
@@ -2239,7 +2283,11 @@ let private itemImpl: Value =
                     failwith $"item: negative index {i}"
                 else
                     match items with
-                    | Indexed l -> if i < int64 l.Count then l[toIntArg "item" Position i] else failwith $"item: no element at index {i}"
+                    | Indexed l ->
+                        if i < int64 l.Count then
+                            l[toIntArg "item" Position i]
+                        else
+                            failwith $"item: no element at index {i}"
                     | _ ->
                         match items |> Seq.tryItem (toIntArg "item" Position i) with
                         | Some v -> v
@@ -2270,7 +2318,10 @@ let private tryItemImpl: Value =
         VBuiltin(fun s ->
             match n, s with
             | VInt i, VSeq(Indexed l) ->
-                if i >= 0L && i < int64 l.Count then VUnion("Some", Some l[toIntArg "tryItem" Position i]) else VUnion("None", None)
+                if i >= 0L && i < int64 l.Count then
+                    VUnion("Some", Some l[toIntArg "tryItem" Position i])
+                else
+                    VUnion("None", None)
             | VInt i, VSeq items ->
                 match items |> Seq.indexed |> Seq.tryFind (fun (j, _) -> int64 j = i) with
                 | Some(_, v) -> VUnion("Some", Some v)
@@ -2288,18 +2339,20 @@ let private skipImpl: Value =
                 staged items (fun () ->
                     let seen = ref 0L
 
-                    { Step =
-                        fun x ->
-                            let keep = seen.Value >= i
-                            seen.Value <- seen.Value + 1L
-                            if keep then Emit x else Skip
-                      Prefix = []
-                      Finish =
-                        fun () ->
-                            if seen.Value < i then
-                                failwith $"skip: fewer than {i} elements to skip (the seq had {seen.Value})"
+                    {
+                        Step =
+                            fun x ->
+                                let keep = seen.Value >= i
+                                seen.Value <- seen.Value + 1L
+                                if keep then Emit x else Skip
+                        Prefix = []
+                        Finish =
+                            fun () ->
+                                if seen.Value < i then
+                                    failwith $"skip: fewer than {i} elements to skip (the seq had {seen.Value})"
 
-                            [] })
+                                []
+                    })
             | _ -> unreachable "the checker rejects 'skip' on these arguments"))
 
 
@@ -2374,25 +2427,33 @@ let private chunkImpl: Value =
                     staged items (fun () ->
                         let buf = ResizeArray<Value>()
 
-                        { Step =
-                            fun x ->
-                                buf.Add x
+                        {
+                            Step =
+                                fun x ->
+                                    buf.Add x
 
-                                if buf.Count = size then
-                                    let chunk = VSeq(buf.ToArray() :> seq<Value>)
-                                    buf.Clear()
-                                    Emit chunk
-                                else
-                                    Skip
-                          Prefix = []
-                          Finish = fun () -> if buf.Count > 0 then [ VSeq(buf.ToArray() :> seq<Value>) ] else [] })
+                                    if buf.Count = size then
+                                        let chunk = VSeq(buf.ToArray() :> seq<Value>)
+                                        buf.Clear()
+                                        Emit chunk
+                                    else
+                                        Skip
+                            Prefix = []
+                            Finish =
+                                fun () ->
+                                    if buf.Count > 0 then
+                                        [ VSeq(buf.ToArray() :> seq<Value>) ]
+                                    else
+                                        []
+                        })
             | v, _ -> unreachable $"the checker rejects 'chunkBySize' on {formatValue v}"))
 
 let private takeWhileImpl: Value =
     VBuiltin(fun pred ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> staged items (fun () -> stage (fun x -> if apply pred x = VBool true then Emit x else Stop))
+            | VSeq items ->
+                staged items (fun () -> stage (fun x -> if apply pred x = VBool true then Emit x else Stop))
             | v -> unreachable $"the checker rejects 'takeWhile' on {formatValue v}"))
 
 let private skipWhileImpl: Value =
@@ -2486,12 +2547,14 @@ let private scanImpl: Value =
                     staged items (fun () ->
                         let acc = ref init
 
-                        { Step =
-                            fun x ->
-                                acc.Value <- apply (apply folder acc.Value) x
-                                Emit acc.Value
-                          Prefix = [ init ]
-                          Finish = fun () -> [] })
+                        {
+                            Step =
+                                fun x ->
+                                    acc.Value <- apply (apply folder acc.Value) x
+                                    Emit acc.Value
+                            Prefix = [ init ]
+                            Finish = fun () -> []
+                        })
                 | v -> unreachable $"the checker rejects 'scan' on {formatValue v}")))
 
 let private tryPickImpl: Value =
@@ -2679,76 +2742,77 @@ let private typedAverageImpl (name: string) (get: Value -> int64) (mk: int64 -> 
                 mk (total / count)
         | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
 
-let private seqMembers: (string * Ty * Value) list =
-    [ "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
-      "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
-      "take", TFun(TInt, TFun(TSeq tA, TSeq tA)), truncateImpl
-      "head", TFun(TSeq tA, tA), headImpl
-      "exactlyOne", TFun(TSeq tA, tA), exactlyOneImpl
-      "tryExactlyOne", TFun(TSeq tA, TNamed("Option", [ tA ])), tryExactlyOneImpl
-      "sum", TFun(seqInt, TInt), sumImpl
-      "freeze", TFun(TSeq tA, TSeq tA), toListImpl
-      "tryHead", TFun(TSeq tA, TNamed("Option", [ tA ])), tryHeadImpl
-      "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
-      "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
-      "length", TFun(TSeq tA, TInt), seqLengthImpl
-      // fold [D:seq-fold]: strict (an infinite source does not
-      // return); state-first folder; constraint-free by construction
-      "fold", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, tA))), foldImpl
-      "choose", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, TSeq tB)), chooseImpl
-      "append", TFun(TSeq tA, TFun(TSeq tA, TSeq tA)), appendImpl
-      "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
-      "sortByDescending", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByDescImpl
-      "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl
-      "pmap", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), pmapImpl
-      "piter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), piterImpl
-      "pmapWith", TFun(TInt, TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB))), pmapWithImpl
-      "pfirst", TFun(TFun(tA, tB), TFun(TSeq tA, tB)), pfirstImpl
-      "pfirstWith", TFun(TInt, TFun(TFun(tA, tB), TFun(TSeq tA, tB))), pfirstWithImpl
-      "piterWith", TFun(TInt, TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit))), piterWithImpl
-      "range", TFun(TInt, TFun(TInt, TFun(TInt, seqInt))), rangeImpl
-      "windowed", TFun(TInt, TFun(TSeq tA, TSeq(TSeq tA))), windowedImpl
-      "last", TFun(TSeq tA, tA), lastImpl
-      "tryLast", TFun(TSeq tA, TNamed("Option", [ tA ])), tryLastImpl
-      "pairwise", TFun(TSeq tA, TSeq(TTuple [ tA; tA ])), pairwiseImpl
-      "zip", TFun(TSeq tA, TFun(TSeq tB, TSeq(TTuple [ tA; tB ]))), zipImpl
-      "exists", TFun(TFun(tA, TBool), TFun(TSeq tA, TBool)), existsImpl
-      "forall", TFun(TFun(tA, TBool), TFun(TSeq tA, TBool)), forallImpl
-      "item", TFun(TInt, TFun(TSeq tA, tA)), itemImpl
-      "tryItem", TFun(TInt, TFun(TSeq tA, TNamed("Option", [ tA ]))), tryItemImpl
-      "skip", TFun(TInt, TFun(TSeq tA, TSeq tA)), skipImpl
-      "contains", TFun(tA, TFun(TSeq tA, TBool)), containsImpl
-      "equal", TFun(TSeq tA, TFun(TSeq tA, TBool)), seqEqualImpl
-      "distinct", TFun(TSeq tA, TSeq tA), distinctImpl
-      // pairs, F#'s own shape [D:groupby-pairs] — countBy/zip/pairwise
-      // already speak tuples; the record was the lone deviation
-      "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TTuple [ tB; TSeq tA ]))), groupByImpl
-      // ---- the Seq-gaps cohort [D:seq-gaps] ----------------------
-      "collect", TFun(TFun(tA, TSeq tB), TFun(TSeq tA, TSeq tB)), collectImpl
-      "concat", TFun(TSeq(TSeq tA), TSeq tA), concatImpl
-      "find", TFun(TFun(tA, TBool), TFun(TSeq tA, tA)), findImpl
-      "indexed", TFun(TSeq tA, TSeq(TTuple [ TInt; tA ])), indexedImpl
-      "rev", TFun(TSeq tA, TSeq tA), revImpl
-      "chunkBySize", TFun(TInt, TFun(TSeq tA, TSeq(TSeq tA))), chunkImpl
-      "takeWhile", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), takeWhileImpl
-      "skipWhile", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), skipWhileImpl
-      "countBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TTuple [ tB; TInt ]))), countByImpl
-      "distinctBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), distinctByImpl
-      "reduce", TFun(TFun(tA, TFun(tA, tA)), TFun(TSeq tA, tA)), reduceImpl
-      "tryReduce", TFun(TFun(tA, TFun(tA, tA)), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryReduceImpl
-      "scan", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, TSeq tA))), scanImpl
-      "tryPick", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, TNamed("Option", [ tB ]))), tryPickImpl
-      "pick", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, tB)), pickImpl
-      "except", TFun(TSeq tA, TFun(TSeq tA, TSeq tA)), exceptImpl
-      "replicate", TFun(TInt, TFun(tA, TSeq tA)), replicateImpl
-      "initInfinite", TFun(TFun(TInt, tA), TSeq tA), initInfiniteImpl
-      "max", TFun(TSeq tA, tA), extremumImpl "max" (fun c -> c > 0)
-      "min", TFun(TSeq tA, tA), extremumImpl "min" (fun c -> c < 0)
-      "maxBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "maxBy" (fun c -> c > 0)
-      "minBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "minBy" (fun c -> c < 0)
-      "sort", TFun(TSeq tA, TSeq tA), sortPlainImpl "sort" false
-      "sortDescending", TFun(TSeq tA, TSeq tA), sortPlainImpl "sortDescending" true
-      "average", TFun(seqInt, TFloat), averageImpl ]
+let private seqMembers: (string * Ty * Value) list = [
+    "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
+    "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
+    "take", TFun(TInt, TFun(TSeq tA, TSeq tA)), truncateImpl
+    "head", TFun(TSeq tA, tA), headImpl
+    "exactlyOne", TFun(TSeq tA, tA), exactlyOneImpl
+    "tryExactlyOne", TFun(TSeq tA, TNamed("Option", [ tA ])), tryExactlyOneImpl
+    "sum", TFun(seqInt, TInt), sumImpl
+    "freeze", TFun(TSeq tA, TSeq tA), toListImpl
+    "tryHead", TFun(TSeq tA, TNamed("Option", [ tA ])), tryHeadImpl
+    "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
+    "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
+    "length", TFun(TSeq tA, TInt), seqLengthImpl
+    // fold [D:seq-fold]: strict (an infinite source does not
+    // return); state-first folder; constraint-free by construction
+    "fold", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, tA))), foldImpl
+    "choose", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, TSeq tB)), chooseImpl
+    "append", TFun(TSeq tA, TFun(TSeq tA, TSeq tA)), appendImpl
+    "sortBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByImpl
+    "sortByDescending", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), sortByDescImpl
+    "iter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), iterImpl
+    "pmap", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), pmapImpl
+    "piter", TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit)), piterImpl
+    "pmapWith", TFun(TInt, TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB))), pmapWithImpl
+    "pfirst", TFun(TFun(tA, tB), TFun(TSeq tA, tB)), pfirstImpl
+    "pfirstWith", TFun(TInt, TFun(TFun(tA, tB), TFun(TSeq tA, tB))), pfirstWithImpl
+    "piterWith", TFun(TInt, TFun(TFun(tA, TUnit), TFun(TSeq tA, TUnit))), piterWithImpl
+    "range", TFun(TInt, TFun(TInt, TFun(TInt, seqInt))), rangeImpl
+    "windowed", TFun(TInt, TFun(TSeq tA, TSeq(TSeq tA))), windowedImpl
+    "last", TFun(TSeq tA, tA), lastImpl
+    "tryLast", TFun(TSeq tA, TNamed("Option", [ tA ])), tryLastImpl
+    "pairwise", TFun(TSeq tA, TSeq(TTuple [ tA; tA ])), pairwiseImpl
+    "zip", TFun(TSeq tA, TFun(TSeq tB, TSeq(TTuple [ tA; tB ]))), zipImpl
+    "exists", TFun(TFun(tA, TBool), TFun(TSeq tA, TBool)), existsImpl
+    "forall", TFun(TFun(tA, TBool), TFun(TSeq tA, TBool)), forallImpl
+    "item", TFun(TInt, TFun(TSeq tA, tA)), itemImpl
+    "tryItem", TFun(TInt, TFun(TSeq tA, TNamed("Option", [ tA ]))), tryItemImpl
+    "skip", TFun(TInt, TFun(TSeq tA, TSeq tA)), skipImpl
+    "contains", TFun(tA, TFun(TSeq tA, TBool)), containsImpl
+    "equal", TFun(TSeq tA, TFun(TSeq tA, TBool)), seqEqualImpl
+    "distinct", TFun(TSeq tA, TSeq tA), distinctImpl
+    // pairs, F#'s own shape [D:groupby-pairs] — countBy/zip/pairwise
+    // already speak tuples; the record was the lone deviation
+    "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TTuple [ tB; TSeq tA ]))), groupByImpl
+    // ---- the Seq-gaps cohort [D:seq-gaps] ----------------------
+    "collect", TFun(TFun(tA, TSeq tB), TFun(TSeq tA, TSeq tB)), collectImpl
+    "concat", TFun(TSeq(TSeq tA), TSeq tA), concatImpl
+    "find", TFun(TFun(tA, TBool), TFun(TSeq tA, tA)), findImpl
+    "indexed", TFun(TSeq tA, TSeq(TTuple [ TInt; tA ])), indexedImpl
+    "rev", TFun(TSeq tA, TSeq tA), revImpl
+    "chunkBySize", TFun(TInt, TFun(TSeq tA, TSeq(TSeq tA))), chunkImpl
+    "takeWhile", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), takeWhileImpl
+    "skipWhile", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), skipWhileImpl
+    "countBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TTuple [ tB; TInt ]))), countByImpl
+    "distinctBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), distinctByImpl
+    "reduce", TFun(TFun(tA, TFun(tA, tA)), TFun(TSeq tA, tA)), reduceImpl
+    "tryReduce", TFun(TFun(tA, TFun(tA, tA)), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryReduceImpl
+    "scan", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, TSeq tA))), scanImpl
+    "tryPick", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, TNamed("Option", [ tB ]))), tryPickImpl
+    "pick", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, tB)), pickImpl
+    "except", TFun(TSeq tA, TFun(TSeq tA, TSeq tA)), exceptImpl
+    "replicate", TFun(TInt, TFun(tA, TSeq tA)), replicateImpl
+    "initInfinite", TFun(TFun(TInt, tA), TSeq tA), initInfiniteImpl
+    "max", TFun(TSeq tA, tA), extremumImpl "max" (fun c -> c > 0)
+    "min", TFun(TSeq tA, tA), extremumImpl "min" (fun c -> c < 0)
+    "maxBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "maxBy" (fun c -> c > 0)
+    "minBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "minBy" (fun c -> c < 0)
+    "sort", TFun(TSeq tA, TSeq tA), sortPlainImpl "sort" false
+    "sortDescending", TFun(TSeq tA, TSeq tA), sortPlainImpl "sortDescending" true
+    "average", TFun(seqInt, TFloat), averageImpl
+]
 
 // the encoding law [D:encoding-law]: weir encodes and decodes UTF-8 at
 // every boundary — what gets read, written, hashed, and base64'd is
@@ -2806,8 +2870,7 @@ module private AppendNative =
 
                 if errno = ENOENT && attempt < 3 then
                     (try
-                        (new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite))
-                            .Dispose()
+                        (new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite)).Dispose()
                      with _ ->
                          ())
 
@@ -2861,7 +2924,8 @@ module private AppendNative =
         nativeint lpSecurityAttributes,
         uint dwCreationDisposition,
         uint dwFlagsAndAttributes,
-        nativeint hTemplateFile)
+        nativeint hTemplateFile
+    )
 
     [<System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)>]
     extern bool private WriteFile(
@@ -2869,7 +2933,8 @@ module private AppendNative =
         byte[] lpBuffer,
         uint nNumberOfBytesToWrite,
         uint& lpNumberOfBytesWritten,
-        nativeint lpOverlapped)
+        nativeint lpOverlapped
+    )
 
     let private appendWindows (path: string) (payload: byte[]) =
         let h =
@@ -2893,9 +2958,10 @@ module private AppendNative =
                 let mutable written = 0u
 
                 if not (WriteFile(sfh.DangerousGetHandle(), rest, uint rest.Length, &written, 0n)) then
-                    raise
-                        (IOException
-                            $"write failed (win32 {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()})")
+                    raise (
+                        IOException
+                            $"write failed (win32 {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()})"
+                    )
 
                 if int written < rest.Length then
                     go rest[int written ..]
@@ -2983,9 +3049,11 @@ type private WindowStream(inner: Stream, start: int64, len: int64) =
     override _.CanSeek = false
     override _.CanWrite = false
     override _.Length = len
+
     override _.Position
         with get () = pos
         and set _ = raise (System.NotSupportedException())
+
     override _.Flush() = ()
     override _.Seek(_, _) = raise (System.NotSupportedException())
     override _.SetLength _ = raise (System.NotSupportedException())
@@ -3036,7 +3104,11 @@ let private readLinesFrom (op: string) (r: string) (off: int64) : string[] * int
             let b0, b1 = readByteAt 0L, readByteAt 1L
 
             let utf32be =
-                size >= 4L && b0 = 0uy && b1 = 0uy && readByteAt 2L = 0xFEuy && readByteAt 3L = 0xFFuy
+                size >= 4L
+                && b0 = 0uy
+                && b1 = 0uy
+                && readByteAt 2L = 0xFEuy
+                && readByteAt 3L = 0xFFuy
 
             if (b0 = 0xFFuy && b1 = 0xFEuy) || (b0 = 0xFEuy && b1 = 0xFFuy) || utf32be then
                 failwith $"{op}: {quoteData r} starts with a UTF-16/32 byte order mark — byte offsets need UTF-8 text"
@@ -3162,106 +3234,119 @@ let private fromBase64Text (name: string) (s: string) : Result<string, string> =
             with _ ->
                 Error $"{name}: the decoded content is not text (not valid UTF-8)"
 
-let private strMembers: (string * Ty * Value) list =
-    [ "contains", TFun(TStr, TFun(TStr, TBool)), str2Bool "contains" (fun needle s -> s.Contains needle)
-      "startsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "startsWith" (fun p s -> s.StartsWith p)
-      "endsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "endsWith" (fun p s -> s.EndsWith p)
-      "trim", TFun(TStr, TStr), str1 "trim" (fun s -> s.Trim())
-      // both spellings read well point-free [D:id-builtin]:
-      // `Seq.where Str.nonEmpty` beside `Str.isEmpty >> not`
-      "isEmpty", TFun(TStr, TBool), VBuiltin(function VStr s -> VBool(s = "") | v -> unreachable $"the checker rejects 'Str.isEmpty' on {formatValue v}")
-      "nonEmpty", TFun(TStr, TBool), VBuiltin(function VStr s -> VBool(s <> "") | v -> unreachable $"the checker rejects 'Str.nonEmpty' on {formatValue v}")
-      "trimStart", TFun(TStr, TStr), str1 "trimStart" (fun s -> s.TrimStart())
-      "trimEnd", TFun(TStr, TStr), str1 "trimEnd" (fun s -> s.TrimEnd())
-      "toLower", TFun(TStr, TStr), str1 "toLower" (fun s -> s.ToLowerInvariant())
-      "toUpper", TFun(TStr, TStr), str1 "toUpper" (fun s -> s.ToUpperInvariant())
-      "split", TFun(TStr, TFun(TStr, TSeq TStr)), splitImpl
-      "fields", TFun(TStr, TSeq TStr), fieldsImpl
-      "splitOnce", TFun(TStr, TFun(TStr, TTuple [ TStr; TStr ])), splitOnceImpl
-      "trySplitOnce", TFun(TStr, TFun(TStr, TNamed("Option", [ TTuple [ TStr; TStr ] ]))), trySplitOnceImpl
-      "rsplitOnce", TFun(TStr, TFun(TStr, TTuple [ TStr; TStr ])), rsplitOnceImpl
-      "tryRsplitOnce", TFun(TStr, TFun(TStr, TNamed("Option", [ TTuple [ TStr; TStr ] ]))), tryRsplitOnceImpl
-      "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
-      "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
-      "length", TFun(TStr, TInt), strLenImpl
-      // terminal columns [D:str-width]: the REPL prompt's own width table
-      "width", TFun(TStr, TInt), VBuiltin(function VStr s -> VInt(int64 (CellWidth.ofString s)) | v -> unreachable $"the checker rejects 'Str.width' on {formatValue v}")
-      "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
-      "replicate", TFun(TInt, TFun(TStr, TStr)), strReplicateImpl
-      "padLeft", TFun(TInt, TFun(TStr, TStr)), padImpl "padLeft" CodePoints.padLeft
-      "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" CodePoints.padRight
-      "toInt", TFun(TStr, TInt), toIntImpl
-      "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
-      // sha256 and sha1 [D:encoding-law] [D:sha1]: md5 is broken
-      // (offering it invites its use), sha512 has no receipt; sha1 is
-      // here for the protocols that name it (git object ids, legacy
-      // checksums), never as a security hash. Lowercase hex =
-      // sha256sum/sha1sum parity (the tools they replace).
-      "sha256",
-      TFun(TStr, TStr),
-      str1 "sha256" (fun s ->
-          System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes s)
-          |> Array.map (fun b -> b.ToString "x2")
-          |> String.concat "")
-      "sha1",
-      TFun(TStr, TStr),
-      str1 "sha1" (fun s ->
-          System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.UTF8.GetBytes s)
-          |> Array.map (fun b -> b.ToString "x2")
-          |> String.concat "")
-      // unwrapped by construction — GNU base64 wraps at 76 cols (the -w0
-      // tax); Convert.ToBase64String simply does not have the problem
-      "toBase64",
-      TFun(TStr, TStr),
-      str1 "toBase64" (fun s -> base64Of "Str.toBase64" (System.Text.Encoding.UTF8.GetBytes s))
-      "fromBase64",
-      TFun(TStr, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s ->
-              match fromBase64Text "fromBase64" s with
-              | Ok t -> VStr t
-              | Error e -> failwith e
-          | v -> unreachable $"the checker rejects 'fromBase64' on {formatValue v}")
-      "tryFromBase64",
-      TFun(TStr, TNamed("Option", [ TStr ])),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s ->
-              match fromBase64Text "tryFromBase64" s with
-              | Ok t -> VUnion("Some", Some(VStr t))
-              | Error _ -> VUnion("None", None)
-          | v -> unreachable $"the checker rejects 'tryFromBase64' on {formatValue v}")
-      "toUtf8",
-      TFun(TStr, TBytes),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s -> VBytes(System.Text.Encoding.UTF8.GetBytes s)
-          | v -> unreachable $"the checker rejects 'Str.toUtf8' on {formatValue v}")
-      "fromUtf8",
-      TFun(TBytes, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VBytes b ->
-              (match utf8TextOf "Str.fromUtf8" b with
-               | Ok t -> VStr t
-               | Error e -> failwith e)
-          | v -> unreachable $"the checker rejects 'Str.fromUtf8' on {formatValue v}")
-      "tryFromUtf8",
-      TFun(TBytes, TNamed("Option", [ TStr ])),
-      VBuiltin(fun v ->
-          match v with
-          | VBytes b ->
-              (match utf8TextOf "Str.tryFromUtf8" b with
-               | Ok t -> VUnion("Some", Some(VStr t))
-               | Error _ -> VUnion("None", None))
-          | v -> unreachable $"the checker rejects 'Str.tryFromUtf8' on {formatValue v}")
-      "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl
-      "isMatch", TFun(TStr, TFun(TStr, TBool)), isMatchImpl
-      "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl
-      "rmatchAll", TFun(TStr, TFun(TStr, TSeq(TSeq TStr))), rmatchAllImpl
-      "rsplit", TFun(TStr, TFun(TStr, TSeq TStr)), rsplitImpl
-      "rreplace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), rreplaceImpl ]
+let private strMembers: (string * Ty * Value) list = [
+    "contains", TFun(TStr, TFun(TStr, TBool)), str2Bool "contains" (fun needle s -> s.Contains needle)
+    "startsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "startsWith" (fun p s -> s.StartsWith p)
+    "endsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "endsWith" (fun p s -> s.EndsWith p)
+    "trim", TFun(TStr, TStr), str1 "trim" (fun s -> s.Trim())
+    // both spellings read well point-free [D:id-builtin]:
+    // `Seq.where Str.nonEmpty` beside `Str.isEmpty >> not`
+    "isEmpty",
+    TFun(TStr, TBool),
+    VBuiltin (function
+        | VStr s -> VBool(s = "")
+        | v -> unreachable $"the checker rejects 'Str.isEmpty' on {formatValue v}")
+    "nonEmpty",
+    TFun(TStr, TBool),
+    VBuiltin (function
+        | VStr s -> VBool(s <> "")
+        | v -> unreachable $"the checker rejects 'Str.nonEmpty' on {formatValue v}")
+    "trimStart", TFun(TStr, TStr), str1 "trimStart" (fun s -> s.TrimStart())
+    "trimEnd", TFun(TStr, TStr), str1 "trimEnd" (fun s -> s.TrimEnd())
+    "toLower", TFun(TStr, TStr), str1 "toLower" (fun s -> s.ToLowerInvariant())
+    "toUpper", TFun(TStr, TStr), str1 "toUpper" (fun s -> s.ToUpperInvariant())
+    "split", TFun(TStr, TFun(TStr, TSeq TStr)), splitImpl
+    "fields", TFun(TStr, TSeq TStr), fieldsImpl
+    "splitOnce", TFun(TStr, TFun(TStr, TTuple [ TStr; TStr ])), splitOnceImpl
+    "trySplitOnce", TFun(TStr, TFun(TStr, TNamed("Option", [ TTuple [ TStr; TStr ] ]))), trySplitOnceImpl
+    "rsplitOnce", TFun(TStr, TFun(TStr, TTuple [ TStr; TStr ])), rsplitOnceImpl
+    "tryRsplitOnce", TFun(TStr, TFun(TStr, TNamed("Option", [ TTuple [ TStr; TStr ] ]))), tryRsplitOnceImpl
+    "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
+    "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
+    "length", TFun(TStr, TInt), strLenImpl
+    // terminal columns [D:str-width]: the REPL prompt's own width table
+    "width",
+    TFun(TStr, TInt),
+    VBuiltin (function
+        | VStr s -> VInt(int64 (CellWidth.ofString s))
+        | v -> unreachable $"the checker rejects 'Str.width' on {formatValue v}")
+    "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
+    "replicate", TFun(TInt, TFun(TStr, TStr)), strReplicateImpl
+    "padLeft", TFun(TInt, TFun(TStr, TStr)), padImpl "padLeft" CodePoints.padLeft
+    "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" CodePoints.padRight
+    "toInt", TFun(TStr, TInt), toIntImpl
+    "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
+    // sha256 and sha1 [D:encoding-law] [D:sha1]: md5 is broken
+    // (offering it invites its use), sha512 has no receipt; sha1 is
+    // here for the protocols that name it (git object ids, legacy
+    // checksums), never as a security hash. Lowercase hex =
+    // sha256sum/sha1sum parity (the tools they replace).
+    "sha256",
+    TFun(TStr, TStr),
+    str1 "sha256" (fun s ->
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes s)
+        |> Array.map (fun b -> b.ToString "x2")
+        |> String.concat "")
+    "sha1",
+    TFun(TStr, TStr),
+    str1 "sha1" (fun s ->
+        System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.UTF8.GetBytes s)
+        |> Array.map (fun b -> b.ToString "x2")
+        |> String.concat "")
+    // unwrapped by construction — GNU base64 wraps at 76 cols (the -w0
+    // tax); Convert.ToBase64String simply does not have the problem
+    "toBase64",
+    TFun(TStr, TStr),
+    str1 "toBase64" (fun s -> base64Of "Str.toBase64" (System.Text.Encoding.UTF8.GetBytes s))
+    "fromBase64",
+    TFun(TStr, TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VStr s ->
+            match fromBase64Text "fromBase64" s with
+            | Ok t -> VStr t
+            | Error e -> failwith e
+        | v -> unreachable $"the checker rejects 'fromBase64' on {formatValue v}")
+    "tryFromBase64",
+    TFun(TStr, TNamed("Option", [ TStr ])),
+    VBuiltin(fun v ->
+        match v with
+        | VStr s ->
+            match fromBase64Text "tryFromBase64" s with
+            | Ok t -> VUnion("Some", Some(VStr t))
+            | Error _ -> VUnion("None", None)
+        | v -> unreachable $"the checker rejects 'tryFromBase64' on {formatValue v}")
+    "toUtf8",
+    TFun(TStr, TBytes),
+    VBuiltin(fun v ->
+        match v with
+        | VStr s -> VBytes(System.Text.Encoding.UTF8.GetBytes s)
+        | v -> unreachable $"the checker rejects 'Str.toUtf8' on {formatValue v}")
+    "fromUtf8",
+    TFun(TBytes, TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VBytes b ->
+            (match utf8TextOf "Str.fromUtf8" b with
+             | Ok t -> VStr t
+             | Error e -> failwith e)
+        | v -> unreachable $"the checker rejects 'Str.fromUtf8' on {formatValue v}")
+    "tryFromUtf8",
+    TFun(TBytes, TNamed("Option", [ TStr ])),
+    VBuiltin(fun v ->
+        match v with
+        | VBytes b ->
+            (match utf8TextOf "Str.tryFromUtf8" b with
+             | Ok t -> VUnion("Some", Some(VStr t))
+             | Error _ -> VUnion("None", None))
+        | v -> unreachable $"the checker rejects 'Str.tryFromUtf8' on {formatValue v}")
+    "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl
+    "isMatch", TFun(TStr, TFun(TStr, TBool)), isMatchImpl
+    "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl
+    "rmatchAll", TFun(TStr, TFun(TStr, TSeq(TSeq TStr))), rmatchAllImpl
+    "rsplit", TFun(TStr, TFun(TStr, TSeq TStr)), rsplitImpl
+    "rreplace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), rreplaceImpl
+]
 
 // Path — string surgery over paths, System.IO.Path underneath.
 // extension keeps the dot and is "" when there is none; dir is "" at
@@ -3383,11 +3468,12 @@ let private nameMaxBytes = 255
 // Microsoft's reserved list too, and since Windows 8 the console names
 // CONIN$/CONOUT$ are DOS devices in every directory
 let private reservedDeviceNames =
-    set
-        [ yield! [ "CON"; "PRN"; "AUX"; "NUL"; "CONIN$"; "CONOUT$" ]
-          for d in [ "0"; "1"; "2"; "3"; "4"; "5"; "6"; "7"; "8"; "9"; "¹"; "²"; "³" ] do
-              yield "COM" + d
-              yield "LPT" + d ]
+    set [
+        yield! [ "CON"; "PRN"; "AUX"; "NUL"; "CONIN$"; "CONOUT$" ]
+        for d in [ "0"; "1"; "2"; "3"; "4"; "5"; "6"; "7"; "8"; "9"; "¹"; "²"; "³" ] do
+            yield "COM" + d
+            yield "LPT" + d
+    ]
 
 // the code points of a string, a lone surrogate as None (no UTF-8 form) —
 // one at a time, never as a list: a name is at most 255 bytes, so the
@@ -3399,7 +3485,11 @@ let private namePoints (s: string) : seq<string * int option> =
         while i < s.Length do
             let c = s[i]
 
-            if System.Char.IsHighSurrogate c && i + 1 < s.Length && System.Char.IsLowSurrogate s[i + 1] then
+            if
+                System.Char.IsHighSurrogate c
+                && i + 1 < s.Length
+                && System.Char.IsLowSurrogate s[i + 1]
+            then
                 yield s.Substring(i, 2), Some(System.Char.ConvertToUtf32(c, s[i + 1]))
                 i <- i + 2
             elif System.Char.IsSurrogate c then
@@ -3531,66 +3621,67 @@ let cacheDir () : string =
     else
         xdgDir "XDG_CACHE_HOME" ".cache"
 
-let private pathMembers: (string * Ty * Value) list =
-    [ "extension", TFun(TStr, TStr), str1 "extension" Path.GetExtension
-      "fileName", TFun(TStr, TStr), str1 "fileName" Path.GetFileName
-      "stem", TFun(TStr, TStr), str1 "stem" Path.GetFileNameWithoutExtension
-      "dir",
-      TFun(TStr, TStr),
-      str1 "dir" (fun s ->
-          match Path.GetDirectoryName s with
-          | null -> ""
-          | d -> d)
-      "combine", TFun(TStr, TFun(TStr, TStr)), pathCombineImpl
-      "normalize", TFun(TStr, TStr), str1 "normalize" pathNormalize
-      "isName",
-      TFun(TStr, TBool),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s -> VBool(pathIsName s)
-          | v -> unreachable $"the checker rejects 'isName' on {formatValue v}")
-      "toName", TFun(TStr, TStr), str1 "toName" pathToName
-      "under", TFun(TStr, TFun(TStr, TStr)), pathUnderImpl
-      "glob", TFun(TStr, TSeq TStr), globImpl
-      // the program a command head would run [D:path-which]: the spawn's
-      // own lookup, on the PATH the command runs with (the `within env`
-      // layers [D:overlay-path]), PATHEXT on Windows
-      "which",
-      TFun(TStr, TNamed("Option", [ TStr ])),
-      VBuiltin(fun v ->
-          match v with
-          | VStr prog ->
-              match Extern.which (Proc.spawnPairs None []) prog with
-              | Some full -> VUnion("Some", Some(VStr full))
-              | None -> VUnion("None", None)
-          | v -> unreachable $"the checker rejects 'Path.which' on {formatValue v}")
-      // home + XDG dirs [D:path-home] — the typed replacement for `~`/`$HOME`
-      // (weir expands nothing in argv): `cat $"{Path.home ()}/.bashrc"`
-      "home", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(homeDir ()))
-      "configHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(configDir ()))
-      "stateHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(stateDir ()))
-      "cacheHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(cacheDir ()))
-      // the query (pure): the system temp root, no trailing separator
-      "tempRoot",
-      TFun(TUnit, TStr),
-      VBuiltin(fun _ ->
-          VStr(
-              System.IO.Path
-                  .GetTempPath()
-                  .TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar)
-          ))
-      // the creator (side effect visible in the name): a fresh unique
-      // dir, `within tmp`'s spelling exactly (weir-tmp- prefix, guid);
-      // cleanup is the caller's or the OS's — `within tmp` is the
-      // scoped-cleanup spelling
-      "newTempDir",
-      TFun(TUnit, TStr),
-      VBuiltin(fun _ ->
-          let dir =
-              System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
+let private pathMembers: (string * Ty * Value) list = [
+    "extension", TFun(TStr, TStr), str1 "extension" Path.GetExtension
+    "fileName", TFun(TStr, TStr), str1 "fileName" Path.GetFileName
+    "stem", TFun(TStr, TStr), str1 "stem" Path.GetFileNameWithoutExtension
+    "dir",
+    TFun(TStr, TStr),
+    str1 "dir" (fun s ->
+        match Path.GetDirectoryName s with
+        | null -> ""
+        | d -> d)
+    "combine", TFun(TStr, TFun(TStr, TStr)), pathCombineImpl
+    "normalize", TFun(TStr, TStr), str1 "normalize" pathNormalize
+    "isName",
+    TFun(TStr, TBool),
+    VBuiltin(fun v ->
+        match v with
+        | VStr s -> VBool(pathIsName s)
+        | v -> unreachable $"the checker rejects 'isName' on {formatValue v}")
+    "toName", TFun(TStr, TStr), str1 "toName" pathToName
+    "under", TFun(TStr, TFun(TStr, TStr)), pathUnderImpl
+    "glob", TFun(TStr, TSeq TStr), globImpl
+    // the program a command head would run [D:path-which]: the spawn's
+    // own lookup, on the PATH the command runs with (the `within env`
+    // layers [D:overlay-path]), PATHEXT on Windows
+    "which",
+    TFun(TStr, TNamed("Option", [ TStr ])),
+    VBuiltin(fun v ->
+        match v with
+        | VStr prog ->
+            match Extern.which (Proc.spawnPairs None []) prog with
+            | Some full -> VUnion("Some", Some(VStr full))
+            | None -> VUnion("None", None)
+        | v -> unreachable $"the checker rejects 'Path.which' on {formatValue v}")
+    // home + XDG dirs [D:path-home] — the typed replacement for `~`/`$HOME`
+    // (weir expands nothing in argv): `cat $"{Path.home ()}/.bashrc"`
+    "home", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(homeDir ()))
+    "configHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(configDir ()))
+    "stateHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(stateDir ()))
+    "cacheHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(cacheDir ()))
+    // the query (pure): the system temp root, no trailing separator
+    "tempRoot",
+    TFun(TUnit, TStr),
+    VBuiltin(fun _ ->
+        VStr(
+            System.IO.Path
+                .GetTempPath()
+                .TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar)
+        ))
+    // the creator (side effect visible in the name): a fresh unique
+    // dir, `within tmp`'s spelling exactly (weir-tmp- prefix, guid);
+    // cleanup is the caller's or the OS's — `within tmp` is the
+    // scoped-cleanup spelling
+    "newTempDir",
+    TFun(TUnit, TStr),
+    VBuiltin(fun _ ->
+        let dir =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
 
-          Session.createPrivateDir dir
-          VStr dir) ]
+        Session.createPrivateDir dir
+        VStr dir)
+]
 
 let private optionIterImpl: Value =
     VBuiltin(fun f ->
@@ -3624,21 +3715,20 @@ let private optionOrElseWithImpl: Value =
             | VUnion("None", None) -> apply f VUnit
             | v -> unreachable $"the checker rejects 'Option.orElseWith' on {formatValue v}"))
 
-let private optionMembers: (string * Ty * Value) list =
-    [ "iter", TFun(TFun(tA, TUnit), TFun(TNamed("Option", [ tA ]), TUnit)), optionIterImpl
-      "orElse",
-      TFun(TNamed("Option", [ tA ]), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tA ]))),
-      optionOrElseImpl
-      "orElseWith",
-      TFun(TFun(TUnit, TNamed("Option", [ tA ])), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tA ]))),
-      optionOrElseWithImpl
-      "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
-      "bind",
-      TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))),
-      optionBindImpl
-      "flatten", TFun(TNamed("Option", [ TNamed("Option", [ tA ]) ]), TNamed("Option", [ tA ])), optionFlattenImpl
-      "defaultValue", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl
-      "defaultWith", TFun(TFun(TUnit, tA), TFun(TNamed("Option", [ tA ]), tA)), defaultWithImpl ]
+let private optionMembers: (string * Ty * Value) list = [
+    "iter", TFun(TFun(tA, TUnit), TFun(TNamed("Option", [ tA ]), TUnit)), optionIterImpl
+    "orElse", TFun(TNamed("Option", [ tA ]), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tA ]))), optionOrElseImpl
+    "orElseWith",
+    TFun(TFun(TUnit, TNamed("Option", [ tA ])), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tA ]))),
+    optionOrElseWithImpl
+    "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
+    "bind",
+    TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))),
+    optionBindImpl
+    "flatten", TFun(TNamed("Option", [ TNamed("Option", [ tA ]) ]), TNamed("Option", [ tA ])), optionFlattenImpl
+    "defaultValue", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl
+    "defaultWith", TFun(TFun(TUnit, tA), TFun(TNamed("Option", [ tA ]), tA)), defaultWithImpl
+]
 
 // Result [D:try-form]: what `e |> try result` produces — F#'s shape, the
 // few members a caller of `try result` reaches for
@@ -3675,11 +3765,12 @@ let private resultIsOkImpl: Value =
         | VUnion("Error", Some _) -> VBool false
         | v -> unreachable $"the checker rejects 'Result.isOk' on {formatValue v}")
 
-let private resultMembers: (string * Ty * Value) list =
-    [ "map", TFun(TFun(tA, tB), TFun(resultTy tA, resultTy tB)), resultMapImpl
-      "defaultValue", TFun(tA, TFun(resultTy tA, tA)), resultDefaultValueImpl
-      "toOption", TFun(resultTy tA, TNamed("Option", [ tA ])), resultToOptionImpl
-      "isOk", TFun(resultTy tA, TBool), resultIsOkImpl ]
+let private resultMembers: (string * Ty * Value) list = [
+    "map", TFun(TFun(tA, tB), TFun(resultTy tA, resultTy tB)), resultMapImpl
+    "defaultValue", TFun(tA, TFun(resultTy tA, tA)), resultDefaultValueImpl
+    "toOption", TFun(resultTy tA, TNamed("Option", [ tA ])), resultToOptionImpl
+    "isOk", TFun(resultTy tA, TBool), resultIsOkImpl
+]
 
 // Args — script-only scanners over the invocation argv (Session.ScriptArgs;
 // empty in the REPL by design). Long-only flags: empty short form.
@@ -3707,17 +3798,19 @@ let private argsValueImpl: Value =
             find Session.ScriptArgs
         | v -> unreachable $"the checker rejects 'Args.value' on {formatValue v}")
 
-let private argsMembers: (string * Ty * Value) list =
-    [ "flag", TFun(TStr, TFun(TStr, TBool)), argsFlagImpl
-      "value", TFun(TStr, TNamed("Option", [ TStr ])), argsValueImpl ]
+let private argsMembers: (string * Ty * Value) list = [
+    "flag", TFun(TStr, TFun(TStr, TBool)), argsFlagImpl
+    "value", TFun(TStr, TNamed("Option", [ TStr ])), argsValueImpl
+]
 
-let envVarDef: RecordDef =
-    { Name = "EnvVar"
-      Params = []
-      Fields = [ "name", TStr; "value", TStr ]
-      Attrs = Map.empty
-      OrdKey = []
-      Docs = Map.empty }
+let envVarDef: RecordDef = {
+    Name = "EnvVar"
+    Params = []
+    Fields = [ "name", TStr; "value", TStr ]
+    Attrs = Map.empty
+    OrdKey = []
+    Docs = Map.empty
+}
 
 // Env.fromFile parses the dotenv subset only: KEY=VALUE, optional
 // single/double quotes around the value, # full-line and trailing
@@ -3886,39 +3979,40 @@ let private envVarsFor (snap: (string * string) list list option) : Value =
 let private envVarsImpl: Value = envVarsFor None
 
 // Env — process environment [D:typed-env]
-let private envMembers: (string * Ty * Value) list =
-    [ "pair", TFun(TStr, TFun(TStr, TNamed("EnvVar", []))), envPairImpl
-      "ofPairs", TFun(TSeq(TTuple [ TStr; TStr ]), TSeq(TNamed("EnvVar", []))), envOfPairsImpl
-      "get",
-      TFun(TStr, TNamed("Option", [ TStr ])),
-      VBuiltin(fun v ->
-          match v with
-          | VStr name ->
-              // the `within env` overlay included [D:env-overlay-read]
-              match Session.getEnv name with
-              | None -> VUnion("None", None)
-              | Some value -> VUnion("Some", Some(VStr value))
-          | v -> unreachable $"the checker rejects 'Env.get' on {formatValue v}")
-      // the one-var string forms [D:env-need-getor]: Env.get's read
-      // (overlay included, set-but-empty is set) with the unwrap built in
-      "need",
-      TFun(TStr, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VStr name ->
-              match Session.getEnv name with
-              | Some value -> VStr value
-              | None -> failwith $"Env.need: {quoteData name} is not set"
-          | v -> unreachable $"the checker rejects 'Env.need' on {formatValue v}")
-      "getOr",
-      TFun(TStr, TFun(TStr, TStr)),
-      VBuiltin(fun n ->
-          VBuiltin(fun d ->
-              match n, d with
-              | VStr name, VStr dflt -> VStr(Session.getEnv name |> Option.defaultValue dflt)
-              | _ -> unreachable "the checker rejects 'Env.getOr' on these arguments"))
-      "vars",TSeq(TNamed(envVarDef.Name, [])), envVarsImpl
-      "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
+let private envMembers: (string * Ty * Value) list = [
+    "pair", TFun(TStr, TFun(TStr, TNamed("EnvVar", []))), envPairImpl
+    "ofPairs", TFun(TSeq(TTuple [ TStr; TStr ]), TSeq(TNamed("EnvVar", []))), envOfPairsImpl
+    "get",
+    TFun(TStr, TNamed("Option", [ TStr ])),
+    VBuiltin(fun v ->
+        match v with
+        | VStr name ->
+            // the `within env` overlay included [D:env-overlay-read]
+            match Session.getEnv name with
+            | None -> VUnion("None", None)
+            | Some value -> VUnion("Some", Some(VStr value))
+        | v -> unreachable $"the checker rejects 'Env.get' on {formatValue v}")
+    // the one-var string forms [D:env-need-getor]: Env.get's read
+    // (overlay included, set-but-empty is set) with the unwrap built in
+    "need",
+    TFun(TStr, TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VStr name ->
+            match Session.getEnv name with
+            | Some value -> VStr value
+            | None -> failwith $"Env.need: {quoteData name} is not set"
+        | v -> unreachable $"the checker rejects 'Env.need' on {formatValue v}")
+    "getOr",
+    TFun(TStr, TFun(TStr, TStr)),
+    VBuiltin(fun n ->
+        VBuiltin(fun d ->
+            match n, d with
+            | VStr name, VStr dflt -> VStr(Session.getEnv name |> Option.defaultValue dflt)
+            | _ -> unreachable "the checker rejects 'Env.getOr' on these arguments"))
+    "vars", TSeq(TNamed(envVarDef.Name, [])), envVarsImpl
+    "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl
+]
 
 // the read-side guards [D:sized-findings]: reads must give the same
 // weir-shaped messages as the delete side, never raw .NET exception
@@ -3954,29 +4048,32 @@ let private readGuard (op: string) (r: string) : unit =
 // [D:plan-preconditions]: the real one for a direct call and Plan.apply,
 // the plan's simulated one at capture — one set of checks, so a plan
 // refuses at capture exactly what the direct call would
-type private FsProbe =
-    { Kind: string -> int // 0 absent, 1 file, 2 dir, 4 another entry
-      IsDir: string -> bool // Kind = 2, in one stat
-      EmptyDir: string -> bool
-      Dangling: string -> bool
-      Canon: string -> string // every symlink followed
-      Looped: string -> bool } // its symlinks loop (ELOOP)
+type private FsProbe = {
+    Kind: string -> int // 0 absent, 1 file, 2 dir, 4 another entry
+    IsDir: string -> bool // Kind = 2, in one stat
+    EmptyDir: string -> bool
+    Dangling: string -> bool
+    Canon: string -> string // every symlink followed
+    Looped: string -> bool
+} // its symlinks loop (ELOOP)
 
-let private realProbe =
-    { Kind = PlanMode.realKind
-      IsDir = System.IO.Directory.Exists
-      EmptyDir = fun r -> System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty
-      Dangling = isDangling
-      Canon = PlanMode.realCanon
-      Looped = PlanMode.realLooped }
+let private realProbe = {
+    Kind = PlanMode.realKind
+    IsDir = System.IO.Directory.Exists
+    EmptyDir = fun r -> System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty
+    Dangling = isDangling
+    Canon = PlanMode.realCanon
+    Looped = PlanMode.realLooped
+}
 
-let private planProbe =
-    { Kind = PlanMode.simKind
-      IsDir = PlanMode.simIsDir
-      EmptyDir = PlanMode.simEmptyDir
-      Dangling = PlanMode.simDangling isDangling
-      Canon = PlanMode.simCanon
-      Looped = PlanMode.simLooped }
+let private planProbe = {
+    Kind = PlanMode.simKind
+    IsDir = PlanMode.simIsDir
+    EmptyDir = PlanMode.simEmptyDir
+    Dangling = PlanMode.simDangling isDangling
+    Canon = PlanMode.simCanon
+    Looped = PlanMode.simLooped
+}
 
 // a new entry's parent must be a directory
 let private requireParent (pr: FsProbe) (op: string) (r: string) : unit =
@@ -4058,12 +4155,7 @@ let private capPath1 (pre: FsProbe -> unit) (case: string) (resolved: string) : 
 /// read). Both
 /// paths are stored resolved absolute [D:plan-path-bound] — apply
 /// replays the exact captured source and destination, cwd-independent.
-let private capPath2
-    (pre: FsProbe -> unit)
-    (case: string)
-    (resolvedSrc: string)
-    (resolvedDst: string)
-    : Value option =
+let private capPath2 (pre: FsProbe -> unit) (case: string) (resolvedSrc: string) (resolvedDst: string) : Value option =
     if PlanMode.active () then
         pre planProbe
 
@@ -4250,7 +4342,9 @@ let private doDirDeleteAll (op: string) (r: string) : unit =
 // a final link itself
 let private refuseIntoSelf (pr: FsProbe) (op: string) (followSrc: bool) (src: string) (dst: string) : unit =
     let sep = string System.IO.Path.DirectorySeparatorChar
-    let trim (p: string) = System.IO.Path.TrimEndingDirectorySeparator p
+
+    let trim (p: string) =
+        System.IO.Path.TrimEndingDirectorySeparator p
 
     let underParent (p: string) =
         let full = trim (System.IO.Path.GetFullPath p)
@@ -4403,149 +4497,150 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
                 failwith
                     $"{op}: linked {quoteData dst} across filesystems, but could not remove the source link {quoteData src} — {quoteData (reason e)}"
 
-let private fileMembers: (string * Ty * Value) list =
-    [ "read",
-      TFun(TStr, TSeq TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VStr path ->
-              let r = Session.resolveFs path
-              PlanMode.checkRead "File.read" r
-              readGuard "File.read" r
-              VSeq(ioGuarded "File.read" r (fun () -> readLinesShared r) |> Seq.map VStr)
-          | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
-      // the polling reader of an append-only file [D:file-readfrom]: eager
-      // like File.read, so `next` is exact when the call returns
-      "readFrom",
-      TFun(TStr, TFun(TSize, TNamed("FileChunk", []))),
-      VBuiltin(fun pathV ->
-          VBuiltin(fun offV ->
-              match pathV, offV with
-              | VStr path, VSize off ->
-                  let r = Session.resolveFs path
-                  PlanMode.checkRead "File.readFrom" r
-                  readGuard "File.readFrom" r
+let private fileMembers: (string * Ty * Value) list = [
+    "read",
+    TFun(TStr, TSeq TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VStr path ->
+            let r = Session.resolveFs path
+            PlanMode.checkRead "File.read" r
+            readGuard "File.read" r
+            VSeq(ioGuarded "File.read" r (fun () -> readLinesShared r) |> Seq.map VStr)
+        | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
+    // the polling reader of an append-only file [D:file-readfrom]: eager
+    // like File.read, so `next` is exact when the call returns
+    "readFrom",
+    TFun(TStr, TFun(TSize, TNamed("FileChunk", []))),
+    VBuiltin(fun pathV ->
+        VBuiltin(fun offV ->
+            match pathV, offV with
+            | VStr path, VSize off ->
+                let r = Session.resolveFs path
+                PlanMode.checkRead "File.readFrom" r
+                readGuard "File.readFrom" r
 
-                  let lines, next =
-                      ioGuarded "File.readFrom" r (fun () -> readLinesFrom "File.readFrom" r off)
+                let lines, next =
+                    ioGuarded "File.readFrom" r (fun () -> readLinesFrom "File.readFrom" r off)
 
-                  VRecord("FileChunk", [ "lines", VSeq(Array.map VStr lines :> seq<Value>); "next", VSize next ])
-              | _ -> unreachable "the checker rejects 'File.readFrom' on these arguments"))
-      // a token in a file is a real pattern [D:secret]: a mounted
-      // container secret is a file. One member (a family would be
-      // parked): the whole content is the secret, trailing newlines
-      // trimmed (the tooling convention — `echo tok > f` adds one, a
-      // mounted secret does not)
-      "readSecret",
-      TFun(TStr, TSecret),
-      VBuiltin(fun v ->
-          match v with
-          | VStr path ->
-              let r = Session.resolveFs path
-              PlanMode.checkRead "File.readSecret" r
-              readGuard "File.readSecret" r
-              VSecret((ioGuarded "File.readSecret" r (fun () -> readTextShared r)).TrimEnd('\n', '\r'))
-          | v -> unreachable $"the checker rejects 'File.readSecret' on {formatValue v}")
-      "write",
-      TFun(TStr, TFun(TSeq TStr, TUnit)),
-      VBuiltin(fun pathV ->
-          VBuiltin(fun linesV ->
-              match pathV, linesV with
-              | VStr path, VSeq lines ->
-                  let r = Session.resolveFs path
+                VRecord("FileChunk", [ "lines", VSeq(Array.map VStr lines :> seq<Value>); "next", VSize next ])
+            | _ -> unreachable "the checker rejects 'File.readFrom' on these arguments"))
+    // a token in a file is a real pattern [D:secret]: a mounted
+    // container secret is a file. One member (a family would be
+    // parked): the whole content is the secret, trailing newlines
+    // trimmed (the tooling convention — `echo tok > f` adds one, a
+    // mounted secret does not)
+    "readSecret",
+    TFun(TStr, TSecret),
+    VBuiltin(fun v ->
+        match v with
+        | VStr path ->
+            let r = Session.resolveFs path
+            PlanMode.checkRead "File.readSecret" r
+            readGuard "File.readSecret" r
+            VSecret((ioGuarded "File.readSecret" r (fun () -> readTextShared r)).TrimEnd('\n', '\r'))
+        | v -> unreachable $"the checker rejects 'File.readSecret' on {formatValue v}")
+    "write",
+    TFun(TStr, TFun(TSeq TStr, TUnit)),
+    VBuiltin(fun pathV ->
+        VBuiltin(fun linesV ->
+            match pathV, linesV with
+            | VStr path, VSeq lines ->
+                let r = Session.resolveFs path
 
-                  match capWrite "File.write" "WriteFile" r lines with
-                  | Some captured -> captured
-                  | None ->
-                  writeGuard "File.write" r
+                match capWrite "File.write" "WriteFile" r lines with
+                | Some captured -> captured
+                | None ->
+                    writeGuard "File.write" r
 
-                  ioGuarded "File.write" r (fun () ->
-                      match Session.openPolledWrite r with
-                      | Some s ->
-                          // a FIFO: no BOM to peek, nothing to truncate — cut as
-                          // a read is [D:fifo-ops-polled]
-                          use s = s
-                          let payload = writePayload false lines
-                          s.Write(payload, 0, payload.Length)
-                      | None ->
-                          // one handle for peek + truncate + write — a separate
-                          // read-open racing the write-open trips a Windows sharing
-                          // violation [D:encoding-law]. Peek the existing first
-                          // bytes to decide the BOM, truncate, then write.
-                          use fs =
-                              new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
+                    ioGuarded "File.write" r (fun () ->
+                        match Session.openPolledWrite r with
+                        | Some s ->
+                            // a FIFO: no BOM to peek, nothing to truncate — cut as
+                            // a read is [D:fifo-ops-polled]
+                            use s = s
+                            let payload = writePayload false lines
+                            s.Write(payload, 0, payload.Length)
+                        | None ->
+                            // one handle for peek + truncate + write — a separate
+                            // read-open racing the write-open trips a Windows sharing
+                            // violation [D:encoding-law]. Peek the existing first
+                            // bytes to decide the BOM, truncate, then write.
+                            use fs =
+                                new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
 
-                          // preserve an existing UTF-8 BOM; a new or no-BOM file
-                          // stays bare, so this never adds a BOM
-                          let keepBom = bomAt fs
+                            // preserve an existing UTF-8 BOM; a new or no-BOM file
+                            // stays bare, so this never adds a BOM
+                            let keepBom = bomAt fs
 
-                          // LF bytes on every platform [D:lf-output] — a
-                          // written file is data (hashes, sigs, diffs).
-                          let payload = writePayload keepBom lines
+                            // LF bytes on every platform [D:lf-output] — a
+                            // written file is data (hashes, sigs, diffs).
+                            let payload = writePayload keepBom lines
 
-                          fs.SetLength 0L
-                          fs.Seek(0L, SeekOrigin.Begin) |> ignore
-                          fs.Write(payload, 0, payload.Length))
+                            fs.SetLength 0L
+                            fs.Seek(0L, SeekOrigin.Begin) |> ignore
+                            fs.Write(payload, 0, payload.Length))
 
-                  VUnit
-              | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
-      "writeAtomic",
-      TFun(TStr, TFun(TSeq TStr, TUnit)),
-      VBuiltin(fun pathV ->
-          VBuiltin(fun linesV ->
-              match pathV, linesV with
-              | VStr path, VSeq lines ->
-                  let r = Session.resolveFs path
+                    VUnit
+            | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
+    "writeAtomic",
+    TFun(TStr, TFun(TSeq TStr, TUnit)),
+    VBuiltin(fun pathV ->
+        VBuiltin(fun linesV ->
+            match pathV, linesV with
+            | VStr path, VSeq lines ->
+                let r = Session.resolveFs path
 
-                  refuseFifoAtomic "File.writeAtomic" r
+                refuseFifoAtomic "File.writeAtomic" r
 
-                  match capWrite "File.writeAtomic" "WriteFileAtomic" r lines with
-                  | Some captured -> captured
-                  | None ->
-                  writeGuard "File.writeAtomic" r
+                match capWrite "File.writeAtomic" "WriteFileAtomic" r lines with
+                | Some captured -> captured
+                | None ->
+                    writeGuard "File.writeAtomic" r
 
-                  ioGuarded "File.writeAtomic" r (fun () -> atomicReplace r lines)
+                    ioGuarded "File.writeAtomic" r (fun () -> atomicReplace r lines)
 
-                  VUnit
-              | _ -> unreachable "the checker rejects 'File.writeAtomic' on these arguments"))
-      "append",
-      TFun(TStr, TFun(TSeq TStr, TUnit)),
-      VBuiltin(fun pathV ->
-          VBuiltin(fun linesV ->
-              match pathV, linesV with
-              | VStr path, VSeq lines ->
-                  let r = Session.resolveFs path
+                    VUnit
+            | _ -> unreachable "the checker rejects 'File.writeAtomic' on these arguments"))
+    "append",
+    TFun(TStr, TFun(TSeq TStr, TUnit)),
+    VBuiltin(fun pathV ->
+        VBuiltin(fun linesV ->
+            match pathV, linesV with
+            | VStr path, VSeq lines ->
+                let r = Session.resolveFs path
 
-                  match refuseInPlan "File.append" "an append is a read-modify-write with no captured Op" with
-                  | Some _ -> VUnit
-                  | None ->
-                  writeGuard "File.append" r
+                match refuseInPlan "File.append" "an append is a read-modify-write with no captured Op" with
+                | Some _ -> VUnit
+                | None ->
+                    writeGuard "File.append" r
 
-                  ioGuarded "File.append" r (fun () ->
-                      let sb = System.Text.StringBuilder()
+                    ioGuarded "File.append" r (fun () ->
+                        let sb = System.Text.StringBuilder()
 
-                      for l in lines do
-                          sb.Append(asString l).Append '\n' |> ignore
+                        for l in lines do
+                            sb.Append(asString l).Append '\n' |> ignore
 
-                      let bytes = utf8Strict.GetBytes(sb.ToString())
+                        let bytes = utf8Strict.GetBytes(sb.ToString())
 
-                      match Session.openPolledWrite r with
-                      | Some s ->
-                          use s = s
-                          s.Write(bytes, 0, bytes.Length)
-                      | None -> AppendNative.appendBytes r bytes)
+                        match Session.openPolledWrite r with
+                        | Some s ->
+                            use s = s
+                            s.Write(bytes, 0, bytes.Length)
+                        | None -> AppendNative.appendBytes r bytes)
 
-                  VUnit
-              | _ -> unreachable "the checker rejects 'File.append' on these arguments"))
-      "exists",
-      TFun(TStr, TBool),
-      VBuiltin(fun v ->
-          match v with
-          | VStr path ->
-              let r = Session.resolveFs path
-              PlanMode.checkRead "File.exists" r
-              VBool(File.Exists r)
-          | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}") ]
+                    VUnit
+            | _ -> unreachable "the checker rejects 'File.append' on these arguments"))
+    "exists",
+    TFun(TStr, TBool),
+    VBuiltin(fun v ->
+        match v with
+        | VStr path ->
+            let r = Session.resolveFs path
+            PlanMode.checkRead "File.exists" r
+            VBool(File.Exists r)
+        | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}")
+]
 
 // fail keeps exit-1 (message-carrying); `exit n` is the propagation
 // spelling [D:exit-rename] — both diverge (`-> 'a`, F#'s typing), so a
@@ -4554,7 +4649,9 @@ let private exitImpl: Value =
     VBuiltin(fun v ->
         match v with
         // the OS keeps only the low byte, so `exit 256` would exit 0 [D:exit-range]
-        | VInt n when n < 0L || n > 255L -> failwith $"exit {n}: an exit code is 0..255 — the OS keeps only the low byte, so it would exit {n &&& 255L}"
+        | VInt n when n < 0L || n > 255L ->
+            failwith
+                $"exit {n}: an exit code is 0..255 — the OS keeps only the low byte, so it would exit {n &&& 255L}"
         | VInt n -> raise (ExitRequest(int n))
         | v -> unreachable $"the checker rejects 'exit' on {formatValue v}")
 
@@ -4585,14 +4682,16 @@ let private logWithMember (level: int) (code: string) (label: string) : Value =
 let private logMembers: (string * Ty * Value) list =
     let thunk = TFun(TUnit, TStr)
 
-    [ "trace", TFun(TStr, TUnit), logMember 0 "90" "TRACE"
-      "debug", TFun(TStr, TUnit), logMember 1 "36" "DEBUG"
-      "info", TFun(TStr, TUnit), logMember 2 "32" "INFO"
-      "warn", TFun(TStr, TUnit), logMember 3 "33" "WARN"
-      "traceWith", TFun(thunk, TUnit), logWithMember 0 "90" "TRACE"
-      "debugWith", TFun(thunk, TUnit), logWithMember 1 "36" "DEBUG"
-      "infoWith", TFun(thunk, TUnit), logWithMember 2 "32" "INFO"
-      "warnWith", TFun(thunk, TUnit), logWithMember 3 "33" "WARN" ]
+    [
+        "trace", TFun(TStr, TUnit), logMember 0 "90" "TRACE"
+        "debug", TFun(TStr, TUnit), logMember 1 "36" "DEBUG"
+        "info", TFun(TStr, TUnit), logMember 2 "32" "INFO"
+        "warn", TFun(TStr, TUnit), logMember 3 "33" "WARN"
+        "traceWith", TFun(thunk, TUnit), logWithMember 0 "90" "TRACE"
+        "debugWith", TFun(thunk, TUnit), logWithMember 1 "36" "DEBUG"
+        "infoWith", TFun(thunk, TUnit), logWithMember 2 "32" "INFO"
+        "warnWith", TFun(thunk, TUnit), logWithMember 3 "33" "WARN"
+    ]
 
 // ---- the filesystem family [D:fs-members] ---------------------------
 // copy/move take (src, dst) — the universal convention; neither arg is
@@ -4624,329 +4723,327 @@ let private fsStr2
                     VUnit
             | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
 
-let private fsMoreFileMembers: (string * Ty * Value) list =
-    [ "mode",
-      // the narrow fact stays a query, not a column [D:filerow]:
-      // rwxr-xr-x shaped; None on Windows — the platform limit stated,
-      // never invented [D:ls-truth]. The receipt: the 0600 check that
-      // should precede File.readSecret
-      TFun(TStr, TNamed("Option", [ TStr ])),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
-              PlanMode.checkRead "File.mode" r
+let private fsMoreFileMembers: (string * Ty * Value) list = [
+    "mode",
+    // the narrow fact stays a query, not a column [D:filerow]:
+    // rwxr-xr-x shaped; None on Windows — the platform limit stated,
+    // never invented [D:ls-truth]. The receipt: the 0600 check that
+    // should precede File.readSecret
+    TFun(TStr, TNamed("Option", [ TStr ])),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkRead "File.mode" r
 
-              if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
-                  failwith $"File.mode: no such path: {quoteData r}"
+            if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
+                failwith $"File.mode: no such path: {quoteData r}"
 
-              try
-                  let m = System.IO.File.GetUnixFileMode r
+            try
+                let m = System.IO.File.GetUnixFileMode r
 
-                  let bit (flag: System.IO.UnixFileMode) (ch: string) = if m.HasFlag flag then ch else "-"
+                let bit (flag: System.IO.UnixFileMode) (ch: string) = if m.HasFlag flag then ch else "-"
 
-                  let text =
-                      bit System.IO.UnixFileMode.UserRead "r"
-                      + bit System.IO.UnixFileMode.UserWrite "w"
-                      + bit System.IO.UnixFileMode.UserExecute "x"
-                      + bit System.IO.UnixFileMode.GroupRead "r"
-                      + bit System.IO.UnixFileMode.GroupWrite "w"
-                      + bit System.IO.UnixFileMode.GroupExecute "x"
-                      + bit System.IO.UnixFileMode.OtherRead "r"
-                      + bit System.IO.UnixFileMode.OtherWrite "w"
-                      + bit System.IO.UnixFileMode.OtherExecute "x"
+                let text =
+                    bit System.IO.UnixFileMode.UserRead "r"
+                    + bit System.IO.UnixFileMode.UserWrite "w"
+                    + bit System.IO.UnixFileMode.UserExecute "x"
+                    + bit System.IO.UnixFileMode.GroupRead "r"
+                    + bit System.IO.UnixFileMode.GroupWrite "w"
+                    + bit System.IO.UnixFileMode.GroupExecute "x"
+                    + bit System.IO.UnixFileMode.OtherRead "r"
+                    + bit System.IO.UnixFileMode.OtherWrite "w"
+                    + bit System.IO.UnixFileMode.OtherExecute "x"
 
-                  VUnion("Some", Some(VStr text))
-              with
-              | :? System.PlatformNotSupportedException -> VUnion("None", None)
-              | :? System.IO.FileNotFoundException
-              | :? System.IO.DirectoryNotFoundException ->
-                  // the read follows; existence does not
-                  // [D:mode-existence]: a path with a row (File.stat/ls
-                  // describe the link) fails here for the honest reason,
-                  // never as absent
-                  if isNull (FileInfo(r).LinkTarget) then
-                      failwith $"File.mode: no such path: {quoteData r}"
-                  else
-                      failwith $"File.mode: dangling symlink: {quoteData r} — no target to read a mode from"
-          | v -> unreachable $"the checker rejects 'File.mode' on {formatValue v}")
-      "isExecutable",
-      // the mode string's 'x', as a bool [D:port-members]: the owner
-      // execute bit (the bit an installer sets), replacing the stringly
-      // `File.mode |> Str.contains "x"`. Follows a symlink like mode;
-      // a missing path raises. Windows posture, stated not guessed
-      // [D:ls-truth]: there is no execute bit there — the answer is by
-      // extension (.exe/.bat/.cmd/.com), CreateProcess's own law.
-      TFun(TStr, TBool),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
-              PlanMode.checkRead "File.isExecutable" r
+                VUnion("Some", Some(VStr text))
+            with
+            | :? System.PlatformNotSupportedException -> VUnion("None", None)
+            | :? System.IO.FileNotFoundException
+            | :? System.IO.DirectoryNotFoundException ->
+                // the read follows; existence does not
+                // [D:mode-existence]: a path with a row (File.stat/ls
+                // describe the link) fails here for the honest reason,
+                // never as absent
+                if isNull (FileInfo(r).LinkTarget) then
+                    failwith $"File.mode: no such path: {quoteData r}"
+                else
+                    failwith $"File.mode: dangling symlink: {quoteData r} — no target to read a mode from"
+        | v -> unreachable $"the checker rejects 'File.mode' on {formatValue v}")
+    "isExecutable",
+    // the mode string's 'x', as a bool [D:port-members]: the owner
+    // execute bit (the bit an installer sets), replacing the stringly
+    // `File.mode |> Str.contains "x"`. Follows a symlink like mode;
+    // a missing path raises. Windows posture, stated not guessed
+    // [D:ls-truth]: there is no execute bit there — the answer is by
+    // extension (.exe/.bat/.cmd/.com), CreateProcess's own law.
+    TFun(TStr, TBool),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkRead "File.isExecutable" r
 
-              // "" is a no-such-path, not the cwd [D:isexecutable-empty]:
-              // Session.resolveFs "" folds to the cwd, which exists and
-              // carries the dir's x bit — the empty string must raise the
-              // same located error as a missing path, never answer true.
-              if p = "" || not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
-                  failwith $"File.isExecutable: no such path: {quoteData r}"
+            // "" is a no-such-path, not the cwd [D:isexecutable-empty]:
+            // Session.resolveFs "" folds to the cwd, which exists and
+            // carries the dir's x bit — the empty string must raise the
+            // same located error as a missing path, never answer true.
+            if
+                p = ""
+                || not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists)
+            then
+                failwith $"File.isExecutable: no such path: {quoteData r}"
 
-              try
-                  let m = System.IO.File.GetUnixFileMode r
-                  VBool(m.HasFlag System.IO.UnixFileMode.UserExecute)
-              with
-              | :? System.PlatformNotSupportedException ->
-                  let ext = System.IO.Path.GetExtension(r).ToLowerInvariant()
-                  VBool(List.contains ext [ ".exe"; ".bat"; ".cmd"; ".com" ])
-              | :? System.IO.FileNotFoundException
-              | :? System.IO.DirectoryNotFoundException ->
-                  // the read follows; existence does not [D:mode-existence]
-                  if isNull (FileInfo(r).LinkTarget) then
-                      failwith $"File.isExecutable: no such path: {quoteData r}"
-                  else
-                      failwith $"File.isExecutable: dangling symlink: {quoteData r} — no target to read a mode from"
-          | v -> unreachable $"the checker rejects 'File.isExecutable' on {formatValue v}")
-      "readBytes",
-      // the byte-faithful read [D:bytes]: File.read decodes leniently
-      // and line-splits; this one does neither
-      TFun(TStr, TBytes),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
-              PlanMode.checkRead "File.readBytes" r
-              readGuard "File.readBytes" r
-              VBytes(ioGuarded "File.readBytes" r (fun () -> readBytesShared r))
-          | v -> unreachable $"the checker rejects 'File.readBytes' on {formatValue v}")
-      "writeBytes",
-      TFun(TStr, TFun(TBytes, TUnit)),
-      VBuiltin(fun pathV ->
-          VBuiltin(fun bytesV ->
-              match pathV, bytesV with
-              | VStr path, VBytes b ->
-                  let r = Session.resolveFs path
+            try
+                let m = System.IO.File.GetUnixFileMode r
+                VBool(m.HasFlag System.IO.UnixFileMode.UserExecute)
+            with
+            | :? System.PlatformNotSupportedException ->
+                let ext = System.IO.Path.GetExtension(r).ToLowerInvariant()
+                VBool(List.contains ext [ ".exe"; ".bat"; ".cmd"; ".com" ])
+            | :? System.IO.FileNotFoundException
+            | :? System.IO.DirectoryNotFoundException ->
+                // the read follows; existence does not [D:mode-existence]
+                if isNull (FileInfo(r).LinkTarget) then
+                    failwith $"File.isExecutable: no such path: {quoteData r}"
+                else
+                    failwith $"File.isExecutable: dangling symlink: {quoteData r} — no target to read a mode from"
+        | v -> unreachable $"the checker rejects 'File.isExecutable' on {formatValue v}")
+    "readBytes",
+    // the byte-faithful read [D:bytes]: File.read decodes leniently
+    // and line-splits; this one does neither
+    TFun(TStr, TBytes),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkRead "File.readBytes" r
+            readGuard "File.readBytes" r
+            VBytes(ioGuarded "File.readBytes" r (fun () -> readBytesShared r))
+        | v -> unreachable $"the checker rejects 'File.readBytes' on {formatValue v}")
+    "writeBytes",
+    TFun(TStr, TFun(TBytes, TUnit)),
+    VBuiltin(fun pathV ->
+        VBuiltin(fun bytesV ->
+            match pathV, bytesV with
+            | VStr path, VBytes b ->
+                let r = Session.resolveFs path
 
-                  match refuseInPlan "File.writeBytes" "the WriteFile Op carries text lines, not bytes" with
-                  | Some _ -> VUnit
-                  | None ->
-                  writeGuard "File.writeBytes" r
+                match refuseInPlan "File.writeBytes" "the WriteFile Op carries text lines, not bytes" with
+                | Some _ -> VUnit
+                | None ->
+                    writeGuard "File.writeBytes" r
 
-                  ioGuarded "File.writeBytes" r (fun () ->
-                      match Session.openPolledWrite r with
-                      | Some s ->
-                          use s = s
-                          s.Write(b, 0, b.Length)
-                      | None -> System.IO.File.WriteAllBytes(r, b))
-                  VUnit
-              | _ -> unreachable "the checker rejects 'File.writeBytes' on these arguments"))
-      "sha256",
-      // streams internally [D:bytes] — the value type is bounded, the
-      // implementation is not required to materialise; the install
-      // story hashes files bigger than a value should be
-      TFun(TStr, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
-              PlanMode.checkRead "File.sha256" r
-              readGuard "File.sha256" r
+                    ioGuarded "File.writeBytes" r (fun () ->
+                        match Session.openPolledWrite r with
+                        | Some s ->
+                            use s = s
+                            s.Write(b, 0, b.Length)
+                        | None -> System.IO.File.WriteAllBytes(r, b))
 
-              VStr(
-                  ioGuarded "File.sha256" r (fun () ->
-                      // a FIFO is cut as File.read's is [D:fifo-ops-polled]
-                      withReadStream r (fun fs ->
-                          System.Security.Cryptography.SHA256.HashData fs
-                          |> Array.map (fun x -> x.ToString "x2")
-                          |> String.concat ""))
-              )
-          | v -> unreachable $"the checker rejects 'File.sha256' on {formatValue v}")
-      "sha1",
-      // streamed like File.sha256 [D:sha1]
-      TFun(TStr, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
-              PlanMode.checkRead "File.sha1" r
-              readGuard "File.sha1" r
+                    VUnit
+            | _ -> unreachable "the checker rejects 'File.writeBytes' on these arguments"))
+    "sha256",
+    // streams internally [D:bytes] — the value type is bounded, the
+    // implementation is not required to materialise; the install
+    // story hashes files bigger than a value should be
+    TFun(TStr, TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkRead "File.sha256" r
+            readGuard "File.sha256" r
 
-              VStr(
-                  ioGuarded "File.sha1" r (fun () ->
-                      // a FIFO is cut as File.read's is [D:fifo-ops-polled]
-                      withReadStream r (fun fs ->
-                          System.Security.Cryptography.SHA1.HashData fs
-                          |> Array.map (fun x -> x.ToString "x2")
-                          |> String.concat ""))
-              )
-          | v -> unreachable $"the checker rejects 'File.sha1' on {formatValue v}")
-      "delete",
-      TFun(TStr, TUnit),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
+            VStr(
+                ioGuarded "File.sha256" r (fun () ->
+                    // a FIFO is cut as File.read's is [D:fifo-ops-polled]
+                    withReadStream r (fun fs ->
+                        System.Security.Cryptography.SHA256.HashData fs
+                        |> Array.map (fun x -> x.ToString "x2")
+                        |> String.concat ""))
+            )
+        | v -> unreachable $"the checker rejects 'File.sha256' on {formatValue v}")
+    "sha1",
+    // streamed like File.sha256 [D:sha1]
+    TFun(TStr, TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkRead "File.sha1" r
+            readGuard "File.sha1" r
 
-              match capPath1 (fun pr -> preFileDelete pr "File.delete" r) "DeleteFile" r with
-              | Some captured -> captured
-              | None ->
+            VStr(
+                ioGuarded "File.sha1" r (fun () ->
+                    // a FIFO is cut as File.read's is [D:fifo-ops-polled]
+                    withReadStream r (fun fs ->
+                        System.Security.Cryptography.SHA1.HashData fs
+                        |> Array.map (fun x -> x.ToString "x2")
+                        |> String.concat ""))
+            )
+        | v -> unreachable $"the checker rejects 'File.sha1' on {formatValue v}")
+    "delete",
+    TFun(TStr, TUnit),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
 
-              doFileDelete "File.delete" r
-              VUnit
-          | v -> unreachable $"the checker rejects 'File.delete' on {formatValue v}")
-      "copy",
-      TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "File.copy" "Copy" preFileCopy (doFileCopy "File.copy")
-      "move",
-      TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "File.move" "Move" preFileMove (doFileMove "File.move")
-      "size",
-      // Size, not int [D:size] — the type is the point: show can
-      // render what the type names (a deliberate break)
-      TFun(TStr, TSize),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
-              PlanMode.checkRead "File.size" r
-              readGuard "File.size" r
+            match capPath1 (fun pr -> preFileDelete pr "File.delete" r) "DeleteFile" r with
+            | Some captured -> captured
+            | None ->
 
-              // the size of what a read sees — a link's target, not the link
-              let fi = System.IO.FileInfo r
+                doFileDelete "File.delete" r
+                VUnit
+        | v -> unreachable $"the checker rejects 'File.delete' on {formatValue v}")
+    "copy", TFun(TStr, TFun(TStr, TUnit)), fsStr2 "File.copy" "Copy" preFileCopy (doFileCopy "File.copy")
+    "move", TFun(TStr, TFun(TStr, TUnit)), fsStr2 "File.move" "Move" preFileMove (doFileMove "File.move")
+    "size",
+    // Size, not int [D:size] — the type is the point: show can
+    // render what the type names (a deliberate break)
+    TFun(TStr, TSize),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkRead "File.size" r
+            readGuard "File.size" r
 
-              match fi.LinkTarget with
-              | null -> VSize fi.Length
-              | _ -> VSize (fi.ResolveLinkTarget(true) :?> System.IO.FileInfo).Length
-          | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}")
-      "stat",
-      // the bridge from paths to rows [D:file-stat]: ls's own
-      // constructor over one resolved path, so the two producers cannot
-      // diverge. Describes the link, not its target (the ls agreement);
-      // raises when absent — a dangling symlink is a row, not an absence
-      TFun(TStr, TNamed(fileRow.Name, [])),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
-              PlanMode.checkRead "File.stat" r
+            // the size of what a read sees — a link's target, not the link
+            let fi = System.IO.FileInfo r
 
-              // FileInfo.Exists is the path's own fact (true for a
-              // dangling link); a directory — or a link to one — takes
-              // the DirectoryInfo shape, as the enumeration does
-              let fi = FileInfo r
+            match fi.LinkTarget with
+            | null -> VSize fi.Length
+            | _ -> VSize (fi.ResolveLinkTarget(true) :?> System.IO.FileInfo).Length
+        | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}")
+    "stat",
+    // the bridge from paths to rows [D:file-stat]: ls's own
+    // constructor over one resolved path, so the two producers cannot
+    // diverge. Describes the link, not its target (the ls agreement);
+    // raises when absent — a dangling symlink is a row, not an absence
+    TFun(TStr, TNamed(fileRow.Name, [])),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkRead "File.stat" r
 
-              if fi.Exists then
-                  lsRow fi
-              else
-                  let di = DirectoryInfo r
+            // FileInfo.Exists is the path's own fact (true for a
+            // dangling link); a directory — or a link to one — takes
+            // the DirectoryInfo shape, as the enumeration does
+            let fi = FileInfo r
 
-                  if di.Exists then
-                      lsRow di
-                  else
-                      failwith $"File.stat: no such path: {quoteData r}"
-          | v -> unreachable $"the checker rejects 'File.stat' on {formatValue v}") ]
+            if fi.Exists then
+                lsRow fi
+            else
+                let di = DirectoryInfo r
 
-let private dirMembers: (string * Ty * Value) list =
-    [ "create",
-      TFun(TStr, TUnit),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
+                if di.Exists then
+                    lsRow di
+                else
+                    failwith $"File.stat: no such path: {quoteData r}"
+        | v -> unreachable $"the checker rejects 'File.stat' on {formatValue v}")
+]
 
-              match capPath1 (fun pr -> preDirCreate pr "Dir.create" r) "MakeDir" r with
-              | Some captured -> captured
-              | None ->
+let private dirMembers: (string * Ty * Value) list = [
+    "create",
+    TFun(TStr, TUnit),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
 
-              doDirCreate "Dir.create" r
-              VUnit
-          | v -> unreachable $"the checker rejects 'Dir.create' on {formatValue v}")
-      "exists",
-      TFun(TStr, TBool),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
-              PlanMode.checkRead "Dir.exists" r
-              VBool(System.IO.Directory.Exists r)
-          | v -> unreachable $"the checker rejects 'Dir.exists' on {formatValue v}")
-      "delete",
-      TFun(TStr, TUnit),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
+            match capPath1 (fun pr -> preDirCreate pr "Dir.create" r) "MakeDir" r with
+            | Some captured -> captured
+            | None ->
 
-              match capPath1 (fun pr -> preDirDelete pr "Dir.delete" r) "DeleteDir" r with
-              | Some captured -> captured
-              | None ->
+                doDirCreate "Dir.create" r
+                VUnit
+        | v -> unreachable $"the checker rejects 'Dir.create' on {formatValue v}")
+    "exists",
+    TFun(TStr, TBool),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkRead "Dir.exists" r
+            VBool(System.IO.Directory.Exists r)
+        | v -> unreachable $"the checker rejects 'Dir.exists' on {formatValue v}")
+    "delete",
+    TFun(TStr, TUnit),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
 
-              doDirDelete "Dir.delete" r
-              VUnit
-          | v -> unreachable $"the checker rejects 'Dir.delete' on {formatValue v}")
-      "deleteAll",
-      TFun(TStr, TUnit),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
+            match capPath1 (fun pr -> preDirDelete pr "Dir.delete" r) "DeleteDir" r with
+            | Some captured -> captured
+            | None ->
 
-              match capPath1 (fun pr -> requireDirIn pr "Dir.deleteAll" r) "DeleteTree" r with
-              | Some captured -> captured
-              | None ->
+                doDirDelete "Dir.delete" r
+                VUnit
+        | v -> unreachable $"the checker rejects 'Dir.delete' on {formatValue v}")
+    "deleteAll",
+    TFun(TStr, TUnit),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
 
-              doDirDeleteAll "Dir.deleteAll" r
-              VUnit
-          | v -> unreachable $"the checker rejects 'Dir.deleteAll' on {formatValue v}")
-      "list",
-      TFun(TStr, TSeq TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
-              PlanMode.checkTree "Dir.list" r
+            match capPath1 (fun pr -> requireDirIn pr "Dir.deleteAll" r) "DeleteTree" r with
+            | Some captured -> captured
+            | None ->
 
-              if not (System.IO.Directory.Exists r) then
-                  failwith $"Dir.list: no such directory: {quoteData r}"
+                doDirDeleteAll "Dir.deleteAll" r
+                VUnit
+        | v -> unreachable $"the checker rejects 'Dir.deleteAll' on {formatValue v}")
+    "list",
+    TFun(TStr, TSeq TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkTree "Dir.list" r
 
-              // full paths, files and directories, sorted (as glob
-              // does), eager (a listing is bounded); ** recursion
-              // is Path.glob's job
-              VSeq(
-                  ioGuarded "Dir.list" r (fun () ->
-                      System.IO.Directory.EnumerateFileSystemEntries r |> Seq.sort |> List.ofSeq)
-                  |> Seq.map VStr
-              )
-          | v -> unreachable $"the checker rejects 'Dir.list' on {formatValue v}")
-      "stat",
-      TFun(TStr, seqFileRow),
-      VBuiltin(fun v ->
-          match v with
-          | VStr p ->
-              let r = Session.resolveFs p
-              PlanMode.checkTree "Dir.stat" r
+            if not (System.IO.Directory.Exists r) then
+                failwith $"Dir.list: no such directory: {quoteData r}"
 
-              if not (System.IO.Directory.Exists r) then
-                  failwith $"Dir.stat: no such directory: {quoteData r}"
+            // full paths, files and directories, sorted (as glob
+            // does), eager (a listing is bounded); ** recursion
+            // is Path.glob's job
+            VSeq(
+                ioGuarded "Dir.list" r (fun () ->
+                    System.IO.Directory.EnumerateFileSystemEntries r |> Seq.sort |> List.ofSeq)
+                |> Seq.map VStr
+            )
+        | v -> unreachable $"the checker rejects 'Dir.list' on {formatValue v}")
+    "stat",
+    TFun(TStr, seqFileRow),
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkTree "Dir.stat" r
 
-              // the rows form of Dir.list [D:dir-stat]: ls's own
-              // enumeration and row constructor over the named
-              // directory, so the discovery surfaces cannot diverge;
-              // eager like list (a listing is bounded)
-              VSeq(
-                  ioGuarded "Dir.stat" r (fun () ->
-                      DirectoryInfo(r).GetFileSystemInfos()
-                      |> Array.sortBy (fun i -> i.Name)
-                      |> Array.map lsRow
-                      |> List.ofArray)
-              )
-          | v -> unreachable $"the checker rejects 'Dir.stat' on {formatValue v}")
-      "move",
-      TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "Dir.move" "MoveDir" preDirMove (doDirMove "Dir.move")
-      // the tree copy [D:sized-findings] — see doDirCopy
-      "copy",
-      TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "Dir.copy" "CopyDir" preDirCopy (doDirCopy "Dir.copy") ]
+            if not (System.IO.Directory.Exists r) then
+                failwith $"Dir.stat: no such directory: {quoteData r}"
+
+            // the rows form of Dir.list [D:dir-stat]: ls's own
+            // enumeration and row constructor over the named
+            // directory, so the discovery surfaces cannot diverge;
+            // eager like list (a listing is bounded)
+            VSeq(
+                ioGuarded "Dir.stat" r (fun () ->
+                    DirectoryInfo(r).GetFileSystemInfos()
+                    |> Array.sortBy (fun i -> i.Name)
+                    |> Array.map lsRow
+                    |> List.ofArray)
+            )
+        | v -> unreachable $"the checker rejects 'Dir.stat' on {formatValue v}")
+    "move", TFun(TStr, TFun(TStr, TUnit)), fsStr2 "Dir.move" "MoveDir" preDirMove (doDirMove "Dir.move")
+    // the tree copy [D:sized-findings] — see doDirCopy
+    "copy", TFun(TStr, TFun(TStr, TUnit)), fsStr2 "Dir.copy" "CopyDir" preDirCopy (doDirCopy "Dir.copy")
+]
 
 // ---- Float [D:floats]: finite-only; no implicit widening -----------
 let private floatFn (name: string) (f: float -> Value) : Value =
@@ -4981,231 +5078,233 @@ let private parsePairImpl (label: string) (parser: string -> Result<'a, string>)
 
     parseImpl, tryImpl
 
-let private floatMembers: (string * Ty * Value) list =
-    [ "ofInt",
-      TFun(TInt, TFloat),
-      VBuiltin(fun v ->
-          match v with
-          | VInt n -> VFloat(float n)
-          | v -> unreachable $"the checker rejects 'Float.ofInt' on {formatValue v}")
-      "toInt",
-      TFun(TFloat, TInt),
-      floatFn "toInt" (fun x ->
-          // truncates toward zero, the int-division rule; out of the
-          // 64-bit range raises (the checkedInt posture)
-          // (-2^63 itself is Int64.MinValue, in range; 2^63 is not)
-          if x >= 9.2233720368547758e18 || x < -9.2233720368547758e18 then
-              failwith $"Float.toInt: out of int range: {formatFloat x}"
-          else
-              VInt(int64 (truncate x)))
-      "round",
-      TFun(TFloat, TFloat),
-      // away-from-zero, the school rule — banker's rounding surprises
-      // -0.4 rounds to -0.0, which normalizes to 0.0 [D:floats]
-      floatFn "round" (fun x ->
-          let r = System.Math.Round(x, System.MidpointRounding.AwayFromZero)
-          VFloat(if r = 0.0 then 0.0 else r))
-      "abs", TFun(TFloat, TFloat), floatFn "abs" (fun x -> VFloat(abs x))
-      "near",
-      TFun(TFloat, TFun(TFloat, TFun(TFloat, TBool))),
-      floatFn "near" (fun a ->
-          VBuiltin(fun v ->
-              match v with
-              | VFloat b ->
-                  VBuiltin(fun v2 ->
-                      match v2 with
-                      | VFloat eps -> VBool(abs (a - b) <= eps)
-                      | v2 -> unreachable $"the checker rejects 'Float.near' on {formatValue v2}")
-              | v -> unreachable $"the checker rejects 'Float.near' on {formatValue v}"))
-      "parse", TFun(TStr, TFloat), fst (parsePairImpl "Float" parseFloat VFloat)
-      "tryParse", TFun(TStr, TNamed("Option", [ TFloat ])), snd (parsePairImpl "Float" parseFloat VFloat)
-      // the per-type sum/mean [D:seq-gaps] — Seq.sum stays seq<int>;
-      // each numeric type owns its own (no numeric class in weir)
-      "sum",
-      TFun(TSeq TFloat, TFloat),
-      VBuiltin(fun s ->
-          match s with
-          | VSeq items ->
-              let total =
-                  items
-                  |> Seq.fold
-                      (fun acc v ->
-                          match v with
-                          | VFloat f -> acc + f
-                          | v -> unreachable $"the checker rejects summing {formatValue v}")
-                      0.0
+let private floatMembers: (string * Ty * Value) list = [
+    "ofInt",
+    TFun(TInt, TFloat),
+    VBuiltin(fun v ->
+        match v with
+        | VInt n -> VFloat(float n)
+        | v -> unreachable $"the checker rejects 'Float.ofInt' on {formatValue v}")
+    "toInt",
+    TFun(TFloat, TInt),
+    floatFn "toInt" (fun x ->
+        // truncates toward zero, the int-division rule; out of the
+        // 64-bit range raises (the checkedInt posture)
+        // (-2^63 itself is Int64.MinValue, in range; 2^63 is not)
+        if x >= 9.2233720368547758e18 || x < -9.2233720368547758e18 then
+            failwith $"Float.toInt: out of int range: {formatFloat x}"
+        else
+            VInt(int64 (truncate x)))
+    "round",
+    TFun(TFloat, TFloat),
+    // away-from-zero, the school rule — banker's rounding surprises
+    // -0.4 rounds to -0.0, which normalizes to 0.0 [D:floats]
+    floatFn "round" (fun x ->
+        let r = System.Math.Round(x, System.MidpointRounding.AwayFromZero)
+        VFloat(if r = 0.0 then 0.0 else r))
+    "abs", TFun(TFloat, TFloat), floatFn "abs" (fun x -> VFloat(abs x))
+    "near",
+    TFun(TFloat, TFun(TFloat, TFun(TFloat, TBool))),
+    floatFn "near" (fun a ->
+        VBuiltin(fun v ->
+            match v with
+            | VFloat b ->
+                VBuiltin(fun v2 ->
+                    match v2 with
+                    | VFloat eps -> VBool(abs (a - b) <= eps)
+                    | v2 -> unreachable $"the checker rejects 'Float.near' on {formatValue v2}")
+            | v -> unreachable $"the checker rejects 'Float.near' on {formatValue v}"))
+    "parse", TFun(TStr, TFloat), fst (parsePairImpl "Float" parseFloat VFloat)
+    "tryParse", TFun(TStr, TNamed("Option", [ TFloat ])), snd (parsePairImpl "Float" parseFloat VFloat)
+    // the per-type sum/mean [D:seq-gaps] — Seq.sum stays seq<int>;
+    // each numeric type owns its own (no numeric class in weir)
+    "sum",
+    TFun(TSeq TFloat, TFloat),
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items ->
+            let total =
+                items
+                |> Seq.fold
+                    (fun acc v ->
+                        match v with
+                        | VFloat f -> acc + f
+                        | v -> unreachable $"the checker rejects summing {formatValue v}")
+                    0.0
 
-              if System.Double.IsFinite total then
-                  VFloat total
-              else
-                  failwith "Float.sum: the sum is not finite"
-          | v -> unreachable $"the checker rejects 'Float.sum' on {formatValue v}")
-      "average",
-      TFun(TSeq TFloat, TFloat),
-      VBuiltin(fun s ->
-          match s with
-          | VSeq items ->
-              let mutable total = 0.0
-              let mutable count = 0L
+            if System.Double.IsFinite total then
+                VFloat total
+            else
+                failwith "Float.sum: the sum is not finite"
+        | v -> unreachable $"the checker rejects 'Float.sum' on {formatValue v}")
+    "average",
+    TFun(TSeq TFloat, TFloat),
+    VBuiltin(fun s ->
+        match s with
+        | VSeq items ->
+            let mutable total = 0.0
+            let mutable count = 0L
 
-              for x in items do
-                  match x with
-                  | VFloat f ->
-                      total <- total + f
-                      count <- count + 1L
-                  | v -> unreachable $"the checker rejects averaging {formatValue v}"
+            for x in items do
+                match x with
+                | VFloat f ->
+                    total <- total + f
+                    count <- count + 1L
+                | v -> unreachable $"the checker rejects averaging {formatValue v}"
 
-              if count = 0L then
-                  failwith "Float.average: empty sequence"
-              elif System.Double.IsFinite(total / float count) then
-                  VFloat(total / float count)
-              else
-                  failwith "Float.average: the mean is not finite"
-          | v -> unreachable $"the checker rejects 'Float.average' on {formatValue v}") ]
+            if count = 0L then
+                failwith "Float.average: empty sequence"
+            elif System.Double.IsFinite(total / float count) then
+                VFloat(total / float count)
+            else
+                failwith "Float.average: the mean is not finite"
+        | v -> unreachable $"the checker rejects 'Float.average' on {formatValue v}")
+]
 
 // ---- Size [D:size]: integer bytes; decimals only in text -----------
 // the non-text value's members [D:bytes] — the smallest useful cut:
 // every member answers a receipt (F4's closed base64 route, the NUL
 // route through File.read, hashing for the install story). Bounded and
 // in-memory by the capture law; unbounded data streams to a sink.
-let private bytesMembers: (string * Ty * Value) list =
-    [ "fromBase64",
-      TFun(TStr, TBytes),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s ->
-              (try
-                  VBytes(base64Bytes s)
-               with _ ->
-                   failwith $"Bytes.fromBase64: invalid base64: \"{excerpt s}\"")
-          | v -> unreachable $"the checker rejects 'Bytes.fromBase64' on {formatValue v}")
-      "tryFromBase64",
-      TFun(TStr, TNamed("Option", [ TBytes ])),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s ->
-              (try
-                  VUnion("Some", Some(VBytes(base64Bytes s)))
-               with _ ->
-                   VUnion("None", None))
-          | v -> unreachable $"the checker rejects 'Bytes.tryFromBase64' on {formatValue v}")
-      "toBase64",
-      TFun(TBytes, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VBytes b -> VStr(base64Of "Bytes.toBase64" b)
-          | v -> unreachable $"the checker rejects 'Bytes.toBase64' on {formatValue v}")
-      "sha256",
-      TFun(TBytes, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VBytes b ->
-              VStr(
-                  System.Security.Cryptography.SHA256.HashData b
-                  |> Array.map (fun x -> x.ToString "x2")
-                  |> String.concat ""
-              )
-          | v -> unreachable $"the checker rejects 'Bytes.sha256' on {formatValue v}")
-      "sha1",
-      TFun(TBytes, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VBytes b ->
-              VStr(
-                  System.Security.Cryptography.SHA1.HashData b
-                  |> Array.map (fun x -> x.ToString "x2")
-                  |> String.concat ""
-              )
-          | v -> unreachable $"the checker rejects 'Bytes.sha1' on {formatValue v}")
-      "length",
-      TFun(TBytes, TSize),
-      VBuiltin(fun v ->
-          match v with
-          | VBytes b -> VSize(int64 b.Length)
-          | v -> unreachable $"the checker rejects 'Bytes.length' on {formatValue v}")
-      // hex, the crypto boundary's other text form [D:port-members]:
-      // lowercase out (sha256/sha256sum parity), either case in;
-      // odd-length and non-hex refuse with the fromBase64 posture
-      "fromHex",
-      TFun(TStr, TBytes),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s ->
-              if s.Length % 2 <> 0 then
-                  failwith $"Bytes.fromHex: odd-length hex ({s.Length} chars) — every byte is two hex digits"
-              else
-                  (try
-                      VBytes(System.Convert.FromHexString s)
-                   with _ ->
-                       failwith $"Bytes.fromHex: invalid hex: \"{excerpt s}\"")
-          | v -> unreachable $"the checker rejects 'Bytes.fromHex' on {formatValue v}")
-      "toHex",
-      TFun(TBytes, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VBytes b ->
-              VStr(buildStr "Bytes.toHex" (2L * int64 b.Length) (fun () -> System.Convert.ToHexStringLower b))
-          | v -> unreachable $"the checker rejects 'Bytes.toHex' on {formatValue v}")
-      // Str.sub's exact shape on bytes [D:port-members]: start, then
-      // length, data last; out of range raises with the same detail
-      "sub",
-      TFun(TInt, TFun(TInt, TFun(TBytes, TBytes))),
-      VBuiltin(fun start ->
-          VBuiltin(fun len ->
-              VBuiltin(fun subject ->
-                  match start, len, subject with
-                  | VInt st64, VInt ln64, VBytes b ->
-                      // int64 bounds, exact narrowing [D:int-narrowing]
-                      if st64 < 0L || ln64 < 0L || st64 > int64 b.Length || ln64 > int64 b.Length - st64 then
-                          failwith $"Bytes.sub: out of bounds (start {st64}, length {ln64}, byte length {b.Length})"
-                      else
-                          let st, ln = toIntArg "Bytes.sub" Position st64, toIntArg "Bytes.sub" Amount ln64
-                          VBytes(b[st .. st + ln - 1])
-                  | _ -> unreachable "the checker rejects 'Bytes.sub' on these arguments")))
-      // key -> message -> mac; .NET's own HMACSHA256, no reflection.
-      // A Secret key exits through Secret.reveal |> Str.toUtf8 —
-      // deliberate, the one Secret exit [D:secret]
-      "hmacSha256",
-      TFun(TBytes, TFun(TBytes, TBytes)),
-      VBuiltin(fun keyV ->
-          VBuiltin(fun msgV ->
-              match keyV, msgV with
-              | VBytes key, VBytes msg -> VBytes(System.Security.Cryptography.HMACSHA256.HashData(key, msg))
-              | _ -> unreachable "the checker rejects 'Bytes.hmacSha256' on these arguments")) ]
+let private bytesMembers: (string * Ty * Value) list = [
+    "fromBase64",
+    TFun(TStr, TBytes),
+    VBuiltin(fun v ->
+        match v with
+        | VStr s ->
+            (try
+                VBytes(base64Bytes s)
+             with _ ->
+                 failwith $"Bytes.fromBase64: invalid base64: \"{excerpt s}\"")
+        | v -> unreachable $"the checker rejects 'Bytes.fromBase64' on {formatValue v}")
+    "tryFromBase64",
+    TFun(TStr, TNamed("Option", [ TBytes ])),
+    VBuiltin(fun v ->
+        match v with
+        | VStr s ->
+            (try
+                VUnion("Some", Some(VBytes(base64Bytes s)))
+             with _ ->
+                 VUnion("None", None))
+        | v -> unreachable $"the checker rejects 'Bytes.tryFromBase64' on {formatValue v}")
+    "toBase64",
+    TFun(TBytes, TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VBytes b -> VStr(base64Of "Bytes.toBase64" b)
+        | v -> unreachable $"the checker rejects 'Bytes.toBase64' on {formatValue v}")
+    "sha256",
+    TFun(TBytes, TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VBytes b ->
+            VStr(
+                System.Security.Cryptography.SHA256.HashData b
+                |> Array.map (fun x -> x.ToString "x2")
+                |> String.concat ""
+            )
+        | v -> unreachable $"the checker rejects 'Bytes.sha256' on {formatValue v}")
+    "sha1",
+    TFun(TBytes, TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VBytes b ->
+            VStr(
+                System.Security.Cryptography.SHA1.HashData b
+                |> Array.map (fun x -> x.ToString "x2")
+                |> String.concat ""
+            )
+        | v -> unreachable $"the checker rejects 'Bytes.sha1' on {formatValue v}")
+    "length",
+    TFun(TBytes, TSize),
+    VBuiltin(fun v ->
+        match v with
+        | VBytes b -> VSize(int64 b.Length)
+        | v -> unreachable $"the checker rejects 'Bytes.length' on {formatValue v}")
+    // hex, the crypto boundary's other text form [D:port-members]:
+    // lowercase out (sha256/sha256sum parity), either case in;
+    // odd-length and non-hex refuse with the fromBase64 posture
+    "fromHex",
+    TFun(TStr, TBytes),
+    VBuiltin(fun v ->
+        match v with
+        | VStr s ->
+            if s.Length % 2 <> 0 then
+                failwith $"Bytes.fromHex: odd-length hex ({s.Length} chars) — every byte is two hex digits"
+            else
+                (try
+                    VBytes(System.Convert.FromHexString s)
+                 with _ ->
+                     failwith $"Bytes.fromHex: invalid hex: \"{excerpt s}\"")
+        | v -> unreachable $"the checker rejects 'Bytes.fromHex' on {formatValue v}")
+    "toHex",
+    TFun(TBytes, TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VBytes b -> VStr(buildStr "Bytes.toHex" (2L * int64 b.Length) (fun () -> System.Convert.ToHexStringLower b))
+        | v -> unreachable $"the checker rejects 'Bytes.toHex' on {formatValue v}")
+    // Str.sub's exact shape on bytes [D:port-members]: start, then
+    // length, data last; out of range raises with the same detail
+    "sub",
+    TFun(TInt, TFun(TInt, TFun(TBytes, TBytes))),
+    VBuiltin(fun start ->
+        VBuiltin(fun len ->
+            VBuiltin(fun subject ->
+                match start, len, subject with
+                | VInt st64, VInt ln64, VBytes b ->
+                    // int64 bounds, exact narrowing [D:int-narrowing]
+                    if st64 < 0L || ln64 < 0L || st64 > int64 b.Length || ln64 > int64 b.Length - st64 then
+                        failwith $"Bytes.sub: out of bounds (start {st64}, length {ln64}, byte length {b.Length})"
+                    else
+                        let st, ln = toIntArg "Bytes.sub" Position st64, toIntArg "Bytes.sub" Amount ln64
+                        VBytes(b[st .. st + ln - 1])
+                | _ -> unreachable "the checker rejects 'Bytes.sub' on these arguments")))
+    // key -> message -> mac; .NET's own HMACSHA256, no reflection.
+    // A Secret key exits through Secret.reveal |> Str.toUtf8 —
+    // deliberate, the one Secret exit [D:secret]
+    "hmacSha256",
+    TFun(TBytes, TFun(TBytes, TBytes)),
+    VBuiltin(fun keyV ->
+        VBuiltin(fun msgV ->
+            match keyV, msgV with
+            | VBytes key, VBytes msg -> VBytes(System.Security.Cryptography.HMACSHA256.HashData(key, msg))
+            | _ -> unreachable "the checker rejects 'Bytes.hmacSha256' on these arguments"))
+]
 
-let private sizeMembers: (string * Ty * Value) list =
-    [ "bytes",
-      TFun(TInt, TSize),
-      VBuiltin(fun v ->
-          match v with
-          | VInt n -> VSize n
-          | v -> unreachable $"the checker rejects 'Size.bytes' on {formatValue v}")
-      "toBytes",
-      TFun(TSize, TInt),
-      VBuiltin(fun v ->
-          match v with
-          | VSize b -> VInt b
-          | v -> unreachable $"the checker rejects 'Size.toBytes' on {formatValue v}")
-      "parse", TFun(TStr, TSize), fst (parsePairImpl "Size" parseSize VSize)
-      "tryParse", TFun(TStr, TNamed("Option", [ TSize ])), snd (parsePairImpl "Size" parseSize VSize)
-      // the per-type sum/mean [D:seq-gaps]; the mean truncates to whole
-      // bytes (integer division — bytes are the unit)
-      "sum",
-      TFun(TSeq TSize, TSize),
-      typedSumImpl
-          "Size.sum"
-          (function
-          | VSize b -> b
-          | v -> unreachable $"the checker rejects summing {formatValue v}")
-          VSize
-      "average",
-      TFun(TSeq TSize, TSize),
-      typedAverageImpl
-          "Size.average"
-          (function
-          | VSize b -> b
-          | v -> unreachable $"the checker rejects averaging {formatValue v}")
-          VSize ]
+let private sizeMembers: (string * Ty * Value) list = [
+    "bytes",
+    TFun(TInt, TSize),
+    VBuiltin(fun v ->
+        match v with
+        | VInt n -> VSize n
+        | v -> unreachable $"the checker rejects 'Size.bytes' on {formatValue v}")
+    "toBytes",
+    TFun(TSize, TInt),
+    VBuiltin(fun v ->
+        match v with
+        | VSize b -> VInt b
+        | v -> unreachable $"the checker rejects 'Size.toBytes' on {formatValue v}")
+    "parse", TFun(TStr, TSize), fst (parsePairImpl "Size" parseSize VSize)
+    "tryParse", TFun(TStr, TNamed("Option", [ TSize ])), snd (parsePairImpl "Size" parseSize VSize)
+    // the per-type sum/mean [D:seq-gaps]; the mean truncates to whole
+    // bytes (integer division — bytes are the unit)
+    "sum",
+    TFun(TSeq TSize, TSize),
+    typedSumImpl
+        "Size.sum"
+        (function
+        | VSize b -> b
+        | v -> unreachable $"the checker rejects summing {formatValue v}")
+        VSize
+    "average",
+    TFun(TSeq TSize, TSize),
+    typedAverageImpl
+        "Size.average"
+        (function
+        | VSize b -> b
+        | v -> unreachable $"the checker rejects averaging {formatValue v}")
+        VSize
+]
 
 // ---- Duration [D:duration]: integer ms; decimals only in text ------
 let private durCtor (name: string) (mult: int64) : Value =
@@ -5218,72 +5317,77 @@ let private durCtor (name: string) (mult: int64) : Value =
                 failwith $"Duration.{name}: {n} overflows a Duration"
         | v -> unreachable $"the checker rejects 'Duration.{name}' on {formatValue v}")
 
-let private durationMembers: (string * Ty * Value) list =
-    [ "ms", TFun(TInt, TDur), durCtor "ms" 1L
-      "s", TFun(TInt, TDur), durCtor "s" 1000L
-      "m", TFun(TInt, TDur), durCtor "m" 60000L
-      "h", TFun(TInt, TDur), durCtor "h" 3600000L
-      "toMillis",
-      TFun(TDur, TInt),
-      VBuiltin(fun v ->
-          match v with
-          | VDur n -> VInt n
-          | v -> unreachable $"the checker rejects 'Duration.toMillis' on {formatValue v}")
-      // float-returning and lossless [D:floats]; Duration's own
-      // parse/render path stays integer
-      "toSeconds",
-      TFun(TDur, TFloat),
-      VBuiltin(fun v ->
-          match v with
-          | VDur n -> VFloat(float n / 1000.0)
-          | v -> unreachable $"the checker rejects 'Duration.toSeconds' on {formatValue v}")
-      "parse", TFun(TStr, TDur), fst (parsePairImpl "Duration" parseDurationMs VDur)
-      "tryParse", TFun(TStr, TNamed("Option", [ TDur ])), snd (parsePairImpl "Duration" parseDurationMs VDur)
-      // the per-type sum/mean [D:seq-gaps]; the mean truncates to whole
-      // milliseconds (ms is the base unit)
-      "sum",
-      TFun(TSeq TDur, TDur),
-      typedSumImpl
-          "Duration.sum"
-          (function
-          | VDur d -> d
-          | v -> unreachable $"the checker rejects summing {formatValue v}")
-          VDur
-      "average",
-      TFun(TSeq TDur, TDur),
-      typedAverageImpl
-          "Duration.average"
-          (function
-          | VDur d -> d
-          | v -> unreachable $"the checker rejects averaging {formatValue v}")
-          VDur
-      // the one consumer worth landing with the type — module-qualified
-      // so the coreutils sleep is never shadowed (bindings-beat-PATH
-      // would flip `sleep 5`'s meaning)
-      "sleep",
-      TFun(TDur, TUnit),
-      VBuiltin(fun v ->
-          match v with
-          | VDur n ->
-              // a negative duration rejects, located — the deadline
-              // idiom (sleep (deadline - now)) must not silently no-op
-              // on a past deadline [D:duration]
-              if n < 0L then
-                  failwith $"Duration.sleep: negative duration ({formatDuration n})"
-              elif n > 0L then
-                  // integer ticks — no float anywhere [D:duration]
-                  // Thread.Sleep takes at most Int32.MaxValue ms, so a longer
-                  // duration sleeps in slices — every valid Duration sleeps
-                  Waiting.during $"sleeping {formatDuration n}" (fun () ->
-                      let mutable left = n
+let private durationMembers: (string * Ty * Value) list = [
+    "ms", TFun(TInt, TDur), durCtor "ms" 1L
+    "s", TFun(TInt, TDur), durCtor "s" 1000L
+    "m", TFun(TInt, TDur), durCtor "m" 60000L
+    "h", TFun(TInt, TDur), durCtor "h" 3600000L
+    "toMillis",
+    TFun(TDur, TInt),
+    VBuiltin(fun v ->
+        match v with
+        | VDur n -> VInt n
+        | v -> unreachable $"the checker rejects 'Duration.toMillis' on {formatValue v}")
+    // float-returning and lossless [D:floats]; Duration's own
+    // parse/render path stays integer
+    "toSeconds",
+    TFun(TDur, TFloat),
+    VBuiltin(fun v ->
+        match v with
+        | VDur n -> VFloat(float n / 1000.0)
+        | v -> unreachable $"the checker rejects 'Duration.toSeconds' on {formatValue v}")
+    "parse", TFun(TStr, TDur), fst (parsePairImpl "Duration" parseDurationMs VDur)
+    "tryParse", TFun(TStr, TNamed("Option", [ TDur ])), snd (parsePairImpl "Duration" parseDurationMs VDur)
+    // the per-type sum/mean [D:seq-gaps]; the mean truncates to whole
+    // milliseconds (ms is the base unit)
+    "sum",
+    TFun(TSeq TDur, TDur),
+    typedSumImpl
+        "Duration.sum"
+        (function
+        | VDur d -> d
+        | v -> unreachable $"the checker rejects summing {formatValue v}")
+        VDur
+    "average",
+    TFun(TSeq TDur, TDur),
+    typedAverageImpl
+        "Duration.average"
+        (function
+        | VDur d -> d
+        | v -> unreachable $"the checker rejects averaging {formatValue v}")
+        VDur
+    // the one consumer worth landing with the type — module-qualified
+    // so the coreutils sleep is never shadowed (bindings-beat-PATH
+    // would flip `sleep 5`'s meaning)
+    "sleep",
+    TFun(TDur, TUnit),
+    VBuiltin(fun v ->
+        match v with
+        | VDur n ->
+            // a negative duration rejects, located — the deadline
+            // idiom (sleep (deadline - now)) must not silently no-op
+            // on a past deadline [D:duration]
+            if n < 0L then
+                failwith $"Duration.sleep: negative duration ({formatDuration n})"
+            elif n > 0L then
+                // integer ticks — no float anywhere [D:duration]
+                // Thread.Sleep takes at most Int32.MaxValue ms, so a longer
+                // duration sleeps in slices — every valid Duration sleeps
+                Waiting.during $"sleeping {formatDuration n}" (fun () ->
+                    let mutable left = n
 
-                      while left > 0L do
-                          let slice = min left (int64 System.Int32.MaxValue - 1L)
-                          Session.sleepInterruptible (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
-                          left <- left - slice)
+                    while left > 0L do
+                        let slice = min left (int64 System.Int32.MaxValue - 1L)
 
-              VUnit
-          | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}") ]
+                        Session.sleepInterruptible (
+                            System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond)
+                        )
+
+                        left <- left - slice)
+
+            VUnit
+        | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}")
+]
 
 // the Color module [D:tty-color]: SGR-wrapping helpers so intentional
 // colour needs no escape-cobbling. Context-aware — each emits the escape
@@ -5351,7 +5455,8 @@ let private setTermTitle (t: string) =
                 ()
     else
         let w =
-            if not System.Console.IsOutputRedirected then Some System.Console.Out
+            if not System.Console.IsOutputRedirected then
+                Some System.Console.Out
             // past the stderr diagnostic sanitizer [D:tty-diag-sanitize],
             // which would defang the escape — the indicator's own channel
             elif not System.Console.IsErrorRedirected then
@@ -5361,7 +5466,8 @@ let private setTermTitle (t: string) =
                     else
                         Types.Waiting.control
                 )
-            else None
+            else
+                None
 
         match w with
         | Some w ->
@@ -5369,46 +5475,48 @@ let private setTermTitle (t: string) =
             w.Flush()
         | None -> ()
 
-let private termMembers: (string * Ty * Value) list =
-    [ "width",
-      TFun(TUnit, TInt),
-      VBuiltin(fun _ ->
-          let w =
-              try
-                  System.Console.WindowWidth
-              with _ ->
-                  0
+let private termMembers: (string * Ty * Value) list = [
+    "width",
+    TFun(TUnit, TInt),
+    VBuiltin(fun _ ->
+        let w =
+            try
+                System.Console.WindowWidth
+            with _ ->
+                0
 
-          VInt(int64 (if w > 0 then w else 80)))
-      "title",
-      TFun(TStr, TUnit),
-      VBuiltin(fun v ->
-          match v with
-          | VStr t ->
-              setTermTitle (sanitizeTermTitle t)
-              VUnit
-          | v -> unreachable $"the checker rejects 'Term.title' on {formatValue v}") ]
+        VInt(int64 (if w > 0 then w else 80)))
+    "title",
+    TFun(TStr, TUnit),
+    VBuiltin(fun v ->
+        match v with
+        | VStr t ->
+            setTermTitle (sanitizeTermTitle t)
+            VUnit
+        | v -> unreachable $"the checker rejects 'Term.title' on {formatValue v}")
+]
 
-let private colorMembers: (string * Ty * Value) list =
-    [ "red", TFun(TStr, TStr), colorHelper "31"
-      "green", TFun(TStr, TStr), colorHelper "32"
-      "yellow", TFun(TStr, TStr), colorHelper "33"
-      "blue", TFun(TStr, TStr), colorHelper "34"
-      "magenta", TFun(TStr, TStr), colorHelper "35"
-      "cyan", TFun(TStr, TStr), colorHelper "36"
-      "gray", TFun(TStr, TStr), colorHelper "90"
-      "bold", TFun(TStr, TStr), colorHelper "1"
-      "dim", TFun(TStr, TStr), colorHelper "2"
-      "underline", TFun(TStr, TStr), colorHelper "4"
-      // the escape hatch for 256-colour / truecolor: a raw SGR parameter
-      // string (`38;5;208`, `38;2;255;128;0`) the caller owns
-      "sgr",
-      TFun(TStr, TFun(TStr, TStr)),
-      VBuiltin(fun codeV ->
-          VBuiltin(fun sV ->
-              match codeV, sV with
-              | VStr code, VStr s -> wrapSgr code s
-              | _ -> unreachable "the checker rejects 'Color.sgr' on these arguments")) ]
+let private colorMembers: (string * Ty * Value) list = [
+    "red", TFun(TStr, TStr), colorHelper "31"
+    "green", TFun(TStr, TStr), colorHelper "32"
+    "yellow", TFun(TStr, TStr), colorHelper "33"
+    "blue", TFun(TStr, TStr), colorHelper "34"
+    "magenta", TFun(TStr, TStr), colorHelper "35"
+    "cyan", TFun(TStr, TStr), colorHelper "36"
+    "gray", TFun(TStr, TStr), colorHelper "90"
+    "bold", TFun(TStr, TStr), colorHelper "1"
+    "dim", TFun(TStr, TStr), colorHelper "2"
+    "underline", TFun(TStr, TStr), colorHelper "4"
+    // the escape hatch for 256-colour / truecolor: a raw SGR parameter
+    // string (`38;5;208`, `38;2;255;128;0`) the caller owns
+    "sgr",
+    TFun(TStr, TFun(TStr, TStr)),
+    VBuiltin(fun codeV ->
+        VBuiltin(fun sV ->
+            match codeV, sV with
+            | VStr code, VStr s -> wrapSgr code s
+            | _ -> unreachable "the checker rejects 'Color.sgr' on these arguments"))
+]
 
 // the builtin names a raise leads with (`toInt: …`, `Bytes.fromHex: …`),
 // filled once the module table exists [D:secret-map-withheld]
@@ -5425,43 +5533,45 @@ let private secretMapWithheld (msg: string) : string =
 let private secretMembers: (string * Ty * Value) list =
     // a marker the renderers respect [D:secret] — of asserts secrecy (the
     // safe direction, for computed secrets), reveal is the one guarded exit
-    [ "of",
-      TFun(TStr, TSecret),
-      VBuiltin(fun v ->
-          match v with
-          | VStr s -> VSecret s
-          | v -> unreachable $"the checker rejects 'Secret.of' on {formatValue v}")
-      "reveal",
-      TFun(TSecret, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VSecret s -> VStr s
-          | v -> unreachable $"the checker rejects 'Secret.reveal' on {formatValue v}")
-      // map keeps a derived value secret [D:secret]: `"Bearer " + reveal`
-      // would defeat the type; Secret.map (fun t -> "Bearer " + t) does not
-      "map",
-      TFun(TFun(TStr, TStr), TFun(TSecret, TSecret)),
-      VBuiltin(fun f ->
-          VBuiltin(fun v ->
-              match v with
-              | VSecret s ->
-                  // the kind survives: a Failure stays a Failure, a
-                  // command failure keeps its code [D:secret-map-withheld]
-                  let mapped =
-                      try
-                          apply f (VStr s)
-                      with
-                      | ExitRequest _ -> reraise ()
-                      | :? System.OperationCanceledException -> reraise ()
-                      | Failure m when m.StartsWith "unreachable:" -> reraise ()
-                      | :? Proc.CommandFailure as cf ->
-                          raise (Proc.CommandFailure(cf.Code, cf.SignalNote, "<withheld inside Secret.map>"))
-                      | ex -> failwith (secretMapWithheld ex.Message)
+    [
+        "of",
+        TFun(TStr, TSecret),
+        VBuiltin(fun v ->
+            match v with
+            | VStr s -> VSecret s
+            | v -> unreachable $"the checker rejects 'Secret.of' on {formatValue v}")
+        "reveal",
+        TFun(TSecret, TStr),
+        VBuiltin(fun v ->
+            match v with
+            | VSecret s -> VStr s
+            | v -> unreachable $"the checker rejects 'Secret.reveal' on {formatValue v}")
+        // map keeps a derived value secret [D:secret]: `"Bearer " + reveal`
+        // would defeat the type; Secret.map (fun t -> "Bearer " + t) does not
+        "map",
+        TFun(TFun(TStr, TStr), TFun(TSecret, TSecret)),
+        VBuiltin(fun f ->
+            VBuiltin(fun v ->
+                match v with
+                | VSecret s ->
+                    // the kind survives: a Failure stays a Failure, a
+                    // command failure keeps its code [D:secret-map-withheld]
+                    let mapped =
+                        try
+                            apply f (VStr s)
+                        with
+                        | ExitRequest _ -> reraise ()
+                        | :? System.OperationCanceledException -> reraise ()
+                        | Failure m when m.StartsWith "unreachable:" -> reraise ()
+                        | :? Proc.CommandFailure as cf ->
+                            raise (Proc.CommandFailure(cf.Code, cf.SignalNote, "<withheld inside Secret.map>"))
+                        | ex -> failwith (secretMapWithheld ex.Message)
 
-                  (match mapped with
-                   | VStr s' -> VSecret s'
-                   | v' -> unreachable $"the checker rejects 'Secret.map' result {formatValue v'}")
-              | v -> unreachable $"the checker rejects 'Secret.map' on {formatValue v}")) ]
+                    (match mapped with
+                     | VStr s' -> VSecret s'
+                     | v' -> unreachable $"the checker rejects 'Secret.map' result {formatValue v'}")
+                | v -> unreachable $"the checker rejects 'Secret.map' on {formatValue v}"))
+    ]
 
 let private httpMethodName (v: Value) : string =
     match v with
@@ -5555,14 +5665,16 @@ let private headerPairs (v: Value) : (string * string) list =
 let private httpDefaults: Value =
     VRecord(
         "HttpRequest",
-        [ "method", VUnion("Get", None)
-          "url", VStr ""
-          "auth", VUnion("NoAuth", None)
-          "headers", VSeq Seq.empty
-          "secretHeaders", VSeq Seq.empty
-          "body", VUnion("NoBody", None)
-          "timeout", VDur 30000L
-          "insecure", VBool false ]
+        [
+            "method", VUnion("Get", None)
+            "url", VStr ""
+            "auth", VUnion("NoAuth", None)
+            "headers", VSeq Seq.empty
+            "secretHeaders", VSeq Seq.empty
+            "body", VUnion("NoBody", None)
+            "timeout", VDur 30000L
+            "insecure", VBool false
+        ]
     )
 
 // translate the request record to Http.Req, send, raise on transport
@@ -5581,7 +5693,8 @@ let private runRequest (reqV: Value) : Http.Resp =
         if not auth.IsEmpty then
             match
                 (plain @ secret)
-                |> List.tryFind (fun (k, _) -> System.String.Equals(k, "Authorization", System.StringComparison.OrdinalIgnoreCase))
+                |> List.tryFind (fun (k, _) ->
+                    System.String.Equals(k, "Authorization", System.StringComparison.OrdinalIgnoreCase))
             with
             | Some(k, _) ->
                 failwith
@@ -5611,28 +5724,30 @@ let private runRequest (reqV: Value) : Http.Resp =
         let urlAuth =
             if
                 (auth @ plain @ secret)
-                |> List.exists (fun (k, _) -> System.String.Equals(k, "Authorization", System.StringComparison.OrdinalIgnoreCase))
+                |> List.exists (fun (k, _) ->
+                    System.String.Equals(k, "Authorization", System.StringComparison.OrdinalIgnoreCase))
             then
                 []
             else
                 Http.userinfoAuth url |> Option.toList
 
-        let req: Http.Req =
-            { Method = httpMethodName (get "method")
-              Url = url
-              Headers = urlAuth @ auth @ plain @ secret
-              SensitiveHeaders = sensitive
-              Body = httpBodyOf (get "body")
-              TimeoutMs =
+        let req: Http.Req = {
+            Method = httpMethodName (get "method")
+            Url = url
+            Headers = urlAuth @ auth @ plain @ secret
+            SensitiveHeaders = sensitive
+            Body = httpBodyOf (get "body")
+            TimeoutMs =
                 (match get "timeout" with
                  // any positive Duration is honoured [D:long-waits]
                  | VDur ms when ms <= 0L -> failwith $"Http: the timeout must be positive; got {formatDuration ms}"
                  | VDur ms -> ms
                  | v -> unreachable $"timeout {formatValue v}")
-              Insecure =
+            Insecure =
                 (match get "insecure" with
                  | VBool b -> b
-                 | v -> unreachable $"insecure {formatValue v}") }
+                 | v -> unreachable $"insecure {formatValue v}")
+        }
 
         // refuse a header name or value carrying CR/LF/NUL at the send
         // boundary [D:http-header-bytes]: the outbound face of review
@@ -5647,7 +5762,9 @@ let private runRequest (reqV: Value) : Http.Resp =
         Http.refuseUnsendableRequestHeader
             failwith
             req.Body.IsSome
-            ((urlAuth @ auth @ secret) |> List.map (fun (k, _) -> k.ToLowerInvariant()) |> Set.ofList)
+            ((urlAuth @ auth @ secret)
+             |> List.map (fun (k, _) -> k.ToLowerInvariant())
+             |> Set.ofList)
             req.Headers
 
         // `Other v` is refused before send when v is not a method token
@@ -5687,13 +5804,14 @@ let private runRequest (reqV: Value) : Http.Resp =
 // (ReadAllLines) or command output (ReadLine) do. StringReader.ReadLine
 // is the same reader command output uses, so `curl url` and an
 // `Http.expect` body agree exactly. Public for the line-law pin.
-let bodyLines (body: string) : string list =
-    [ use r = new StringReader(body)
-      let mutable line = r.ReadLine()
+let bodyLines (body: string) : string list = [
+    use r = new StringReader(body)
+    let mutable line = r.ReadLine()
 
-      while not (isNull line) do
-          yield line
-          line <- r.ReadLine() ]
+    while not (isNull line) do
+        yield line
+        line <- r.ReadLine()
+]
 
 let private respBodyLines (resp: Http.Resp) : seq<Value> =
     resp.Body |> bodyLines |> List.map VStr :> seq<Value>
@@ -5723,9 +5841,11 @@ let private httpSendImpl: Value =
 
             VRecord(
                 "HttpResponse",
-                [ "status", VInt(int64 resp.Status)
-                  "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
-                  "body", VSeq(respBodyLines resp) ]
+                [
+                    "status", VInt(int64 resp.Status)
+                    "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
+                    "body", VSeq(respBodyLines resp)
+                ]
             ))
 
 // a constructor [D:http-s2]: `Http.get u` = `{ Http.defaults with
@@ -5767,6 +5887,7 @@ let private httpExpectImpl: Value =
 
                     let snippet =
                         let flat = resp.Body.Replace("\r", " ").Replace("\n", " ").Trim()
+
                         if CodePoints.length flat > 200 then
                             quoteData (CodePoints.head flat 200) + "…"
                         else
@@ -5832,7 +5953,8 @@ let private httpHeaderImpl (all: bool) : Value =
             | VStr name, VRecord("HttpResponse", f) ->
                 let hits =
                     headerPairs (recGet "headers" f)
-                    |> List.filter (fun (k, _) -> System.String.Equals(k, name, System.StringComparison.OrdinalIgnoreCase))
+                    |> List.filter (fun (k, _) ->
+                        System.String.Equals(k, name, System.StringComparison.OrdinalIgnoreCase))
                     |> List.map snd
 
                 if all then
@@ -5846,20 +5968,22 @@ let private httpHeaderImpl (all: bool) : Value =
 let private httpMembers: (string * Ty * Value) list =
     let ctorTy = TFun(TStr, TNamed("HttpRequest", []))
 
-    [ "defaults", TNamed("HttpRequest", []), httpDefaults
-      "send", TFun(TNamed("HttpRequest", []), TNamed("HttpResponse", [])), httpSendImpl
-      "expect", TFun(TNamed("HttpRequest", []), TSeq TStr), httpExpectImpl
-      "withQuery", TFun(TSeq(TTuple [ TStr; TStr ]), TFun(TStr, TStr)), httpWithQueryImpl
-      "header", TFun(TStr, TFun(TNamed("HttpResponse", []), TNamed("Option", [ TStr ]))), httpHeaderImpl false
-      "headerAll", TFun(TStr, TFun(TNamed("HttpResponse", []), TSeq TStr)), httpHeaderImpl true
-      "get", ctorTy, httpCtor "Get"
-      "post", ctorTy, httpCtor "Post"
-      "put", ctorTy, httpCtor "Put"
-      "delete", ctorTy, httpCtor "Delete"
-      "patch", ctorTy, httpCtor "Patch"
-      "head", ctorTy, httpCtor "Head"
-      "options", ctorTy, httpCtor "Options"
-      "query", ctorTy, httpCtor "Query" ]
+    [
+        "defaults", TNamed("HttpRequest", []), httpDefaults
+        "send", TFun(TNamed("HttpRequest", []), TNamed("HttpResponse", [])), httpSendImpl
+        "expect", TFun(TNamed("HttpRequest", []), TSeq TStr), httpExpectImpl
+        "withQuery", TFun(TSeq(TTuple [ TStr; TStr ]), TFun(TStr, TStr)), httpWithQueryImpl
+        "header", TFun(TStr, TFun(TNamed("HttpResponse", []), TNamed("Option", [ TStr ]))), httpHeaderImpl false
+        "headerAll", TFun(TStr, TFun(TNamed("HttpResponse", []), TSeq TStr)), httpHeaderImpl true
+        "get", ctorTy, httpCtor "Get"
+        "post", ctorTy, httpCtor "Post"
+        "put", ctorTy, httpCtor "Put"
+        "delete", ctorTy, httpCtor "Delete"
+        "patch", ctorTy, httpCtor "Patch"
+        "head", ctorTy, httpCtor "Head"
+        "options", ctorTy, httpCtor "Options"
+        "query", ctorTy, httpCtor "Query"
+    ]
 
 // ---- plan/apply: the Plan.* members [D:plan-apply] -----------------
 // A Plan is a VRecord("Plan", ["ops", VSeq ops]) built by the `plan`
@@ -5883,11 +6007,11 @@ let private planOps (v: Value) : Value seq =
 let private previewOp (op: Value) : string =
     // a path is data: CR, LF and escapes render visibly, so a name cannot
     // rewrite or forge a preview line [D:tty-echo-strict]
-    let shown (p: string) = (sanitizeTtyEcho p).Replace("\n", "\\x0a")
+    let shown (p: string) =
+        (sanitizeTtyEcho p).Replace("\n", "\\x0a")
 
     match op with
-    | VUnion("WriteFile", Some(VTuple [ VStr p; VSeq lines ])) ->
-        $"write {shown p} ({lines |> Seq.length} line(s))"
+    | VUnion("WriteFile", Some(VTuple [ VStr p; VSeq lines ])) -> $"write {shown p} ({lines |> Seq.length} line(s))"
     | VUnion("WriteFileAtomic", Some(VTuple [ VStr p; VSeq lines ])) ->
         $"write {shown p} atomically ({lines |> Seq.length} line(s))"
     | VUnion("DeleteFile", Some(VStr p)) -> $"delete file {shown p}"
@@ -5956,10 +6080,12 @@ let private planApplyImpl: Value =
 let private planMembers: (string * Ty * Value) list =
     let planTy = TNamed("Plan", [])
 
-    [ "ops", TFun(planTy, TSeq(TNamed("Op", []))), VBuiltin(fun v -> VSeq(planOps v))
-      "preview", TFun(planTy, TSeq TStr), VBuiltin(fun v -> VSeq(planOps v |> Seq.map (previewOp >> VStr)))
-      "apply", TFun(planTy, TUnit), planApplyImpl
-      "isEmpty", TFun(planTy, TBool), VBuiltin(fun v -> VBool(planOps v |> Seq.isEmpty)) ]
+    [
+        "ops", TFun(planTy, TSeq(TNamed("Op", []))), VBuiltin(fun v -> VSeq(planOps v))
+        "preview", TFun(planTy, TSeq TStr), VBuiltin(fun v -> VSeq(planOps v |> Seq.map (previewOp >> VStr)))
+        "apply", TFun(planTy, TUnit), planApplyImpl
+        "isEmpty", TFun(planTy, TBool), VBuiltin(fun v -> VBool(planOps v |> Seq.isEmpty))
+    ]
 
 
 // ---- Map<K, V> [D:map-keys]: any equatable key ---------------------
@@ -5985,36 +6111,37 @@ let private asProc (who: string) (v: Value) : ProcHandle =
     | VProc h -> h
     | v -> unreachable $"the checker rejects '{who}' on {formatValue v}"
 
-let private procMembers: (string * Ty * Value) list =
-    [ "pid", TFun(procTy, TInt), VBuiltin(fun v -> VInt(int64 (asProc "Proc.pid" v).Proc.Id))
-      "running",
-      TFun(procTy, TBool),
-      VBuiltin(fun v ->
-          let h = asProc "Proc.running" v
+let private procMembers: (string * Ty * Value) list = [
+    "pid", TFun(procTy, TInt), VBuiltin(fun v -> VInt(int64 (asProc "Proc.pid" v).Proc.Id))
+    "running",
+    TFun(procTy, TBool),
+    VBuiltin(fun v ->
+        let h = asProc "Proc.running" v
 
-          VBool(
-              try
-                  not h.Proc.HasExited
-              with _ ->
-                  false
-          ))
-      "wait",
-      TFun(procTy, TInt),
-      VBuiltin(fun v ->
-          let h = asProc "Proc.wait" v
+        VBool(
+            try
+                not h.Proc.HasExited
+            with _ ->
+                false
+        ))
+    "wait",
+    TFun(procTy, TInt),
+    VBuiltin(fun v ->
+        let h = asProc "Proc.wait" v
 
-          Waiting.during $"waiting for pid {h.Proc.Id}" (fun () ->
-              Session.waitProcess h.Proc
-              // a child killed by a teardown returns no code
-              // [D:signal-main-unwind]
-              Session.checkTeardown ()
-              VInt(int64 h.Proc.ExitCode)))
-      "stop",
-      TFun(procTy, TUnit),
-      VBuiltin(fun v ->
-          Proc.stopTree (asProc "Proc.stop" v).Proc
-          VUnit)
-      "tail", TFun(procTy, TSeq TStr), VBuiltin(fun v -> VSeq(procTail (asProc "Proc.tail" v) |> List.map VStr)) ]
+        Waiting.during $"waiting for pid {h.Proc.Id}" (fun () ->
+            Session.waitProcess h.Proc
+            // a child killed by a teardown returns no code
+            // [D:signal-main-unwind]
+            Session.checkTeardown ()
+            VInt(int64 h.Proc.ExitCode)))
+    "stop",
+    TFun(procTy, TUnit),
+    VBuiltin(fun v ->
+        Proc.stopTree (asProc "Proc.stop" v).Proc
+        VUnit)
+    "tail", TFun(procTy, TSeq TStr), VBuiltin(fun v -> VSeq(procTail (asProc "Proc.tail" v) |> List.map VStr))
+]
 
 // the scoped-listener surface [D:http-serve]: the handle is data — port
 // reads the bound port (a computed port is knowable), running reports
@@ -6028,51 +6155,51 @@ let private asServer (who: string) (v: Value) : Serve.Handle =
     | VServer h -> h
     | v -> unreachable $"the checker rejects '{who}' on {formatValue v}"
 
-let private serverMembers: (string * Ty * Value) list =
-    [ "port", TFun(serverTy, TInt), VBuiltin(fun v -> VInt(int64 (asServer "Server.port" v).Port))
-      "running",
-      TFun(serverTy, TBool),
-      VBuiltin(fun v -> VBool(not (asServer "Server.running" v).Closed))
-      // the stream-producer failure channel [D:serve-stream]: a Stream
-      // body whose producer raised mid-flight is not a raise out of the
-      // handler (it aborts the client's body instead) — it surfaces here,
-      // Proc.wait's data-not-raise shape, so a monitoring loop can tell a
-      // truncated stream from a clean one. Occurrence order; empty until a
-      // producer fails.
-      "streamErrors",
-      TFun(serverTy, TSeq TStr),
-      VBuiltin(fun v -> VSeq(Serve.streamErrors (asServer "Server.streamErrors" v) |> List.map VStr)) ]
+let private serverMembers: (string * Ty * Value) list = [
+    "port", TFun(serverTy, TInt), VBuiltin(fun v -> VInt(int64 (asServer "Server.port" v).Port))
+    "running", TFun(serverTy, TBool), VBuiltin(fun v -> VBool(not (asServer "Server.running" v).Closed))
+    // the stream-producer failure channel [D:serve-stream]: a Stream
+    // body whose producer raised mid-flight is not a raise out of the
+    // handler (it aborts the client's body instead) — it surfaces here,
+    // Proc.wait's data-not-raise shape, so a monitoring loop can tell a
+    // truncated stream from a clean one. Occurrence order; empty until a
+    // producer fails.
+    "streamErrors",
+    TFun(serverTy, TSeq TStr),
+    VBuiltin(fun v -> VSeq(Serve.streamErrors (asServer "Server.streamErrors" v) |> List.map VStr))
+]
 
 // Net [D:scoped-procs]: one readiness probe — poll's body. Remote
 // hosts on a receipt; localhost is the scoped-process pattern.
-let private netMembers: (string * Ty * Value) list =
-    [ "portOpen",
-      TFun(TInt, TBool),
-      VBuiltin(fun v ->
-          match v with
-          | VInt port ->
-              if port < 1L || port > 65535L then
-                  failwith $"Net.portOpen: a port is 1..65535; got {port}"
+let private netMembers: (string * Ty * Value) list = [
+    "portOpen",
+    TFun(TInt, TBool),
+    VBuiltin(fun v ->
+        match v with
+        | VInt port ->
+            if port < 1L || port > 65535L then
+                failwith $"Net.portOpen: a port is 1..65535; got {port}"
 
-              // a raw v4 socket to the loopback address — never the
-              // host-string path (getaddrinfo on a loaded macOS runner
-              // turned "127.0.0.1" into ~400ms per probe and the poll
-              // starved past its own timeout)
-              use sock =
-                  new System.Net.Sockets.Socket(
-                      System.Net.Sockets.AddressFamily.InterNetwork,
-                      System.Net.Sockets.SocketType.Stream,
-                      System.Net.Sockets.ProtocolType.Tcp
-                  )
+            // a raw v4 socket to the loopback address — never the
+            // host-string path (getaddrinfo on a loaded macOS runner
+            // turned "127.0.0.1" into ~400ms per probe and the poll
+            // starved past its own timeout)
+            use sock =
+                new System.Net.Sockets.Socket(
+                    System.Net.Sockets.AddressFamily.InterNetwork,
+                    System.Net.Sockets.SocketType.Stream,
+                    System.Net.Sockets.ProtocolType.Tcp
+                )
 
-              VBool(
-                  try
-                      sock.ConnectAsync(System.Net.IPAddress.Loopback, toIntArg "Net.portOpen" Amount port).Wait 250
-                      && sock.Connected
-                  with _ ->
-                      false
-              )
-          | v -> unreachable $"the checker rejects 'Net.portOpen' on {formatValue v}") ]
+            VBool(
+                try
+                    sock.ConnectAsync(System.Net.IPAddress.Loopback, toIntArg "Net.portOpen" Amount port).Wait 250
+                    && sock.Connected
+                with _ ->
+                    false
+            )
+        | v -> unreachable $"the checker rejects 'Net.portOpen' on {formatValue v}")
+]
 
 // a point on the UTC timeline [D:instant]: the boring subset — no
 // local zones, no calendar arithmetic; parse in, epoch out, `-` for
@@ -6080,51 +6207,55 @@ let private netMembers: (string * Ty * Value) list =
 let private instantMembers: (string * Ty * Value) list =
     let parseP, tryParseP = parsePairImpl "Instant" parseInstantMs VInstant
 
-    [ "now", TFun(TUnit, TInstant), VBuiltin(fun _ -> VInstant(System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
-      "parse", TFun(TStr, TInstant), parseP
-      "tryParse", TFun(TStr, TNamed("Option", [ TInstant ])), tryParseP
-      "parseWith",
-      TFun(TStr, TFun(TStr, TInstant)),
-      VBuiltin(fun fmtV ->
-          VBuiltin(fun v ->
-              match fmtV, v with
-              | VStr fmt, VStr text ->
-                  (match parseInstantWithMs fmt text with
-                   | Ok ms -> VInstant ms
-                   | Error e -> failwith $"Instant.parseWith: {e}")
-              | _ -> unreachable "the checker rejects 'Instant.parseWith' on these arguments"))
-      "tryParseWith",
-      TFun(TStr, TFun(TStr, TNamed("Option", [ TInstant ]))),
-      VBuiltin(fun fmtV ->
-          VBuiltin(fun v ->
-              match fmtV, v with
-              | VStr fmt, VStr text ->
-                  // a FORMAT defect raises here too, whatever the input —
-                  // only an input miss is None
-                  (match instantFormatDefect fmt with
-                   | Some defect -> failwith $"Instant.tryParseWith: {defect}"
-                   | None ->
-                       match parseInstantWithMs fmt text with
-                       | Ok ms -> VUnion("Some", Some(VInstant ms))
-                       | Error _ -> VUnion("None", None))
-              | _ -> unreachable "the checker rejects 'Instant.tryParseWith' on these arguments"))
-      "epochMs",
-      TFun(TInstant, TInt),
-      VBuiltin(fun v ->
-          match v with
-          | VInstant ms -> VInt ms
-          | v -> unreachable $"the checker rejects 'Instant.epochMs' on {formatValue v}")
-      "ofEpochMs",
-      TFun(TInt, TInstant),
-      VBuiltin(fun v ->
-          match v with
-          | VInt ms -> VInstant(checkInstant "Instant.ofEpochMs" ms)
-          | v -> unreachable $"the checker rejects 'Instant.ofEpochMs' on {formatValue v}") ]
+    [
+        "now", TFun(TUnit, TInstant), VBuiltin(fun _ -> VInstant(System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
+        "parse", TFun(TStr, TInstant), parseP
+        "tryParse", TFun(TStr, TNamed("Option", [ TInstant ])), tryParseP
+        "parseWith",
+        TFun(TStr, TFun(TStr, TInstant)),
+        VBuiltin(fun fmtV ->
+            VBuiltin(fun v ->
+                match fmtV, v with
+                | VStr fmt, VStr text ->
+                    (match parseInstantWithMs fmt text with
+                     | Ok ms -> VInstant ms
+                     | Error e -> failwith $"Instant.parseWith: {e}")
+                | _ -> unreachable "the checker rejects 'Instant.parseWith' on these arguments"))
+        "tryParseWith",
+        TFun(TStr, TFun(TStr, TNamed("Option", [ TInstant ]))),
+        VBuiltin(fun fmtV ->
+            VBuiltin(fun v ->
+                match fmtV, v with
+                | VStr fmt, VStr text ->
+                    // a FORMAT defect raises here too, whatever the input —
+                    // only an input miss is None
+                    (match instantFormatDefect fmt with
+                     | Some defect -> failwith $"Instant.tryParseWith: {defect}"
+                     | None ->
+                         match parseInstantWithMs fmt text with
+                         | Ok ms -> VUnion("Some", Some(VInstant ms))
+                         | Error _ -> VUnion("None", None))
+                | _ -> unreachable "the checker rejects 'Instant.tryParseWith' on these arguments"))
+        "epochMs",
+        TFun(TInstant, TInt),
+        VBuiltin(fun v ->
+            match v with
+            | VInstant ms -> VInt ms
+            | v -> unreachable $"the checker rejects 'Instant.epochMs' on {formatValue v}")
+        "ofEpochMs",
+        TFun(TInt, TInstant),
+        VBuiltin(fun v ->
+            match v with
+            | VInt ms -> VInstant(checkInstant "Instant.ofEpochMs" ms)
+            | v -> unreachable $"the checker rejects 'Instant.ofEpochMs' on {formatValue v}")
+    ]
 
 // the uuid generators [D:uuid]. Bytes are big-endian (RFC 9562 network
 // order) everywhere; Guid's default byte array is mixed-endian, so it is
 // never used. Randomness is RandomNumberGenerator only.
-let private uuidOfBytes (b: byte[]) = System.Guid(System.ReadOnlySpan<byte>(b), bigEndian = true)
+let private uuidOfBytes (b: byte[]) =
+    System.Guid(System.ReadOnlySpan<byte>(b), bigEndian = true)
+
 let private uuidBytes (g: System.Guid) = g.ToByteArray(bigEndian = true)
 
 let private uuidRandom (n: int) =
@@ -6143,7 +6274,9 @@ let private uuidV4 () =
 
 let private uuidV5 (ns: System.Guid) (name: string) =
     let h =
-        System.Security.Cryptography.SHA1.HashData(Array.append (uuidBytes ns) (System.Text.Encoding.UTF8.GetBytes name))
+        System.Security.Cryptography.SHA1.HashData(
+            Array.append (uuidBytes ns) (System.Text.Encoding.UTF8.GetBytes name)
+        )
 
     let b = h[0..15]
     uuidStamp b 5
@@ -6205,8 +6338,10 @@ let private uuidV7 () =
 let private uuidV7At (ms: int64) =
     if ms < 0L || ms > uuidMaxMs then
         let shown =
-            if ms >= System.DateTimeOffset.MinValue.ToUnixTimeMilliseconds()
-               && ms <= System.DateTimeOffset.MaxValue.ToUnixTimeMilliseconds() then
+            if
+                ms >= System.DateTimeOffset.MinValue.ToUnixTimeMilliseconds()
+                && ms <= System.DateTimeOffset.MaxValue.ToUnixTimeMilliseconds()
+            then
                 formatInstant ms
             else
                 $"epoch ms {ms}"
@@ -6250,11 +6385,12 @@ let private uuidInstant (g: System.Guid) =
         None
 
 // RFC 9562 Table 3 (6ba7b813 is unassigned)
-let private uuidNamespaces =
-    [ "dns", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
-      "url", "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
-      "oid", "6ba7b812-9dad-11d1-80b4-00c04fd430c8"
-      "x500", "6ba7b814-9dad-11d1-80b4-00c04fd430c8" ]
+let private uuidNamespaces = [
+    "dns", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+    "url", "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+    "oid", "6ba7b812-9dad-11d1-80b4-00c04fd430c8"
+    "x500", "6ba7b814-9dad-11d1-80b4-00c04fd430c8"
+]
 
 let private uuidMembers: (string * Ty * Value) list =
     let parseP, tryParseP = parsePairImpl "Uuid" parseUuid VUuid
@@ -6266,99 +6402,103 @@ let private uuidMembers: (string * Ty * Value) list =
             | VUuid g -> f g
             | v -> unreachable $"the checker rejects 'Uuid.{name}' on {formatValue v}")
 
-    [ "v4", TFun(TUnit, TUuid), VBuiltin(fun _ -> VUuid(uuidV4 ()))
-      "v7", TFun(TUnit, TUuid), VBuiltin(fun _ -> VUuid(uuidV7 ()))
-      "v7At",
-      TFun(TInstant, TUuid),
-      VBuiltin(fun v ->
-          match v with
-          | VInstant ms -> VUuid(uuidV7At ms)
-          | v -> unreachable $"the checker rejects 'Uuid.v7At' on {formatValue v}")
-      "v5",
-      TFun(TUuid, TFun(TStr, TUuid)),
-      VBuiltin(fun nsV ->
-          VBuiltin(fun nameV ->
-              match nsV, nameV with
-              | VUuid ns, VStr name -> VUuid(uuidV5 ns name)
-              | _ -> unreachable "the checker rejects 'Uuid.v5' on these arguments"))
-      "ns",
-      TNamed("UuidNamespaces", []),
-      VRecord(
-          "UuidNamespaces",
-          uuidNamespaces |> List.map (fun (k, s) -> k, VUuid(System.Guid.ParseExact(s, "D")))
-      )
-      "parse", TFun(TStr, TUuid), parseP
-      "tryParse", TFun(TStr, optUuid), tryParseP
-      "toString", TFun(TUuid, TStr), one "toString" (fun g -> VStr(formatUuid g))
-      "version", TFun(TUuid, TInt), one "version" (fun g -> VInt(int64 (uuidVersion g)))
-      "instant",
-      TFun(TUuid, TNamed("Option", [ TInstant ])),
-      one "instant" (fun g ->
-          match uuidInstant g with
-          | Some ms -> VUnion("Some", Some(VInstant ms))
-          | None -> VUnion("None", None))
-      "nil", TUuid, VUuid System.Guid.Empty
-      "max", TUuid, VUuid System.Guid.AllBitsSet
-      "toBytes", TFun(TUuid, TBytes), one "toBytes" (fun g -> VBytes(uuidBytes g))
-      "fromBytes",
-      TFun(TBytes, TUuid),
-      VBuiltin(fun v ->
-          match v with
-          | VBytes b when b.Length = 16 -> VUuid(uuidOfBytes b)
-          | VBytes b -> failwith $"Uuid.fromBytes: a uuid is 16 bytes, got {b.Length}"
-          | v -> unreachable $"the checker rejects 'Uuid.fromBytes' on {formatValue v}") ]
+    [
+        "v4", TFun(TUnit, TUuid), VBuiltin(fun _ -> VUuid(uuidV4 ()))
+        "v7", TFun(TUnit, TUuid), VBuiltin(fun _ -> VUuid(uuidV7 ()))
+        "v7At",
+        TFun(TInstant, TUuid),
+        VBuiltin(fun v ->
+            match v with
+            | VInstant ms -> VUuid(uuidV7At ms)
+            | v -> unreachable $"the checker rejects 'Uuid.v7At' on {formatValue v}")
+        "v5",
+        TFun(TUuid, TFun(TStr, TUuid)),
+        VBuiltin(fun nsV ->
+            VBuiltin(fun nameV ->
+                match nsV, nameV with
+                | VUuid ns, VStr name -> VUuid(uuidV5 ns name)
+                | _ -> unreachable "the checker rejects 'Uuid.v5' on these arguments"))
+        "ns",
+        TNamed("UuidNamespaces", []),
+        VRecord(
+            "UuidNamespaces",
+            uuidNamespaces
+            |> List.map (fun (k, s) -> k, VUuid(System.Guid.ParseExact(s, "D")))
+        )
+        "parse", TFun(TStr, TUuid), parseP
+        "tryParse", TFun(TStr, optUuid), tryParseP
+        "toString", TFun(TUuid, TStr), one "toString" (fun g -> VStr(formatUuid g))
+        "version", TFun(TUuid, TInt), one "version" (fun g -> VInt(int64 (uuidVersion g)))
+        "instant",
+        TFun(TUuid, TNamed("Option", [ TInstant ])),
+        one "instant" (fun g ->
+            match uuidInstant g with
+            | Some ms -> VUnion("Some", Some(VInstant ms))
+            | None -> VUnion("None", None))
+        "nil", TUuid, VUuid System.Guid.Empty
+        "max", TUuid, VUuid System.Guid.AllBitsSet
+        "toBytes", TFun(TUuid, TBytes), one "toBytes" (fun g -> VBytes(uuidBytes g))
+        "fromBytes",
+        TFun(TBytes, TUuid),
+        VBuiltin(fun v ->
+            match v with
+            | VBytes b when b.Length = 16 -> VUuid(uuidOfBytes b)
+            | VBytes b -> failwith $"Uuid.fromBytes: a uuid is 16 bytes, got {b.Length}"
+            | v -> unreachable $"the checker rejects 'Uuid.fromBytes' on {formatValue v}")
+    ]
 
-let private mapMembers: (string * Ty * Value) list =
-    [ "ofPairs",
-      TFun(TSeq(TTuple [ tK; tA ]), mapTy tA),
-      VBuiltin(fun v ->
-          match v with
-          | VSeq items ->
-              // duplicate keys: last wins, matching the JSON boundary's
-              // stated law — never a silent first-wins split
-              items
-              |> Seq.fold
-                  (fun m x ->
-                      match x with
-                      | VTuple [ k; value ] -> Map.add k value m
-                      | v -> unreachable $"the checker rejects a pair {formatValue v}")
-                  Map.empty
-              |> VMap
-          | v -> unreachable $"the checker rejects 'Map.ofPairs' on {formatValue v}")
-      "pairs",
-      TFun(mapTy tA, TSeq(TTuple [ tK; tA ])),
-      VBuiltin(fun v -> (asMap "Map.pairs" v) |> Seq.map (fun kv -> VTuple [ kv.Key; kv.Value ]) |> VSeq)
-      "keys", TFun(mapTy tA, TSeq tK), VBuiltin(fun v -> (asMap "Map.keys" v) |> Seq.map _.Key |> VSeq)
-      "values", TFun(mapTy tA, TSeq tA), VBuiltin(fun v -> (asMap "Map.values" v) |> Seq.map _.Value |> VSeq)
-      "get",
-      TFun(tK, TFun(mapTy tA, tA)),
-      VBuiltin(fun k ->
-          VBuiltin(fun mv ->
-              match Map.tryFind k (asMap "Map.get" mv) with
-              | Some v -> v
-              | None ->
-                  // a string key keeps its quotes; any other renders as
-                  // show does (a Secret masks) [D:map-keys]
-                  match k with
-                  | VStr key -> failwith $"Map.get: no key \"{quoteData key}\""
-                  | k -> failwith $"Map.get: no key {quoteData (formatValue k)}"))
-      "tryGet",
-      TFun(tK, TFun(mapTy tA, TNamed("Option", [ tA ]))),
-      VBuiltin(fun k ->
-          VBuiltin(fun mv ->
-              match Map.tryFind k (asMap "Map.tryGet" mv) with
-              | Some v -> VUnion("Some", Some v)
-              | None -> VUnion("None", None)))
-      "has",
-      TFun(tK, TFun(mapTy tA, TBool)),
-      VBuiltin(fun k -> VBuiltin(fun mv -> VBool(Map.containsKey k (asMap "Map.has" mv))))
-      "count", TFun(mapTy tA, TInt), VBuiltin(fun v -> VInt(int64 (asMap "Map.count" v).Count))
-      "add",
-      TFun(tK, TFun(tA, TFun(mapTy tA, mapTy tA))),
-      VBuiltin(fun k -> VBuiltin(fun value -> VBuiltin(fun mv -> VMap(Map.add k value (asMap "Map.add" mv)))))
-      "remove",
-      TFun(tK, TFun(mapTy tA, mapTy tA)),
-      VBuiltin(fun k -> VBuiltin(fun mv -> VMap(Map.remove k (asMap "Map.remove" mv)))) ]
+let private mapMembers: (string * Ty * Value) list = [
+    "ofPairs",
+    TFun(TSeq(TTuple [ tK; tA ]), mapTy tA),
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            // duplicate keys: last wins, matching the JSON boundary's
+            // stated law — never a silent first-wins split
+            items
+            |> Seq.fold
+                (fun m x ->
+                    match x with
+                    | VTuple [ k; value ] -> Map.add k value m
+                    | v -> unreachable $"the checker rejects a pair {formatValue v}")
+                Map.empty
+            |> VMap
+        | v -> unreachable $"the checker rejects 'Map.ofPairs' on {formatValue v}")
+    "pairs",
+    TFun(mapTy tA, TSeq(TTuple [ tK; tA ])),
+    VBuiltin(fun v -> (asMap "Map.pairs" v) |> Seq.map (fun kv -> VTuple [ kv.Key; kv.Value ]) |> VSeq)
+    "keys", TFun(mapTy tA, TSeq tK), VBuiltin(fun v -> (asMap "Map.keys" v) |> Seq.map _.Key |> VSeq)
+    "values", TFun(mapTy tA, TSeq tA), VBuiltin(fun v -> (asMap "Map.values" v) |> Seq.map _.Value |> VSeq)
+    "get",
+    TFun(tK, TFun(mapTy tA, tA)),
+    VBuiltin(fun k ->
+        VBuiltin(fun mv ->
+            match Map.tryFind k (asMap "Map.get" mv) with
+            | Some v -> v
+            | None ->
+                // a string key keeps its quotes; any other renders as
+                // show does (a Secret masks) [D:map-keys]
+                match k with
+                | VStr key -> failwith $"Map.get: no key \"{quoteData key}\""
+                | k -> failwith $"Map.get: no key {quoteData (formatValue k)}"))
+    "tryGet",
+    TFun(tK, TFun(mapTy tA, TNamed("Option", [ tA ]))),
+    VBuiltin(fun k ->
+        VBuiltin(fun mv ->
+            match Map.tryFind k (asMap "Map.tryGet" mv) with
+            | Some v -> VUnion("Some", Some v)
+            | None -> VUnion("None", None)))
+    "has",
+    TFun(tK, TFun(mapTy tA, TBool)),
+    VBuiltin(fun k -> VBuiltin(fun mv -> VBool(Map.containsKey k (asMap "Map.has" mv))))
+    "count", TFun(mapTy tA, TInt), VBuiltin(fun v -> VInt(int64 (asMap "Map.count" v).Count))
+    "add",
+    TFun(tK, TFun(tA, TFun(mapTy tA, mapTy tA))),
+    VBuiltin(fun k -> VBuiltin(fun value -> VBuiltin(fun mv -> VMap(Map.add k value (asMap "Map.add" mv)))))
+    "remove",
+    TFun(tK, TFun(mapTy tA, mapTy tA)),
+    VBuiltin(fun k -> VBuiltin(fun mv -> VMap(Map.remove k (asMap "Map.remove" mv))))
+]
 
 // ---- structural walks [D:structural-walk] --------------------------------
 // the frontier/visited worklist as a builtin: a graph or tree walk needs
@@ -6419,7 +6559,8 @@ let private frontierFoldImpl: Value =
                                 | VTuple [ acc'; VSeq children ] ->
                                     acc <- acc'
                                     children
-                                | v -> unreachable $"the checker rejects a non-(acc, children) step: {formatValue v}")
+                                | v ->
+                                    unreachable $"the checker rejects a non-(acc, children) step: {formatValue v}")
                             initial
 
                         acc
@@ -6461,19 +6602,17 @@ let private treeWalkImpl: Value =
 
             VUnit))
 
-let private frontierMembers: (string * Ty * Value) list =
-    [ "fold",
-      TFun(
-          TFun(tA, TStr),
-          TFun(tB, TFun(TFun(tB, TFun(tA, TTuple [ tB; TSeq tA ])), TFun(TSeq tA, tB)))
-      ),
-      frontierFoldImpl ]
+let private frontierMembers: (string * Ty * Value) list = [
+    "fold",
+    TFun(TFun(tA, TStr), TFun(tB, TFun(TFun(tB, TFun(tA, TTuple [ tB; TSeq tA ])), TFun(TSeq tA, tB)))),
+    frontierFoldImpl
+]
 
-let private graphMembers: (string * Ty * Value) list =
-    [ "reach", TFun(TFun(tA, TStr), TFun(TFun(tA, TSeq tA), TFun(tA, TSeq tA))), graphReachImpl ]
+let private graphMembers: (string * Ty * Value) list = [
+    "reach", TFun(TFun(tA, TStr), TFun(TFun(tA, TSeq tA), TFun(tA, TSeq tA))), graphReachImpl
+]
 
-let private treeMembers: (string * Ty * Value) list =
-    [ "walk", TFun(TFun(tA, TSeq tA), TFun(tA, TUnit)), treeWalkImpl ]
+let private treeMembers: (string * Ty * Value) list = [ "walk", TFun(TFun(tA, TSeq tA), TFun(tA, TUnit)), treeWalkImpl ]
 
 // ---- the typeless yaml boundary [D:yaml-nodes] ----------------------------
 // Yaml.parse reads one document into the public Yaml union (structure
@@ -6662,61 +6801,65 @@ let private inferShapeImpl (fmt: Infer.Format) : Value =
             VStr(Infer.inferShapeText Parser.keywords taken fmt "Root" lines)
         | v -> unreachable $"the checker rejects 'inferShape' on {formatValue v}")
 
-let private yamlModuleMembers: (string * Ty * Value) list =
-    [ "parse", TFun(TSeq TStr, TNamed("Yaml", [])), yamlParseImpl
-      "merge", TFun(TNamed("YamlPatch", []), TFun(TNamed("Yaml", []), TNamed("Yaml", []))), yamlMergeImpl
-      "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Yaml ]
+let private yamlModuleMembers: (string * Ty * Value) list = [
+    "parse", TFun(TSeq TStr, TNamed("Yaml", [])), yamlParseImpl
+    "merge", TFun(TNamed("YamlPatch", []), TFun(TNamed("Yaml", []), TNamed("Yaml", []))), yamlMergeImpl
+    "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Yaml
+]
 
-let private jsonModuleMembers: (string * Ty * Value) list =
-    [ "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Json ]
+let private jsonModuleMembers: (string * Ty * Value) list = [
+    "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Json
+]
 
-let private tableModuleMembers: (string * Ty * Value) list =
-    [ "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Table
-      // the display renderer the REPL echo already uses [D:tty-color],
-      // exposed to scripts: a seq of same-shaped records -> aligned column
-      // lines to `print`. This is DISPLAY, distinct from the refused wire
-      // `to table` (a table is not a round-trip format). Width tracks the
-      // terminal when colour is on, unclamped when piped; no tint (the
-      // caller colours). A non-record seq fails with the repair.
-      "render",
-      TFun(TSeq tA, TSeq TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VSeq items ->
-              // force once — a display consumes every row anyway, and this
-              // avoids the re-enumeration echoTable + an emptiness peek
-              // would otherwise cost a command-backed seq
-              let rows = List.ofSeq items
+let private tableModuleMembers: (string * Ty * Value) list = [
+    "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Table
+    // the display renderer the REPL echo already uses [D:tty-color],
+    // exposed to scripts: a seq of same-shaped records -> aligned column
+    // lines to `print`. This is DISPLAY, distinct from the refused wire
+    // `to table` (a table is not a round-trip format). Width tracks the
+    // terminal when colour is on, unclamped when piped; no tint (the
+    // caller colours). A non-record seq fails with the repair.
+    "render",
+    TFun(TSeq tA, TSeq TStr),
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            // force once — a display consumes every row anyway, and this
+            // avoids the re-enumeration echoTable + an emptiness peek
+            // would otherwise cost a command-backed seq
+            let rows = List.ofSeq items
 
-              if List.isEmpty rows then
-                  VSeq Seq.empty // no rows, no shape to infer — print nothing
-              else
-                  let width =
-                      if Types.Color.onStdout.Value then
-                          try
-                              Some(max 20 System.Console.WindowWidth)
-                          with _ ->
-                              None
-                      else
-                          None
+            if List.isEmpty rows then
+                VSeq Seq.empty // no rows, no shape to infer — print nothing
+            else
+                let width =
+                    if Types.Color.onStdout.Value then
+                        try
+                            Some(max 20 System.Console.WindowWidth)
+                        with _ ->
+                            None
+                    else
+                        None
 
-                  match Eval.echoTable None width (VSeq(rows :> seq<Value>)) with
-                  | Some(lines, _) -> VSeq(lines |> List.map VStr :> seq<Value>)
-                  | None ->
-                      failwith
-                          "Table.render needs a seq of same-shaped records with scalar fields; for other sequences use Seq.map show"
-          | _ -> unreachable $"the checker rejects 'Table.render' on {formatValue v}") ]
+                match Eval.echoTable None width (VSeq(rows :> seq<Value>)) with
+                | Some(lines, _) -> VSeq(lines |> List.map VStr :> seq<Value>)
+                | None ->
+                    failwith
+                        "Table.render needs a seq of same-shaped records with scalar fields; for other sequences use Seq.map show"
+        | _ -> unreachable $"the checker rejects 'Table.render' on {formatValue v}")
+]
 
-let private moduleTable: (string * (string * Ty * Value) list) list =
-    [ "Seq", seqMembers
-      "Str", strMembers
-      // the interactive read [D:prompt]: message to stderr (a piped
-      // stdout stays data), one line from stdin; EOF refuses — no
-      // phantom input. The one static Self member — the script FACTS
-      // inject per-run in Script [D:self-module], overriding this
-      // module entry with the full set (prompt included)
-      "Self",
-      [ "prompt",
+let private moduleTable: (string * (string * Ty * Value) list) list = [
+    "Seq", seqMembers
+    "Str", strMembers
+    // the interactive read [D:prompt]: message to stderr (a piped
+    // stdout stays data), one line from stdin; EOF refuses — no
+    // phantom input. The one static Self member — the script FACTS
+    // inject per-run in Script [D:self-module], overriding this
+    // module entry with the full set (prompt included)
+    "Self",
+    [
+        "prompt",
         TFun(TStr, TStr),
         VBuiltin(fun v ->
             match v with
@@ -6733,46 +6876,53 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
                 // a terminal's arrows are ignored [D:prompt-tty-keys]
                 | line when not System.Console.IsInputRedirected -> VStr(Session.Stdin.dropKeySequences line)
                 | line -> VStr line
-            | v -> unreachable $"the checker rejects 'Self.prompt' on {formatValue v}") ]
-      "Frontier", frontierMembers
-      "Graph", graphMembers
-      "Tree", treeMembers
-      "Yaml", yamlModuleMembers
-      "Json", jsonModuleMembers
-      "Table", tableModuleMembers
-      "Map", mapMembers
-      "Instant", instantMembers
-      "Uuid", uuidMembers
-      "Proc", procMembers
-      "Server", serverMembers
-      "Net", netMembers
-      "Path", pathMembers
-      "Option", optionMembers
-      "Result", resultMembers
-      "File", fileMembers @ fsMoreFileMembers
-      "Dir", dirMembers
-      "Args", argsMembers
-      "Env", envMembers
-      "Log", logMembers
-      "Duration", durationMembers
-      "Size", sizeMembers
-      "Bytes", bytesMembers
-      "Secret", secretMembers
-      "Color", colorMembers
-      "Term", termMembers
-      // the bounded-loop option templates [D:retry-poll]: the resting
-      // values the key=value head desugars over
-      "Retry",
-      [ "defaults",
+            | v -> unreachable $"the checker rejects 'Self.prompt' on {formatValue v}")
+    ]
+    "Frontier", frontierMembers
+    "Graph", graphMembers
+    "Tree", treeMembers
+    "Yaml", yamlModuleMembers
+    "Json", jsonModuleMembers
+    "Table", tableModuleMembers
+    "Map", mapMembers
+    "Instant", instantMembers
+    "Uuid", uuidMembers
+    "Proc", procMembers
+    "Server", serverMembers
+    "Net", netMembers
+    "Path", pathMembers
+    "Option", optionMembers
+    "Result", resultMembers
+    "File", fileMembers @ fsMoreFileMembers
+    "Dir", dirMembers
+    "Args", argsMembers
+    "Env", envMembers
+    "Log", logMembers
+    "Duration", durationMembers
+    "Size", sizeMembers
+    "Bytes", bytesMembers
+    "Secret", secretMembers
+    "Color", colorMembers
+    "Term", termMembers
+    // the bounded-loop option templates [D:retry-poll]: the resting
+    // values the key=value head desugars over
+    "Retry",
+    [
+        "defaults",
         TNamed("Retry", []),
-        VRecord("Retry", [ "attempts", VInt 5L; "delay", VDur 1000L; "timeout", VUnion("None", None) ]) ]
-      "Poll", [ "defaults", TNamed("Poll", []), VRecord("Poll", [ "timeout", VDur 60000L; "interval", VDur 1000L ]) ]
-      "Http", httpMembers
-      // plan/apply [D:plan-apply]: the Plan value's members —
-      // ops/preview/apply/isEmpty (the `plan` scope itself is a keyword
-      // head, not a member)
-      "Plan", planMembers
-      "Float", floatMembers ]
+        VRecord("Retry", [ "attempts", VInt 5L; "delay", VDur 1000L; "timeout", VUnion("None", None) ])
+    ]
+    "Poll",
+    [
+        "defaults", TNamed("Poll", []), VRecord("Poll", [ "timeout", VDur 60000L; "interval", VDur 1000L ])
+    ]
+    "Http", httpMembers
+    // plan/apply [D:plan-apply]: the Plan value's members —
+    // ops/preview/apply/isEmpty (the `plan` scope itself is a keyword
+    // head, not a member)
+    "Plan", planMembers
+    "Float", floatMembers
+]
 
 // ---- builtin docs [D:builtin-docs] (PLAN-doc-comments half 2) --------
 // Out-of-band, exactly as half 1: Value/Eval/Check never see a doc.
@@ -6782,21 +6932,23 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
 // layout), so the Summary never restates the signature; the Pointer
 // names the law or boundary a member obeys (quoted from
 // SEMANTICS/DECISIONS, not memory).
-type BuiltinDoc =
-    { Summary: string
-      Example: string option
-      Pointer: string option
-      // parameter names for the annotated hover signature
-      // [D:annotated-signature] — a separate field, never parsed out of
-      // the prose (that is D1's F#-literal trap). Empty -> arrow fallback.
-      // Half 2's writing pass names every parameter; this is a sample.
-      Params: string list }
+type BuiltinDoc = {
+    Summary: string
+    Example: string option
+    Pointer: string option
+    // parameter names for the annotated hover signature
+    // [D:annotated-signature] — a separate field, never parsed out of
+    // the prose (that is D1's F#-literal trap). Empty -> arrow fallback.
+    // Half 2's writing pass names every parameter; this is a sample.
+    Params: string list
+}
 
-let private bd (summary: string) (example: string option) (pointer: string option) : BuiltinDoc =
-    { Summary = summary
-      Example = example
-      Pointer = pointer
-      Params = [] }
+let private bd (summary: string) (example: string option) (pointer: string option) : BuiltinDoc = {
+    Summary = summary
+    Example = example
+    Pointer = pointer
+    Params = []
+}
 
 /// name a member's parameters for the annotated signature (a `{ bd … with
 /// Params = … }` shorthand for the sample; the full pass is half 2)
@@ -6805,1653 +6957,1801 @@ let private named (ps: string list) (d: BuiltinDoc) : BuiltinDoc = { d with Para
 /// keyed as the name appears at a use site: `Seq.map`, a bare `print`,
 /// `Env.load`. Filled set by set; coverage is reported as a fraction.
 let builtinDocs: Map<string, BuiltinDoc> =
-    Map
-        [
-          // ---- the form heads [D:scoped-procs]: #help retry/poll/within
-          // answer like any member — the docs live here, one source
-          "try",
-          bd
-              "Turn a failure into a value: `<expr> |> try` gives Some value, or None if evaluating the expression raised (a failed command, a parse error, a fail, a missing file). `<expr> |> try result` gives Ok value or Error message instead. Everything to the left of `|> try` is captured, and its value is fully evaluated inside, so a lazy sequence cannot fail later. `exit` still exits, and effects that happened before the failure are not undone."
-              (Some "File.read \"Cargo.toml\" |> from toml {| package: {| version: string |} |} |> try")
-              (Some "Commands have their own form: `<command> | complete` gives the exit code and output as a record.")
-          "retry",
-          bd
-              "Re-run an indented body until it succeeds: `retry attempts=5 delay=30s` followed by the body. If the body returns a bool, true means success. If it returns another value, add `until r` and a predicate block; retry then returns the value that passed. Running out of attempts raises. An error raised inside the body is not retried, it propagates; to retry a failing command, turn its result into data with `| succeeds` or `| complete`."
-              (Some "retry attempts=2 delay=1ms true")
-              (Some "The options are a record, so you can also write `retry { Retry.defaults with attempts = 3 }`.")
-          "poll",
-          bd
-              "Like retry, but bounded by time instead of attempts: `poll timeout=5m interval=10s` followed by a body that checks readiness. With `watch=<proc>`, poll fails immediately if that scoped process dies (the error includes its last output), and a timeout error reports the process's state."
-              (Some "poll timeout=1s interval=1ms true")
-              (Some
-                  "To wait for a server to come up, start it with `within proc srv = …`, then `poll timeout=10s watch=srv` with `Net.portOpen <port>` as the body.")
-          "repeat",
-          bd
-              "Run an indented block until the program is asked to stop: `repeat interval=1s` followed by the block, which runs, then the interval passes, then it runs again. The first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Ctrl+C on Windows) lets the iteration in hand finish and returns, so the code after the loop runs and the program exits 0; a second signal tears down as usual. A bool block ends the loop when true; `until r` binds a value block's result and returns it once the predicate holds; `timeout=(Some 5m)` raises when it passes, as poll's does. Waits inside the block are not ended by the request — only the interval is."
-              (Some "repeat interval=1ms true")
-              (Some "A server or sidecar held until the operator stops it is a `within` scope with `until stopped` after its block instead.")
-          "within",
-          bd
-              ("Open a resource for an indented block. It is released however the block exits, normally or by an error. The kinds: "
-               + (Ast.withinKinds
-                  |> List.filter (fun k -> not k.Standalone)
-                  |> List.map (fun k -> $"`{k.Name}` — {k.Doc}")
-                  |> String.concat "; ")
-               + ". After the block, `until stopped` holds the scope until the first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), then it closes by its normal path and the program exits 0; an `always` cleanup comes after it.")
-              (Some "within tmp d\n    print d")
-              (Some "`within proc srv = <command>` binds a Proc handle; the process and its children are killed and reaped when the block exits.")
-          // the purity assertion's two spellings [D:pure-stage1] — its
-          // own head, never `within pure`
-          "pure",
-          bd
-              "Assert that an indented block has no side effects: no filesystem, commands, network, environment, console or clock. If the block can reach one, `weir check` reports an error naming it. This is opt-in; code outside a pure block is not restricted."
-              (Some "pure 1 + 1")
-              (Some "To mark a whole function, use `let pure`. Calls the checker cannot see into (a function parameter, a member of an import) count as impure, so the check may reject code that is actually pure, but it never accepts code that is not.")
-          "let pure",
-          bd
-              "Mark a binding as pure: `let pure f x = …` asserts that its whole body has no side effects, and `weir check` reports an error if it does. It works the same as wrapping the body in a `pure` block; hover shows the binding with a (pure) badge."
-              (Some "let pure double n = n * 2")
-              (Some "See `#help pure` for the block form and the list of effects.")
-          // ---- Instant: the UTC point [D:instant] ----
-          "Instant.now",
-          bd "The current instant (UTC)." (Some "Instant.now () > Instant.parse \"2020-01-01\"") None
-          |> named [ "unit" ]
-          "Instant.parse",
-          bd
-              "Parse an ISO 8601 timestamp with Z or a numeric offset, converted to UTC. A bare date means midnight UTC. Raises on anything else; use tryParse to get an Option instead."
-              (Some "Instant.parse \"2026-08-14T12:00:00Z\"")
-              None
-          |> named [ "text" ]
-          "Instant.tryParse",
-          bd "Some instant, or None when the text is not ISO 8601." (Some "Instant.tryParse \"not-a-time\"") None
-          |> named [ "text" ]
-          "Instant.parseWith",
-          bd
-              "Parse a timestamp using a format string: %Y %m %d %e (1-2 digit day) %b (Jan..Dec) %H %M %S %f %z, with %% for a literal %; any other text must match exactly. Only the start of the text has to match, so trailing text such as the rest of a log line is ignored. Without %z the time is UTC. Raises on a mismatch, naming the position."
-              (Some "Instant.parseWith \"%Y/%m/%d %H:%M:%S\" \"2026/08/14 09:15:00 GET /health\"")
-              None
-          |> named [ "format"; "text" ]
-          "Instant.tryParseWith",
-          bd
-              "Some instant, or None when the text does not match. An unknown directive in the format still raises, because that is a bug in the format, not in the data."
-              (Some "Instant.tryParseWith \"%Y-%m-%d\" \"no timestamp here\"")
-              None
-          |> named [ "format"; "text" ]
-          "Instant.epochMs",
-          bd
-              "Milliseconds since the Unix epoch, as an int. Useful for JSON fields and other tools (like `date +%s%3N`)."
-              (Some "Instant.parse \"1970-01-01T00:00:01Z\" |> Instant.epochMs")
-              None
-          |> named [ "t" ]
-          "Instant.ofEpochMs",
-          bd "The instant for a number of milliseconds since the Unix epoch." (Some "Instant.ofEpochMs 0 |> show") None
-          |> named [ "ms" ]
-          // ---- Uuid: 128-bit identifiers [D:uuid] ----
-          "Uuid.v4",
-          bd "A random uuid (version 4), from the system's cryptographic generator." (Some "Uuid.v4 () |> Uuid.version") None
-          |> named [ "unit" ]
-          "Uuid.v7",
-          bd
-              "A time-ordered uuid (version 7): epoch milliseconds, then a counter and random bits. Values are strictly increasing within this process, so they sort by creation time both as uuids and as text."
-              (Some "Uuid.v7 () |> Uuid.instant")
-              None
-          |> named [ "unit" ]
-          "Uuid.v7At",
-          bd
-              "A version 7 uuid for the given instant, truncated to milliseconds. Use it for records that carry their own timestamp. If the instant is between the last generated uuid and now, it sorts correctly with v7 uuids; an earlier or future instant gets random bits and no ordering guarantee. Raises for instants before the Unix epoch."
-              (Some "Uuid.v7At (Instant.parse \"2022-02-22T19:22:22Z\") |> Uuid.instant")
-              None
-          |> named [ "t" ]
-          "Uuid.v5",
-          bd
-              "The name-based uuid (version 5): SHA-1 over the namespace's bytes and the name's UTF-8 bytes. The same name in the same namespace always gives the same uuid."
-              (Some "Uuid.v5 Uuid.ns.dns \"www.example.com\"")
-              None
-          |> named [ "ns"; "name" ]
-          "Uuid.ns",
-          bd
-              "The RFC 9562 namespaces for v5: `dns`, `url`, `oid`, `x500`. Any uuid works as a namespace of your own."
-              (Some "Uuid.ns.url")
-              None
-          "Uuid.parse",
-          bd
-              "Parse a uuid: 8-4-4-4-12 hex digits or 32 digits without dashes, in any case, with an optional urn:uuid: prefix. Every version and variant is accepted. Raises on anything else; use tryParse to get an Option instead."
-              (Some "Uuid.parse \"urn:uuid:F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6\"")
-              None
-          |> named [ "text" ]
-          "Uuid.tryParse",
-          bd
-              "Some uuid, or None when the text is not one (including braces and other platform-specific forms)."
-              (Some "Uuid.tryParse \"{f81d4fae-7dec-11d0-a765-00a0c91e6bf6}\"")
-              None
-          |> named [ "text" ]
-          "Uuid.toString",
-          bd
-              "The standard text form: lowercase 8-4-4-4-12. This is what show, JSON and command arguments use."
-              (Some "Uuid.toString Uuid.nil")
-              None
-          |> named [ "id" ]
-          "Uuid.version",
-          bd
-              "The version field: 4, 5, 7 and so on (0 for nil, 15 for max). Meaningful for the RFC 9562 variant."
-              (Some "Uuid.parse \"017f22e2-79b0-7cc3-98c4-dc0c0c07398f\" |> Uuid.version")
-              None
-          |> named [ "id" ]
-          "Uuid.instant",
-          bd
-              "Some creation instant for a version 7 uuid (millisecond precision); None for every other version."
-              (Some "Uuid.parse \"017f22e2-79b0-7cc3-98c4-dc0c0c07398f\" |> Uuid.instant")
-              None
-          |> named [ "id" ]
-          "Uuid.nil", bd "The all-zero uuid, used to mean \"no uuid\"." (Some "show Uuid.nil") None
-          "Uuid.max", bd "The all-ones uuid. It sorts after every other uuid." (Some "show Uuid.max") None
-          "Uuid.toBytes",
-          bd
-              "The 16 bytes in big-endian (network) order, the same order as the text form."
-              (Some "Uuid.nil |> Uuid.toBytes |> Bytes.toBase64")
-              None
-          |> named [ "id" ]
-          "Uuid.fromBytes",
-          bd "The uuid of 16 big-endian bytes. Raises on any other length." (Some "Uuid.nil |> Uuid.toBytes |> Uuid.fromBytes") None
-          |> named [ "b" ]
-          // ---- Map: any equatable key [D:map-keys] ----
-          "Map.ofPairs",
-          bd
-              "Build a map from (key, value) pairs. A key is any type with equality (not float). If a key repeats, the last value wins, as when reading JSON."
-              (Some "Map.ofPairs [(\"a\", 1); (\"b\", 2)]")
-              None
-          |> named [ "pairs" ]
-          "Map.pairs",
-          bd
-              "The entries as (key, value) pairs, key-sorted."
-              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.pairs |> Seq.freeze")
-              None
-          |> named [ "m" ]
-          "Map.keys",
-          bd "The keys, sorted." (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.keys |> Seq.freeze") None
-          |> named [ "m" ]
-          "Map.values",
-          bd
-              "The values, in key-sorted order."
-              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.values |> Seq.freeze")
-              None
-          |> named [ "m" ]
-          "Map.get",
-          bd
-              "The value for a key. Raises, naming the key (as show renders it), when it is missing; use tryGet to get an Option instead."
-              (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.get \"aaa\"")
-              None
-          |> named [ "key"; "m" ]
-          "Map.tryGet",
-          bd
-              "Some value when the key is present, None when not."
-              (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.tryGet \"zzz\"")
-              None
-          |> named [ "key"; "m" ]
-          "Map.has",
-          bd "True when a key is present." (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.has \"aaa\"") None
-          |> named [ "key"; "m" ]
-          "Map.count",
-          bd "The number of entries." (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.count") None
-          |> named [ "m" ]
-          "Map.add",
-          bd
-              "A new map with the entry added, replacing any existing value for the key; the original is unchanged."
-              (Some "Map.ofPairs [(\"a\", 1)] |> Map.add \"k\" 5")
-              None
-          |> named [ "key"; "value"; "m" ]
-          "Map.remove",
-          bd
-              "A new map without the key (a missing key is not an error); the original is unchanged."
-              (Some "Map.ofPairs [(\"a\", 1); (\"k\", 2)] |> Map.remove \"k\"")
-              None
-          |> named [ "key"; "m" ]
-          // ---- Proc: the scoped-process handle [D:scoped-procs] ----
-          "Proc.pid",
-          bd "The child's OS process id." None (Some "within proc p = <command> binds the handle; see #help within")
-          |> named [ "p" ]
-          "Proc.running",
-          bd "True while the child has not exited." None (Some "`poll watch=p` checks this for you and gives better errors.")
-          |> named [ "p" ]
-          "Proc.wait",
-          bd
-              "Wait until the child exits on its own and return its exit code. Use this to let a scoped process finish; otherwise it is killed when the block exits."
-              None
-              None
-          |> named [ "p" ]
-          "Proc.stop",
-          bd "Kill the process and its children now and wait for them. Safe to call more than once; the block's exit then has nothing left to do." None None
-          |> named [ "p" ]
-          "Proc.tail",
-          bd
-              "The child's last ~100 lines of output (stderr first). You can read it while the process is still running."
-              None
-              (Some "Errors from `poll watch=…` include this automatically.")
-          |> named [ "p" ]
-          // ---- Server: the scoped-listener handle [D:http-serve] ----
-          "Server.port",
-          bd "The port the listener bound — the port asked for, or the free one picked for `port = None`." None (Some "within serve srv = { port = Some 8080; maxConcurrent = 4 } handler binds the handle; see #help within")
-          |> named [ "srv" ]
-          "Server.running",
-          bd "True while the listener is still open (the scope has not exited)." None None
-          |> named [ "srv" ]
-          "Server.streamErrors",
-          bd
-              "Error messages from Stream response bodies that raised partway through (the client received a truncated body for each), from response headers that could not be sent, and from handlers that raised or returned an invalid status (the client received a 500 for each). Empty until one fails. These errors are reported here instead of being raised out of the handler."
-              None
-              (Some "When a Stream body raises, the client's response is cut off and the error is recorded here.")
-          |> named [ "srv" ]
-          // ---- Net: readiness probes [D:scoped-procs] ----
-          "Net.portOpen",
-          bd
-              "True when 127.0.0.1:<port> accepts a TCP connection within 250ms. Meant as a readiness check inside poll. Only local ports are supported for now."
-              (Some "Net.portOpen 1")
-              None
-          |> named [ "port" ]
-          // ---- Seq: lazy sequences (weir has no list type) ----
-          "Seq.map",
-          bd
-              "Apply a function to every element, lazily."
-              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.freeze")
-              None
-          |> named [ "f"; "xs" ]
-          "Seq.where",
-          bd
-              "Keep the elements a predicate accepts, lazily."
-              (Some "[1; 2; 3] |> Seq.where (fun x -> x > 1) |> Seq.freeze")
-              None
-          |> named [ "pred"; "xs" ]
-          "Seq.choose",
-          bd
-              "Apply a function that returns an Option and keep only the Some values, lazily."
-              (Some "[1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.freeze")
-              None
-          |> named [ "f"; "xs" ]
-          "Seq.fold",
-          bd "Combine the elements from left to right, starting from an initial accumulator." (Some "[1; 2; 3] |> Seq.fold (+) 0") None
-          |> named [ "f"; "init"; "xs" ]
-          "Seq.freeze",
-          bd
-              "Evaluate a lazy sequence now and keep the results."
-              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.freeze")
-              (Some "Freeze a sequence you will read more than once, or to capture its contents now (such as a command's output or a directory listing) before something changes them.")
-          |> named [ "xs" ]
-          "Seq.head",
-          (bd "The first element (raises on empty)." (Some "Seq.head [1; 2; 3]") None
-           |> named [ "xs" ])
-          "Seq.tryHead",
-          (bd "The first element as an Option, None when empty." (Some "Seq.tryHead [1; 2; 3]") None
-           |> named [ "xs" ])
-          "Seq.exactlyOne",
-          (bd
-              "The only element. Raises if there are none or more than one (unlike head, which quietly ignores extra elements). Use it for command output that should be exactly one line."
-              (Some "[\"one line\"] |> Seq.exactlyOne |> print")
-              None
-           |> named [ "xs" ])
-          "Seq.tryExactlyOne",
-          (bd
-              "Like exactlyOne, but returns an Option: Some when there is exactly one element, None otherwise."
-              (Some "[42] |> Seq.tryExactlyOne")
-              None
-           |> named [ "xs" ])
-          "Seq.tryFind",
-          bd
-              "The first element a predicate accepts, as an Option."
-              (Some "[1; 2; 3] |> Seq.tryFind (fun x -> x > 1)")
-              None
-          |> named [ "pred"; "xs" ]
-          "Seq.item",
-          (bd "The element at a zero-based index (raises out of range)." (Some "[1; 2; 3] |> Seq.item 0") None
-           |> named [ "i"; "xs" ])
-          "Seq.tryItem",
-          (bd "The element at an index as an Option." (Some "[1; 2; 3] |> Seq.tryItem 0") None
-           |> named [ "i"; "xs" ])
-          "Seq.take",
-          (bd "The first n elements, lazily; pairs with Seq.skip." (Some "[1; 2; 3] |> Seq.take 2 |> Seq.freeze") None
-           |> named [ "n"; "xs" ])
-          "Seq.skip",
-          (bd "Drop the first n elements, keep the rest lazily." (Some "[1; 2; 3] |> Seq.skip 1 |> Seq.freeze") None
-           |> named [ "n"; "xs" ])
-          "Seq.length",
-          (bd "Count the elements (forces the sequence)." (Some "Seq.length [1; 2; 3]") None
-           |> named [ "xs" ])
-          "Seq.isEmpty",
-          (bd "True when the sequence has no elements." (Some "Seq.isEmpty [1; 2; 3]") None
-           |> named [ "xs" ])
-          "Seq.sum",
-          (bd "Add the elements of an int sequence." (Some "Seq.sum [1; 2; 3]") None
-           |> named [ "xs" ])
-          "Seq.contains",
-          (bd "True when an element is present." (Some "Seq.contains 2 [1; 2; 3]") None
-           |> named [ "x"; "xs" ])
-          "Seq.equal",
-          (bd
-              "True when both sequences have the same length and equal elements in order. Elements must support equality, as for Seq.contains. It stops at the first mismatch without reading further. Prefer it to joining and comparing strings, which can give a wrong answer when elements contain the separator."
-              (Some "[\"a\"; \"b\"] |> Seq.equal [\"a\"; \"b\"]")
-              None
-           |> named [ "xs"; "ys" ])
-          "Seq.exists",
-          (bd "True when any element satisfies a predicate." (Some "[1; 2; 3] |> Seq.exists (fun x -> x > 2)") None
-           |> named [ "pred"; "xs" ])
-          "Seq.forall",
-          (bd "True when every element satisfies a predicate." (Some "[1; 2; 3] |> Seq.forall (fun x -> x > 0)") None
-           |> named [ "pred"; "xs" ])
-          "Seq.distinct",
-          (bd "Drop duplicate elements, keeping first order." (Some "[1; 1; 2] |> Seq.distinct |> Seq.freeze") None
-           |> named [ "xs" ])
-          "Seq.append",
-          (bd "Concatenate two sequences, lazily." (Some "Seq.append [1; 2] [3; 4] |> Seq.freeze") None
-           |> named [ "xs"; "ys" ])
-          "Seq.sortBy",
-          (bd "Order by a key projection." (Some "[3; 1; 2] |> Seq.sortBy (fun x -> x) |> Seq.freeze") None
-           |> named [ "key"; "xs" ])
-          "Seq.sortByDescending",
-          bd
-              "Order by a key projection, descending."
-              (Some "[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.freeze")
-              None
-          |> named [ "key"; "xs" ]
-          "Seq.iter",
-          (bd "Run a unit-returning effect over each element." (Some "[1; 2; 3] |> Seq.iter (fun x -> ())") None
-           |> named [ "f"; "xs" ])
-          "Seq.windowed",
-          (bd
-              "Sliding windows of n consecutive elements, produced lazily. A source shorter than n gives an empty sequence (there are no partial windows). The windows share the same cached elements. Raises when n <= 0."
-              (Some "[1; 2; 3] |> Seq.windowed 2 |> Seq.map Seq.freeze |> Seq.freeze")
-              None
-           |> named [ "n"; "xs" ])
-          "Seq.last",
-          (bd
-              "The last element. Raises 'last: empty sequence' when empty; Seq.tryLast returns None instead. It reads the whole sequence, so it never returns on an infinite one."
-              (Some "[1; 2; 3] |> Seq.last")
-              None
-           |> named [ "xs" ])
-          "Seq.tryLast",
-          (bd
-              "The last element as an Option, None when empty. Reads the whole sequence."
-              (Some "[] |> Seq.tryLast")
-              None
-           |> named [ "xs" ])
-          "Seq.pairwise",
-          (bd "Adjacent pairs: (e0,e1), (e1,e2), and so on." (Some "[1; 2; 3] |> Seq.pairwise |> Seq.freeze") None
-           |> named [ "xs" ])
-          "Seq.zip",
-          bd
-              "Pair two sequences element-wise, stopping at the shorter."
-              (Some "Seq.zip [1; 2] [3; 4] |> Seq.freeze")
-              None
-          |> named [ "xs"; "ys" ]
-          "Seq.range",
-          (bd "A lazy arithmetic range: start, step, stop." (Some "Seq.range 1 1 5 |> Seq.freeze") None
-           |> named [ "start"; "step"; "stop" ])
-          "Seq.groupBy",
-          bd
-              "Group elements by a key into (key, items) pairs, as in F#."
-              (Some "[1; 2; 3] |> Seq.groupBy (fun x -> x) |> Seq.freeze")
-              None
-          |> named [ "key"; "xs" ]
-          // ---- the Seq-gaps cohort [D:seq-gaps] ----------------------
-          "Seq.collect",
-          bd
-              "Map each element to a sequence and flatten the results into one, lazily (flatMap in other languages)."
-              (Some "[\"a<b\"; \"c\"] |> Seq.collect (Str.split \"<\") |> Seq.freeze")
-              None
-          |> named [ "f"; "xs" ]
-          "Seq.concat",
-          bd
-              "Flatten a sequence of sequences into one, lazily."
-              (Some "[[1; 2]; [3]] |> Seq.concat |> Seq.freeze")
-              None
-          |> named [ "xss" ]
-          "Seq.find",
-          bd
-              "The first element a predicate accepts. Raises when none match; use tryFind to get an Option instead."
-              (Some "[1; 5; 3] |> Seq.find (fun x -> x > 2)")
-              None
-          |> named [ "pred"; "xs" ]
-          "Seq.indexed",
-          bd
-              "Pair every element with its zero-based index, lazily. For F#'s mapi/iteri, use `indexed |> map`/`iter` on the pairs."
-              (Some "[\"a\"; \"b\"] |> Seq.indexed |> Seq.freeze")
-              None
-          |> named [ "xs" ]
-          "Seq.rev",
-          bd
-              "Reverse the sequence. The whole input is read when the first element is requested, so it cannot be used on an infinite sequence."
-              (Some "[1; 2; 3] |> Seq.rev |> Seq.freeze")
-              None
-          |> named [ "xs" ]
-          "Seq.chunkBySize",
-          bd
-              "Split into consecutive batches of at most n elements, lazily. The last batch may be shorter."
-              (Some "[1; 2; 3; 4; 5] |> Seq.chunkBySize 2 |> Seq.map Seq.freeze |> Seq.freeze")
-              None
-          |> named [ "n"; "xs" ]
-          "Seq.takeWhile",
-          bd
-              "The leading elements for which the predicate holds, lazily; stops at the first one that fails."
-              (Some "[1; 2; 9; 1] |> Seq.takeWhile (fun x -> x < 5) |> Seq.freeze")
-              None
-          |> named [ "pred"; "xs" ]
-          "Seq.skipWhile",
-          bd
-              "Drop leading elements while the predicate holds, then return all the rest, lazily."
-              (Some "[1; 2; 9; 1] |> Seq.skipWhile (fun x -> x < 5) |> Seq.freeze")
-              None
-          |> named [ "pred"; "xs" ]
-          "Seq.countBy",
-          bd
-              "Count the elements per key as (key, count) pairs, in the order each key is first seen. The whole input is read when the first pair is requested."
-              (Some "[\"a\"; \"bb\"; \"c\"] |> Seq.countBy Str.length |> Seq.freeze")
-              None
-          |> named [ "key"; "xs" ]
-          "Seq.distinctBy",
-          bd
-              "Keep only the first element for each key, lazily. Like distinct, but compares by a key function."
-              (Some "[\"a\"; \"bb\"; \"cc\"] |> Seq.distinctBy Str.length |> Seq.freeze")
-              None
-          |> named [ "key"; "xs" ]
-          "Seq.reduce",
-          bd
-              "Like fold without an initial value: the first element is the starting accumulator. Raises on an empty sequence; use fold when you have a starting value."
-              (Some "[1; 2; 3] |> Seq.reduce (+)")
-              None
-          |> named [ "f"; "xs" ]
-          "Seq.tryReduce",
-          bd
-              "Like reduce, but returns an Option: Some result, or None for an empty sequence (where reduce raises)."
-              (Some "[1; 2] |> Seq.where (fun n -> n > 9) |> Seq.tryReduce (+)")
-              None
-          |> named [ "f"; "xs" ]
-          "Seq.scan",
-          bd
-              "Like fold, but returns every intermediate accumulator, starting with the initial value, lazily."
-              (Some "[1; 2; 3] |> Seq.scan (+) 0 |> Seq.freeze")
-              None
-          |> named [ "f"; "init"; "xs" ]
-          "Seq.tryPick",
-          bd
-              "Apply a function to each element and return the first Some result, or None."
-              (Some "[\"a\"; \"12\"] |> Seq.tryPick Str.tryToInt")
-              None
-          |> named [ "f"; "xs" ]
-          "Seq.pick",
-          bd
-              "Apply a function to each element and return the value of the first Some result. Raises when there is none; use tryPick to get an Option instead."
-              (Some "[\"a\"; \"12\"] |> Seq.pick Str.tryToInt")
-              None
-          |> named [ "f"; "xs" ]
-          "Seq.except",
-          bd
-              "The elements of the sequence that are not in the excluded values, each kept once (a repeat is dropped, as F#'s Seq.except does). The excluded values come first and are read in full on the first request; the sequence itself is read lazily."
-              (Some "[1; 2; 3; 4] |> Seq.except [2; 4] |> Seq.freeze")
-              None
-          |> named [ "excluded"; "xs" ]
-          "Seq.replicate",
-          bd
-              "A sequence of n copies of a value, lazily. Raises on a negative count."
-              (Some "Seq.replicate 3 \"x\" |> Seq.freeze")
-              None
-          |> named [ "n"; "x" ]
-          "Seq.initInfinite",
-          bd
-              "The endless sequence f 0, f 1, f 2, …, computed lazily as it is read. Bound it with take, takeWhile or a slice before forcing it."
-              (Some "Seq.initInfinite (fun i -> i * i) |> Seq.take 4 |> Seq.freeze")
-              None
-          |> named [ "f" ]
-          "Seq.max",
-          bd "The largest element, found in one pass without sorting. Elements must be comparable; raises on an empty sequence." (Some "Seq.max [3; 1; 2]") None
-          |> named [ "xs" ]
-          "Seq.min",
-          bd "The smallest element, found in one pass without sorting. Elements must be comparable; raises on an empty sequence." (Some "Seq.min [3; 1; 2]") None
-          |> named [ "xs" ]
-          "Seq.maxBy",
-          bd
-              "The element with the largest key. Keys must be comparable; raises on an empty sequence."
-              (Some "[\"a\"; \"ccc\"] |> Seq.maxBy Str.length")
-              None
-          |> named [ "key"; "xs" ]
-          "Seq.minBy",
-          bd
-              "The element with the smallest key. Keys must be comparable; raises on an empty sequence."
-              (Some "[\"a\"; \"ccc\"] |> Seq.minBy Str.length")
-              None
-          |> named [ "key"; "xs" ]
-          "Seq.sort",
-          bd
-              "Sort the elements in ascending order (they must be comparable). The whole input is read when the first element is requested."
-              (Some "[\"pear\"; \"apple\"] |> Seq.sort |> Seq.freeze")
-              None
-          |> named [ "xs" ]
-          "Seq.sortDescending",
-          bd
-              "Sort the elements in descending order (they must be comparable). The whole input is read when the first element is requested."
-              (Some "[1; 3; 2] |> Seq.sortDescending |> Seq.freeze")
-              None
-          |> named [ "xs" ]
-          "Seq.average",
-          bd
-              "The mean of an int sequence, as a float. Raises on an empty sequence. For floats, sizes and durations use Float.average, Size.average or Duration.average."
-              (Some "[1; 2] |> Seq.average")
-              None
-          |> named [ "xs" ]
-          "Float.sum",
-          bd
-              "Add up a sequence of floats; raises if the sum is not finite. Seq.sum is for ints only; each numeric type has its own sum."
-              (Some "[1.5; 2.5] |> Float.sum")
-              None
-          |> named [ "xs" ]
-          "Float.average",
-          bd "The mean of a float sequence. Raises on an empty sequence or a non-finite result." (Some "[1.0; 2.0] |> Float.average") None
-          |> named [ "xs" ]
-          "Size.sum",
-          bd "Add up sizes; the total is a Size." (Some "[1KiB; 512B] |> Size.sum") None
-          |> named [ "xs" ]
-          "Size.average",
-          bd "The mean size, truncated to whole bytes. Raises on an empty sequence." (Some "[1KiB; 3KiB] |> Size.average") None
-          |> named [ "xs" ]
-          "Duration.sum", bd "Sum durations." (Some "[90s; 30s] |> Duration.sum") None |> named [ "xs" ]
-          "Duration.average",
-          bd
-              "The mean duration, truncated to whole milliseconds. Raises on an empty sequence."
-              (Some "[90s; 30s] |> Duration.average")
-              None
-          |> named [ "xs" ]
-          "Seq.pmap",
-          bd
-              "Map in parallel across worker threads."
-              (Some "[1; 2; 3] |> Seq.pmap (fun x -> x + 1) |> Seq.freeze")
-              (Some "Results keep the input order. It runs eagerly with up to 64 workers; if several items fail, the error from the earliest item is the one reported.")
-          |> named [ "f"; "xs" ]
-          "Seq.piter",
-          bd
-              "Run an effect over each element in parallel."
-              (Some "[1; 2; 3] |> Seq.piter (fun x -> ())")
-              (Some "Each worker gets its own copy of the session: a `cd` inside a worker affects only that worker and is gone when the workers finish.")
-          |> named [ "f"; "xs" ]
-          "Seq.pmapWith",
-          bd
-              "Seq.pmap with an explicit number of workers. Use it when the work is rate-limited or uses a lot of memory."
-              (Some "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.freeze")
-              (Some "Plain `pmap` uses fewer workers when parallel calls are nested; the n you give here is always used as is.")
-          |> named [ "n"; "f"; "xs" ]
-          "Seq.piterWith",
-          bd
-              "Seq.piter with an explicit worker count."
-              (Some "[1; 2; 3] |> Seq.piterWith 2 (fun x -> ())")
-              (Some "Plain `piter` uses fewer workers when parallel calls are nested; the n you give here is always used as is.")
-          |> named [ "n"; "f"; "xs" ]
-          "Seq.pfirst",
-          bd
-              "Run the function on every element in parallel and return the first successful result. Processes started by the others are killed, along with their children; each other call stops at its next builtin call, command, sleep or Http send, and pfirst returns only after they have all stopped, so nothing they do happens after it returns. `exit n` in a call ends the race and the script. If every call fails, the error of the earliest element is raised; an empty sequence raises. Errors from the calls that did not win are discarded, so if only one element can ever succeed, the others' errors stay hidden and a misconfiguration can go unnoticed."
-              (Some "[3; 1; 2] |> Seq.pfirst (fun n -> n * 10)")
-              (Some "A race, not a retry: for example the same download from several mirrors, where the first answer wins and the losers' processes are killed.")
-          |> named [ "f"; "xs" ]
-          "Seq.pfirstWith",
-          bd "Seq.pfirst with a maximum number of parallel calls." (Some "[1; 2] |> Seq.pfirstWith 2 (fun n -> n)") None
-          |> named [ "degree"; "f"; "xs" ]
+    Map [
+        // ---- the form heads [D:scoped-procs]: #help retry/poll/within
+        // answer like any member — the docs live here, one source
+        "try",
+        bd
+            "Turn a failure into a value: `<expr> |> try` gives Some value, or None if evaluating the expression raised (a failed command, a parse error, a fail, a missing file). `<expr> |> try result` gives Ok value or Error message instead. Everything to the left of `|> try` is captured, and its value is fully evaluated inside, so a lazy sequence cannot fail later. `exit` still exits, and effects that happened before the failure are not undone."
+            (Some "File.read \"Cargo.toml\" |> from toml {| package: {| version: string |} |} |> try")
+            (Some "Commands have their own form: `<command> | complete` gives the exit code and output as a record.")
+        "retry",
+        bd
+            "Re-run an indented body until it succeeds: `retry attempts=5 delay=30s` followed by the body. If the body returns a bool, true means success. If it returns another value, add `until r` and a predicate block; retry then returns the value that passed. Running out of attempts raises. An error raised inside the body is not retried, it propagates; to retry a failing command, turn its result into data with `| succeeds` or `| complete`."
+            (Some "retry attempts=2 delay=1ms true")
+            (Some "The options are a record, so you can also write `retry { Retry.defaults with attempts = 3 }`.")
+        "poll",
+        bd
+            "Like retry, but bounded by time instead of attempts: `poll timeout=5m interval=10s` followed by a body that checks readiness. With `watch=<proc>`, poll fails immediately if that scoped process dies (the error includes its last output), and a timeout error reports the process's state."
+            (Some "poll timeout=1s interval=1ms true")
+            (Some
+                "To wait for a server to come up, start it with `within proc srv = …`, then `poll timeout=10s watch=srv` with `Net.portOpen <port>` as the body.")
+        "repeat",
+        bd
+            "Run an indented block until the program is asked to stop: `repeat interval=1s` followed by the block, which runs, then the interval passes, then it runs again. The first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Ctrl+C on Windows) lets the iteration in hand finish and returns, so the code after the loop runs and the program exits 0; a second signal tears down as usual. A bool block ends the loop when true; `until r` binds a value block's result and returns it once the predicate holds; `timeout=(Some 5m)` raises when it passes, as poll's does. Waits inside the block are not ended by the request — only the interval is."
+            (Some "repeat interval=1ms true")
+            (Some
+                "A server or sidecar held until the operator stops it is a `within` scope with `until stopped` after its block instead.")
+        "within",
+        bd
+            ("Open a resource for an indented block. It is released however the block exits, normally or by an error. The kinds: "
+             + (Ast.withinKinds
+                |> List.filter (fun k -> not k.Standalone)
+                |> List.map (fun k -> $"`{k.Name}` — {k.Doc}")
+                |> String.concat "; ")
+             + ". After the block, `until stopped` holds the scope until the first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), then it closes by its normal path and the program exits 0; an `always` cleanup comes after it.")
+            (Some "within tmp d\n    print d")
+            (Some
+                "`within proc srv = <command>` binds a Proc handle; the process and its children are killed and reaped when the block exits.")
+        // the purity assertion's two spellings [D:pure-stage1] — its
+        // own head, never `within pure`
+        "pure",
+        bd
+            "Assert that an indented block has no side effects: no filesystem, commands, network, environment, console or clock. If the block can reach one, `weir check` reports an error naming it. This is opt-in; code outside a pure block is not restricted."
+            (Some "pure 1 + 1")
+            (Some
+                "To mark a whole function, use `let pure`. Calls the checker cannot see into (a function parameter, a member of an import) count as impure, so the check may reject code that is actually pure, but it never accepts code that is not.")
+        "let pure",
+        bd
+            "Mark a binding as pure: `let pure f x = …` asserts that its whole body has no side effects, and `weir check` reports an error if it does. It works the same as wrapping the body in a `pure` block; hover shows the binding with a (pure) badge."
+            (Some "let pure double n = n * 2")
+            (Some "See `#help pure` for the block form and the list of effects.")
+        // ---- Instant: the UTC point [D:instant] ----
+        "Instant.now",
+        bd "The current instant (UTC)." (Some "Instant.now () > Instant.parse \"2020-01-01\"") None
+        |> named [ "unit" ]
+        "Instant.parse",
+        bd
+            "Parse an ISO 8601 timestamp with Z or a numeric offset, converted to UTC. A bare date means midnight UTC. Raises on anything else; use tryParse to get an Option instead."
+            (Some "Instant.parse \"2026-08-14T12:00:00Z\"")
+            None
+        |> named [ "text" ]
+        "Instant.tryParse",
+        bd "Some instant, or None when the text is not ISO 8601." (Some "Instant.tryParse \"not-a-time\"") None
+        |> named [ "text" ]
+        "Instant.parseWith",
+        bd
+            "Parse a timestamp using a format string: %Y %m %d %e (1-2 digit day) %b (Jan..Dec) %H %M %S %f %z, with %% for a literal %; any other text must match exactly. Only the start of the text has to match, so trailing text such as the rest of a log line is ignored. Without %z the time is UTC. Raises on a mismatch, naming the position."
+            (Some "Instant.parseWith \"%Y/%m/%d %H:%M:%S\" \"2026/08/14 09:15:00 GET /health\"")
+            None
+        |> named [ "format"; "text" ]
+        "Instant.tryParseWith",
+        bd
+            "Some instant, or None when the text does not match. An unknown directive in the format still raises, because that is a bug in the format, not in the data."
+            (Some "Instant.tryParseWith \"%Y-%m-%d\" \"no timestamp here\"")
+            None
+        |> named [ "format"; "text" ]
+        "Instant.epochMs",
+        bd
+            "Milliseconds since the Unix epoch, as an int. Useful for JSON fields and other tools (like `date +%s%3N`)."
+            (Some "Instant.parse \"1970-01-01T00:00:01Z\" |> Instant.epochMs")
+            None
+        |> named [ "t" ]
+        "Instant.ofEpochMs",
+        bd "The instant for a number of milliseconds since the Unix epoch." (Some "Instant.ofEpochMs 0 |> show") None
+        |> named [ "ms" ]
+        // ---- Uuid: 128-bit identifiers [D:uuid] ----
+        "Uuid.v4",
+        bd
+            "A random uuid (version 4), from the system's cryptographic generator."
+            (Some "Uuid.v4 () |> Uuid.version")
+            None
+        |> named [ "unit" ]
+        "Uuid.v7",
+        bd
+            "A time-ordered uuid (version 7): epoch milliseconds, then a counter and random bits. Values are strictly increasing within this process, so they sort by creation time both as uuids and as text."
+            (Some "Uuid.v7 () |> Uuid.instant")
+            None
+        |> named [ "unit" ]
+        "Uuid.v7At",
+        bd
+            "A version 7 uuid for the given instant, truncated to milliseconds. Use it for records that carry their own timestamp. If the instant is between the last generated uuid and now, it sorts correctly with v7 uuids; an earlier or future instant gets random bits and no ordering guarantee. Raises for instants before the Unix epoch."
+            (Some "Uuid.v7At (Instant.parse \"2022-02-22T19:22:22Z\") |> Uuid.instant")
+            None
+        |> named [ "t" ]
+        "Uuid.v5",
+        bd
+            "The name-based uuid (version 5): SHA-1 over the namespace's bytes and the name's UTF-8 bytes. The same name in the same namespace always gives the same uuid."
+            (Some "Uuid.v5 Uuid.ns.dns \"www.example.com\"")
+            None
+        |> named [ "ns"; "name" ]
+        "Uuid.ns",
+        bd
+            "The RFC 9562 namespaces for v5: `dns`, `url`, `oid`, `x500`. Any uuid works as a namespace of your own."
+            (Some "Uuid.ns.url")
+            None
+        "Uuid.parse",
+        bd
+            "Parse a uuid: 8-4-4-4-12 hex digits or 32 digits without dashes, in any case, with an optional urn:uuid: prefix. Every version and variant is accepted. Raises on anything else; use tryParse to get an Option instead."
+            (Some "Uuid.parse \"urn:uuid:F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6\"")
+            None
+        |> named [ "text" ]
+        "Uuid.tryParse",
+        bd
+            "Some uuid, or None when the text is not one (including braces and other platform-specific forms)."
+            (Some "Uuid.tryParse \"{f81d4fae-7dec-11d0-a765-00a0c91e6bf6}\"")
+            None
+        |> named [ "text" ]
+        "Uuid.toString",
+        bd
+            "The standard text form: lowercase 8-4-4-4-12. This is what show, JSON and command arguments use."
+            (Some "Uuid.toString Uuid.nil")
+            None
+        |> named [ "id" ]
+        "Uuid.version",
+        bd
+            "The version field: 4, 5, 7 and so on (0 for nil, 15 for max). Meaningful for the RFC 9562 variant."
+            (Some "Uuid.parse \"017f22e2-79b0-7cc3-98c4-dc0c0c07398f\" |> Uuid.version")
+            None
+        |> named [ "id" ]
+        "Uuid.instant",
+        bd
+            "Some creation instant for a version 7 uuid (millisecond precision); None for every other version."
+            (Some "Uuid.parse \"017f22e2-79b0-7cc3-98c4-dc0c0c07398f\" |> Uuid.instant")
+            None
+        |> named [ "id" ]
+        "Uuid.nil", bd "The all-zero uuid, used to mean \"no uuid\"." (Some "show Uuid.nil") None
+        "Uuid.max", bd "The all-ones uuid. It sorts after every other uuid." (Some "show Uuid.max") None
+        "Uuid.toBytes",
+        bd
+            "The 16 bytes in big-endian (network) order, the same order as the text form."
+            (Some "Uuid.nil |> Uuid.toBytes |> Bytes.toBase64")
+            None
+        |> named [ "id" ]
+        "Uuid.fromBytes",
+        bd
+            "The uuid of 16 big-endian bytes. Raises on any other length."
+            (Some "Uuid.nil |> Uuid.toBytes |> Uuid.fromBytes")
+            None
+        |> named [ "b" ]
+        // ---- Map: any equatable key [D:map-keys] ----
+        "Map.ofPairs",
+        bd
+            "Build a map from (key, value) pairs. A key is any type with equality (not float). If a key repeats, the last value wins, as when reading JSON."
+            (Some "Map.ofPairs [(\"a\", 1); (\"b\", 2)]")
+            None
+        |> named [ "pairs" ]
+        "Map.pairs",
+        bd
+            "The entries as (key, value) pairs, key-sorted."
+            (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.pairs |> Seq.freeze")
+            None
+        |> named [ "m" ]
+        "Map.keys",
+        bd "The keys, sorted." (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.keys |> Seq.freeze") None
+        |> named [ "m" ]
+        "Map.values",
+        bd
+            "The values, in key-sorted order."
+            (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.values |> Seq.freeze")
+            None
+        |> named [ "m" ]
+        "Map.get",
+        bd
+            "The value for a key. Raises, naming the key (as show renders it), when it is missing; use tryGet to get an Option instead."
+            (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.get \"aaa\"")
+            None
+        |> named [ "key"; "m" ]
+        "Map.tryGet",
+        bd
+            "Some value when the key is present, None when not."
+            (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.tryGet \"zzz\"")
+            None
+        |> named [ "key"; "m" ]
+        "Map.has",
+        bd "True when a key is present." (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.has \"aaa\"") None
+        |> named [ "key"; "m" ]
+        "Map.count",
+        bd "The number of entries." (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.count") None
+        |> named [ "m" ]
+        "Map.add",
+        bd
+            "A new map with the entry added, replacing any existing value for the key; the original is unchanged."
+            (Some "Map.ofPairs [(\"a\", 1)] |> Map.add \"k\" 5")
+            None
+        |> named [ "key"; "value"; "m" ]
+        "Map.remove",
+        bd
+            "A new map without the key (a missing key is not an error); the original is unchanged."
+            (Some "Map.ofPairs [(\"a\", 1); (\"k\", 2)] |> Map.remove \"k\"")
+            None
+        |> named [ "key"; "m" ]
+        // ---- Proc: the scoped-process handle [D:scoped-procs] ----
+        "Proc.pid",
+        bd "The child's OS process id." None (Some "within proc p = <command> binds the handle; see #help within")
+        |> named [ "p" ]
+        "Proc.running",
+        bd
+            "True while the child has not exited."
+            None
+            (Some "`poll watch=p` checks this for you and gives better errors.")
+        |> named [ "p" ]
+        "Proc.wait",
+        bd
+            "Wait until the child exits on its own and return its exit code. Use this to let a scoped process finish; otherwise it is killed when the block exits."
+            None
+            None
+        |> named [ "p" ]
+        "Proc.stop",
+        bd
+            "Kill the process and its children now and wait for them. Safe to call more than once; the block's exit then has nothing left to do."
+            None
+            None
+        |> named [ "p" ]
+        "Proc.tail",
+        bd
+            "The child's last ~100 lines of output (stderr first). You can read it while the process is still running."
+            None
+            (Some "Errors from `poll watch=…` include this automatically.")
+        |> named [ "p" ]
+        // ---- Server: the scoped-listener handle [D:http-serve] ----
+        "Server.port",
+        bd
+            "The port the listener bound — the port asked for, or the free one picked for `port = None`."
+            None
+            (Some
+                "within serve srv = { port = Some 8080; maxConcurrent = 4 } handler binds the handle; see #help within")
+        |> named [ "srv" ]
+        "Server.running",
+        bd "True while the listener is still open (the scope has not exited)." None None
+        |> named [ "srv" ]
+        "Server.streamErrors",
+        bd
+            "Error messages from Stream response bodies that raised partway through (the client received a truncated body for each), from response headers that could not be sent, and from handlers that raised or returned an invalid status (the client received a 500 for each). Empty until one fails. These errors are reported here instead of being raised out of the handler."
+            None
+            (Some "When a Stream body raises, the client's response is cut off and the error is recorded here.")
+        |> named [ "srv" ]
+        // ---- Net: readiness probes [D:scoped-procs] ----
+        "Net.portOpen",
+        bd
+            "True when 127.0.0.1:<port> accepts a TCP connection within 250ms. Meant as a readiness check inside poll. Only local ports are supported for now."
+            (Some "Net.portOpen 1")
+            None
+        |> named [ "port" ]
+        // ---- Seq: lazy sequences (weir has no list type) ----
+        "Seq.map",
+        bd
+            "Apply a function to every element, lazily."
+            (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.freeze")
+            None
+        |> named [ "f"; "xs" ]
+        "Seq.where",
+        bd
+            "Keep the elements a predicate accepts, lazily."
+            (Some "[1; 2; 3] |> Seq.where (fun x -> x > 1) |> Seq.freeze")
+            None
+        |> named [ "pred"; "xs" ]
+        "Seq.choose",
+        bd
+            "Apply a function that returns an Option and keep only the Some values, lazily."
+            (Some "[1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.freeze")
+            None
+        |> named [ "f"; "xs" ]
+        "Seq.fold",
+        bd
+            "Combine the elements from left to right, starting from an initial accumulator."
+            (Some "[1; 2; 3] |> Seq.fold (+) 0")
+            None
+        |> named [ "f"; "init"; "xs" ]
+        "Seq.freeze",
+        bd
+            "Evaluate a lazy sequence now and keep the results."
+            (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.freeze")
+            (Some
+                "Freeze a sequence you will read more than once, or to capture its contents now (such as a command's output or a directory listing) before something changes them.")
+        |> named [ "xs" ]
+        "Seq.head",
+        (bd "The first element (raises on empty)." (Some "Seq.head [1; 2; 3]") None
+         |> named [ "xs" ])
+        "Seq.tryHead",
+        (bd "The first element as an Option, None when empty." (Some "Seq.tryHead [1; 2; 3]") None
+         |> named [ "xs" ])
+        "Seq.exactlyOne",
+        (bd
+            "The only element. Raises if there are none or more than one (unlike head, which quietly ignores extra elements). Use it for command output that should be exactly one line."
+            (Some "[\"one line\"] |> Seq.exactlyOne |> print")
+            None
+         |> named [ "xs" ])
+        "Seq.tryExactlyOne",
+        (bd
+            "Like exactlyOne, but returns an Option: Some when there is exactly one element, None otherwise."
+            (Some "[42] |> Seq.tryExactlyOne")
+            None
+         |> named [ "xs" ])
+        "Seq.tryFind",
+        bd
+            "The first element a predicate accepts, as an Option."
+            (Some "[1; 2; 3] |> Seq.tryFind (fun x -> x > 1)")
+            None
+        |> named [ "pred"; "xs" ]
+        "Seq.item",
+        (bd "The element at a zero-based index (raises out of range)." (Some "[1; 2; 3] |> Seq.item 0") None
+         |> named [ "i"; "xs" ])
+        "Seq.tryItem",
+        (bd "The element at an index as an Option." (Some "[1; 2; 3] |> Seq.tryItem 0") None
+         |> named [ "i"; "xs" ])
+        "Seq.take",
+        (bd "The first n elements, lazily; pairs with Seq.skip." (Some "[1; 2; 3] |> Seq.take 2 |> Seq.freeze") None
+         |> named [ "n"; "xs" ])
+        "Seq.skip",
+        (bd "Drop the first n elements, keep the rest lazily." (Some "[1; 2; 3] |> Seq.skip 1 |> Seq.freeze") None
+         |> named [ "n"; "xs" ])
+        "Seq.length",
+        (bd "Count the elements (forces the sequence)." (Some "Seq.length [1; 2; 3]") None
+         |> named [ "xs" ])
+        "Seq.isEmpty",
+        (bd "True when the sequence has no elements." (Some "Seq.isEmpty [1; 2; 3]") None
+         |> named [ "xs" ])
+        "Seq.sum",
+        (bd "Add the elements of an int sequence." (Some "Seq.sum [1; 2; 3]") None
+         |> named [ "xs" ])
+        "Seq.contains",
+        (bd "True when an element is present." (Some "Seq.contains 2 [1; 2; 3]") None
+         |> named [ "x"; "xs" ])
+        "Seq.equal",
+        (bd
+            "True when both sequences have the same length and equal elements in order. Elements must support equality, as for Seq.contains. It stops at the first mismatch without reading further. Prefer it to joining and comparing strings, which can give a wrong answer when elements contain the separator."
+            (Some "[\"a\"; \"b\"] |> Seq.equal [\"a\"; \"b\"]")
+            None
+         |> named [ "xs"; "ys" ])
+        "Seq.exists",
+        (bd "True when any element satisfies a predicate." (Some "[1; 2; 3] |> Seq.exists (fun x -> x > 2)") None
+         |> named [ "pred"; "xs" ])
+        "Seq.forall",
+        (bd "True when every element satisfies a predicate." (Some "[1; 2; 3] |> Seq.forall (fun x -> x > 0)") None
+         |> named [ "pred"; "xs" ])
+        "Seq.distinct",
+        (bd "Drop duplicate elements, keeping first order." (Some "[1; 1; 2] |> Seq.distinct |> Seq.freeze") None
+         |> named [ "xs" ])
+        "Seq.append",
+        (bd "Concatenate two sequences, lazily." (Some "Seq.append [1; 2] [3; 4] |> Seq.freeze") None
+         |> named [ "xs"; "ys" ])
+        "Seq.sortBy",
+        (bd "Order by a key projection." (Some "[3; 1; 2] |> Seq.sortBy (fun x -> x) |> Seq.freeze") None
+         |> named [ "key"; "xs" ])
+        "Seq.sortByDescending",
+        bd
+            "Order by a key projection, descending."
+            (Some "[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.freeze")
+            None
+        |> named [ "key"; "xs" ]
+        "Seq.iter",
+        (bd "Run a unit-returning effect over each element." (Some "[1; 2; 3] |> Seq.iter (fun x -> ())") None
+         |> named [ "f"; "xs" ])
+        "Seq.windowed",
+        (bd
+            "Sliding windows of n consecutive elements, produced lazily. A source shorter than n gives an empty sequence (there are no partial windows). The windows share the same cached elements. Raises when n <= 0."
+            (Some "[1; 2; 3] |> Seq.windowed 2 |> Seq.map Seq.freeze |> Seq.freeze")
+            None
+         |> named [ "n"; "xs" ])
+        "Seq.last",
+        (bd
+            "The last element. Raises 'last: empty sequence' when empty; Seq.tryLast returns None instead. It reads the whole sequence, so it never returns on an infinite one."
+            (Some "[1; 2; 3] |> Seq.last")
+            None
+         |> named [ "xs" ])
+        "Seq.tryLast",
+        (bd "The last element as an Option, None when empty. Reads the whole sequence." (Some "[] |> Seq.tryLast") None
+         |> named [ "xs" ])
+        "Seq.pairwise",
+        (bd "Adjacent pairs: (e0,e1), (e1,e2), and so on." (Some "[1; 2; 3] |> Seq.pairwise |> Seq.freeze") None
+         |> named [ "xs" ])
+        "Seq.zip",
+        bd "Pair two sequences element-wise, stopping at the shorter." (Some "Seq.zip [1; 2] [3; 4] |> Seq.freeze") None
+        |> named [ "xs"; "ys" ]
+        "Seq.range",
+        (bd "A lazy arithmetic range: start, step, stop." (Some "Seq.range 1 1 5 |> Seq.freeze") None
+         |> named [ "start"; "step"; "stop" ])
+        "Seq.groupBy",
+        bd
+            "Group elements by a key into (key, items) pairs, as in F#."
+            (Some "[1; 2; 3] |> Seq.groupBy (fun x -> x) |> Seq.freeze")
+            None
+        |> named [ "key"; "xs" ]
+        // ---- the Seq-gaps cohort [D:seq-gaps] ----------------------
+        "Seq.collect",
+        bd
+            "Map each element to a sequence and flatten the results into one, lazily (flatMap in other languages)."
+            (Some "[\"a<b\"; \"c\"] |> Seq.collect (Str.split \"<\") |> Seq.freeze")
+            None
+        |> named [ "f"; "xs" ]
+        "Seq.concat",
+        bd "Flatten a sequence of sequences into one, lazily." (Some "[[1; 2]; [3]] |> Seq.concat |> Seq.freeze") None
+        |> named [ "xss" ]
+        "Seq.find",
+        bd
+            "The first element a predicate accepts. Raises when none match; use tryFind to get an Option instead."
+            (Some "[1; 5; 3] |> Seq.find (fun x -> x > 2)")
+            None
+        |> named [ "pred"; "xs" ]
+        "Seq.indexed",
+        bd
+            "Pair every element with its zero-based index, lazily. For F#'s mapi/iteri, use `indexed |> map`/`iter` on the pairs."
+            (Some "[\"a\"; \"b\"] |> Seq.indexed |> Seq.freeze")
+            None
+        |> named [ "xs" ]
+        "Seq.rev",
+        bd
+            "Reverse the sequence. The whole input is read when the first element is requested, so it cannot be used on an infinite sequence."
+            (Some "[1; 2; 3] |> Seq.rev |> Seq.freeze")
+            None
+        |> named [ "xs" ]
+        "Seq.chunkBySize",
+        bd
+            "Split into consecutive batches of at most n elements, lazily. The last batch may be shorter."
+            (Some "[1; 2; 3; 4; 5] |> Seq.chunkBySize 2 |> Seq.map Seq.freeze |> Seq.freeze")
+            None
+        |> named [ "n"; "xs" ]
+        "Seq.takeWhile",
+        bd
+            "The leading elements for which the predicate holds, lazily; stops at the first one that fails."
+            (Some "[1; 2; 9; 1] |> Seq.takeWhile (fun x -> x < 5) |> Seq.freeze")
+            None
+        |> named [ "pred"; "xs" ]
+        "Seq.skipWhile",
+        bd
+            "Drop leading elements while the predicate holds, then return all the rest, lazily."
+            (Some "[1; 2; 9; 1] |> Seq.skipWhile (fun x -> x < 5) |> Seq.freeze")
+            None
+        |> named [ "pred"; "xs" ]
+        "Seq.countBy",
+        bd
+            "Count the elements per key as (key, count) pairs, in the order each key is first seen. The whole input is read when the first pair is requested."
+            (Some "[\"a\"; \"bb\"; \"c\"] |> Seq.countBy Str.length |> Seq.freeze")
+            None
+        |> named [ "key"; "xs" ]
+        "Seq.distinctBy",
+        bd
+            "Keep only the first element for each key, lazily. Like distinct, but compares by a key function."
+            (Some "[\"a\"; \"bb\"; \"cc\"] |> Seq.distinctBy Str.length |> Seq.freeze")
+            None
+        |> named [ "key"; "xs" ]
+        "Seq.reduce",
+        bd
+            "Like fold without an initial value: the first element is the starting accumulator. Raises on an empty sequence; use fold when you have a starting value."
+            (Some "[1; 2; 3] |> Seq.reduce (+)")
+            None
+        |> named [ "f"; "xs" ]
+        "Seq.tryReduce",
+        bd
+            "Like reduce, but returns an Option: Some result, or None for an empty sequence (where reduce raises)."
+            (Some "[1; 2] |> Seq.where (fun n -> n > 9) |> Seq.tryReduce (+)")
+            None
+        |> named [ "f"; "xs" ]
+        "Seq.scan",
+        bd
+            "Like fold, but returns every intermediate accumulator, starting with the initial value, lazily."
+            (Some "[1; 2; 3] |> Seq.scan (+) 0 |> Seq.freeze")
+            None
+        |> named [ "f"; "init"; "xs" ]
+        "Seq.tryPick",
+        bd
+            "Apply a function to each element and return the first Some result, or None."
+            (Some "[\"a\"; \"12\"] |> Seq.tryPick Str.tryToInt")
+            None
+        |> named [ "f"; "xs" ]
+        "Seq.pick",
+        bd
+            "Apply a function to each element and return the value of the first Some result. Raises when there is none; use tryPick to get an Option instead."
+            (Some "[\"a\"; \"12\"] |> Seq.pick Str.tryToInt")
+            None
+        |> named [ "f"; "xs" ]
+        "Seq.except",
+        bd
+            "The elements of the sequence that are not in the excluded values, each kept once (a repeat is dropped, as F#'s Seq.except does). The excluded values come first and are read in full on the first request; the sequence itself is read lazily."
+            (Some "[1; 2; 3; 4] |> Seq.except [2; 4] |> Seq.freeze")
+            None
+        |> named [ "excluded"; "xs" ]
+        "Seq.replicate",
+        bd
+            "A sequence of n copies of a value, lazily. Raises on a negative count."
+            (Some "Seq.replicate 3 \"x\" |> Seq.freeze")
+            None
+        |> named [ "n"; "x" ]
+        "Seq.initInfinite",
+        bd
+            "The endless sequence f 0, f 1, f 2, …, computed lazily as it is read. Bound it with take, takeWhile or a slice before forcing it."
+            (Some "Seq.initInfinite (fun i -> i * i) |> Seq.take 4 |> Seq.freeze")
+            None
+        |> named [ "f" ]
+        "Seq.max",
+        bd
+            "The largest element, found in one pass without sorting. Elements must be comparable; raises on an empty sequence."
+            (Some "Seq.max [3; 1; 2]")
+            None
+        |> named [ "xs" ]
+        "Seq.min",
+        bd
+            "The smallest element, found in one pass without sorting. Elements must be comparable; raises on an empty sequence."
+            (Some "Seq.min [3; 1; 2]")
+            None
+        |> named [ "xs" ]
+        "Seq.maxBy",
+        bd
+            "The element with the largest key. Keys must be comparable; raises on an empty sequence."
+            (Some "[\"a\"; \"ccc\"] |> Seq.maxBy Str.length")
+            None
+        |> named [ "key"; "xs" ]
+        "Seq.minBy",
+        bd
+            "The element with the smallest key. Keys must be comparable; raises on an empty sequence."
+            (Some "[\"a\"; \"ccc\"] |> Seq.minBy Str.length")
+            None
+        |> named [ "key"; "xs" ]
+        "Seq.sort",
+        bd
+            "Sort the elements in ascending order (they must be comparable). The whole input is read when the first element is requested."
+            (Some "[\"pear\"; \"apple\"] |> Seq.sort |> Seq.freeze")
+            None
+        |> named [ "xs" ]
+        "Seq.sortDescending",
+        bd
+            "Sort the elements in descending order (they must be comparable). The whole input is read when the first element is requested."
+            (Some "[1; 3; 2] |> Seq.sortDescending |> Seq.freeze")
+            None
+        |> named [ "xs" ]
+        "Seq.average",
+        bd
+            "The mean of an int sequence, as a float. Raises on an empty sequence. For floats, sizes and durations use Float.average, Size.average or Duration.average."
+            (Some "[1; 2] |> Seq.average")
+            None
+        |> named [ "xs" ]
+        "Float.sum",
+        bd
+            "Add up a sequence of floats; raises if the sum is not finite. Seq.sum is for ints only; each numeric type has its own sum."
+            (Some "[1.5; 2.5] |> Float.sum")
+            None
+        |> named [ "xs" ]
+        "Float.average",
+        bd
+            "The mean of a float sequence. Raises on an empty sequence or a non-finite result."
+            (Some "[1.0; 2.0] |> Float.average")
+            None
+        |> named [ "xs" ]
+        "Size.sum",
+        bd "Add up sizes; the total is a Size." (Some "[1KiB; 512B] |> Size.sum") None
+        |> named [ "xs" ]
+        "Size.average",
+        bd
+            "The mean size, truncated to whole bytes. Raises on an empty sequence."
+            (Some "[1KiB; 3KiB] |> Size.average")
+            None
+        |> named [ "xs" ]
+        "Duration.sum", bd "Sum durations." (Some "[90s; 30s] |> Duration.sum") None |> named [ "xs" ]
+        "Duration.average",
+        bd
+            "The mean duration, truncated to whole milliseconds. Raises on an empty sequence."
+            (Some "[90s; 30s] |> Duration.average")
+            None
+        |> named [ "xs" ]
+        "Seq.pmap",
+        bd
+            "Map in parallel across worker threads."
+            (Some "[1; 2; 3] |> Seq.pmap (fun x -> x + 1) |> Seq.freeze")
+            (Some
+                "Results keep the input order. It runs eagerly with up to 64 workers; if several items fail, the error from the earliest item is the one reported.")
+        |> named [ "f"; "xs" ]
+        "Seq.piter",
+        bd
+            "Run an effect over each element in parallel."
+            (Some "[1; 2; 3] |> Seq.piter (fun x -> ())")
+            (Some
+                "Each worker gets its own copy of the session: a `cd` inside a worker affects only that worker and is gone when the workers finish.")
+        |> named [ "f"; "xs" ]
+        "Seq.pmapWith",
+        bd
+            "Seq.pmap with an explicit number of workers. Use it when the work is rate-limited or uses a lot of memory."
+            (Some "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.freeze")
+            (Some
+                "Plain `pmap` uses fewer workers when parallel calls are nested; the n you give here is always used as is.")
+        |> named [ "n"; "f"; "xs" ]
+        "Seq.piterWith",
+        bd
+            "Seq.piter with an explicit worker count."
+            (Some "[1; 2; 3] |> Seq.piterWith 2 (fun x -> ())")
+            (Some
+                "Plain `piter` uses fewer workers when parallel calls are nested; the n you give here is always used as is.")
+        |> named [ "n"; "f"; "xs" ]
+        "Seq.pfirst",
+        bd
+            "Run the function on every element in parallel and return the first successful result. Processes started by the others are killed, along with their children; each other call stops at its next builtin call, command, sleep or Http send, and pfirst returns only after they have all stopped, so nothing they do happens after it returns. `exit n` in a call ends the race and the script. If every call fails, the error of the earliest element is raised; an empty sequence raises. Errors from the calls that did not win are discarded, so if only one element can ever succeed, the others' errors stay hidden and a misconfiguration can go unnoticed."
+            (Some "[3; 1; 2] |> Seq.pfirst (fun n -> n * 10)")
+            (Some
+                "A race, not a retry: for example the same download from several mirrors, where the first answer wins and the losers' processes are killed.")
+        |> named [ "f"; "xs" ]
+        "Seq.pfirstWith",
+        bd "Seq.pfirst with a maximum number of parallel calls." (Some "[1; 2] |> Seq.pfirstWith 2 (fun n -> n)") None
+        |> named [ "degree"; "f"; "xs" ]
 
-          // ---- Option ----
-          "Option.iter",
-          (bd
-              "Run a side effect on the value inside Some; do nothing for None. Saves writing a match."
-              (Some "Some \"x\" |> Option.iter print")
-              None
-           |> named [ "f"; "opt" ])
-          "Option.orElse",
-          (bd
-              "The option itself when it is Some, otherwise the fallback option. The fallback comes first so it works in a pipe. The result is still an Option; use Option.defaultValue to unwrap. The fallback is evaluated even when the option is Some."
-              (Some "None |> Option.orElse (Some 1)")
-              None
-           |> named [ "fallback"; "opt" ])
-          "Option.orElseWith",
-          (bd
-              "Like orElse, but the fallback is a function (unit -> Option) called only when the option is None. Use it when the fallback is expensive to compute."
-              (Some "None |> Option.orElseWith (fun () -> Some 1)")
-              None
-           |> named [ "f"; "opt" ])
-          "Result.map",
-          (bd "Apply a function to the value inside Ok; an Error stays as it is." (Some "File.read \"n.txt\" |> Seq.length |> try result |> Result.map (fun n -> n * 2)") None
-           |> named [ "f"; "r" ])
-          "Result.defaultValue",
-          (bd "The value inside Ok, or the fallback for an Error." (Some "File.read \"n.txt\" |> Seq.length |> try result |> Result.defaultValue 0") None
-           |> named [ "fallback"; "r" ])
-          "Result.toOption",
-          (bd "Some value for Ok, None for an Error (the message is dropped)." (Some "File.read \"n.txt\" |> try result |> Result.toOption") None
-           |> named [ "r" ])
-          "Result.isOk",
-          (bd "True for Ok, false for an Error." (Some "File.read \"n.txt\" |> try result |> Result.isOk") None
-           |> named [ "r" ])
-          "Option.map",
-          (bd "Apply a function to the value inside Some; None stays None." (Some "Option.map (fun x -> x + 1) (Some 5)") None
-           |> named [ "f"; "opt" ])
-          "Option.bind",
-          (bd
-              "Apply a function that itself returns an Option to the value inside Some, without nesting the result. Use it to chain lookups that may each fail."
-              (Some "Some 5 |> Option.bind (fun x -> Some (x + 1))")
-              None
-           |> named [ "f"; "opt" ])
-          "Option.flatten",
-          (bd
-              "Collapse a nested Option<Option<T>> into Option<T> (Some (Some x) -> Some x; any None -> None)."
-              (Some "Option.flatten (Some (Some 5))")
-              None
-           |> named [ "opt" ])
-          "Frontier.fold",
-          (bd
-              "Fold over a graph that is discovered as you go. Nodes are taken from a first-in, first-out queue; a node whose key was already seen is skipped. The step returns the new accumulator and the node's children, which are added to the queue. It ends when the queue is empty. Cycles are safe, and after 100000 steps it raises instead of running forever. A node with key \"\" is never skipped as a duplicate."
-              (Some
-                  "[1] |> Frontier.fold (fun n -> show n) 0 (fun acc n -> (acc + n, if n < 3 then [n + 1] else []))")
-              None
-           |> named [ "keyOf"; "seed"; "step"; "frontier" ])
-          "Graph.reach",
-          (bd
-              "Every node reachable from a start node, breadth-first, each listed once; nodes with the same key count as one, so cycles are safe. The neighbors function defines the graph, so nothing has to be built up front."
-              (Some "Graph.reach (fun n -> show n) (fun n -> if n < 3 then [n + 1] else []) 1")
-              None
-           |> named [ "keyOf"; "neighbors"; "start" ])
-          "Tree.walk",
-          (bd
-              "Walk a tree for its side effects, parents before children. The step function does the work for a node and returns its children, so which children exist can depend on what the parent did. Nodes are not de-duplicated; for structures with cycles use Graph.reach or Frontier.fold. The 100000-step limit still applies."
-              (Some "1 |> Tree.walk (fun n -> if n < 3 then [n + 1] else [])")
-              None
-           |> named [ "step"; "root" ])
-          "Option.defaultValue",
-          bd "The Some value, or a fallback when None." (Some "Option.defaultValue 0 (Some 5)") None
-          |> named [ "fallback"; "opt" ]
-          "Option.defaultWith",
-          bd
-              "Like defaultValue, but the fallback is computed only when None."
-              (Some "Option.defaultWith (fun () -> 0) None")
-              None
-          |> named [ "fallback"; "opt" ]
+        // ---- Option ----
+        "Option.iter",
+        (bd
+            "Run a side effect on the value inside Some; do nothing for None. Saves writing a match."
+            (Some "Some \"x\" |> Option.iter print")
+            None
+         |> named [ "f"; "opt" ])
+        "Option.orElse",
+        (bd
+            "The option itself when it is Some, otherwise the fallback option. The fallback comes first so it works in a pipe. The result is still an Option; use Option.defaultValue to unwrap. The fallback is evaluated even when the option is Some."
+            (Some "None |> Option.orElse (Some 1)")
+            None
+         |> named [ "fallback"; "opt" ])
+        "Option.orElseWith",
+        (bd
+            "Like orElse, but the fallback is a function (unit -> Option) called only when the option is None. Use it when the fallback is expensive to compute."
+            (Some "None |> Option.orElseWith (fun () -> Some 1)")
+            None
+         |> named [ "f"; "opt" ])
+        "Result.map",
+        (bd
+            "Apply a function to the value inside Ok; an Error stays as it is."
+            (Some "File.read \"n.txt\" |> Seq.length |> try result |> Result.map (fun n -> n * 2)")
+            None
+         |> named [ "f"; "r" ])
+        "Result.defaultValue",
+        (bd
+            "The value inside Ok, or the fallback for an Error."
+            (Some "File.read \"n.txt\" |> Seq.length |> try result |> Result.defaultValue 0")
+            None
+         |> named [ "fallback"; "r" ])
+        "Result.toOption",
+        (bd
+            "Some value for Ok, None for an Error (the message is dropped)."
+            (Some "File.read \"n.txt\" |> try result |> Result.toOption")
+            None
+         |> named [ "r" ])
+        "Result.isOk",
+        (bd "True for Ok, false for an Error." (Some "File.read \"n.txt\" |> try result |> Result.isOk") None
+         |> named [ "r" ])
+        "Option.map",
+        (bd
+            "Apply a function to the value inside Some; None stays None."
+            (Some "Option.map (fun x -> x + 1) (Some 5)")
+            None
+         |> named [ "f"; "opt" ])
+        "Option.bind",
+        (bd
+            "Apply a function that itself returns an Option to the value inside Some, without nesting the result. Use it to chain lookups that may each fail."
+            (Some "Some 5 |> Option.bind (fun x -> Some (x + 1))")
+            None
+         |> named [ "f"; "opt" ])
+        "Option.flatten",
+        (bd
+            "Collapse a nested Option<Option<T>> into Option<T> (Some (Some x) -> Some x; any None -> None)."
+            (Some "Option.flatten (Some (Some 5))")
+            None
+         |> named [ "opt" ])
+        "Frontier.fold",
+        (bd
+            "Fold over a graph that is discovered as you go. Nodes are taken from a first-in, first-out queue; a node whose key was already seen is skipped. The step returns the new accumulator and the node's children, which are added to the queue. It ends when the queue is empty. Cycles are safe, and after 100000 steps it raises instead of running forever. A node with key \"\" is never skipped as a duplicate."
+            (Some "[1] |> Frontier.fold (fun n -> show n) 0 (fun acc n -> (acc + n, if n < 3 then [n + 1] else []))")
+            None
+         |> named [ "keyOf"; "seed"; "step"; "frontier" ])
+        "Graph.reach",
+        (bd
+            "Every node reachable from a start node, breadth-first, each listed once; nodes with the same key count as one, so cycles are safe. The neighbors function defines the graph, so nothing has to be built up front."
+            (Some "Graph.reach (fun n -> show n) (fun n -> if n < 3 then [n + 1] else []) 1")
+            None
+         |> named [ "keyOf"; "neighbors"; "start" ])
+        "Tree.walk",
+        (bd
+            "Walk a tree for its side effects, parents before children. The step function does the work for a node and returns its children, so which children exist can depend on what the parent did. Nodes are not de-duplicated; for structures with cycles use Graph.reach or Frontier.fold. The 100000-step limit still applies."
+            (Some "1 |> Tree.walk (fun n -> if n < 3 then [n + 1] else [])")
+            None
+         |> named [ "step"; "root" ])
+        "Option.defaultValue",
+        bd "The Some value, or a fallback when None." (Some "Option.defaultValue 0 (Some 5)") None
+        |> named [ "fallback"; "opt" ]
+        "Option.defaultWith",
+        bd
+            "Like defaultValue, but the fallback is computed only when None."
+            (Some "Option.defaultWith (fun () -> 0) None")
+            None
+        |> named [ "fallback"; "opt" ]
 
-          // ---- bare / hot-path ----
-          "print",
-          (bd
-              "Write a value and a trailing newline to stdout. Takes a string, int, float, bool, or seq<string> (one line per element); for anything else, render through an interpolation hole ($\"{row}\") or show."
-              (Some "print \"hi\"")
-              None
-           |> named [ "value" ])
-          "printerr",
-          (bd
-              "Write a value and a newline to stderr. Use it for diagnostics and keep stdout for data. Accepts the same types as print: string, int, float, bool, or seq<string>."
-              (Some "printerr \"oops\"")
-              None
-           |> named [ "value" ])
-          "show",
-          (bd
-              "Turn any value into its text form, the same text string interpolation produces. Use it where interpolation does not fit, such as `Seq.map show`. A Secret cannot be interpolated, but `show` renders it masked. It works on every value; functions show as an opaque placeholder."
-              (Some "[1; 2; 3] |> Seq.map show |> Seq.freeze")
-              None
-           |> named [ "value" ])
-          "not", (bd "Boolean negation." (Some "not true") None |> named [ "b" ])
-          "id",
-          (bd
-              "The identity function: returns its argument unchanged. Useful where a function is expected, as in `Seq.choose id` over a seq of Options. Unlike `not` or `fst`, `id` can still be used as a variable name; a binding named `id` simply shadows it."
-              (Some "[Some 1; None; Some 3] |> Seq.choose id")
-              None
-           |> named [ "x" ])
-          "fst", (bd "The first element of a pair. Wider tuples are a type error, as in F#." (Some "fst (1, \"a\")") None |> named [ "pair" ])
-          "snd", (bd "The second element of a pair. Wider tuples are a type error, as in F#." (Some "snd (1, \"a\")") None |> named [ "pair" ])
-          "ls",
-          (bd
-              "The current directory's entries as typed rows (name, kind, target, bytes, modified, hidden, path), sorted by name. Dir.stat gives the same rows for a named directory; ^ls runs the external ls."
-              (Some "ls |> Seq.where (fun f -> f.kind == Directory)")
-              None)
-          "pwd",
-          (bd "The session's current directory, read where it is used." (Some "pwd") None)
-          "cd",
-          (bd
-              "Change the session's directory and return the absolute directory it moved to (`let here = cd \"/tmp\"`). A bare name uses the value of that binding (`cd target`). `cd` with no argument, or a typed `cd ~`, goes to the home directory; a string argument is used literally. To change directory for a block only, use `within cd`."
-              (Some "cd \".\"")
-              None
-           |> named [ "path" ])
-          "freeze",
-          (bd "Evaluate a lazy sequence now and keep the results. Same as Seq.freeze." (Some "[1; 2; 3] |> freeze") None
-           |> named [ "xs" ])
-          "fail",
-          (bd
-              "Stop with a message and exit code 1."
-              None
-              // the divergence claim is [D:fail-bottom]'s
-              (Some
-                  "Use `exit n` to exit with a code and no message. fail never returns (its type is `string -> 'a`), so it can stand in any branch, for example opposite a branch that returns a value.")
-           |> named [ "message" ])
-          "exit", (bd "Exit the process with a status code." None None |> named [ "code" ])
-          // ---- Str ----
-          "Str.isEmpty",
-          (bd "True for the empty string \"\" (whitespace is not empty; Str.trim first for that)." (Some "Str.isEmpty \"\"") None
-           |> named [ "s" ])
-          "Str.nonEmpty",
-          (bd "True for any string but \"\" — the point-free filter: `lines |> Seq.where Str.nonEmpty`." (Some "[\"a\"; \"\"] |> Seq.where Str.nonEmpty") None
-           |> named [ "s" ])
-          "Str.contains",
-          (bd "True when a substring is present." (Some "\"abc\" |> Str.contains \"b\"") None
-           |> named [ "needle"; "s" ])
-          "Str.startsWith",
-          (bd "True when the string starts with a prefix." (Some "\"abc\" |> Str.startsWith \"a\"") None
-           |> named [ "prefix"; "s" ])
-          "Str.endsWith",
-          (bd "True when the string ends with a suffix." (Some "\"abc\" |> Str.endsWith \"c\"") None
-           |> named [ "suffix"; "s" ])
-          "Str.trim",
-          (bd "Drop leading and trailing whitespace." (Some "Str.trim \"  x  \"") None
-           |> named [ "s" ])
-          "Str.trimStart",
-          (bd "Drop leading whitespace." (Some "Str.trimStart \"  x\"") None
-           |> named [ "s" ])
-          "Str.trimEnd",
-          (bd "Drop trailing whitespace." (Some "Str.trimEnd \"x  \"") None
-           |> named [ "s" ])
-          "Str.toLower",
-          (bd "Lowercase (invariant culture)." (Some "Str.toLower \"ABC\"") None
-           |> named [ "s" ])
-          "Str.toUpper",
-          (bd "Uppercase (invariant culture)." (Some "Str.toUpper \"abc\"") None
-           |> named [ "s" ])
-          "Str.split",
-          (bd
-              "Split on a separator into a sequence. Empty pieces are kept: adjacent separators, or a separator at either end, produce \"\"."
-              (Some "Str.split \",\" \"a,b,c\" |> Seq.freeze")
-              None
-           |> named [ "sep"; "s" ])
-          "Str.fields",
-          (bd
-              "Split on runs of whitespace (the same whitespace trim removes) into fields. Never produces empty pieces; a blank or empty string gives an empty sequence."
-              (Some "\"NAME   READY  1/1\" |> Str.fields |> Seq.freeze")
-              None
-           |> named [ "s" ])
-          "Str.splitOnce",
-          (bd
-              "Split at the first occurrence of the separator into (before, after); the after part is kept whole, including any later separators. Raises when the separator is missing; trySplitOnce returns an Option instead."
-              (Some "Str.splitOnce \"=\" \"key=a=b\" |> snd |> print")
-              None
-           |> named [ "sep"; "s" ])
-          "Str.trySplitOnce",
-          (bd
-              "Like splitOnce, but returns an Option: Some (before, after) at the first occurrence, None when the separator is missing. Handy for parsing `KEY=VALUE`."
-              (Some "match Str.trySplitOnce \"=\" \"key=val\" with | Some (k, v) -> print k | None -> print \"no\"")
-              None
-           |> named [ "sep"; "s" ])
-          "Str.rsplitOnce",
-          (bd
-              "Split at the last occurrence of the separator into (before, after). Raises when the separator is missing; tryRsplitOnce returns an Option instead. Useful for host:port when the host may contain colons."
-              (Some "Str.rsplitOnce \":\" \"[::1]:8080\" |> snd |> print")
-              None
-           |> named [ "sep"; "s" ])
-          "Str.tryRsplitOnce",
-          (bd
-              "Like rsplitOnce, but returns an Option: Some (before, after) at the last occurrence, None when the separator is missing."
-              (Some "match Str.tryRsplitOnce \"@\" \"a@b@host\" with | Some (u, h) -> print h | None -> print \"no\"")
-              None
-           |> named [ "sep"; "s" ])
-          "Str.join",
-          (bd "Join a sequence of strings with a separator." (Some "Str.join \",\" [\"a\"; \"b\"]") None
-           |> named [ "sep"; "xs" ])
-          "Str.replace",
-          bd "Replace every occurrence of a substring. The text is literal, not a regex (Str.rreplace takes a pattern)." (Some "Str.replace \"a\" \"b\" \"aba\"") None
-          |> named [ "old"; "new"; "s" ]
-          "Str.length", (bd "The number of characters (Unicode code points)." (Some "Str.length \"abc\"") None |> named [ "s" ])
-          "Str.width",
-          (bd
-              "The number of terminal columns the string takes when printed: two for a wide character (Chinese, Japanese, Korean, fullwidth forms, emoji), none for a combining mark, a zero-width or control character, or an escape sequence such as a colour, one for the rest. An emoji built from several code points (a family joined by zero-width joiners, a flag) counts once. Use it to pad or align text you print; Str.length counts code points instead."
-              (Some "Str.width \"日本\"")
-              None
-           |> named [ "s" ])
-          "Str.sub",
-          (bd "A substring by start index and length, both in characters (code points)." (Some "Str.sub 0 2 \"abc\"") None
-           |> named [ "start"; "len"; "s" ])
-          "Str.replicate",
-          (bd "The string repeated n times. 0 gives the empty string; a negative count raises, as in Seq.replicate."
-              (Some "Str.replicate 3 \"ab\"")
-              None
-           |> named [ "n"; "s" ])
-          "Str.padLeft",
-          (bd
-              "Pad with spaces on the left to a total width, for right-aligned columns. A string already that long is unchanged; a negative width raises."
-              (Some "Str.padLeft 5 \"42\"")
-              None
-           |> named [ "width"; "s" ])
-          "Str.padRight",
-          (bd
-              "Pad with spaces on the right to a total width, for left-aligned columns (like printf \"%-15s\"). A string already that long is unchanged; a negative width raises."
-              (Some "Str.padRight 6 \"name\"")
-              None
-           |> named [ "width"; "s" ])
-          "Str.toInt",
-          (bd "Parse an int (raises on a non-number)." (Some "Str.toInt \"42\"") None
-           |> named [ "s" ])
-          "Str.tryToInt",
-          (bd "Parse an int as an Option, None when it is not a number." (Some "Str.tryToInt \"42\"") None
-           |> named [ "s" ])
-          "Str.sha256",
-          (bd
-              "The SHA-256 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha256sum)."
-              (Some "Str.sha256 \"hello\"")
-              None
-           |> named [ "s" ])
-          "Str.sha1",
-          (bd
-              "The SHA-1 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha1sum). SHA-1 is broken for security; use it only where a protocol names it (git object ids, legacy checksums), and Str.sha256 otherwise."
-              (Some "Str.sha1 \"hello\"")
-              None
-           |> named [ "s" ])
-          "Str.toBase64",
-          (bd
-              "Base64 of the string's UTF-8 bytes, on one line. It is never wrapped at 76 columns, so there is no need for base64 -w0."
-              (Some "Str.toBase64 \"caf\u00e9\"")
-              None
-           |> named [ "s" ])
-          "Str.fromBase64",
-          (bd
-              "Decode standard base64 (padded or unpadded) to text. Raises on invalid base64 or when the decoded bytes are not valid UTF-8, instead of silently inserting replacement characters."
-              (Some "Str.fromBase64 \"Y2Fmw6k=\"")
-              None
-           |> named [ "s" ])
-          "Str.tryFromBase64",
-          (bd
-              "Like fromBase64, but returns an Option: None both for malformed base64 and for valid base64 that does not decode to text."
-              (Some "Str.tryFromBase64 \"!!!\"")
-              None
-           |> named [ "s" ])
-          "Str.toUtf8",
-          (bd "The string's UTF-8 bytes as a Bytes value." (Some "Str.toUtf8 \"caf\u00e9\"") None
-           |> named [ "s" ])
-          "Str.fromUtf8",
-          (bd
-              "Decode Bytes as UTF-8 text. Raises when the bytes are not valid UTF-8 or contain a NUL byte, so corrupt data is never decoded silently."
-              None
-              None
-           |> named [ "b" ])
-          "Str.tryFromUtf8",
-          (bd "Like fromUtf8, but returns an Option: None when the bytes are not text (including bytes with NUL)." None None
-           |> named [ "b" ])
-          "Str.tryIndexOf",
-          (bd "The index of a substring as an Option." (Some "Str.tryIndexOf \"b\" \"abc\"") None
-           |> named [ "needle"; "s" ])
-          "Str.isMatch",
-          bd "True when a regex matches anywhere in the string." (Some "Str.isMatch \"[0-9]+\" \"x42\"") None
-          |> named [ "pattern"; "subject" ]
-          "Str.rmatch",
-          bd
-              "The groups of the first regex match as Some sequence, or None when there is no match. Groups are positional: named groups `(?<x>...)` are rejected, because in weir you name captures when you bind them."
-              (Some "Str.rmatch \"([0-9]+)\" \"x42\"")
-              None
-          |> named [ "pattern"; "s" ]
-          "Str.rmatchAll",
-          bd
-              "Every regex match's groups, as a sequence of sequences."
-              (Some "Str.rmatchAll \"[0-9]+\" \"a1b2\" |> Seq.freeze")
-              None
-          |> named [ "pattern"; "s" ]
-          "Str.rsplit",
-          bd
-              "Split on every regex match. As with split, empty pieces are kept (adjacent matches, or a match at either end, produce \"\"). Capture groups do not add extra pieces."
-              (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.freeze")
-              None
-          |> named [ "pattern"; "s" ]
-          "Str.rreplace",
-          bd
-              "Replace every regex match. In the replacement, $1 (or ${1}) is a group, $0 the whole match, and $$ a literal $; any other $ raises, as does a group the pattern does not have. Str.replace is the literal form."
-              (Some "Str.rreplace @\"(\\w+)@(\\w+)\" \"$2 at $1\" \"me@host\"")
-              None
-          |> named [ "pattern"; "replacement"; "s" ]
+        // ---- bare / hot-path ----
+        "print",
+        (bd
+            "Write a value and a trailing newline to stdout. Takes a string, int, float, bool, or seq<string> (one line per element); for anything else, render through an interpolation hole ($\"{row}\") or show."
+            (Some "print \"hi\"")
+            None
+         |> named [ "value" ])
+        "printerr",
+        (bd
+            "Write a value and a newline to stderr. Use it for diagnostics and keep stdout for data. Accepts the same types as print: string, int, float, bool, or seq<string>."
+            (Some "printerr \"oops\"")
+            None
+         |> named [ "value" ])
+        "show",
+        (bd
+            "Turn any value into its text form, the same text string interpolation produces. Use it where interpolation does not fit, such as `Seq.map show`. A Secret cannot be interpolated, but `show` renders it masked. It works on every value; functions show as an opaque placeholder."
+            (Some "[1; 2; 3] |> Seq.map show |> Seq.freeze")
+            None
+         |> named [ "value" ])
+        "not", (bd "Boolean negation." (Some "not true") None |> named [ "b" ])
+        "id",
+        (bd
+            "The identity function: returns its argument unchanged. Useful where a function is expected, as in `Seq.choose id` over a seq of Options. Unlike `not` or `fst`, `id` can still be used as a variable name; a binding named `id` simply shadows it."
+            (Some "[Some 1; None; Some 3] |> Seq.choose id")
+            None
+         |> named [ "x" ])
+        "fst",
+        (bd "The first element of a pair. Wider tuples are a type error, as in F#." (Some "fst (1, \"a\")") None
+         |> named [ "pair" ])
+        "snd",
+        (bd "The second element of a pair. Wider tuples are a type error, as in F#." (Some "snd (1, \"a\")") None
+         |> named [ "pair" ])
+        "ls",
+        (bd
+            "The current directory's entries as typed rows (name, kind, target, bytes, modified, hidden, path), sorted by name. Dir.stat gives the same rows for a named directory; ^ls runs the external ls."
+            (Some "ls |> Seq.where (fun f -> f.kind == Directory)")
+            None)
+        "pwd", (bd "The session's current directory, read where it is used." (Some "pwd") None)
+        "cd",
+        (bd
+            "Change the session's directory and return the absolute directory it moved to (`let here = cd \"/tmp\"`). A bare name uses the value of that binding (`cd target`). `cd` with no argument, or a typed `cd ~`, goes to the home directory; a string argument is used literally. To change directory for a block only, use `within cd`."
+            (Some "cd \".\"")
+            None
+         |> named [ "path" ])
+        "freeze",
+        (bd "Evaluate a lazy sequence now and keep the results. Same as Seq.freeze." (Some "[1; 2; 3] |> freeze") None
+         |> named [ "xs" ])
+        "fail",
+        (bd
+            "Stop with a message and exit code 1."
+            None
+            // the divergence claim is [D:fail-bottom]'s
+            (Some
+                "Use `exit n` to exit with a code and no message. fail never returns (its type is `string -> 'a`), so it can stand in any branch, for example opposite a branch that returns a value.")
+         |> named [ "message" ])
+        "exit", (bd "Exit the process with a status code." None None |> named [ "code" ])
+        // ---- Str ----
+        "Str.isEmpty",
+        (bd
+            "True for the empty string \"\" (whitespace is not empty; Str.trim first for that)."
+            (Some "Str.isEmpty \"\"")
+            None
+         |> named [ "s" ])
+        "Str.nonEmpty",
+        (bd
+            "True for any string but \"\" — the point-free filter: `lines |> Seq.where Str.nonEmpty`."
+            (Some "[\"a\"; \"\"] |> Seq.where Str.nonEmpty")
+            None
+         |> named [ "s" ])
+        "Str.contains",
+        (bd "True when a substring is present." (Some "\"abc\" |> Str.contains \"b\"") None
+         |> named [ "needle"; "s" ])
+        "Str.startsWith",
+        (bd "True when the string starts with a prefix." (Some "\"abc\" |> Str.startsWith \"a\"") None
+         |> named [ "prefix"; "s" ])
+        "Str.endsWith",
+        (bd "True when the string ends with a suffix." (Some "\"abc\" |> Str.endsWith \"c\"") None
+         |> named [ "suffix"; "s" ])
+        "Str.trim",
+        (bd "Drop leading and trailing whitespace." (Some "Str.trim \"  x  \"") None
+         |> named [ "s" ])
+        "Str.trimStart",
+        (bd "Drop leading whitespace." (Some "Str.trimStart \"  x\"") None
+         |> named [ "s" ])
+        "Str.trimEnd",
+        (bd "Drop trailing whitespace." (Some "Str.trimEnd \"x  \"") None
+         |> named [ "s" ])
+        "Str.toLower",
+        (bd "Lowercase (invariant culture)." (Some "Str.toLower \"ABC\"") None
+         |> named [ "s" ])
+        "Str.toUpper",
+        (bd "Uppercase (invariant culture)." (Some "Str.toUpper \"abc\"") None
+         |> named [ "s" ])
+        "Str.split",
+        (bd
+            "Split on a separator into a sequence. Empty pieces are kept: adjacent separators, or a separator at either end, produce \"\"."
+            (Some "Str.split \",\" \"a,b,c\" |> Seq.freeze")
+            None
+         |> named [ "sep"; "s" ])
+        "Str.fields",
+        (bd
+            "Split on runs of whitespace (the same whitespace trim removes) into fields. Never produces empty pieces; a blank or empty string gives an empty sequence."
+            (Some "\"NAME   READY  1/1\" |> Str.fields |> Seq.freeze")
+            None
+         |> named [ "s" ])
+        "Str.splitOnce",
+        (bd
+            "Split at the first occurrence of the separator into (before, after); the after part is kept whole, including any later separators. Raises when the separator is missing; trySplitOnce returns an Option instead."
+            (Some "Str.splitOnce \"=\" \"key=a=b\" |> snd |> print")
+            None
+         |> named [ "sep"; "s" ])
+        "Str.trySplitOnce",
+        (bd
+            "Like splitOnce, but returns an Option: Some (before, after) at the first occurrence, None when the separator is missing. Handy for parsing `KEY=VALUE`."
+            (Some "match Str.trySplitOnce \"=\" \"key=val\" with | Some (k, v) -> print k | None -> print \"no\"")
+            None
+         |> named [ "sep"; "s" ])
+        "Str.rsplitOnce",
+        (bd
+            "Split at the last occurrence of the separator into (before, after). Raises when the separator is missing; tryRsplitOnce returns an Option instead. Useful for host:port when the host may contain colons."
+            (Some "Str.rsplitOnce \":\" \"[::1]:8080\" |> snd |> print")
+            None
+         |> named [ "sep"; "s" ])
+        "Str.tryRsplitOnce",
+        (bd
+            "Like rsplitOnce, but returns an Option: Some (before, after) at the last occurrence, None when the separator is missing."
+            (Some "match Str.tryRsplitOnce \"@\" \"a@b@host\" with | Some (u, h) -> print h | None -> print \"no\"")
+            None
+         |> named [ "sep"; "s" ])
+        "Str.join",
+        (bd "Join a sequence of strings with a separator." (Some "Str.join \",\" [\"a\"; \"b\"]") None
+         |> named [ "sep"; "xs" ])
+        "Str.replace",
+        bd
+            "Replace every occurrence of a substring. The text is literal, not a regex (Str.rreplace takes a pattern)."
+            (Some "Str.replace \"a\" \"b\" \"aba\"")
+            None
+        |> named [ "old"; "new"; "s" ]
+        "Str.length",
+        (bd "The number of characters (Unicode code points)." (Some "Str.length \"abc\"") None
+         |> named [ "s" ])
+        "Str.width",
+        (bd
+            "The number of terminal columns the string takes when printed: two for a wide character (Chinese, Japanese, Korean, fullwidth forms, emoji), none for a combining mark, a zero-width or control character, or an escape sequence such as a colour, one for the rest. An emoji built from several code points (a family joined by zero-width joiners, a flag) counts once. Use it to pad or align text you print; Str.length counts code points instead."
+            (Some "Str.width \"日本\"")
+            None
+         |> named [ "s" ])
+        "Str.sub",
+        (bd "A substring by start index and length, both in characters (code points)." (Some "Str.sub 0 2 \"abc\"") None
+         |> named [ "start"; "len"; "s" ])
+        "Str.replicate",
+        (bd
+            "The string repeated n times. 0 gives the empty string; a negative count raises, as in Seq.replicate."
+            (Some "Str.replicate 3 \"ab\"")
+            None
+         |> named [ "n"; "s" ])
+        "Str.padLeft",
+        (bd
+            "Pad with spaces on the left to a total width, for right-aligned columns. A string already that long is unchanged; a negative width raises."
+            (Some "Str.padLeft 5 \"42\"")
+            None
+         |> named [ "width"; "s" ])
+        "Str.padRight",
+        (bd
+            "Pad with spaces on the right to a total width, for left-aligned columns (like printf \"%-15s\"). A string already that long is unchanged; a negative width raises."
+            (Some "Str.padRight 6 \"name\"")
+            None
+         |> named [ "width"; "s" ])
+        "Str.toInt",
+        (bd "Parse an int (raises on a non-number)." (Some "Str.toInt \"42\"") None
+         |> named [ "s" ])
+        "Str.tryToInt",
+        (bd "Parse an int as an Option, None when it is not a number." (Some "Str.tryToInt \"42\"") None
+         |> named [ "s" ])
+        "Str.sha256",
+        (bd
+            "The SHA-256 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha256sum)."
+            (Some "Str.sha256 \"hello\"")
+            None
+         |> named [ "s" ])
+        "Str.sha1",
+        (bd
+            "The SHA-1 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha1sum). SHA-1 is broken for security; use it only where a protocol names it (git object ids, legacy checksums), and Str.sha256 otherwise."
+            (Some "Str.sha1 \"hello\"")
+            None
+         |> named [ "s" ])
+        "Str.toBase64",
+        (bd
+            "Base64 of the string's UTF-8 bytes, on one line. It is never wrapped at 76 columns, so there is no need for base64 -w0."
+            (Some "Str.toBase64 \"caf\u00e9\"")
+            None
+         |> named [ "s" ])
+        "Str.fromBase64",
+        (bd
+            "Decode standard base64 (padded or unpadded) to text. Raises on invalid base64 or when the decoded bytes are not valid UTF-8, instead of silently inserting replacement characters."
+            (Some "Str.fromBase64 \"Y2Fmw6k=\"")
+            None
+         |> named [ "s" ])
+        "Str.tryFromBase64",
+        (bd
+            "Like fromBase64, but returns an Option: None both for malformed base64 and for valid base64 that does not decode to text."
+            (Some "Str.tryFromBase64 \"!!!\"")
+            None
+         |> named [ "s" ])
+        "Str.toUtf8",
+        (bd "The string's UTF-8 bytes as a Bytes value." (Some "Str.toUtf8 \"caf\u00e9\"") None
+         |> named [ "s" ])
+        "Str.fromUtf8",
+        (bd
+            "Decode Bytes as UTF-8 text. Raises when the bytes are not valid UTF-8 or contain a NUL byte, so corrupt data is never decoded silently."
+            None
+            None
+         |> named [ "b" ])
+        "Str.tryFromUtf8",
+        (bd
+            "Like fromUtf8, but returns an Option: None when the bytes are not text (including bytes with NUL)."
+            None
+            None
+         |> named [ "b" ])
+        "Str.tryIndexOf",
+        (bd "The index of a substring as an Option." (Some "Str.tryIndexOf \"b\" \"abc\"") None
+         |> named [ "needle"; "s" ])
+        "Str.isMatch",
+        bd "True when a regex matches anywhere in the string." (Some "Str.isMatch \"[0-9]+\" \"x42\"") None
+        |> named [ "pattern"; "subject" ]
+        "Str.rmatch",
+        bd
+            "The groups of the first regex match as Some sequence, or None when there is no match. Groups are positional: named groups `(?<x>...)` are rejected, because in weir you name captures when you bind them."
+            (Some "Str.rmatch \"([0-9]+)\" \"x42\"")
+            None
+        |> named [ "pattern"; "s" ]
+        "Str.rmatchAll",
+        bd
+            "Every regex match's groups, as a sequence of sequences."
+            (Some "Str.rmatchAll \"[0-9]+\" \"a1b2\" |> Seq.freeze")
+            None
+        |> named [ "pattern"; "s" ]
+        "Str.rsplit",
+        bd
+            "Split on every regex match. As with split, empty pieces are kept (adjacent matches, or a match at either end, produce \"\"). Capture groups do not add extra pieces."
+            (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.freeze")
+            None
+        |> named [ "pattern"; "s" ]
+        "Str.rreplace",
+        bd
+            "Replace every regex match. In the replacement, $1 (or ${1}) is a group, $0 the whole match, and $$ a literal $; any other $ raises, as does a group the pattern does not have. Str.replace is the literal form."
+            (Some "Str.rreplace @\"(\\w+)@(\\w+)\" \"$2 at $1\" \"me@host\"")
+            None
+        |> named [ "pattern"; "replacement"; "s" ]
 
-          // ---- Path (pure string ops; glob touches the filesystem) ----
-          "Path.dir",
-          (bd "The directory part of a path." (Some "Path.dir \"a/b/c\"") None
-           |> named [ "path" ])
-          "Path.fileName",
-          (bd "The final component of a path." (Some "Path.fileName \"a/b.txt\"") None
-           |> named [ "path" ])
-          "Path.stem",
-          (bd "The file name without its extension." (Some "Path.stem \"a/b.txt\"") None
-           |> named [ "path" ])
-          "Path.extension",
-          (bd "The extension, including the dot." (Some "Path.extension \"a.txt\"") None
-           |> named [ "path" ])
-          "Path.combine",
-          (bd "Join two path segments." (Some "Path.combine \"a\" \"b\"") None
-           |> named [ "a"; "b" ])
-          "Path.under",
-          (bd
-              "Join a name onto base, normalize, and raise if the result ends up outside base. The check is by whole path segments, so uploads-evil is not inside uploads. Use combine for paths you control and under for paths you do not (such as user input). It works on the text only and never touches the disk or follows symlinks. An absolute or Windows-style name is rejected on every platform."
-              (Some "Path.under (Path.tempRoot ()) \"a/b\"")
-              None
-           |> named [ "base"; "name" ])
-          "Path.normalize",
-          (bd
-              "Resolve '.' and '..' segments in the text of a path, without touching the filesystem, using the current directory, or following symlinks. combine leaves '..' in place and under rejects paths that leave the base; use normalize when going up out of a directory is intended. A relative path keeps its leading '..' segments; at the root of an absolute path, '..' is dropped (on Windows a drive root such as C:/ counts as a root)."
-              (Some "Path.normalize \"src/App/../Core/Core.csproj\"")
-              None
-           |> named [ "path" ])
-          "Path.isName",
-          (bd
-              "True when the string is one file name that is valid on Linux, macOS and Windows alike: not empty, '.' or '..'; no '/', '\\', control character (U+0000 to U+001F) or any of < > : \" | ? *; no trailing space or dot; not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`-`COM9`, `LPT0`-`LPT9`, `COM¹`-`COM³`, `LPT¹`-`LPT³`) in any case, with or without an extension; at most 255 bytes in UTF-8. Use toName to turn arbitrary text into such a name."
-              (Some "Path.isName \"report-2026.txt\"")
-              None
-           |> named [ "name" ])
-          "Path.toName",
-          (bd
-              "Turn arbitrary text into a file name for which isName is true: each forbidden character becomes '_', trailing spaces and dots are dropped, a device name gets a '_' prefix (`CON.txt` becomes `_CON.txt`), the result is cut to 255 UTF-8 bytes without splitting a character, and an empty result becomes '_'. Everything else is kept as it is, and a name that is already valid comes back unchanged."
-              (Some "Path.toName \"Q3: draft/final?.txt\"")
-              None
-           |> named [ "text" ])
-          "Path.tempRoot",
-          (bd
-              "The system temp directory, in the platform's native form and without a trailing separator. Has no side effects."
-              (Some "Path.tempRoot ()")
-              None
-           |> named [ "()" ])
-          "Path.newTempDir",
-          (bd
-              "Create a new, uniquely named directory under the temp root and return its path (named the same way as `within tmp`, and like it readable only by you). It is never removed automatically; deleting it is up to you or the OS. For a directory that is removed when a block exits (also on Ctrl+C or kill), use `within tmp dir`."
-              (Some "Path.newTempDir () |> Str.startsWith (Path.tempRoot ())")
-              None
-           |> named [ "()" ])
-          "Path.glob",
-          bd
-              "The paths matching a glob pattern, lazily. `**` does not follow symlinks."
-              (Some "Path.glob \"*.nope123\" |> Seq.freeze")
-              None
-          |> named [ "pattern" ]
-          "Path.which",
-          bd
-              "The full path of the program a command name would run, as Some path, or None when there is none. It looks the name up the way weir does when it runs a command: on the PATH the command would run with, including one set by `within env PATH=…`, and through PATHEXT on Windows. A name with a / in it is checked as a path."
-              (Some "Path.which \"sh\"")
-              None
-          |> named [ "name" ]
-          "Path.home",
-          (bd
-              "The user's home directory: `$HOME` as set (even if that directory is missing), the OS lookup when it is unset; raises when there is none (an empty `$HOME`). Has no side effects. In a command line, a typed `~` means this path; in an expression, build paths with `$\"{Path.home ()}/.bashrc\"`."
-              (Some "Path.home ()")
-              None
-           |> named [ "()" ])
-          "Path.configHome",
-          (bd
-              "The base directory for user config: `$XDG_CONFIG_HOME` (or `~/.config`) on POSIX, `%APPDATA%` on Windows."
-              (Some "Path.configHome ()")
-              None
-           |> named [ "()" ])
-          "Path.stateHome",
-          (bd
-              "The base directory for user state: `$XDG_STATE_HOME` (or `~/.local/state`) on POSIX, `%LOCALAPPDATA%` on Windows. Where the REPL keeps its history."
-              (Some "Path.stateHome ()")
-              None
-           |> named [ "()" ])
-          "Path.cacheHome",
-          (bd
-              "The base directory for user cache: `$XDG_CACHE_HOME` (or `~/.cache`) on POSIX, `%LOCALAPPDATA%` on Windows."
-              (Some "Path.cacheHome ()")
-              None
-           |> named [ "()" ])
+        // ---- Path (pure string ops; glob touches the filesystem) ----
+        "Path.dir",
+        (bd "The directory part of a path." (Some "Path.dir \"a/b/c\"") None
+         |> named [ "path" ])
+        "Path.fileName",
+        (bd "The final component of a path." (Some "Path.fileName \"a/b.txt\"") None
+         |> named [ "path" ])
+        "Path.stem",
+        (bd "The file name without its extension." (Some "Path.stem \"a/b.txt\"") None
+         |> named [ "path" ])
+        "Path.extension",
+        (bd "The extension, including the dot." (Some "Path.extension \"a.txt\"") None
+         |> named [ "path" ])
+        "Path.combine",
+        (bd "Join two path segments." (Some "Path.combine \"a\" \"b\"") None
+         |> named [ "a"; "b" ])
+        "Path.under",
+        (bd
+            "Join a name onto base, normalize, and raise if the result ends up outside base. The check is by whole path segments, so uploads-evil is not inside uploads. Use combine for paths you control and under for paths you do not (such as user input). It works on the text only and never touches the disk or follows symlinks. An absolute or Windows-style name is rejected on every platform."
+            (Some "Path.under (Path.tempRoot ()) \"a/b\"")
+            None
+         |> named [ "base"; "name" ])
+        "Path.normalize",
+        (bd
+            "Resolve '.' and '..' segments in the text of a path, without touching the filesystem, using the current directory, or following symlinks. combine leaves '..' in place and under rejects paths that leave the base; use normalize when going up out of a directory is intended. A relative path keeps its leading '..' segments; at the root of an absolute path, '..' is dropped (on Windows a drive root such as C:/ counts as a root)."
+            (Some "Path.normalize \"src/App/../Core/Core.csproj\"")
+            None
+         |> named [ "path" ])
+        "Path.isName",
+        (bd
+            "True when the string is one file name that is valid on Linux, macOS and Windows alike: not empty, '.' or '..'; no '/', '\\', control character (U+0000 to U+001F) or any of < > : \" | ? *; no trailing space or dot; not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`-`COM9`, `LPT0`-`LPT9`, `COM¹`-`COM³`, `LPT¹`-`LPT³`) in any case, with or without an extension; at most 255 bytes in UTF-8. Use toName to turn arbitrary text into such a name."
+            (Some "Path.isName \"report-2026.txt\"")
+            None
+         |> named [ "name" ])
+        "Path.toName",
+        (bd
+            "Turn arbitrary text into a file name for which isName is true: each forbidden character becomes '_', trailing spaces and dots are dropped, a device name gets a '_' prefix (`CON.txt` becomes `_CON.txt`), the result is cut to 255 UTF-8 bytes without splitting a character, and an empty result becomes '_'. Everything else is kept as it is, and a name that is already valid comes back unchanged."
+            (Some "Path.toName \"Q3: draft/final?.txt\"")
+            None
+         |> named [ "text" ])
+        "Path.tempRoot",
+        (bd
+            "The system temp directory, in the platform's native form and without a trailing separator. Has no side effects."
+            (Some "Path.tempRoot ()")
+            None
+         |> named [ "()" ])
+        "Path.newTempDir",
+        (bd
+            "Create a new, uniquely named directory under the temp root and return its path (named the same way as `within tmp`, and like it readable only by you). It is never removed automatically; deleting it is up to you or the OS. For a directory that is removed when a block exits (also on Ctrl+C or kill), use `within tmp dir`."
+            (Some "Path.newTempDir () |> Str.startsWith (Path.tempRoot ())")
+            None
+         |> named [ "()" ])
+        "Path.glob",
+        bd
+            "The paths matching a glob pattern, lazily. `**` does not follow symlinks."
+            (Some "Path.glob \"*.nope123\" |> Seq.freeze")
+            None
+        |> named [ "pattern" ]
+        "Path.which",
+        bd
+            "The full path of the program a command name would run, as Some path, or None when there is none. It looks the name up the way weir does when it runs a command: on the PATH the command would run with, including one set by `within env PATH=…`, and through PATHEXT on Windows. A name with a / in it is checked as a path."
+            (Some "Path.which \"sh\"")
+            None
+        |> named [ "name" ]
+        "Path.home",
+        (bd
+            "The user's home directory: `$HOME` as set (even if that directory is missing), the OS lookup when it is unset; raises when there is none (an empty `$HOME`). Has no side effects. In a command line, a typed `~` means this path; in an expression, build paths with `$\"{Path.home ()}/.bashrc\"`."
+            (Some "Path.home ()")
+            None
+         |> named [ "()" ])
+        "Path.configHome",
+        (bd
+            "The base directory for user config: `$XDG_CONFIG_HOME` (or `~/.config`) on POSIX, `%APPDATA%` on Windows."
+            (Some "Path.configHome ()")
+            None
+         |> named [ "()" ])
+        "Path.stateHome",
+        (bd
+            "The base directory for user state: `$XDG_STATE_HOME` (or `~/.local/state`) on POSIX, `%LOCALAPPDATA%` on Windows. Where the REPL keeps its history."
+            (Some "Path.stateHome ()")
+            None
+         |> named [ "()" ])
+        "Path.cacheHome",
+        (bd
+            "The base directory for user cache: `$XDG_CACHE_HOME` (or `~/.cache`) on POSIX, `%LOCALAPPDATA%` on Windows."
+            (Some "Path.cacheHome ()")
+            None
+         |> named [ "()" ])
 
-          // ---- File (read/write touch the filesystem — no inline example) ----
-          "File.exists",
-          (bd "True when a path exists." (Some "File.exists \"README.md\"") None
-           |> named [ "path" ])
-          "File.delete",
-          (bd
-              "Delete a file. Raises, naming the path, when it does not exist. Copy and move never overwrite, so delete the destination first when you want to replace it."
-              (Some
-                  "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/f.txt\"\nFile.delete $\"{d}/f.txt\"\nDir.delete d")
-              None
-           |> named [ "path" ])
-          "File.copy",
-          (bd
-              "Copy a file from src to dst. The arguments are in the usual (src, dst) order rather than data-last, since neither one is the data. Raises, naming the path, if the destination exists; delete it first to overwrite."
-              (Some
-                  "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/a.txt\"\nFile.copy $\"{d}/a.txt\" $\"{d}/b.txt\"\nDir.deleteAll d")
-              None
-           |> named [ "src"; "dst" ])
-          "File.move",
-          (bd
-              "Move (rename) a file from src to dst. Raises if the destination exists."
-              (Some
-                  "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/a.txt\"\nFile.move $\"{d}/a.txt\" $\"{d}/b.txt\"\nDir.deleteAll d")
-              None
-           |> named [ "src"; "dst" ])
-          "File.size",
-          (bd
-              "The file's size as a Size, which you can compare directly (`File.size p > 10MiB`); use Size.toBytes to get an int. Raises when the file does not exist (there is no trySize yet)."
-              (Some
-                  "let d = Path.newTempDir ()\nlet f = $\"{d}/a.txt\"\n[\"x\"] |> File.write f\nprint $\"{File.size f}\"\nDir.deleteAll d")
-              None
-           |> named [ "path" ])
-          "File.stat",
-          (bd
-              "The FileRow for one path, the same row ls shows, so `Path.glob ... |> Seq.map File.stat` turns paths into rows. For a symlink it describes the link itself (kind Symlink, target Some), not what it points to. Raises when the path does not exist; note that a file found by glob may be deleted before stat reads it."
-              (Some
-                  "let d = Path.newTempDir ()\nlet f = $\"{d}/a.txt\"\n[\"x\"] |> File.write f\nprint (File.stat f).name\nDir.deleteAll d")
-              None
-           |> named [ "path" ])
-          "Dir.create",
-          (bd
-              "Create a directory and any missing parents (like mkdir -p). Does nothing if it already exists, unlike copy and move, which raise on an existing destination."
-              (Some "Dir.create (Path.tempRoot ())")
-              None
-           |> named [ "path" ])
-          "Dir.exists",
-          (bd "True when the directory exists." (Some "Dir.exists \".\"") None
-           |> named [ "path" ])
-          "Dir.delete",
-          (bd
-              "Delete an empty directory. Raises when it does not exist, or when it is not empty (the error points you to Dir.deleteAll)."
-              (Some "Dir.delete (Path.newTempDir ())")
-              None
-           |> named [ "path" ])
-          "Dir.deleteAll",
-          (bd
-              "Delete the directory and everything in it, recursively. There is no undo."
-              (Some "let d = Path.newTempDir ()\nDir.create $\"{d}/tree-a/tree-b\"\nDir.deleteAll d")
-              None
-           |> named [ "path" ])
-          "Dir.list",
-          (bd
-              "The full paths of the directory's entries, both files and directories, sorted by name and read immediately. Filter with Seq.where and File.exists/Dir.exists; for a recursive listing use `Path.glob \"**\"`."
-              (Some "let d = Path.newTempDir ()\nprint $\"{Dir.list d |> Seq.length}\"\nDir.delete d")
-              None
-           |> named [ "path" ])
-          "Dir.stat",
-          (bd
-              "The directory's entries as FileRow values, the same rows ls shows, but for any directory (ls only lists the current one). Sorted by name and read immediately."
-              (Some "let d = Path.newTempDir ()\nprint $\"{Dir.stat d |> Seq.length}\"\nDir.delete d")
-              None
-           |> named [ "path" ])
-          "Dir.move",
-          (bd
-              "Move (rename) a directory from src to dst. Raises if the destination exists."
-              (Some "let d = Path.newTempDir ()\nDir.move d $\"{d}-m\"\nDir.delete $\"{d}-m\"")
-              None
-           |> named [ "src"; "dst" ])
-          "Dir.copy",
-          (bd
-              "Copy a directory and everything in it from src to dst. Raises if the destination exists (use Dir.deleteAll first to replace it) or lies inside the source. The copy is always recursive; symlinks are copied as links, never followed, and a FIFO, socket or device is recreated, never opened (as cp -R does)."
-              (Some "let d = Path.newTempDir ()\nDir.copy d $\"{d}-c\"\nDir.deleteAll d\nDir.deleteAll $\"{d}-c\"")
-              None
-           |> named [ "src"; "dst" ])
-          "File.read",
-          (bd "Read a file's lines. The whole file is read immediately." None None
-           |> named [ "path" ])
-          "File.readFrom",
-          (bd
-              "Read the complete lines of a file from a byte offset, for polling a file that is being appended to. Returns a FileChunk: lines, and next, the offset to pass on the next call. Only the bytes from the offset to the file's size when the read starts are read, and a last line without its newline yet is left for the next call, so every line is returned once and whole. Lines decode as File.read's do (a BOM is skipped only at offset 0, and a \\r\\n line ending counts as two bytes). Raises when the offset is past the end (the file was truncated or replaced) or is not at the start of a line; pass 0 or a next this function returned."
-              (Some
-                  "let d = Path.newTempDir ()\nlet f = $\"{d}/log.txt\"\n[\"a\"; \"b\"] |> File.append f\nlet c = File.readFrom f 0B\nc.lines |> Seq.iter print\n[\"c\"] |> File.append f\n(File.readFrom f c.next).lines |> Seq.iter print\nDir.deleteAll d")
-              None
-           |> named [ "path"; "offset" ])
-          "File.readBytes",
-          (bd
-              "Read a file's raw bytes, exactly as stored, without decoding or splitting into lines (File.read does both and replaces invalid characters). The whole file is loaded into memory, so it is not meant for very large files."
-              None
-              None
-           |> named [ "path" ])
-          "File.writeBytes",
-          (bd "Write raw bytes to a file exactly as given (File.write instead encodes lines and ends each with LF)." None None
-           |> named [ "path"; "bytes" ])
-          "File.sha256",
-          (bd
-              "The SHA-256 digest of a file's bytes, as lowercase hex (same output as sha256sum). The file is streamed, never loaded into memory whole."
-              None
-              None
-           |> named [ "path" ])
-          "File.sha1",
-          (bd
-              "The SHA-1 digest of a file's bytes, as lowercase hex (same output as sha1sum). The file is streamed, never loaded into memory whole. SHA-1 is broken for security; use it only where a protocol names it, and File.sha256 otherwise."
-              None
-              None
-           |> named [ "path" ])
-          "File.readSecret",
-          (bd
-              "Read a file's whole content as a Secret, for example a secret mounted into a container. Trailing newlines are removed."
-              None
-              None
-           |> named [ "path" ])
-          "File.write",
-          (bd "Write a sequence of lines to a file, replacing its contents." None None
-           |> named [ "path"; "lines" ])
-          "File.writeAtomic",
-          (bd
-              "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records a WriteFileAtomic op, and apply replaces the file the same way. A FIFO refuses: use File.write."
-              None
-              None
-           |> named [ "path"; "lines" ])
-          "File.append",
-          (bd
-              "Append a sequence of lines, safely even when other processes append to the same file. Each call is written as a single append (O_APPEND on Unix, append-only access on Windows), so its lines stay together and intact, and no lock blocks readers. If the system writes only part of the data (disk full, a size limit), the rest is retried and another writer's data may land in between. This holds on local filesystems, including bind mounts on the same host, but not on network filesystems (nfs, smb)."
-              None
-              None
-           |> named [ "path"; "lines" ])
-          "File.mode",
-          (bd
-              "The path's permissions as text like rwxr-xr-x, wrapped in Some; None on Windows, which has no POSIX permissions. Like the other File.* queries it follows symlinks, so a broken link raises, naming the link. A typical use is checking for 0600 before File.readSecret: File.mode p == Some \"rw-------\"."
-              (Some "File.mode \".\" |> Option.defaultValue \"none\"")
-              None
-           |> named [ "path" ])
-          "File.isExecutable",
-          (bd
-              "True when the owner execute bit is set (the bit an installer sets). Simpler than checking File.mode with Str.contains \"x\". Follows symlinks like the other File.* queries; a missing path raises. Windows has no execute bit, so there the answer is based on the extension (.exe/.bat/.cmd/.com)."
-              (Some "File.isExecutable \".\"")
-              None
-           |> named [ "path" ])
+        // ---- File (read/write touch the filesystem — no inline example) ----
+        "File.exists",
+        (bd "True when a path exists." (Some "File.exists \"README.md\"") None
+         |> named [ "path" ])
+        "File.delete",
+        (bd
+            "Delete a file. Raises, naming the path, when it does not exist. Copy and move never overwrite, so delete the destination first when you want to replace it."
+            (Some
+                "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/f.txt\"\nFile.delete $\"{d}/f.txt\"\nDir.delete d")
+            None
+         |> named [ "path" ])
+        "File.copy",
+        (bd
+            "Copy a file from src to dst. The arguments are in the usual (src, dst) order rather than data-last, since neither one is the data. Raises, naming the path, if the destination exists; delete it first to overwrite."
+            (Some
+                "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/a.txt\"\nFile.copy $\"{d}/a.txt\" $\"{d}/b.txt\"\nDir.deleteAll d")
+            None
+         |> named [ "src"; "dst" ])
+        "File.move",
+        (bd
+            "Move (rename) a file from src to dst. Raises if the destination exists."
+            (Some
+                "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/a.txt\"\nFile.move $\"{d}/a.txt\" $\"{d}/b.txt\"\nDir.deleteAll d")
+            None
+         |> named [ "src"; "dst" ])
+        "File.size",
+        (bd
+            "The file's size as a Size, which you can compare directly (`File.size p > 10MiB`); use Size.toBytes to get an int. Raises when the file does not exist (there is no trySize yet)."
+            (Some
+                "let d = Path.newTempDir ()\nlet f = $\"{d}/a.txt\"\n[\"x\"] |> File.write f\nprint $\"{File.size f}\"\nDir.deleteAll d")
+            None
+         |> named [ "path" ])
+        "File.stat",
+        (bd
+            "The FileRow for one path, the same row ls shows, so `Path.glob ... |> Seq.map File.stat` turns paths into rows. For a symlink it describes the link itself (kind Symlink, target Some), not what it points to. Raises when the path does not exist; note that a file found by glob may be deleted before stat reads it."
+            (Some
+                "let d = Path.newTempDir ()\nlet f = $\"{d}/a.txt\"\n[\"x\"] |> File.write f\nprint (File.stat f).name\nDir.deleteAll d")
+            None
+         |> named [ "path" ])
+        "Dir.create",
+        (bd
+            "Create a directory and any missing parents (like mkdir -p). Does nothing if it already exists, unlike copy and move, which raise on an existing destination."
+            (Some "Dir.create (Path.tempRoot ())")
+            None
+         |> named [ "path" ])
+        "Dir.exists",
+        (bd "True when the directory exists." (Some "Dir.exists \".\"") None
+         |> named [ "path" ])
+        "Dir.delete",
+        (bd
+            "Delete an empty directory. Raises when it does not exist, or when it is not empty (the error points you to Dir.deleteAll)."
+            (Some "Dir.delete (Path.newTempDir ())")
+            None
+         |> named [ "path" ])
+        "Dir.deleteAll",
+        (bd
+            "Delete the directory and everything in it, recursively. There is no undo."
+            (Some "let d = Path.newTempDir ()\nDir.create $\"{d}/tree-a/tree-b\"\nDir.deleteAll d")
+            None
+         |> named [ "path" ])
+        "Dir.list",
+        (bd
+            "The full paths of the directory's entries, both files and directories, sorted by name and read immediately. Filter with Seq.where and File.exists/Dir.exists; for a recursive listing use `Path.glob \"**\"`."
+            (Some "let d = Path.newTempDir ()\nprint $\"{Dir.list d |> Seq.length}\"\nDir.delete d")
+            None
+         |> named [ "path" ])
+        "Dir.stat",
+        (bd
+            "The directory's entries as FileRow values, the same rows ls shows, but for any directory (ls only lists the current one). Sorted by name and read immediately."
+            (Some "let d = Path.newTempDir ()\nprint $\"{Dir.stat d |> Seq.length}\"\nDir.delete d")
+            None
+         |> named [ "path" ])
+        "Dir.move",
+        (bd
+            "Move (rename) a directory from src to dst. Raises if the destination exists."
+            (Some "let d = Path.newTempDir ()\nDir.move d $\"{d}-m\"\nDir.delete $\"{d}-m\"")
+            None
+         |> named [ "src"; "dst" ])
+        "Dir.copy",
+        (bd
+            "Copy a directory and everything in it from src to dst. Raises if the destination exists (use Dir.deleteAll first to replace it) or lies inside the source. The copy is always recursive; symlinks are copied as links, never followed, and a FIFO, socket or device is recreated, never opened (as cp -R does)."
+            (Some "let d = Path.newTempDir ()\nDir.copy d $\"{d}-c\"\nDir.deleteAll d\nDir.deleteAll $\"{d}-c\"")
+            None
+         |> named [ "src"; "dst" ])
+        "File.read",
+        (bd "Read a file's lines. The whole file is read immediately." None None
+         |> named [ "path" ])
+        "File.readFrom",
+        (bd
+            "Read the complete lines of a file from a byte offset, for polling a file that is being appended to. Returns a FileChunk: lines, and next, the offset to pass on the next call. Only the bytes from the offset to the file's size when the read starts are read, and a last line without its newline yet is left for the next call, so every line is returned once and whole. Lines decode as File.read's do (a BOM is skipped only at offset 0, and a \\r\\n line ending counts as two bytes). Raises when the offset is past the end (the file was truncated or replaced) or is not at the start of a line; pass 0 or a next this function returned."
+            (Some
+                "let d = Path.newTempDir ()\nlet f = $\"{d}/log.txt\"\n[\"a\"; \"b\"] |> File.append f\nlet c = File.readFrom f 0B\nc.lines |> Seq.iter print\n[\"c\"] |> File.append f\n(File.readFrom f c.next).lines |> Seq.iter print\nDir.deleteAll d")
+            None
+         |> named [ "path"; "offset" ])
+        "File.readBytes",
+        (bd
+            "Read a file's raw bytes, exactly as stored, without decoding or splitting into lines (File.read does both and replaces invalid characters). The whole file is loaded into memory, so it is not meant for very large files."
+            None
+            None
+         |> named [ "path" ])
+        "File.writeBytes",
+        (bd
+            "Write raw bytes to a file exactly as given (File.write instead encodes lines and ends each with LF)."
+            None
+            None
+         |> named [ "path"; "bytes" ])
+        "File.sha256",
+        (bd
+            "The SHA-256 digest of a file's bytes, as lowercase hex (same output as sha256sum). The file is streamed, never loaded into memory whole."
+            None
+            None
+         |> named [ "path" ])
+        "File.sha1",
+        (bd
+            "The SHA-1 digest of a file's bytes, as lowercase hex (same output as sha1sum). The file is streamed, never loaded into memory whole. SHA-1 is broken for security; use it only where a protocol names it, and File.sha256 otherwise."
+            None
+            None
+         |> named [ "path" ])
+        "File.readSecret",
+        (bd
+            "Read a file's whole content as a Secret, for example a secret mounted into a container. Trailing newlines are removed."
+            None
+            None
+         |> named [ "path" ])
+        "File.write",
+        (bd "Write a sequence of lines to a file, replacing its contents." None None
+         |> named [ "path"; "lines" ])
+        "File.writeAtomic",
+        (bd
+            "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records a WriteFileAtomic op, and apply replaces the file the same way. A FIFO refuses: use File.write."
+            None
+            None
+         |> named [ "path"; "lines" ])
+        "File.append",
+        (bd
+            "Append a sequence of lines, safely even when other processes append to the same file. Each call is written as a single append (O_APPEND on Unix, append-only access on Windows), so its lines stay together and intact, and no lock blocks readers. If the system writes only part of the data (disk full, a size limit), the rest is retried and another writer's data may land in between. This holds on local filesystems, including bind mounts on the same host, but not on network filesystems (nfs, smb)."
+            None
+            None
+         |> named [ "path"; "lines" ])
+        "File.mode",
+        (bd
+            "The path's permissions as text like rwxr-xr-x, wrapped in Some; None on Windows, which has no POSIX permissions. Like the other File.* queries it follows symlinks, so a broken link raises, naming the link. A typical use is checking for 0600 before File.readSecret: File.mode p == Some \"rw-------\"."
+            (Some "File.mode \".\" |> Option.defaultValue \"none\"")
+            None
+         |> named [ "path" ])
+        "File.isExecutable",
+        (bd
+            "True when the owner execute bit is set (the bit an installer sets). Simpler than checking File.mode with Str.contains \"x\". Follows symlinks like the other File.* queries; a missing path raises. Windows has no execute bit, so there the answer is based on the extension (.exe/.bat/.cmd/.com)."
+            (Some "File.isExecutable \".\"")
+            None
+         |> named [ "path" ])
 
-          // ---- Log [D:log-module]: STDERR always — stdout is DATA ----
-          "Log.trace",
-          (bd
-              "Write a TRACE line to stderr. This is the most detailed level, hidden unless WEIR_LOG=trace."
-              (Some "Log.trace \"entering the retry loop\"")
-              None
-           |> named [ "message" ])
-          "Log.debug",
-          (bd
-              "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). All Log functions write to stderr so stdout stays free for data; there is no option to log to stdout."
-              (Some "Log.debug \"cache miss\"")
-              None
-           |> named [ "message" ])
-          "Log.info",
-          (bd
-              "Write an INFO line to stderr. Shown by default; set WEIR_LOG to a level (case-insensitive) to change what is shown, or to off to silence logging."
-              (Some "Log.info \"deploy starting\"")
-              None
-           |> named [ "message" ])
-          "Log.warn",
-          (bd
-              "Write a WARN line to stderr. This is the highest level, shown unless WEIR_LOG=off."
-              (Some "Log.warn \"lockfile missing, regenerating\"")
-              None
-           |> named [ "message" ])
-          "Log.traceWith",
-          (bd
-              "Like Log.trace, but takes a function that builds the message, called only when trace logging is on. Plain Log.trace always builds its message, so use this when that is expensive."
-              (Some "Log.traceWith (fun () -> \"expensive detail\")")
-              None
-           |> named [ "thunk" ])
-          "Log.debugWith",
-          (bd
-              "Like Log.debug, but takes a function that builds the message, called only when debug logging is on."
-              (Some "Log.debugWith (fun () -> \"expensive detail\")")
-              None
-           |> named [ "thunk" ])
-          "Log.infoWith",
-          (bd
-              "Like Log.info, but takes a function that builds the message, called only when info logging is on."
-              (Some "Log.infoWith (fun () -> \"expensive detail\")")
-              None
-           |> named [ "thunk" ])
-          "Log.warnWith",
-          (bd
-              "Like Log.warn, but takes a function that builds the message, called only when warnings are shown."
-              (Some "Log.warnWith (fun () -> \"expensive detail\")")
-              None
-           |> named [ "thunk" ])
+        // ---- Log [D:log-module]: STDERR always — stdout is DATA ----
+        "Log.trace",
+        (bd
+            "Write a TRACE line to stderr. This is the most detailed level, hidden unless WEIR_LOG=trace."
+            (Some "Log.trace \"entering the retry loop\"")
+            None
+         |> named [ "message" ])
+        "Log.debug",
+        (bd
+            "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). All Log functions write to stderr so stdout stays free for data; there is no option to log to stdout."
+            (Some "Log.debug \"cache miss\"")
+            None
+         |> named [ "message" ])
+        "Log.info",
+        (bd
+            "Write an INFO line to stderr. Shown by default; set WEIR_LOG to a level (case-insensitive) to change what is shown, or to off to silence logging."
+            (Some "Log.info \"deploy starting\"")
+            None
+         |> named [ "message" ])
+        "Log.warn",
+        (bd
+            "Write a WARN line to stderr. This is the highest level, shown unless WEIR_LOG=off."
+            (Some "Log.warn \"lockfile missing, regenerating\"")
+            None
+         |> named [ "message" ])
+        "Log.traceWith",
+        (bd
+            "Like Log.trace, but takes a function that builds the message, called only when trace logging is on. Plain Log.trace always builds its message, so use this when that is expensive."
+            (Some "Log.traceWith (fun () -> \"expensive detail\")")
+            None
+         |> named [ "thunk" ])
+        "Log.debugWith",
+        (bd
+            "Like Log.debug, but takes a function that builds the message, called only when debug logging is on."
+            (Some "Log.debugWith (fun () -> \"expensive detail\")")
+            None
+         |> named [ "thunk" ])
+        "Log.infoWith",
+        (bd
+            "Like Log.info, but takes a function that builds the message, called only when info logging is on."
+            (Some "Log.infoWith (fun () -> \"expensive detail\")")
+            None
+         |> named [ "thunk" ])
+        "Log.warnWith",
+        (bd
+            "Like Log.warn, but takes a function that builds the message, called only when warnings are shown."
+            (Some "Log.warnWith (fun () -> \"expensive detail\")")
+            None
+         |> named [ "thunk" ])
 
-          // ---- Env ----
-          "Env.get",
-          (bd "A process environment variable as an Option." (Some "Env.get \"PATH\"") None
-           |> named [ "name" ])
-          "Env.need",
-          (bd
-              "A required environment variable as a string; raises naming the variable when it is unset. A set-but-empty variable gives \"\"."
-              (Some "Env.need \"PATH\"")
-              (Some "For a typed or multi-variable read, use Env.load.")
-           |> named [ "name" ])
-          "Env.getOr",
-          (bd
-              "An environment variable as a string, or the default when it is unset. A set-but-empty variable gives \"\", not the default."
-              (Some "Env.getOr \"PORT\" \"8080\"")
-              None
-           |> named [ "name"; "fallback" ])
-          "Env.vars",bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.freeze") None
-          "Env.pair",
-          (bd "Build one EnvVar from a name and value. A name that is empty or contains `=` is an error." (Some "Env.pair \"K\" \"V\"") None
-           |> named [ "name"; "value" ])
-          "Env.ofPairs",
-          (bd "Build EnvVar records from name/value tuples. A name that is empty or contains `=` is an error." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.freeze") None
-           |> named [ "pairs" ])
-          "Env.fromFile",
-          (bd "Read `.env` lines (`KEY=value`) as EnvVar records." None None
-           |> named [ "path" ])
-          "Env.load",
-          bd
-              "Load environment variables into a typed record. Fields can be scalars, bool, or Option."
-              None
-              (Some "Each field reads the variable with exactly that name (case included), and the field types are checked before the script runs.")
+        // ---- Env ----
+        "Env.get",
+        (bd "A process environment variable as an Option." (Some "Env.get \"PATH\"") None
+         |> named [ "name" ])
+        "Env.need",
+        (bd
+            "A required environment variable as a string; raises naming the variable when it is unset. A set-but-empty variable gives \"\"."
+            (Some "Env.need \"PATH\"")
+            (Some "For a typed or multi-variable read, use Env.load.")
+         |> named [ "name" ])
+        "Env.getOr",
+        (bd
+            "An environment variable as a string, or the default when it is unset. A set-but-empty variable gives \"\", not the default."
+            (Some "Env.getOr \"PORT\" \"8080\"")
+            None
+         |> named [ "name"; "fallback" ])
+        "Env.vars", bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.freeze") None
+        "Env.pair",
+        (bd
+            "Build one EnvVar from a name and value. A name that is empty or contains `=` is an error."
+            (Some "Env.pair \"K\" \"V\"")
+            None
+         |> named [ "name"; "value" ])
+        "Env.ofPairs",
+        (bd
+            "Build EnvVar records from name/value tuples. A name that is empty or contains `=` is an error."
+            (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.freeze")
+            None
+         |> named [ "pairs" ])
+        "Env.fromFile",
+        (bd "Read `.env` lines (`KEY=value`) as EnvVar records." None None
+         |> named [ "path" ])
+        "Env.load",
+        bd
+            "Load environment variables into a typed record. Fields can be scalars, bool, or Option."
+            None
+            (Some
+                "Each field reads the variable with exactly that name (case included), and the field types are checked before the script runs.")
 
-          // ---- Args ----
-          "Args.flag",
-          (bd "True when a --flag (or its short form) is present in argv." (Some "Args.flag \"verbose\"") None
-           |> named [ "name" ])
-          "Args.value",
-          (bd "The value of a --name option as an Option." (Some "Args.value \"name\"") None
-           |> named [ "name" ])
-          "Args.load",
-          bd
-              "Parse argv into a typed record or union."
-              None
-              (Some "The type can be a record (flags), a union (subcommands), or a record that contains a union (shared flags plus subcommands).")
+        // ---- Args ----
+        "Args.flag",
+        (bd "True when a --flag (or its short form) is present in argv." (Some "Args.flag \"verbose\"") None
+         |> named [ "name" ])
+        "Args.value",
+        (bd "The value of a --name option as an Option." (Some "Args.value \"name\"") None
+         |> named [ "name" ])
+        "Args.load",
+        bd
+            "Parse argv into a typed record or union."
+            None
+            (Some
+                "The type can be a record (flags), a union (subcommands), or a record that contains a union (shared flags plus subcommands).")
 
-          // ---- Self (per-run introspection) ----
-          "Self.pid", bd "This process's id." None None
-          "Self.args", bd "The command-line arguments of the script that was run. The same in every module." None None
-          "Self.stdin", bd "This process's standard input, as lazy lines. The same in every module." None None
-          "Self.prompt",
-          (bd
-              "Write a message to stderr and read one line from stdin, for interactive input. The prompt goes to stderr, so piped stdout still carries only data. Raises at end of input instead of returning an empty answer. To read the rest of stdin as a stream, use Self.stdin — both read the same input, so a line a prompt took is not seen again."
-              None
-              (Some "`let name = Self.prompt \"your name?\"`. In tests, pipe the answer in.")
-           |> named [ "message" ])
-          "Self.scriptPath", bd "The path of the file that contains this code; in a module, the module's own path." None None
-          "Self.entryPath",
-          bd "The path of the script that was run. Unlike scriptPath, it is the same in every module." None None
+        // ---- Self (per-run introspection) ----
+        "Self.pid", bd "This process's id." None None
+        "Self.args", bd "The command-line arguments of the script that was run. The same in every module." None None
+        "Self.stdin", bd "This process's standard input, as lazy lines. The same in every module." None None
+        "Self.prompt",
+        (bd
+            "Write a message to stderr and read one line from stdin, for interactive input. The prompt goes to stderr, so piped stdout still carries only data. Raises at end of input instead of returning an empty answer. To read the rest of stdin as a stream, use Self.stdin — both read the same input, so a line a prompt took is not seen again."
+            None
+            (Some "`let name = Self.prompt \"your name?\"`. In tests, pipe the answer in.")
+         |> named [ "message" ])
+        "Self.scriptPath",
+        bd "The path of the file that contains this code; in a module, the module's own path." None None
+        "Self.entryPath",
+        bd "The path of the script that was run. Unlike scriptPath, it is the same in every module." None None
 
-          // ---- Float: finite-only [D:floats] ---------------------------
-          "Float.ofInt",
-          (bd
-              "Convert an int to a float. weir never converts between them automatically."
-              (Some "Float.ofInt 3 / 2.0")
-              None
-           |> named [ "n" ])
-          "Float.toInt",
-          (bd
-              "The integer part, rounding toward zero. Raises when the value is outside the 64-bit int range."
-              (Some "Float.toInt 2.9")
-              None
-           |> named [ "f" ])
-          "Float.round",
-          (bd "Round to the nearest whole number, with halves rounded away from zero (2.5 becomes 3.0)." (Some "Float.round 2.5") None
-           |> named [ "f" ])
-          "Float.abs", (bd "The absolute value." (Some "Float.abs (0.0 - 1.5)") None |> named [ "f" ])
-          "Float.near",
-          (bd
-              "True when a and b differ by at most eps. This is how to compare floats, since `==` does not accept them."
-              (Some "Float.near (0.1 + 0.2) 0.3 1e-9")
-              None
-           |> named [ "a"; "b"; "eps" ])
-          "Float.parse",
-          (bd
-              "Parse a float in the form show prints. Raises on anything else, including NaN and Infinity, because weir floats are always finite."
-              (Some "Float.parse \"1.5e-3\"")
-              None
-           |> named [ "text" ])
-          "Float.tryParse",
-          (bd "Like Float.parse, but returns None instead of raising." (Some "Float.tryParse \"nope\"") None
-           |> named [ "text" ])
+        // ---- Float: finite-only [D:floats] ---------------------------
+        "Float.ofInt",
+        (bd
+            "Convert an int to a float. weir never converts between them automatically."
+            (Some "Float.ofInt 3 / 2.0")
+            None
+         |> named [ "n" ])
+        "Float.toInt",
+        (bd
+            "The integer part, rounding toward zero. Raises when the value is outside the 64-bit int range."
+            (Some "Float.toInt 2.9")
+            None
+         |> named [ "f" ])
+        "Float.round",
+        (bd
+            "Round to the nearest whole number, with halves rounded away from zero (2.5 becomes 3.0)."
+            (Some "Float.round 2.5")
+            None
+         |> named [ "f" ])
+        "Float.abs", (bd "The absolute value." (Some "Float.abs (0.0 - 1.5)") None |> named [ "f" ])
+        "Float.near",
+        (bd
+            "True when a and b differ by at most eps. This is how to compare floats, since `==` does not accept them."
+            (Some "Float.near (0.1 + 0.2) 0.3 1e-9")
+            None
+         |> named [ "a"; "b"; "eps" ])
+        "Float.parse",
+        (bd
+            "Parse a float in the form show prints. Raises on anything else, including NaN and Infinity, because weir floats are always finite."
+            (Some "Float.parse \"1.5e-3\"")
+            None
+         |> named [ "text" ])
+        "Float.tryParse",
+        (bd "Like Float.parse, but returns None instead of raising." (Some "Float.tryParse \"nope\"") None
+         |> named [ "text" ])
 
-          // ---- retry/poll option templates [D:retry-poll] --------------
-          "Retry.defaults",
-          bd
-              "The default retry options: attempts = 5, delay = 1s, timeout = None. `retry attempts=5` is short for `retry { Retry.defaults with attempts = 5 }`."
-              None
-              None
-          "Poll.defaults", bd "The default poll options: timeout = 1m, interval = 1s." None None
-          "Http.defaults",
-          bd
-              "The default request: method = Get, empty url, NoAuth, no body, 30s timeout. Start from it with `Http.send { Http.defaults with url = u }`. `Http.get url` and the other method helpers return a request built from it."
-              None
-              None
-          "Http.send",
-          (bd
-              "Send a request and return the response. A non-2xx status such as 404 is returned, not raised; only network failures raise. A Json body sends `to json` output exactly as given. Auth values hold Secrets, and show masks them."
-              None
-              None
-           |> named [ "request" ])
-          "Http.get",
-          (bd
-              "Build a GET request for the url; nothing is sent yet. `Http.get u` is the same as `{ Http.defaults with method = Get; url = u }`. Send it with Http.send (returns the response, whatever the status) or Http.expect (returns the body, raises on failure). Set other fields with `with`: `Http.send { Http.get u with auth = Bearer t }`."
-              (Some "Http.get \"http://x/y\"")
-              None
-           |> named [ "url" ])
-          "Http.post",
-          (bd "Build a Post request for the url; add a body or auth with `with`." None None
-           |> named [ "url" ])
-          "Http.put", (bd "Build a Put request for the url." None None |> named [ "url" ])
-          "Http.delete", (bd "Build a Delete request for the url." None None |> named [ "url" ])
-          "Http.patch", (bd "Build a Patch request for the url." None None |> named [ "url" ])
-          "Http.head", (bd "Build a Head request for the url." None None |> named [ "url" ])
-          "Http.options", (bd "Build an Options request for the url." None None |> named [ "url" ])
-          "Http.query",
-          (bd
-              "Build a QUERY request (RFC 10008) for the url. QUERY is idempotent by definition, so wrapping it in `retry` is safe. Few servers support it yet, so expect 405."
-              None
-              None
-           |> named [ "url" ])
-          "Http.expect",
-          (bd
-              "Send a request and return the response body as lines. Raises on a non-2xx status; the error names the method, url and status and includes the start of the body. Use `Http.get url |> Http.expect` for a simple read; requests built with `with` work the same way. If you need to inspect an error response, use Http.send instead."
-              None
-              None
-           |> named [ "request" ])
-          "Http.header",
-          (bd
-              "The first value of a response header, or None when it is missing. Header names match case-insensitively, as HTTP requires, so ETag and etag are the same header. For headers that can repeat (Set-Cookie), use Http.headerAll."
-              None
-              (Some "After a send: `let r = Http.get url |> Http.send`, then `r |> Http.header \"etag\"`. An HttpResponse only comes from a send, so code that reads headers takes the response it was given rather than building one.")
-           |> named [ "name"; "resp" ])
-          "Http.headerAll",
-          (bd
-              "Every value of a response header, in the order received, matching the name case-insensitively. Use it for headers that can repeat (Set-Cookie). Empty when the header is missing."
-              None
-              None
-           |> named [ "name"; "resp" ])
-          "Http.withQuery",
-          (bd
-              "Add a query string to a url. The parameters come first and the url last, so it fits a pipe: `url |> Http.withQuery [(k, v)]`. Keys and values are percent-encoded, so a space or `&` cannot break the url. (Not to be confused with `Http.query`, which builds a QUERY request.)"
-              (Some "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")
-              None
-           |> named [ "params"; "base" ])
+        // ---- retry/poll option templates [D:retry-poll] --------------
+        "Retry.defaults",
+        bd
+            "The default retry options: attempts = 5, delay = 1s, timeout = None. `retry attempts=5` is short for `retry { Retry.defaults with attempts = 5 }`."
+            None
+            None
+        "Poll.defaults", bd "The default poll options: timeout = 1m, interval = 1s." None None
+        "Http.defaults",
+        bd
+            "The default request: method = Get, empty url, NoAuth, no body, 30s timeout. Start from it with `Http.send { Http.defaults with url = u }`. `Http.get url` and the other method helpers return a request built from it."
+            None
+            None
+        "Http.send",
+        (bd
+            "Send a request and return the response. A non-2xx status such as 404 is returned, not raised; only network failures raise. A Json body sends `to json` output exactly as given. Auth values hold Secrets, and show masks them."
+            None
+            None
+         |> named [ "request" ])
+        "Http.get",
+        (bd
+            "Build a GET request for the url; nothing is sent yet. `Http.get u` is the same as `{ Http.defaults with method = Get; url = u }`. Send it with Http.send (returns the response, whatever the status) or Http.expect (returns the body, raises on failure). Set other fields with `with`: `Http.send { Http.get u with auth = Bearer t }`."
+            (Some "Http.get \"http://x/y\"")
+            None
+         |> named [ "url" ])
+        "Http.post",
+        (bd "Build a Post request for the url; add a body or auth with `with`." None None
+         |> named [ "url" ])
+        "Http.put", (bd "Build a Put request for the url." None None |> named [ "url" ])
+        "Http.delete", (bd "Build a Delete request for the url." None None |> named [ "url" ])
+        "Http.patch", (bd "Build a Patch request for the url." None None |> named [ "url" ])
+        "Http.head", (bd "Build a Head request for the url." None None |> named [ "url" ])
+        "Http.options", (bd "Build an Options request for the url." None None |> named [ "url" ])
+        "Http.query",
+        (bd
+            "Build a QUERY request (RFC 10008) for the url. QUERY is idempotent by definition, so wrapping it in `retry` is safe. Few servers support it yet, so expect 405."
+            None
+            None
+         |> named [ "url" ])
+        "Http.expect",
+        (bd
+            "Send a request and return the response body as lines. Raises on a non-2xx status; the error names the method, url and status and includes the start of the body. Use `Http.get url |> Http.expect` for a simple read; requests built with `with` work the same way. If you need to inspect an error response, use Http.send instead."
+            None
+            None
+         |> named [ "request" ])
+        "Http.header",
+        (bd
+            "The first value of a response header, or None when it is missing. Header names match case-insensitively, as HTTP requires, so ETag and etag are the same header. For headers that can repeat (Set-Cookie), use Http.headerAll."
+            None
+            (Some
+                "After a send: `let r = Http.get url |> Http.send`, then `r |> Http.header \"etag\"`. An HttpResponse only comes from a send, so code that reads headers takes the response it was given rather than building one.")
+         |> named [ "name"; "resp" ])
+        "Http.headerAll",
+        (bd
+            "Every value of a response header, in the order received, matching the name case-insensitively. Use it for headers that can repeat (Set-Cookie). Empty when the header is missing."
+            None
+            None
+         |> named [ "name"; "resp" ])
+        "Http.withQuery",
+        (bd
+            "Add a query string to a url. The parameters come first and the url last, so it fits a pipe: `url |> Http.withQuery [(k, v)]`. Keys and values are percent-encoded, so a space or `&` cannot break the url. (Not to be confused with `Http.query`, which builds a QUERY request.)"
+            (Some "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")
+            None
+         |> named [ "params"; "base" ])
 
-          // ---- plan/apply [D:plan-apply]: the Plan value's members ------
-          "Plan.ops",
-          (bd
-              "The operations recorded in a plan, in the order they were recorded, as a seq<Op>. Useful for tests and inspection (`plan <block> == [WriteFile(p, c)]`); Op values can be compared and shown, with Secrets masked."
-              None
-              None
-           |> named [ "plan" ])
-          "Plan.preview",
-          (bd
-              "A readable description of a plan's operations, one line each. Nothing has been changed yet; only Plan.apply makes the changes. Secrets are masked."
-              None
-              None
-           |> named [ "plan" ])
-          "Plan.apply",
-          (bd
-              "Carry out a plan's operations in the order they were recorded, using the normal functions. Stops at the first operation that fails; earlier ones stay done, since there is no rollback. Not allowed inside a `plan` block."
-              None
-              None
-           |> named [ "plan" ])
-          "Plan.isEmpty",
-          (bd "True when the plan recorded no operations, for example because the script only read things." None None
-           |> named [ "plan" ])
+        // ---- plan/apply [D:plan-apply]: the Plan value's members ------
+        "Plan.ops",
+        (bd
+            "The operations recorded in a plan, in the order they were recorded, as a seq<Op>. Useful for tests and inspection (`plan <block> == [WriteFile(p, c)]`); Op values can be compared and shown, with Secrets masked."
+            None
+            None
+         |> named [ "plan" ])
+        "Plan.preview",
+        (bd
+            "A readable description of a plan's operations, one line each. Nothing has been changed yet; only Plan.apply makes the changes. Secrets are masked."
+            None
+            None
+         |> named [ "plan" ])
+        "Plan.apply",
+        (bd
+            "Carry out a plan's operations in the order they were recorded, using the normal functions. Stops at the first operation that fails; earlier ones stay done, since there is no rollback. Not allowed inside a `plan` block."
+            None
+            None
+         |> named [ "plan" ])
+        "Plan.isEmpty",
+        (bd "True when the plan recorded no operations, for example because the script only read things." None None
+         |> named [ "plan" ])
 
-          // ---- Size: bytes as a type [D:size] --------------------------
-          "Bytes.fromBase64",
-          (bd
-              "Decode standard base64 (padded or unpadded) to Bytes. Raises on malformed input. Use it for binary data; Str.fromBase64 decodes to text."
-              (Some "Bytes.fromBase64 \"iVBORw0KGgo=\"")
-              None
-           |> named [ "s" ])
-          "Bytes.tryFromBase64",
-          (bd "Like fromBase64, but returns an Option: None for malformed base64." (Some "Bytes.tryFromBase64 \"!!!\"") None
-           |> named [ "s" ])
-          "Bytes.toBase64",
-          (bd
-              "Base64 of the bytes, on one line. Use it to turn bytes into text, since print, JSON and YAML do not accept raw bytes."
-              None
-              None
-           |> named [ "b" ])
-          "Bytes.sha256",
-          (bd "The SHA-256 digest of the bytes, as lowercase hex (same output as sha256sum)." None None
-           |> named [ "b" ])
-          "Bytes.sha1",
-          (bd "The SHA-1 digest of the bytes, as lowercase hex (same output as sha1sum). For protocols that name SHA-1; Bytes.sha256 otherwise." None None
-           |> named [ "b" ])
-          "Bytes.length", (bd "The byte count as a Size." None None |> named [ "b" ])
-          "Bytes.fromHex",
-          (bd
-              "Decode hex (upper or lower case) to Bytes. Raises on odd-length or non-hex input. Handy for crypto values such as fingerprints, moduli and EC points, which are usually written in hex."
-              (Some "Bytes.fromHex \"0a1B\" |> Bytes.toHex")
-              None
-           |> named [ "s" ])
-          "Bytes.toHex",
-          (bd "The bytes as lowercase hex on one line (the same format sha256 uses)."
-              (Some "Str.toUtf8 \"hi\" |> Bytes.toHex")
-              None
-           |> named [ "b" ])
-          "Bytes.sub",
-          (bd
-              "A slice of the bytes by start index and length. Works like Str.sub, including the error when the range is out of bounds."
-              (Some "Str.toUtf8 \"abcd\" |> Bytes.sub 1 2 |> Bytes.toHex")
-              None
-           |> named [ "start"; "len"; "b" ])
-          "Bytes.hmacSha256",
-          (bd
-              "Compute an HMAC-SHA256 of a message with a key (key first), returned as Bytes. To use a Secret as the key, pass `Secret.reveal s |> Str.toUtf8`; revealing a Secret is always explicit."
-              (Some "Bytes.hmacSha256 (Str.toUtf8 \"key\") (Str.toUtf8 \"msg\") |> Bytes.toHex")
-              None
-           |> named [ "key"; "msg" ])
-          "Size.bytes",
-          (bd "A size of n bytes. The function form of a literal like 512B." (Some "Size.bytes 512") None
-           |> named [ "n" ])
-          "Size.toBytes",
-          (bd
-              "The exact number of bytes as an int. (show truncates sizes to one decimal place.)"
-              (Some "Size.toBytes 2KiB")
-              None
-           |> named [ "s" ])
-          "Secret.of",
-          (bd
-              "Mark a computed string (a generated token, a derived key) as secret. show prints it as ***; only Secret.reveal gives back the plain value."
-              (Some "Secret.of \"hunter2\"")
-              None
-           |> named [ "s" ])
-          "Secret.reveal",
-          (bd
-              "The secret's plain value. This is the only way to get it out of a Secret, so each use (a header, a hash) is explicit and easy to find when auditing."
-              (Some "Secret.reveal (Secret.of \"x\")")
-              None
-           |> named [ "s" ])
-          "Secret.map",
-          (bd
-              "Transform a secret's value while keeping it secret. `Secret.map (fun t -> \"Bearer \" + t)` gives a Secret, whereas revealing and then concatenating would give a plain string."
-              (Some "Secret.map (fun t -> \"Bearer \" + t) (Secret.of \"x\")")
-              None
-           |> named [ "f"; "s" ])
-          // Color [D:tty-color]: wrap a string in an SGR colour/attribute,
-          // auto-off when piped or NO_COLOR — `print (Color.green x)` colours
-          // at a terminal, plain elsewhere. Nest to combine.
-          "Color.red", (bd "Color the text red. No color when output is piped or NO_COLOR is set." (Some "print (Color.red \"error\")") None |> named [ "s" ])
-          "Color.green", (bd "Color the text green. No color when output is piped or NO_COLOR is set." (Some "print (Color.green \"ok\")") None |> named [ "s" ])
-          "Color.yellow", (bd "Color the text yellow. No color when output is piped or NO_COLOR is set." (Some "print (Color.yellow \"warn\")") None |> named [ "s" ])
-          "Color.blue", (bd "Color the text blue. No color when output is piped or NO_COLOR is set." (Some "print (Color.blue \"info\")") None |> named [ "s" ])
-          "Color.magenta", (bd "Color the text magenta. No color when output is piped or NO_COLOR is set." (Some "print (Color.magenta \"x\")") None |> named [ "s" ])
-          "Color.cyan", (bd "Color the text cyan. No color when output is piped or NO_COLOR is set." (Some "print (Color.cyan \"x\")") None |> named [ "s" ])
-          "Color.gray", (bd "Color the text gray (bright black). No color when output is piped or NO_COLOR is set." (Some "print (Color.gray \"muted\")") None |> named [ "s" ])
-          "Color.bold", (bd "Make the text bold; combine with a color by nesting. No styling when output is piped or NO_COLOR is set." (Some "print (Color.bold (Color.red \"!\"))") None |> named [ "s" ])
-          "Color.dim", (bd "Make the text dim. No styling when output is piped or NO_COLOR is set." (Some "print (Color.dim \"note\")") None |> named [ "s" ])
-          "Color.underline", (bd "Underline the text. No styling when output is piped or NO_COLOR is set." (Some "print (Color.underline \"link\")") None |> named [ "s" ])
-          "Color.sgr",
-          (bd
-              "Style the text with a raw terminal escape code, for 256-color (`38;5;208`) or truecolor (`38;2;r;g;b`). No styling when output is piped or NO_COLOR is set."
-              (Some "print (Color.sgr \"38;5;208\" \"orange\")")
-              None
-           |> named [ "code"; "s" ])
-          "Term.width",
-          (bd
-              "The terminal width in columns, read each time it is called, so resizes are picked up. Returns 80 instead of raising when there is no terminal (output piped or redirected). Use it to size output, like `tput cols`."
-              (Some "print (show (Term.width ()))")
-              None
-           |> named [ "()" ])
-          "Term.title",
-          (bd
-              "Set the terminal window title. Control characters, escape sequences and bidi controls in the text are dropped, and it is cut to 256 characters. Does nothing when there is no terminal (output piped or redirected). Call it from the init.weir prompt function to keep the title current."
-              (Some "Term.title $\"weir: {pwd |> Path.fileName}\"")
-              None
-           |> named [ "text" ])
-          "Size.parse",
-          (bd
-              "Parse a size. Binary units are powers of 1024 (1.5MiB); SI units are powers of 10 (1MB is 10^6 bytes); B means bytes. Raises if the value is not a whole number of bytes."
-              (Some "Size.parse \"1.5MiB\"")
-              None
-           |> named [ "text" ])
-          "Size.tryParse",
-          (bd "Like Size.parse, but returns None instead of raising." (Some "Size.tryParse \"nope\"") None
-           |> named [ "text" ])
+        // ---- Size: bytes as a type [D:size] --------------------------
+        "Bytes.fromBase64",
+        (bd
+            "Decode standard base64 (padded or unpadded) to Bytes. Raises on malformed input. Use it for binary data; Str.fromBase64 decodes to text."
+            (Some "Bytes.fromBase64 \"iVBORw0KGgo=\"")
+            None
+         |> named [ "s" ])
+        "Bytes.tryFromBase64",
+        (bd
+            "Like fromBase64, but returns an Option: None for malformed base64."
+            (Some "Bytes.tryFromBase64 \"!!!\"")
+            None
+         |> named [ "s" ])
+        "Bytes.toBase64",
+        (bd
+            "Base64 of the bytes, on one line. Use it to turn bytes into text, since print, JSON and YAML do not accept raw bytes."
+            None
+            None
+         |> named [ "b" ])
+        "Bytes.sha256",
+        (bd "The SHA-256 digest of the bytes, as lowercase hex (same output as sha256sum)." None None
+         |> named [ "b" ])
+        "Bytes.sha1",
+        (bd
+            "The SHA-1 digest of the bytes, as lowercase hex (same output as sha1sum). For protocols that name SHA-1; Bytes.sha256 otherwise."
+            None
+            None
+         |> named [ "b" ])
+        "Bytes.length", (bd "The byte count as a Size." None None |> named [ "b" ])
+        "Bytes.fromHex",
+        (bd
+            "Decode hex (upper or lower case) to Bytes. Raises on odd-length or non-hex input. Handy for crypto values such as fingerprints, moduli and EC points, which are usually written in hex."
+            (Some "Bytes.fromHex \"0a1B\" |> Bytes.toHex")
+            None
+         |> named [ "s" ])
+        "Bytes.toHex",
+        (bd
+            "The bytes as lowercase hex on one line (the same format sha256 uses)."
+            (Some "Str.toUtf8 \"hi\" |> Bytes.toHex")
+            None
+         |> named [ "b" ])
+        "Bytes.sub",
+        (bd
+            "A slice of the bytes by start index and length. Works like Str.sub, including the error when the range is out of bounds."
+            (Some "Str.toUtf8 \"abcd\" |> Bytes.sub 1 2 |> Bytes.toHex")
+            None
+         |> named [ "start"; "len"; "b" ])
+        "Bytes.hmacSha256",
+        (bd
+            "Compute an HMAC-SHA256 of a message with a key (key first), returned as Bytes. To use a Secret as the key, pass `Secret.reveal s |> Str.toUtf8`; revealing a Secret is always explicit."
+            (Some "Bytes.hmacSha256 (Str.toUtf8 \"key\") (Str.toUtf8 \"msg\") |> Bytes.toHex")
+            None
+         |> named [ "key"; "msg" ])
+        "Size.bytes",
+        (bd "A size of n bytes. The function form of a literal like 512B." (Some "Size.bytes 512") None
+         |> named [ "n" ])
+        "Size.toBytes",
+        (bd
+            "The exact number of bytes as an int. (show truncates sizes to one decimal place.)"
+            (Some "Size.toBytes 2KiB")
+            None
+         |> named [ "s" ])
+        "Secret.of",
+        (bd
+            "Mark a computed string (a generated token, a derived key) as secret. show prints it as ***; only Secret.reveal gives back the plain value."
+            (Some "Secret.of \"hunter2\"")
+            None
+         |> named [ "s" ])
+        "Secret.reveal",
+        (bd
+            "The secret's plain value. This is the only way to get it out of a Secret, so each use (a header, a hash) is explicit and easy to find when auditing."
+            (Some "Secret.reveal (Secret.of \"x\")")
+            None
+         |> named [ "s" ])
+        "Secret.map",
+        (bd
+            "Transform a secret's value while keeping it secret. `Secret.map (fun t -> \"Bearer \" + t)` gives a Secret, whereas revealing and then concatenating would give a plain string."
+            (Some "Secret.map (fun t -> \"Bearer \" + t) (Secret.of \"x\")")
+            None
+         |> named [ "f"; "s" ])
+        // Color [D:tty-color]: wrap a string in an SGR colour/attribute,
+        // auto-off when piped or NO_COLOR — `print (Color.green x)` colours
+        // at a terminal, plain elsewhere. Nest to combine.
+        "Color.red",
+        (bd
+            "Color the text red. No color when output is piped or NO_COLOR is set."
+            (Some "print (Color.red \"error\")")
+            None
+         |> named [ "s" ])
+        "Color.green",
+        (bd
+            "Color the text green. No color when output is piped or NO_COLOR is set."
+            (Some "print (Color.green \"ok\")")
+            None
+         |> named [ "s" ])
+        "Color.yellow",
+        (bd
+            "Color the text yellow. No color when output is piped or NO_COLOR is set."
+            (Some "print (Color.yellow \"warn\")")
+            None
+         |> named [ "s" ])
+        "Color.blue",
+        (bd
+            "Color the text blue. No color when output is piped or NO_COLOR is set."
+            (Some "print (Color.blue \"info\")")
+            None
+         |> named [ "s" ])
+        "Color.magenta",
+        (bd
+            "Color the text magenta. No color when output is piped or NO_COLOR is set."
+            (Some "print (Color.magenta \"x\")")
+            None
+         |> named [ "s" ])
+        "Color.cyan",
+        (bd
+            "Color the text cyan. No color when output is piped or NO_COLOR is set."
+            (Some "print (Color.cyan \"x\")")
+            None
+         |> named [ "s" ])
+        "Color.gray",
+        (bd
+            "Color the text gray (bright black). No color when output is piped or NO_COLOR is set."
+            (Some "print (Color.gray \"muted\")")
+            None
+         |> named [ "s" ])
+        "Color.bold",
+        (bd
+            "Make the text bold; combine with a color by nesting. No styling when output is piped or NO_COLOR is set."
+            (Some "print (Color.bold (Color.red \"!\"))")
+            None
+         |> named [ "s" ])
+        "Color.dim",
+        (bd
+            "Make the text dim. No styling when output is piped or NO_COLOR is set."
+            (Some "print (Color.dim \"note\")")
+            None
+         |> named [ "s" ])
+        "Color.underline",
+        (bd
+            "Underline the text. No styling when output is piped or NO_COLOR is set."
+            (Some "print (Color.underline \"link\")")
+            None
+         |> named [ "s" ])
+        "Color.sgr",
+        (bd
+            "Style the text with a raw terminal escape code, for 256-color (`38;5;208`) or truecolor (`38;2;r;g;b`). No styling when output is piped or NO_COLOR is set."
+            (Some "print (Color.sgr \"38;5;208\" \"orange\")")
+            None
+         |> named [ "code"; "s" ])
+        "Term.width",
+        (bd
+            "The terminal width in columns, read each time it is called, so resizes are picked up. Returns 80 instead of raising when there is no terminal (output piped or redirected). Use it to size output, like `tput cols`."
+            (Some "print (show (Term.width ()))")
+            None
+         |> named [ "()" ])
+        "Term.title",
+        (bd
+            "Set the terminal window title. Control characters, escape sequences and bidi controls in the text are dropped, and it is cut to 256 characters. Does nothing when there is no terminal (output piped or redirected). Call it from the init.weir prompt function to keep the title current."
+            (Some "Term.title $\"weir: {pwd |> Path.fileName}\"")
+            None
+         |> named [ "text" ])
+        "Size.parse",
+        (bd
+            "Parse a size. Binary units are powers of 1024 (1.5MiB); SI units are powers of 10 (1MB is 10^6 bytes); B means bytes. Raises if the value is not a whole number of bytes."
+            (Some "Size.parse \"1.5MiB\"")
+            None
+         |> named [ "text" ])
+        "Size.tryParse",
+        (bd "Like Size.parse, but returns None instead of raising." (Some "Size.tryParse \"nope\"") None
+         |> named [ "text" ])
 
-          // ---- Duration: time as a type [D:duration] -------------------
-          "Duration.ms",
-          (bd "A duration of n milliseconds. The function form of a literal like 500ms." (Some "Duration.ms 500") None
-           |> named [ "n" ])
-          "Duration.s", (bd "A duration of n seconds." (Some "Duration.s 30") None |> named [ "n" ])
-          "Duration.m", (bd "A duration of n minutes." (Some "Duration.m 5") None |> named [ "n" ])
-          "Duration.h", (bd "A duration of n hours." (Some "Duration.h 2") None |> named [ "n" ])
-          "Duration.toMillis",
-          (bd "The total milliseconds as an int, for example for ratios or JSON fields." (Some "Duration.toMillis 2m") None
-           |> named [ "d" ])
-          "Duration.toSeconds",
-          (bd "The total seconds as a float, without losing precision (2500ms is 2.5)." (Some "Duration.toSeconds 2500ms") None
-           |> named [ "d" ])
-          "Duration.parse",
-          (bd
-              "Parse a duration in the form show prints, such as 1h30m, 2.5s or 500ms. Raises on anything else, including values finer than a millisecond."
-              (Some "Duration.parse \"1h30m\"")
-              None
-           |> named [ "text" ])
-          "Duration.tryParse",
-          (bd
-              "Like Duration.parse, but returns None instead of raising."
-              (Some "Duration.tryParse \"not-a-duration\"")
-              None
-           |> named [ "text" ])
-          "Duration.sleep",
-          (bd
-              "Pause for the duration. Zero returns immediately; a negative duration raises. The OS timer resolution (about 15ms on Windows, 1ms on Linux) means a short sleep may last longer than asked, never shorter. It is called Duration.sleep so that plain `sleep` still runs the system command."
-              (Some "Duration.sleep 10ms")
-              None
-           |> named [ "d" ])
+        // ---- Duration: time as a type [D:duration] -------------------
+        "Duration.ms",
+        (bd "A duration of n milliseconds. The function form of a literal like 500ms." (Some "Duration.ms 500") None
+         |> named [ "n" ])
+        "Duration.s", (bd "A duration of n seconds." (Some "Duration.s 30") None |> named [ "n" ])
+        "Duration.m", (bd "A duration of n minutes." (Some "Duration.m 5") None |> named [ "n" ])
+        "Duration.h", (bd "A duration of n hours." (Some "Duration.h 2") None |> named [ "n" ])
+        "Duration.toMillis",
+        (bd
+            "The total milliseconds as an int, for example for ratios or JSON fields."
+            (Some "Duration.toMillis 2m")
+            None
+         |> named [ "d" ])
+        "Duration.toSeconds",
+        (bd
+            "The total seconds as a float, without losing precision (2500ms is 2.5)."
+            (Some "Duration.toSeconds 2500ms")
+            None
+         |> named [ "d" ])
+        "Duration.parse",
+        (bd
+            "Parse a duration in the form show prints, such as 1h30m, 2.5s or 500ms. Raises on anything else, including values finer than a millisecond."
+            (Some "Duration.parse \"1h30m\"")
+            None
+         |> named [ "text" ])
+        "Duration.tryParse",
+        (bd
+            "Like Duration.parse, but returns None instead of raising."
+            (Some "Duration.tryParse \"not-a-duration\"")
+            None
+         |> named [ "text" ])
+        "Duration.sleep",
+        (bd
+            "Pause for the duration. Zero returns immediately; a negative duration raises. The OS timer resolution (about 15ms on Windows, 1ms on Linux) means a short sleep may last longer than asked, never shorter. It is called Duration.sleep so that plain `sleep` still runs the system command."
+            (Some "Duration.sleep 10ms")
+            None
+         |> named [ "d" ])
 
-          // ---- boundary forms: adapters between text and typed data ----
-          "from json",
-          bd
-              "Parse one JSON document, which may span several lines (so a pretty-printed HTTP body can be piped straight in), into a declared record. Fields can be int, string, bool, float, or an Option of one of those; a missing key or null becomes None."
-              None
-              (Some "Use it as a pipe stage: `resp.body |> from json Config`.")
-          "from jsonl",
-          bd
-              "Parse JSON lines (NDJSON, one document per line, as `to jsonl` writes) into declared records."
-              None
-              (Some "Use it as a pipe stage: `xs |> from jsonl Config`.")
-          "to json",
-          bd
-              "Write one value as a single-line JSON document. A record becomes an object and a seq becomes an array (the whole seq is read first). A None field is left out, so from json reads it back as None."
-              None
-              (Some "Use it as a pipe stage: `payload |> to json`.")
-          "to jsonl",
-          bd
-              "Write a sequence as JSON lines (NDJSON, one document per element, as `from jsonl` reads), lazily."
-              None
-              (Some "Use it as a pipe stage: `xs |> to jsonl`.")
-          "from yaml",
-          bd
-              "Parse YAML into declared records. Supports a strict subset: block mappings and sequences, scalars, # comments, and multiple documents separated by ---. Fields can be nested records, seqs, seq<string * _> for mappings, and Option (a missing key or null becomes None). Anchors, tags and flow style are rejected."
-              None
-              (Some "Use it as a pipe stage: `lines |> from yaml Deployment` gives a seq<Deployment>, one per YAML document.")
-          "to yaml",
-          bd
-              "Write one value as a YAML document. A record becomes a mapping, a seq a sequence, and a seq of pairs a mapping. `to yaml stream` writes one document per element, separated by `---`. A None field is left out; strings that YAML could misread as another type (no, 007, 1e5) are quoted."
-              None
-              (Some "Use it as a pipe stage: `deployment |> to yaml`.")
-          "from toml",
-          bd
-              "Parse one TOML document (TOML 1.1, so every 1.0 file too) into a declared record, the same way `from yaml` does: nested records for tables, seqs for arrays and arrays of tables, Option for a key that may be missing, [<Wire \"key\">] for a key that is not a weir name (`current-context`, `requires-python`). Duplicate keys and redefined tables are errors, with the line. A date or time is read as its text; an offset date-time can be read into an Instant field with [<Iso8601>]. Reading only; there is no `to toml`."
-              None
-              (Some "Use it as a pipe stage: `File.read \"Cargo.toml\" |> from toml Cargo`.")
-          "from xml",
-          bd
-              "Parse one XML document (a .csproj, .slnx or any XML) into a declared record. The root element is the record, and each field matches a child element by local name (a default xmlns is ignored). Use [<Attr>] to read an attribute, [<Elem \"X\">] for a repeated child, and a nested record for a child element. All values are text: fields are string, Option<string>, a record, or a seq of these, so declare a number as string and convert it with Str.toInt. Reading only; there is no `to xml`."
-              None
-              (Some "Use it as a pipe stage: `File.read \"App.csproj\" |> from xml Proj`.")
-          "from table",
-          bd
-              "Parse column-aligned tool output (a header row followed by aligned rows) into declared records, giving a seq<T>. Columns are cut at the header positions, not at every space, so a value with spaces (`Up 2 hours`) stays whole; headers are separated by 2 or more spaces (`CONTAINER ID` is one column). Fields match headers by their letters and digits, ignoring case (`podTemplateHash` matches `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a header exactly. Cells are trimmed and converted to the field type (string, int, float, bool); for an Option field, an empty or `<none>` cell becomes None. Extra columns and blank lines are ignored, and errors report the line and column. Reading only; there is no `to table`."
-              None
-              (Some "Use it as a pipe stage on a tool's table output: `… |> from table Pod`.")
-          "Yaml.parse",
-          (bd
-              "Parse one YAML document (the same strict subset) into Yaml nodes without a declared type. Every key is kept, including ones `from yaml T` would drop. Scalar types follow the same rules as in a `yaml` block: unquoted true/3/1.5 become YBool/YInt/YFloat, quoted or block scalars become YStr, and empty values become YNull."
-              (Some "[\"replicas: 3\"] |> Yaml.parse")
-              None
-           |> named [ "lines" ])
-          "Yaml.merge",
-          (bd
-              "Apply a `yaml patch` block to a document. The patch's structure says where each change goes: mappings are merged recursively; sequence items are appended if missing, or updated/removed by the key given with `by=<key>`; scalars are replaced; `$-` removes a key or a matching item. The order of entries does not matter and applying a patch twice changes nothing more. Write the result with `to yaml`."
-              None
-              (Some
-                  "Define the patch with `let p = yaml patch by=name` and indented patch lines, then run `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.")
-           |> named [ "patch"; "doc" ])
-          "Yaml.inferShape",
-          (bd
-              "Generate draft `type` declarations from a YAML sample and return them as text; this is what `#infer` uses. The top record is named Root and nested records are named automatically. Array elements are merged, and a key missing from some elements becomes an Option. An object used as a dictionary (values of one shape with mostly non-identifier keys, different keys in sibling objects, or an empty {}) becomes seq<string * _>. Notes are added as `//` lines. The draft only covers what the sample contains, so review and edit it. This runs on a sample at runtime; it does not affect type checking."
-              (Some "let sample = <<<\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)")
-              (Some "Like `weir add schema`, this turns outside data into a type declaration you paste into your script and own; it does not change how `check` or `from yaml` behave.")
-           |> named [ "lines" ])
-          "Json.inferShape",
-          (bd
-              "Generate draft `type` declarations from a JSON sample and return them as text; this is what `#infer` uses. The top record is named Root; nested records are named after their field, with array element types in the singular. Array elements are merged, and a key missing from some elements becomes an Option. An object used as a dictionary (values of one shape with mostly non-identifier keys, different keys in sibling objects, or an empty {}) becomes seq<string * _>. Notes are added as `//` lines. The draft only covers what the sample contains, so review and edit it. This runs on a sample at runtime; it does not affect type checking."
-              (Some "print (Json.inferShape [\"{\\\"id\\\": 1, \\\"name\\\": \\\"x\\\"}\"])")
-              (Some "Like `weir add schema`, this turns outside data into a type declaration you paste into your script and own; it does not change how `check` or `from json` behave.")
-           |> named [ "lines" ])
-          "Table.inferShape",
-          (bd
-              "Generate a draft row `type` declaration from a sample of column-aligned output and return it as text; this is what `#infer … from table` uses. Each column's type comes from its values: int if all are ints, otherwise float or bool if they all fit, otherwise string; a column with empty or `<none>` cells becomes an Option, with a note. Headers become field names, with `[<Wire>]` added when the original header cannot be recovered from the name. A note says the result is read as seq<Root>. Review and edit the draft. This runs on a sample at runtime; it does not affect type checking."
-              (Some "print (Table.inferShape [\"NAME   RESTARTS\"; \"web-1  0\"])")
-              (Some "Like `weir add schema`, this turns outside data into a type declaration you paste into your script and own; it does not change how `check` or `from table` behave.")
-           |> named [ "lines" ])
-          "Table.render",
-          (bd
-              "Format a seq of records of the same type as aligned table lines for `print`, with a bold header and the same layout the REPL uses. It is for display only: there is no `to table`, and a table cannot be read back reliably, so use `to json` or `to yaml` to exchange data. The table is fitted to the terminal width, and not limited when piped. A seq of non-records is an error that points at the location."
-              (Some "ls |> Table.render |> Seq.iter print")
-              None
-           |> named [ "rows" ])
+        // ---- boundary forms: adapters between text and typed data ----
+        "from json",
+        bd
+            "Parse one JSON document, which may span several lines (so a pretty-printed HTTP body can be piped straight in), into a declared record. Fields can be int, string, bool, float, or an Option of one of those; a missing key or null becomes None."
+            None
+            (Some "Use it as a pipe stage: `resp.body |> from json Config`.")
+        "from jsonl",
+        bd
+            "Parse JSON lines (NDJSON, one document per line, as `to jsonl` writes) into declared records."
+            None
+            (Some "Use it as a pipe stage: `xs |> from jsonl Config`.")
+        "to json",
+        bd
+            "Write one value as a single-line JSON document. A record becomes an object and a seq becomes an array (the whole seq is read first). A None field is left out, so from json reads it back as None."
+            None
+            (Some "Use it as a pipe stage: `payload |> to json`.")
+        "to jsonl",
+        bd
+            "Write a sequence as JSON lines (NDJSON, one document per element, as `from jsonl` reads), lazily."
+            None
+            (Some "Use it as a pipe stage: `xs |> to jsonl`.")
+        "from yaml",
+        bd
+            "Parse YAML into declared records. Supports a strict subset: block mappings and sequences, scalars, # comments, and multiple documents separated by ---. Fields can be nested records, seqs, seq<string * _> for mappings, and Option (a missing key or null becomes None). Anchors, tags and flow style are rejected."
+            None
+            (Some
+                "Use it as a pipe stage: `lines |> from yaml Deployment` gives a seq<Deployment>, one per YAML document.")
+        "to yaml",
+        bd
+            "Write one value as a YAML document. A record becomes a mapping, a seq a sequence, and a seq of pairs a mapping. `to yaml stream` writes one document per element, separated by `---`. A None field is left out; strings that YAML could misread as another type (no, 007, 1e5) are quoted."
+            None
+            (Some "Use it as a pipe stage: `deployment |> to yaml`.")
+        "from toml",
+        bd
+            "Parse one TOML document (TOML 1.1, so every 1.0 file too) into a declared record, the same way `from yaml` does: nested records for tables, seqs for arrays and arrays of tables, Option for a key that may be missing, [<Wire \"key\">] for a key that is not a weir name (`current-context`, `requires-python`). Duplicate keys and redefined tables are errors, with the line. A date or time is read as its text; an offset date-time can be read into an Instant field with [<Iso8601>]. Reading only; there is no `to toml`."
+            None
+            (Some "Use it as a pipe stage: `File.read \"Cargo.toml\" |> from toml Cargo`.")
+        "from xml",
+        bd
+            "Parse one XML document (a .csproj, .slnx or any XML) into a declared record. The root element is the record, and each field matches a child element by local name (a default xmlns is ignored). Use [<Attr>] to read an attribute, [<Elem \"X\">] for a repeated child, and a nested record for a child element. All values are text: fields are string, Option<string>, a record, or a seq of these, so declare a number as string and convert it with Str.toInt. Reading only; there is no `to xml`."
+            None
+            (Some "Use it as a pipe stage: `File.read \"App.csproj\" |> from xml Proj`.")
+        "from table",
+        bd
+            "Parse column-aligned tool output (a header row followed by aligned rows) into declared records, giving a seq<T>. Columns are cut at the header positions, not at every space, so a value with spaces (`Up 2 hours`) stays whole; headers are separated by 2 or more spaces (`CONTAINER ID` is one column). Fields match headers by their letters and digits, ignoring case (`podTemplateHash` matches `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a header exactly. Cells are trimmed and converted to the field type (string, int, float, bool); for an Option field, an empty or `<none>` cell becomes None. Extra columns and blank lines are ignored, and errors report the line and column. Reading only; there is no `to table`."
+            None
+            (Some "Use it as a pipe stage on a tool's table output: `… |> from table Pod`.")
+        "Yaml.parse",
+        (bd
+            "Parse one YAML document (the same strict subset) into Yaml nodes without a declared type. Every key is kept, including ones `from yaml T` would drop. Scalar types follow the same rules as in a `yaml` block: unquoted true/3/1.5 become YBool/YInt/YFloat, quoted or block scalars become YStr, and empty values become YNull."
+            (Some "[\"replicas: 3\"] |> Yaml.parse")
+            None
+         |> named [ "lines" ])
+        "Yaml.merge",
+        (bd
+            "Apply a `yaml patch` block to a document. The patch's structure says where each change goes: mappings are merged recursively; sequence items are appended if missing, or updated/removed by the key given with `by=<key>`; scalars are replaced; `$-` removes a key or a matching item. The order of entries does not matter and applying a patch twice changes nothing more. Write the result with `to yaml`."
+            None
+            (Some
+                "Define the patch with `let p = yaml patch by=name` and indented patch lines, then run `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.")
+         |> named [ "patch"; "doc" ])
+        "Yaml.inferShape",
+        (bd
+            "Generate draft `type` declarations from a YAML sample and return them as text; this is what `#infer` uses. The top record is named Root and nested records are named automatically. Array elements are merged, and a key missing from some elements becomes an Option. An object used as a dictionary (values of one shape with mostly non-identifier keys, different keys in sibling objects, or an empty {}) becomes seq<string * _>. Notes are added as `//` lines. The draft only covers what the sample contains, so review and edit it. This runs on a sample at runtime; it does not affect type checking."
+            (Some "let sample = <<<\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)")
+            (Some
+                "Like `weir add schema`, this turns outside data into a type declaration you paste into your script and own; it does not change how `check` or `from yaml` behave.")
+         |> named [ "lines" ])
+        "Json.inferShape",
+        (bd
+            "Generate draft `type` declarations from a JSON sample and return them as text; this is what `#infer` uses. The top record is named Root; nested records are named after their field, with array element types in the singular. Array elements are merged, and a key missing from some elements becomes an Option. An object used as a dictionary (values of one shape with mostly non-identifier keys, different keys in sibling objects, or an empty {}) becomes seq<string * _>. Notes are added as `//` lines. The draft only covers what the sample contains, so review and edit it. This runs on a sample at runtime; it does not affect type checking."
+            (Some "print (Json.inferShape [\"{\\\"id\\\": 1, \\\"name\\\": \\\"x\\\"}\"])")
+            (Some
+                "Like `weir add schema`, this turns outside data into a type declaration you paste into your script and own; it does not change how `check` or `from json` behave.")
+         |> named [ "lines" ])
+        "Table.inferShape",
+        (bd
+            "Generate a draft row `type` declaration from a sample of column-aligned output and return it as text; this is what `#infer … from table` uses. Each column's type comes from its values: int if all are ints, otherwise float or bool if they all fit, otherwise string; a column with empty or `<none>` cells becomes an Option, with a note. Headers become field names, with `[<Wire>]` added when the original header cannot be recovered from the name. A note says the result is read as seq<Root>. Review and edit the draft. This runs on a sample at runtime; it does not affect type checking."
+            (Some "print (Table.inferShape [\"NAME   RESTARTS\"; \"web-1  0\"])")
+            (Some
+                "Like `weir add schema`, this turns outside data into a type declaration you paste into your script and own; it does not change how `check` or `from table` behave.")
+         |> named [ "lines" ])
+        "Table.render",
+        (bd
+            "Format a seq of records of the same type as aligned table lines for `print`, with a bold header and the same layout the REPL uses. It is for display only: there is no `to table`, and a table cannot be read back reliably, so use `to json` or `to yaml` to exchange data. The table is fitted to the terminal width, and not limited when piped. A seq of non-records is an error that points at the location."
+            (Some "ls |> Table.render |> Seq.iter print")
+            None
+         |> named [ "rows" ])
 
-          // ---- reifiers: a `|` stage that turns a command's run into a value
-          // [D:exit-reifiers] [D:reifier-term].
-          // Surface names; the typed tree carries the un-typeable |completed
-          // key (+ Env/In twins), mapped back by reifierSurface below. ----
-          "complete",
-          bd
-              "Run the command (or pipeline) and capture everything as a `Completed` record: ok (exitCode == 0), its exit code, stdout and stderr. A nonzero exit does not raise."
-              None
-              (Some "Use it when you need the exit code and the output together: `let r = git push | complete`, then `if r.ok then …` or read `r.exitCode`, `r.stdout`, `r.stderr`.")
-          "succeeds",
-          bd
-              "Run the command and return true if it exited 0. Its output is discarded."
-              None
-              (Some "Use it in a condition: `if git diff --quiet | succeeds then …`.")
-          "orFail",
-          bd
-              "Stop with a message if it didn't work. After a command, `<command> | orFail \"msg\"` runs it with its output streaming to the terminal; if it exits nonzero, it raises with your message and the exit code. After an expression, `<expr> |> orFail` is the inverse of `|> try`: `Ok v` and `Some v` give `v`, `Error msg` raises `msg`, and `None` raises `orFail: no value (None)`. With a message, `|> orFail \"msg\"` raises `msg: <error>` for an Error and `msg` for None."
-              (Some "Map.tryGet \"port\" (Map.ofPairs [(\"port\", \"8080\")]) |> orFail \"no port\"")
-              (Some "Use it to stop the script when a command fails: `make test | orFail \"tests failed\"`. The raise is an ordinary one: `|> try` catches it.")
-          "exitCode",
-          bd
-              "Run the command with its output streaming to the terminal and return its exit code as an int. It never raises."
-              None
-              (Some "Bind or match the result, as in `let rc = make test | exitCode`. Using it as a bare statement is an error, because the code would be thrown away.")
-          "exec",
-          bd
-              "Replace weir's process with the command (execve), so it never returns. The program keeps weir's process id, which means a container entrypoint receives signals directly. It cannot take piped stdin."
-              None
-              (Some "Like `fail` and `exit`, it ends the script, so it fits in any branch, whatever type the other branches have.")
-          "line",
-          bd
-              "Run a one-value command and return its single line of output as a trimmed string — for tools like `git rev-parse HEAD` or `az … -o tsv`. Raises on a nonzero exit, or when the output is not exactly one line."
-              None
-              (Some "For several lines use `| text` (one string), or bind the command itself (a seq<string>, one element per line).")
-          "text",
-          bd
-              "Run the command and return its whole output as one string: lines joined with newlines, trailing blank lines dropped (like bash's `$(…)`). Raises on a nonzero exit."
-              None
-              (Some "To keep the exit code instead of raising, use `| complete`.")
+        // ---- reifiers: a `|` stage that turns a command's run into a value
+        // [D:exit-reifiers] [D:reifier-term].
+        // Surface names; the typed tree carries the un-typeable |completed
+        // key (+ Env/In twins), mapped back by reifierSurface below. ----
+        "complete",
+        bd
+            "Run the command (or pipeline) and capture everything as a `Completed` record: ok (exitCode == 0), its exit code, stdout and stderr. A nonzero exit does not raise."
+            None
+            (Some
+                "Use it when you need the exit code and the output together: `let r = git push | complete`, then `if r.ok then …` or read `r.exitCode`, `r.stdout`, `r.stderr`.")
+        "succeeds",
+        bd
+            "Run the command and return true if it exited 0. Its output is discarded."
+            None
+            (Some "Use it in a condition: `if git diff --quiet | succeeds then …`.")
+        "orFail",
+        bd
+            "Stop with a message if it didn't work. After a command, `<command> | orFail \"msg\"` runs it with its output streaming to the terminal; if it exits nonzero, it raises with your message and the exit code. After an expression, `<expr> |> orFail` is the inverse of `|> try`: `Ok v` and `Some v` give `v`, `Error msg` raises `msg`, and `None` raises `orFail: no value (None)`. With a message, `|> orFail \"msg\"` raises `msg: <error>` for an Error and `msg` for None."
+            (Some "Map.tryGet \"port\" (Map.ofPairs [(\"port\", \"8080\")]) |> orFail \"no port\"")
+            (Some
+                "Use it to stop the script when a command fails: `make test | orFail \"tests failed\"`. The raise is an ordinary one: `|> try` catches it.")
+        "exitCode",
+        bd
+            "Run the command with its output streaming to the terminal and return its exit code as an int. It never raises."
+            None
+            (Some
+                "Bind or match the result, as in `let rc = make test | exitCode`. Using it as a bare statement is an error, because the code would be thrown away.")
+        "exec",
+        bd
+            "Replace weir's process with the command (execve), so it never returns. The program keeps weir's process id, which means a container entrypoint receives signals directly. It cannot take piped stdin."
+            None
+            (Some
+                "Like `fail` and `exit`, it ends the script, so it fits in any branch, whatever type the other branches have.")
+        "line",
+        bd
+            "Run a one-value command and return its single line of output as a trimmed string — for tools like `git rev-parse HEAD` or `az … -o tsv`. Raises on a nonzero exit, or when the output is not exactly one line."
+            None
+            (Some
+                "For several lines use `| text` (one string), or bind the command itself (a seq<string>, one element per line).")
+        "text",
+        bd
+            "Run the command and return its whole output as one string: lines joined with newlines, trailing blank lines dropped (like bash's `$(…)`). Raises on a nonzero exit."
+            None
+            (Some "To keep the exit code instead of raising, use `| complete`.")
 
-          // ---- types: a hover renders the structure; the value here is
-          // when you get one ----
-          "Completed",
-          bd
-              "A finished command: ok, exitCode, stdout, stderr. ok is exitCode == 0; a tool whose nonzero codes mean something (grep's 1) reads the code. You get one from `| complete`, and only from there: it is a receipt of a run, so a literal or `{ r with … }` is refused."
-              None
-              None
-          "FileRow",
-          bd
-              "A directory entry, as returned by `ls`. Fields: name; kind (Regular, Directory or Symlink); target (Some link target for a symlink, None otherwise; no File.* function gives you this); bytes (0 B for a directory); modified (the last-write time as an Instant, which does not change after you read it; tables show it as relative time, show prints ISO); hidden; and path. `ls` lists files and subdirectories sorted by name, case-sensitively with uppercase first, regardless of locale. Use name for matching and display and path when calling File.* functions. Less common details are separate functions rather than fields, such as File.mode for permissions."
-              None
-              None
-          "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
-          "FileChunk",
-          bd
-              "What File.readFrom returns: lines, the complete lines read, and next, the byte offset just past the last one (the offset you started from when there were none). Pass next to the following File.readFrom."
-              None
-              None ]
+        // ---- types: a hover renders the structure; the value here is
+        // when you get one ----
+        "Completed",
+        bd
+            "A finished command: ok, exitCode, stdout, stderr. ok is exitCode == 0; a tool whose nonzero codes mean something (grep's 1) reads the code. You get one from `| complete`, and only from there: it is a receipt of a run, so a literal or `{ r with … }` is refused."
+            None
+            None
+        "FileRow",
+        bd
+            "A directory entry, as returned by `ls`. Fields: name; kind (Regular, Directory or Symlink); target (Some link target for a symlink, None otherwise; no File.* function gives you this); bytes (0 B for a directory); modified (the last-write time as an Instant, which does not change after you read it; tables show it as relative time, show prints ISO); hidden; and path. `ls` lists files and subdirectories sorted by name, case-sensitively with uppercase first, regardless of locale. Use name for matching and display and path when calling File.* functions. Less common details are separate functions rather than fields, such as File.mode for permissions."
+            None
+            None
+        "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
+        "FileChunk",
+        bd
+            "What File.readFrom returns: lines, the complete lines read, and next, the byte offset just past the last one (the offset you started from when there were none). Pass next to the following File.readFrom."
+            None
+            None
+    ]
 
 /// the boundary adapters a direction supports, derived from the doc keys
 /// (`from json` / `to yaml` …) [D:form-word-hover] — the one source the
@@ -8462,29 +8762,31 @@ let builtinDocs: Map<string, BuiltinDoc> =
 /// line per name, shown on hover inside `[<…>]`. Keyed by the bare
 /// name; the checker owns validation, this owns the explanation.
 let attrDocs: Map<string, string> =
-    Map.ofList
-        [ "Short", "[<Short \"c\">] — the flag's one-character short form (Args.load); overrides the derived letter"
-          "NoShort", "[<NoShort>] — suppress this flag's short form (Args.load)"
-          "Positional", "[<Positional>] — a signature's operand, not a flag (command signatures)"
-          "Default", "[<Default v>] — the value used when the flag/env var is absent (Args.load/Env.load)"
-          "Wire",
-          "[<Wire \"key\">] — the field's (or tagged case's) wire key, when it differs from the weir name (json/yaml/env)"
-          "Tag",
-          "[<Tag \"field\">] — marks a union as wire-tagged: the named field discriminates the case at the json/yaml boundary"
-          "Other",
-          "[<Other>] — the open-world fallback case: wire tags matching no declared case land here (carries the raw tag as a string, or nothing)"
-          "Ord",
-          "[<Ord n>] — a position in the type's ordering key, on a record field or a union case: the type then sorts, min/max-es, keys sortBy and compares with < > <= >= by its numbered members in ascending n (a union by case position, then payload). Unnumbered record fields take no part: two values equal on the key but different elsewhere are neither < nor > nor ==; Seq.sort keeps their input order, min/max return the first"
-          "Iso8601", "[<Iso8601>] — an Instant field crosses json/yaml as an ISO 8601 string"
-          "EpochMs", "[<EpochMs>] — an Instant field crosses json/yaml as integer epoch milliseconds"
-          "EpochSec",
-          "[<EpochSec>] — an Instant field crosses json/yaml as integer epoch seconds (a sub-second value raises on write)"
-          "Millis", "[<Millis>] — a Duration field crosses json/yaml as integer milliseconds"
-          "Seconds", "[<Seconds>] — a Duration field crosses json/yaml as integer seconds (a sub-second value raises on write)"
-          "ByteCount", "[<ByteCount>] — a Size field crosses json/yaml as an integer byte count"
-          "Attr",
-          "[<Attr>] / [<Attr \"Name\">] — read this field from an XML attribute (from xml), named like the field unless given"
-          "Elem", "[<Elem \"Child\">] — the repeated child element a seq field reads (from xml)" ]
+    Map.ofList [
+        "Short", "[<Short \"c\">] — the flag's one-character short form (Args.load); overrides the derived letter"
+        "NoShort", "[<NoShort>] — suppress this flag's short form (Args.load)"
+        "Positional", "[<Positional>] — a signature's operand, not a flag (command signatures)"
+        "Default", "[<Default v>] — the value used when the flag/env var is absent (Args.load/Env.load)"
+        "Wire",
+        "[<Wire \"key\">] — the field's (or tagged case's) wire key, when it differs from the weir name (json/yaml/env)"
+        "Tag",
+        "[<Tag \"field\">] — marks a union as wire-tagged: the named field discriminates the case at the json/yaml boundary"
+        "Other",
+        "[<Other>] — the open-world fallback case: wire tags matching no declared case land here (carries the raw tag as a string, or nothing)"
+        "Ord",
+        "[<Ord n>] — a position in the type's ordering key, on a record field or a union case: the type then sorts, min/max-es, keys sortBy and compares with < > <= >= by its numbered members in ascending n (a union by case position, then payload). Unnumbered record fields take no part: two values equal on the key but different elsewhere are neither < nor > nor ==; Seq.sort keeps their input order, min/max return the first"
+        "Iso8601", "[<Iso8601>] — an Instant field crosses json/yaml as an ISO 8601 string"
+        "EpochMs", "[<EpochMs>] — an Instant field crosses json/yaml as integer epoch milliseconds"
+        "EpochSec",
+        "[<EpochSec>] — an Instant field crosses json/yaml as integer epoch seconds (a sub-second value raises on write)"
+        "Millis", "[<Millis>] — a Duration field crosses json/yaml as integer milliseconds"
+        "Seconds",
+        "[<Seconds>] — a Duration field crosses json/yaml as integer seconds (a sub-second value raises on write)"
+        "ByteCount", "[<ByteCount>] — a Size field crosses json/yaml as an integer byte count"
+        "Attr",
+        "[<Attr>] / [<Attr \"Name\">] — read this field from an XML attribute (from xml), named like the field unless given"
+        "Elem", "[<Elem \"Child\">] — the repeated child element a seq field reads (from xml)"
+    ]
 
 let adapterNames (dir: string) : string list =
     builtinDocs
@@ -8526,41 +8828,42 @@ let renderBuiltinDoc (d: BuiltinDoc) : string = renderBuiltinDocWith id d
 // gen-lexical pattern): a new module without a blurb fails loud, and a
 // blurb for a retired module fails too.
 let moduleBlurbs: Map<string, string> =
-    Map.ofList
-        [ "Args", "typed argv — flags, subcommands, defaults from a record"
-          "Bytes", "the non-text value: base64, sha256, UTF-8 bridges"
-          "Dir", "directory operations: create, list, move, delete, stat"
-          "Duration", "spans of time: literals, arithmetic, parse/show, sleep"
-          "Env", "environment variables: one, a typed record, a dotenv file"
-          "File", "file operations: read, write, copy, hash, secrets"
-          "Float", "finite floats: convert, round, near-compare, parse"
-          "Frontier", "the bounded worklist fold Graph and Tree derive from"
-          "Graph", "reachability over a neighbor function, cycle-safe"
-          "Http", "HTTP requests: one record, one runner, typed auth"
-          "Instant", "points on the UTC timeline: now, parse, compare"
-          "Json", "JSON helpers: inferShape drafts type decls from a sample"
-          "Log", "levelled diagnostics to stderr (WEIR_LOG selects)"
-          "Map", "immutable maps keyed by any equatable type: get, add, pairs"
-          "Net", "network probes: portOpen"
-          "Option", "presence and absence: map, bind, defaults"
-          "Result", "the value or the error message `|> try result` gives: map, defaults, toOption"
-          "Path", "path text and discovery: join, confine, glob, temp dirs"
-          "Plan", "plan/apply: preview a plan's ops before applying"
-          "Poll", "poll's options record: defaults"
-          "Proc", "scoped process handles: pid, running, tail, wait, stop"
-          "Server", "scoped HTTP listener handles: port, running (see within serve)"
-          "Retry", "retry's options record: defaults"
-          "Secret", "rendering-masked values: of, map, reveal"
-          "Color", "terminal colour: red/green/…, bold/dim/underline, sgr — auto-off when piped"
-          "Term", "the terminal: width (columns; 80 when there is no terminal), title (set the window title)"
-          "Self", "the process's own facts: args, stdin, pid, paths — and prompt"
-          "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
-          "Size", "byte sizes: binary-unit literals, arithmetic, parse"
-          "Str", "string ops: trim, split, match, encode, hash"
-          "Table", "aligned-table helpers: inferShape drafts a row type from a sample"
-          "Tree", "parent-first effect walks over discovered children"
-          "Uuid", "128-bit identifiers: v4, v5, time-ordered v7, parse, inspect"
-          "Yaml", "YAML nodes: parse, merge (strategic patch), inferShape" ]
+    Map.ofList [
+        "Args", "typed argv — flags, subcommands, defaults from a record"
+        "Bytes", "the non-text value: base64, sha256, UTF-8 bridges"
+        "Dir", "directory operations: create, list, move, delete, stat"
+        "Duration", "spans of time: literals, arithmetic, parse/show, sleep"
+        "Env", "environment variables: one, a typed record, a dotenv file"
+        "File", "file operations: read, write, copy, hash, secrets"
+        "Float", "finite floats: convert, round, near-compare, parse"
+        "Frontier", "the bounded worklist fold Graph and Tree derive from"
+        "Graph", "reachability over a neighbor function, cycle-safe"
+        "Http", "HTTP requests: one record, one runner, typed auth"
+        "Instant", "points on the UTC timeline: now, parse, compare"
+        "Json", "JSON helpers: inferShape drafts type decls from a sample"
+        "Log", "levelled diagnostics to stderr (WEIR_LOG selects)"
+        "Map", "immutable maps keyed by any equatable type: get, add, pairs"
+        "Net", "network probes: portOpen"
+        "Option", "presence and absence: map, bind, defaults"
+        "Result", "the value or the error message `|> try result` gives: map, defaults, toOption"
+        "Path", "path text and discovery: join, confine, glob, temp dirs"
+        "Plan", "plan/apply: preview a plan's ops before applying"
+        "Poll", "poll's options record: defaults"
+        "Proc", "scoped process handles: pid, running, tail, wait, stop"
+        "Server", "scoped HTTP listener handles: port, running (see within serve)"
+        "Retry", "retry's options record: defaults"
+        "Secret", "rendering-masked values: of, map, reveal"
+        "Color", "terminal colour: red/green/…, bold/dim/underline, sgr — auto-off when piped"
+        "Term", "the terminal: width (columns; 80 when there is no terminal), title (set the window title)"
+        "Self", "the process's own facts: args, stdin, pid, paths — and prompt"
+        "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
+        "Size", "byte sizes: binary-unit literals, arithmetic, parse"
+        "Str", "string ops: trim, split, match, encode, hash"
+        "Table", "aligned-table helpers: inferShape drafts a row type from a sample"
+        "Tree", "parent-first effect walks over discovered children"
+        "Uuid", "128-bit identifiers: v4, v5, time-ordered v7, parse, inspect"
+        "Yaml", "YAML nodes: parse, merge (strategic patch), inferShape"
+    ]
 
 // the allowlist [D:bare-allowlist]: only these modules contribute
 // bare aliases to the REPL. An allowlist, not a blocklist: a blocklist
@@ -8616,6 +8919,7 @@ let private printerrImpl: Value =
             System.Console.Error.WriteLine(
                 sanitizeIfTty System.Console.IsErrorRedirected (scalarString "printerr argument" scalar)
             )
+
             VUnit
         | v -> unreachable $"the checker rejects 'printerr' on {formatValue v}")
 
@@ -8651,18 +8955,21 @@ let private chainSpecs (stagesV: Value) (stdinV: Value) : Proc.Spec list =
         |> List.ofSeq
         |> List.mapi (fun i st ->
             match st with
-            | VTuple [ VStr prog; VSeq args; envV ] ->
-                { Proc.Spec.Prog = Proc.specProg prog
-                  Proc.Spec.Args = argStrings args
-                  Proc.Spec.Env = envVarPairs envV
-                  Proc.Spec.Input = (if i = 0 then input else None)
-                  Proc.Spec.Cwd = None
-                  Proc.Spec.Ambient = None }
+            | VTuple [ VStr prog; VSeq args; envV ] -> {
+                Proc.Spec.Prog = Proc.specProg prog
+                Proc.Spec.Args = argStrings args
+                Proc.Spec.Env = envVarPairs envV
+                Proc.Spec.Input = (if i = 0 then input else None)
+                Proc.Spec.Cwd = None
+                Proc.Spec.Ambient = None
+              }
             | v -> unreachable $"the parser builds chain stages as tuples, got {formatValue v}")
     | v -> unreachable $"the parser builds a chain as a stage list, got {formatValue v}"
 
 let private chainShown (specs: Proc.Spec list) =
-    specs |> List.map (fun sp -> Proc.showArgv (sp.Prog :: sp.Args)) |> String.concat " | "
+    specs
+    |> List.map (fun sp -> Proc.showArgv (sp.Prog :: sp.Args))
+    |> String.concat " | "
 
 let private chainBuiltin (k: Proc.Spec list -> Value) : Value =
     VBuiltin(fun stagesV -> VBuiltin(fun stdinV -> k (chainSpecs stagesV stdinV)))
@@ -8673,8 +8980,7 @@ let private chainCompletedImpl =
         completedOf code stdout stderr)
 
 let private chainSucceededImpl =
-    chainBuiltin (fun specs ->
-        VBool(Proc.chainCompletedCode specs = 0))
+    chainBuiltin (fun specs -> VBool(Proc.chainCompletedCode specs = 0))
 
 let private chainExitCodedImpl =
     chainBuiltin (fun specs -> VInt(int64 (Proc.chainStreamCodeOf specs)))
@@ -8692,7 +8998,9 @@ let private chainLinedImpl =
     chainBuiltin (fun specs ->
         match List.ofSeq (Proc.chainLinesOf specs) with
         | [ one ] -> VStr(one.Trim())
-        | ls -> failwith $"'{quoteData (chainShown specs)} | line' expected exactly one line of output, got {List.length ls}")
+        | ls ->
+            failwith
+                $"'{quoteData (chainShown specs)} | line' expected exactly one line of output, got {List.length ls}")
 
 let private chainTextedImpl =
     chainBuiltin (fun specs -> wholeText (Proc.chainLinesOf specs))
@@ -8720,74 +9028,76 @@ let private chainTy (result: Ty) : Ty =
     TFun(TSeq stage, TFun(TNamed("Option", [ TSeq TStr ]), result))
 
 let private entries: (string * Ty * Value) list =
-    [ "ls", seqFileRow, realLs
-      "cd", TFun(TStr, TStr), cdImpl
-      "pwd", TStr, pwdImpl
-      "not", TFun(TBool, TBool), notImpl
-      "id", TFun(tA, tA), idImpl
-      "fst", TFun(TTuple [ tA; tB ], tA), fstImpl
-      "snd", TFun(TTuple [ tA; tB ], tB), sndImpl
-      // reifier desugar targets [D:drop-reify-builtins]: '|'-prefixed so
-      // `| complete`/`| succeeds`/`| orFail`/`| exitCode` resolve them,
-      // user code cannot (identifiers are [A-Za-z_]..). Reification at
-      // expression position is `let r = cmd | complete`; a computed argv
-      // splats into the chain [D:splat-reifier-chains].
-      "|completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl
-      "|succeeded", TFun(TStr, TFun(TSeq TStr, TBool)), succeededWith []
-      "|orFailed", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit))), orFailedWith []
-      "|exitCoded", TFun(TStr, TFun(TSeq TStr, TInt)), exitCodedWith []
-      // the single-line capture [D:reify-line] — `cmd | line` : the one
-      // trimmed line of stdout as a string (the one-value-CLI idiom)
-      "|lined", TFun(TStr, TFun(TSeq TStr, TStr)), linedWith []
-      // the whole-output capture [D:reify-text] — `cmd | text` : stdout as
-      // one string
-      "|texted", TFun(TStr, TFun(TSeq TStr, TStr)), textedWith []
-      // process replacement [D:exec] — diverging (tA), like fail/exit; the
-      // stdin twin is refused at parse (no parent to feed a replacement)
-      "|execed", TFun(TStr, TFun(TSeq TStr, tA)), execedWith []
-      // stdin-carrying twins — the value-headed reifier route
-      // (`xs | grep | complete`) [D:value-headed-pipe]
-      "|completedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))), completedWithIn []
-      "|succeededIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TBool))), succeededWithIn []
-      "|orFailedIn", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TUnit)))), orFailedWithIn []
-      "|exitCodedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TInt))), exitCodedWithIn []
-      "|linedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TStr))), linedWithIn []
-      "|textedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TStr))), textedWithIn []
-      // diverging [D:fail-bottom]: the result var generalizes, so an arm
-      // or branch that fails/exits unifies with the value the others make
-      "fail", TFun(TStr, tA), failImpl
-      "exit", TFun(TInt, tA), exitImpl
-      // env-carrying twins — the env-sigil reifier route
-      // (`$e(cmd | complete)`)
-      "|completedEnv",
-      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))),
-      VBuiltin(fun envV -> completedWith (envVarPairs envV))
-      "|succeededEnv",
-      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TBool))),
-      VBuiltin(fun envV -> succeededWith (envVarPairs envV))
-      "|orFailedEnv",
-      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit)))),
-      VBuiltin(fun envV -> orFailedWith (envVarPairs envV))
-      "|exitCodedEnv",
-      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TInt))),
-      VBuiltin(fun envV -> exitCodedWith (envVarPairs envV))
-      "|execedEnv",
-      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, tA))),
-      VBuiltin(fun envV -> execedWith (envVarPairs envV))
-      "|linedEnv",
-      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TStr))),
-      VBuiltin(fun envV -> linedWith (envVarPairs envV))
-      "|textedEnv",
-      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TStr))),
-      VBuiltin(fun envV -> textedWith (envVarPairs envV))
-      // reifiers after a command chain [D:chain-reifiers]: a stage list of
-      // (prog, argv, env) and the value head's stdin
-      "|chainCompleted", chainTy (TNamed(completedDef.Name, [])), chainCompletedImpl
-      "|chainSucceeded", chainTy TBool, chainSucceededImpl
-      "|chainExitCoded", chainTy TInt, chainExitCodedImpl
-      "|chainOrFailed", TFun(TStr, chainTy TUnit), chainOrFailedImpl
-      "|chainLined", chainTy TStr, chainLinedImpl
-      "|chainTexted", chainTy TStr, chainTextedImpl ]
+    [
+        "ls", seqFileRow, realLs
+        "cd", TFun(TStr, TStr), cdImpl
+        "pwd", TStr, pwdImpl
+        "not", TFun(TBool, TBool), notImpl
+        "id", TFun(tA, tA), idImpl
+        "fst", TFun(TTuple [ tA; tB ], tA), fstImpl
+        "snd", TFun(TTuple [ tA; tB ], tB), sndImpl
+        // reifier desugar targets [D:drop-reify-builtins]: '|'-prefixed so
+        // `| complete`/`| succeeds`/`| orFail`/`| exitCode` resolve them,
+        // user code cannot (identifiers are [A-Za-z_]..). Reification at
+        // expression position is `let r = cmd | complete`; a computed argv
+        // splats into the chain [D:splat-reifier-chains].
+        "|completed", TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, []))), completedImpl
+        "|succeeded", TFun(TStr, TFun(TSeq TStr, TBool)), succeededWith []
+        "|orFailed", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit))), orFailedWith []
+        "|exitCoded", TFun(TStr, TFun(TSeq TStr, TInt)), exitCodedWith []
+        // the single-line capture [D:reify-line] — `cmd | line` : the one
+        // trimmed line of stdout as a string (the one-value-CLI idiom)
+        "|lined", TFun(TStr, TFun(TSeq TStr, TStr)), linedWith []
+        // the whole-output capture [D:reify-text] — `cmd | text` : stdout as
+        // one string
+        "|texted", TFun(TStr, TFun(TSeq TStr, TStr)), textedWith []
+        // process replacement [D:exec] — diverging (tA), like fail/exit; the
+        // stdin twin is refused at parse (no parent to feed a replacement)
+        "|execed", TFun(TStr, TFun(TSeq TStr, tA)), execedWith []
+        // stdin-carrying twins — the value-headed reifier route
+        // (`xs | grep | complete`) [D:value-headed-pipe]
+        "|completedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))), completedWithIn []
+        "|succeededIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TBool))), succeededWithIn []
+        "|orFailedIn", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TUnit)))), orFailedWithIn []
+        "|exitCodedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TInt))), exitCodedWithIn []
+        "|linedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TStr))), linedWithIn []
+        "|textedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TStr))), textedWithIn []
+        // diverging [D:fail-bottom]: the result var generalizes, so an arm
+        // or branch that fails/exits unifies with the value the others make
+        "fail", TFun(TStr, tA), failImpl
+        "exit", TFun(TInt, tA), exitImpl
+        // env-carrying twins — the env-sigil reifier route
+        // (`$e(cmd | complete)`)
+        "|completedEnv",
+        TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))),
+        VBuiltin(fun envV -> completedWith (envVarPairs envV))
+        "|succeededEnv",
+        TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TBool))),
+        VBuiltin(fun envV -> succeededWith (envVarPairs envV))
+        "|orFailedEnv",
+        TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit)))),
+        VBuiltin(fun envV -> orFailedWith (envVarPairs envV))
+        "|exitCodedEnv",
+        TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TInt))),
+        VBuiltin(fun envV -> exitCodedWith (envVarPairs envV))
+        "|execedEnv",
+        TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, tA))),
+        VBuiltin(fun envV -> execedWith (envVarPairs envV))
+        "|linedEnv",
+        TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TStr))),
+        VBuiltin(fun envV -> linedWith (envVarPairs envV))
+        "|textedEnv",
+        TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TStr))),
+        VBuiltin(fun envV -> textedWith (envVarPairs envV))
+        // reifiers after a command chain [D:chain-reifiers]: a stage list of
+        // (prog, argv, env) and the value head's stdin
+        "|chainCompleted", chainTy (TNamed(completedDef.Name, [])), chainCompletedImpl
+        "|chainSucceeded", chainTy TBool, chainSucceededImpl
+        "|chainExitCoded", chainTy TInt, chainExitCodedImpl
+        "|chainOrFailed", TFun(TStr, chainTy TUnit), chainOrFailedImpl
+        "|chainLined", chainTy TStr, chainLinedImpl
+        "|chainTexted", chainTy TStr, chainTextedImpl
+    ]
     @ bareEntries
 
 let private showImpl: Value = VBuiltin(formatValue >> VStr)
@@ -8831,22 +9141,25 @@ let internalAliases: (string * Ty * Value) list =
     // copy [D:desugar-namespace], read here to resolve each to its Value
     // and by the Purity/Can/Effects classifiers to read a library key as
     // its target member
-    [ for key, modName, field in Weir.Effects.libraryDesugars do
-          let ty, v =
-              if key = "|repeatDefaults" then
-                  // the base the key=value head updates; the parser demands
-                  // interval=, so the 0ms never runs [D:repeat]
-                  TNamed("Repeat", []), VRecord("Repeat", [ "interval", VDur 0L; "timeout", VUnion("None", None) ])
-              else
-                  m modName field
-          // the desugars whose value is not their classification target:
-          // the from-end twin, and pfor's refusal naming `pfor` [D:pfor]
-          let v =
-              match key with
-              | "|seqItemFromEnd" -> itemFromEndImpl
-              | "|seqPiter" -> pforImpl
-              | _ -> v
-          key, ty, v ]
+    [
+        for key, modName, field in Weir.Effects.libraryDesugars do
+            let ty, v =
+                if key = "|repeatDefaults" then
+                    // the base the key=value head updates; the parser demands
+                    // interval=, so the 0ms never runs [D:repeat]
+                    TNamed("Repeat", []), VRecord("Repeat", [ "interval", VDur 0L; "timeout", VUnion("None", None) ])
+                else
+                    m modName field
+            // the desugars whose value is not their classification target:
+            // the from-end twin, and pfor's refusal naming `pfor` [D:pfor]
+            let v =
+                match key with
+                | "|seqItemFromEnd" -> itemFromEndImpl
+                | "|seqPiter" -> pforImpl
+                | _ -> v
+
+            key, ty, v
+    ]
 
 let bareAliasHomesOf (table: (string * (string * Ty * Value) list) list) : Map<string, string> =
     let allowed, isSingle = singleHomed table
@@ -8883,98 +9196,108 @@ let bareTwoHome: Set<string> =
 
 // sortBy : Ord b => (a -> b) -> seq<a> -> seq<a> — the constraint that
 // killed the runtime scalar-key rule (sentinel-ledger customer four).
-let private sortByScheme: Scheme =
-    { Forall = Set [ "a"; "b" ]
-      Cs = Map [ "b", Set [ Cls.Ord ] ]
-      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let private sortByScheme: Scheme = {
+    Forall = Set [ "a"; "b" ]
+    Cs = Map [ "b", Set [ Cls.Ord ] ]
+    Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
 // the cohort's constrained schemes [D:seq-gaps]: Ord on the element for
 // the key-less sorts and extrema, Ord on the key for the By twins
 // (sortBy's shape), Eq on the key for the projection twins, Eq on the
 // element for set difference
-let private ordSeqToElem: Scheme =
-    { Forall = Set.singleton "a"
-      Cs = Map [ "a", Set [ Cls.Ord ] ]
-      Ty = TFun(TSeq(TVar "a"), TVar "a")
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let private ordSeqToElem: Scheme = {
+    Forall = Set.singleton "a"
+    Cs = Map [ "a", Set [ Cls.Ord ] ]
+    Ty = TFun(TSeq(TVar "a"), TVar "a")
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
-let private ordSeqToSeq: Scheme =
-    { Forall = Set.singleton "a"
-      Cs = Map [ "a", Set [ Cls.Ord ] ]
-      Ty = TFun(TSeq(TVar "a"), TSeq(TVar "a"))
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let private ordSeqToSeq: Scheme = {
+    Forall = Set.singleton "a"
+    Cs = Map [ "a", Set [ Cls.Ord ] ]
+    Ty = TFun(TSeq(TVar "a"), TSeq(TVar "a"))
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
-let private ordByToElem: Scheme =
-    { Forall = Set [ "a"; "b" ]
-      Cs = Map [ "b", Set [ Cls.Ord ] ]
-      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TVar "a"))
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let private ordByToElem: Scheme = {
+    Forall = Set [ "a"; "b" ]
+    Cs = Map [ "b", Set [ Cls.Ord ] ]
+    Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TVar "a"))
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
-let private eqKeyCountBy: Scheme =
-    { Forall = Set [ "a"; "b" ]
-      Cs = Map [ "b", Set [ Cls.Eq ] ]
-      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TTuple [ TVar "b"; TInt ])))
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let private eqKeyCountBy: Scheme = {
+    Forall = Set [ "a"; "b" ]
+    Cs = Map [ "b", Set [ Cls.Eq ] ]
+    Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TTuple [ TVar "b"; TInt ])))
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
-let private eqKeyGroupBy: Scheme =
-    { Forall = Set [ "a"; "b" ]
-      Cs = Map [ "b", Set [ Cls.Eq ] ]
-      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TTuple [ TVar "b"; TSeq(TVar "a") ])))
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let private eqKeyGroupBy: Scheme = {
+    Forall = Set [ "a"; "b" ]
+    Cs = Map [ "b", Set [ Cls.Eq ] ]
+    Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TTuple [ TVar "b"; TSeq(TVar "a") ])))
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
-let private eqKeyDistinctBy: Scheme =
-    { Forall = Set [ "a"; "b" ]
-      Cs = Map [ "b", Set [ Cls.Eq ] ]
-      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let private eqKeyDistinctBy: Scheme = {
+    Forall = Set [ "a"; "b" ]
+    Cs = Map [ "b", Set [ Cls.Eq ] ]
+    Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
-let private eqExcept: Scheme =
-    { Forall = Set.singleton "a"
-      Cs = Map [ "a", Set [ Cls.Eq ] ]
-      Ty = TFun(TSeq(TVar "a"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let private eqExcept: Scheme = {
+    Forall = Set.singleton "a"
+    Cs = Map [ "a", Set [ Cls.Eq ] ]
+    Ty = TFun(TSeq(TVar "a"), TFun(TSeq(TVar "a"), TSeq(TVar "a")))
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
 // Seq.equal mirrors Seq.contains's Eq constraint [D:port-members] — the
 // element type must compare, so functions/seqs refuse at the use site
-let private eqSeqEqual: Scheme =
-    { Forall = Set.singleton "a"
-      Cs = Map [ "a", Set [ Cls.Eq ] ]
-      Ty = TFun(TSeq(TVar "a"), TFun(TSeq(TVar "a"), TBool))
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let private eqSeqEqual: Scheme = {
+    Forall = Set.singleton "a"
+    Cs = Map [ "a", Set [ Cls.Eq ] ]
+    Ty = TFun(TSeq(TVar "a"), TFun(TSeq(TVar "a"), TBool))
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
 // members whose signature is a constrained scheme, not a plain
 // generalization — applied at the module map and at the bare slot
 // [D:bare-partition]: a bare `sortBy` must keep its Ord key, or the
 // bare spelling would be laxer than the qualified one
-let private seqSchemeOverrides: (string * Scheme) list =
-    [ "contains", Check.containsScheme
-      "equal", eqSeqEqual
-      "distinct", Check.distinctScheme
-      "sortBy", sortByScheme
-      "sortByDescending", sortByScheme
-      "max", ordSeqToElem
-      "min", ordSeqToElem
-      "sort", ordSeqToSeq
-      "sortDescending", ordSeqToSeq
-      "maxBy", ordByToElem
-      "minBy", ordByToElem
-      "countBy", eqKeyCountBy
-      "groupBy", eqKeyGroupBy
-      "distinctBy", eqKeyDistinctBy
-      "except", eqExcept ]
+let private seqSchemeOverrides: (string * Scheme) list = [
+    "contains", Check.containsScheme
+    "equal", eqSeqEqual
+    "distinct", Check.distinctScheme
+    "sortBy", sortByScheme
+    "sortByDescending", sortByScheme
+    "max", ordSeqToElem
+    "min", ordSeqToElem
+    "sort", ordSeqToSeq
+    "sortDescending", ordSeqToSeq
+    "maxBy", ordByToElem
+    "minBy", ordByToElem
+    "countBy", eqKeyCountBy
+    "groupBy", eqKeyGroupBy
+    "distinctBy", eqKeyDistinctBy
+    "except", eqExcept
+]
 
-let typeEnv: TypeEnv =
-    { Values =
+let typeEnv: TypeEnv = {
+    Values =
         entries @ internalAliases
         |> List.map (fun (n, ty, _) -> n, generalize ty)
         |> Map.ofList
@@ -8991,7 +9314,7 @@ let typeEnv: TypeEnv =
         // the arming desugar's un-shadowable print [D:desugar-capture]
         |> Map.add "|print" Check.printScheme
         |> Map.add "show" Check.showScheme
-      Modules =
+    Modules =
         moduleTable
         |> List.map (fun (m, members) -> m, members |> List.map (fun (n, ty, _) -> n, generalize ty) |> Map.ofList)
         |> Map.ofList
@@ -9005,29 +9328,35 @@ let typeEnv: TypeEnv =
             (Option.map (
                 Map.map (fun _ sch ->
                     if sch.Forall.Contains "k" then
-                        { sch with Cs = Map [ "k", Set [ Cls.Eq ] ] }
+                        {
+                            sch with
+                                Cs = Map [ "k", Set [ Cls.Eq ] ]
+                        }
                     else
                         sch)
             ))
-      Types =
-        Map
-            [ fileRow.Name, Record fileRow
-              fileKind.Name, Union fileKind
-              completedDef.Name, Record completedDef
-              envVarDef.Name, Record envVarDef ]
-      LoadTargets = Map.empty
-      ModuleTypes = Map.empty
-      TypeOrigins = Map.empty
-      ModulePrivate = Map.empty
-      PureBindings = Map.empty
-      PlanRefused = Map.empty
-      ExecHelpers = Set.empty
-      OpenIndex = None
-      AnonLitDefs = System.Collections.Generic.Dictionary() }
+    Types =
+        Map [
+            fileRow.Name, Record fileRow
+            fileKind.Name, Union fileKind
+            completedDef.Name, Record completedDef
+            envVarDef.Name, Record envVarDef
+        ]
+    LoadTargets = Map.empty
+    ModuleTypes = Map.empty
+    TypeOrigins = Map.empty
+    ModulePrivate = Map.empty
+    PureBindings = Map.empty
+    PlanRefused = Map.empty
+    ExecHelpers = Set.empty
+    OpenIndex = None
+    AnonLitDefs = System.Collections.Generic.Dictionary()
+}
 
-let typeEnvStrict: TypeEnv =
-    { typeEnv with
-        Values = bareAliasHomes |> Map.fold (fun vs name _ -> Map.remove name vs) typeEnv.Values }
+let typeEnvStrict: TypeEnv = {
+    typeEnv with
+        Values = bareAliasHomes |> Map.fold (fun vs name _ -> Map.remove name vs) typeEnv.Values
+}
 
 let valueEnv: Env =
     let flat = entries |> List.map (fun (n, _, v) -> n, v)

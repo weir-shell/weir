@@ -36,17 +36,19 @@ type private Value =
     | VTab of Tab
     | VAot of List<Tab> * int
 
-and private Tab =
-    { Keys: List<string>
-      Values: Dictionary<string, Value>
-      mutable Kind: Kind
-      Line: int }
+and private Tab = {
+    Keys: List<string>
+    Values: Dictionary<string, Value>
+    mutable Kind: Kind
+    Line: int
+}
 
-let private newTab kind line =
-    { Keys = List()
-      Values = Dictionary()
-      Kind = kind
-      Line = line }
+let private newTab kind line = {
+    Keys = List()
+    Values = Dictionary()
+    Kind = kind
+    Line = line
+}
 
 let private add (t: Tab) (k: string) (v: Value) =
     t.Keys.Add k
@@ -59,25 +61,31 @@ let private tryGet (t: Tab) (k: string) =
 
 let private maxDepth = 500
 
-type private State =
-    { Src: string
-      mutable Pos: int
-      mutable Line: int }
+type private State = {
+    Src: string
+    mutable Pos: int
+    mutable Line: int
+}
 
 // a message quotes the document's text [D:error-data-escape]
 let private fail (s: State) msg =
     raise (TomlError(s.Line, Weir.Types.quoteData msg))
 
 let private eof (s: State) = s.Pos >= s.Src.Length
-let private peekAt (s: State) k = if s.Pos + k < s.Src.Length then s.Src[s.Pos + k] else '\000'
+
+let private peekAt (s: State) k =
+    if s.Pos + k < s.Src.Length then
+        s.Src[s.Pos + k]
+    else
+        '\000'
+
 let private peek s = peekAt s 0
 
 let private startsWith (s: State) (lit: string) =
     String.CompareOrdinal(s.Src, s.Pos, lit, 0, lit.Length) = 0
 
 // control characters TOML forbids outside escapes (tab is allowed)
-let private isControl (c: char) =
-    (c < ' ' && c <> '\t') || c = '\u007f'
+let private isControl (c: char) = (c < ' ' && c <> '\t') || c = '\u007f'
 
 let private quoted (k: string) = "'" + k + "'"
 
@@ -91,7 +99,10 @@ let private atNewline (s: State) =
 
 let private newline (s: State) =
     if peek s = '\r' then
-        if peekAt s 1 = '\n' then s.Pos <- s.Pos + 2 else fail s "a carriage return must be followed by a newline"
+        if peekAt s 1 = '\n' then
+            s.Pos <- s.Pos + 2
+        else
+            fail s "a carriage return must be followed by a newline"
     else
         s.Pos <- s.Pos + 1
 
@@ -104,9 +115,12 @@ let private skipComment (s: State) =
         while not (eof s) && not (atNewline s) do
             let c = peek s
 
-            if c = '\r' then fail s "a carriage return must be followed by a newline"
-            elif isControl c then fail s "comments may not contain control characters"
-            else s.Pos <- s.Pos + 1
+            if c = '\r' then
+                fail s "a carriage return must be followed by a newline"
+            elif isControl c then
+                fail s "comments may not contain control characters"
+            else
+                s.Pos <- s.Pos + 1
 
 // inside arrays and inline tables: whitespace, comments and newlines
 let private skipBlank (s: State) =
@@ -115,18 +129,24 @@ let private skipBlank (s: State) =
     while go do
         skipWs s
 
-        if peek s = '#' then skipComment s
-        elif not (eof s) && (peek s = '\n' || peek s = '\r') then newline s
-        else go <- false
+        if peek s = '#' then
+            skipComment s
+        elif not (eof s) && (peek s = '\n' || peek s = '\r') then
+            newline s
+        else
+            go <- false
 
 // after a key/value or a header: optional comment, then a newline or the end
 let private endOfLine (s: State) what =
     skipWs s
     skipComment s
 
-    if eof s then ()
-    elif peek s = '\n' || peek s = '\r' then newline s
-    else fail s $"unexpected '{peek s}' after the {what} — one {what} per line"
+    if eof s then
+        ()
+    elif peek s = '\n' || peek s = '\r' then
+        newline s
+    else
+        fail s $"unexpected '{peek s}' after the {what} — one {what} per line"
 
 // ---- strings ---------------------------------------------------------------
 
@@ -144,7 +164,9 @@ let private appendCodePoint (s: State) (sb: StringBuilder) (cp: int) =
 // one escape after the backslash (the multi-line line-ending form is the caller's)
 let private escape (s: State) (sb: StringBuilder) =
     let take n =
-        if s.Pos + n > s.Src.Length then fail s "the escape is cut short by the end of input"
+        if s.Pos + n > s.Src.Length then
+            fail s "the escape is cut short by the end of input"
+
         let d = s.Src.Substring(s.Pos, n)
 
         if d |> Seq.forall Uri.IsHexDigit then
@@ -210,7 +232,9 @@ let private literalString (s: State) =
         else
             s.Pos <- s.Pos + 1
 
-    if eof s then fail s "a string must close on the line it opens (''' spans lines)"
+    if eof s then
+        fail s "a string must close on the line it opens (''' spans lines)"
+
     let text = s.Src.Substring(start, s.Pos - start)
     s.Pos <- s.Pos + 1
     text
@@ -220,7 +244,8 @@ let private literalString (s: State) =
 let private multiline (s: State) (q: char) =
     s.Pos <- s.Pos + 3
 
-    if atNewline s then newline s
+    if atNewline s then
+        newline s
 
     let sb = StringBuilder()
     let delim = String(q, 3)
@@ -235,7 +260,9 @@ let private multiline (s: State) (q: char) =
             while peekAt s n = q do
                 n <- n + 1
 
-            if n > 5 then fail s $"too many {q} characters at the end of a multi-line string"
+            if n > 5 then
+                fail s $"too many {q} characters at the end of a multi-line string"
+
             sb.Append(q, n - 3) |> ignore
             s.Pos <- s.Pos + n
             go <- false
@@ -267,7 +294,11 @@ let private multiline (s: State) (q: char) =
 // ---- keys ------------------------------------------------------------------
 
 let private isBare (c: char) =
-    (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c = '_' || c = '-'
+    (c >= 'A' && c <= 'Z')
+    || (c >= 'a' && c <= 'z')
+    || (c >= '0' && c <= '9')
+    || c = '_'
+    || c = '-'
 
 let private simpleKey (s: State) =
     match peek s with
@@ -300,7 +331,8 @@ let private dottedKey (s: State) =
 
 // ---- numbers, booleans, datetimes ------------------------------------------
 
-let private rx (p: string) = RegularExpressions.Regex(p, RegularExpressions.RegexOptions.CultureInvariant)
+let private rx (p: string) =
+    RegularExpressions.Regex(p, RegularExpressions.RegexOptions.CultureInvariant)
 
 let private decInt = rx @"^[+-]?(0|[1-9](_?[0-9])*)$"
 let private hexInt = rx @"^0x[0-9A-Fa-f](_?[0-9A-Fa-f])*$"
@@ -334,7 +366,10 @@ let private datetimeOrNone (s: State) (tok: string) =
         if d.Groups[4].Success then
             validTime s d.Groups[5].Value d.Groups[6].Value d.Groups[8].Value
 
-            if d.Groups[11].Success && (int d.Groups[11].Value > 23 || int d.Groups[12].Value > 59) then
+            if
+                d.Groups[11].Success
+                && (int d.Groups[11].Value > 23 || int d.Groups[12].Value > 59)
+            then
                 fail s "the offset is out of range"
 
         Some tok
@@ -354,7 +389,9 @@ let private number (s: State) (tok: string) =
         try
             let v = Convert.ToUInt64(digits, b)
 
-            if v > uint64 Int64.MaxValue then fail s $"'{tok}' is outside the 64-bit integer range"
+            if v > uint64 Int64.MaxValue then
+                fail s $"'{tok}' is outside the 64-bit integer range"
+
             string v
         with
         | TomlError _ -> reraise ()
@@ -364,9 +401,12 @@ let private number (s: State) (tok: string) =
         match Int64.TryParse(clean, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture) with
         | true, v -> Some(string v)
         | _ -> fail s $"'{tok}' is outside the 64-bit integer range"
-    elif hexInt.IsMatch tok then Some(radix (clean.Substring 2) 16)
-    elif octInt.IsMatch tok then Some(radix (clean.Substring 2) 8)
-    elif binInt.IsMatch tok then Some(radix (clean.Substring 2) 2)
+    elif hexInt.IsMatch tok then
+        Some(radix (clean.Substring 2) 16)
+    elif octInt.IsMatch tok then
+        Some(radix (clean.Substring 2) 8)
+    elif binInt.IsMatch tok then
+        Some(radix (clean.Substring 2) 2)
     // inf/nan and overflowing floats parse: only a float field that reads
     // one refuses (weir floats are finite), so an unread value never fails
     // the document
@@ -379,8 +419,14 @@ let private number (s: State) (tok: string) =
 // a space and a time (`1979-05-27 07:32:00`)
 let private bareToken (s: State) =
     let isTok c =
-        (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-        || c = '_' || c = '+' || c = '-' || c = '.' || c = ':'
+        (c >= '0' && c <= '9')
+        || (c >= 'a' && c <= 'z')
+        || (c >= 'A' && c <= 'Z')
+        || c = '_'
+        || c = '+'
+        || c = '-'
+        || c = '.'
+        || c = ':'
 
     let start = s.Pos
 
@@ -422,9 +468,12 @@ let rec private value (s: State) (depth: int) : Value =
     | _ ->
         let tok = bareToken s
 
-        if tok = "" then fail s $"'{peek s}' cannot start a value"
-        elif tok = "true" then VBool(true, line)
-        elif tok = "false" then VBool(false, line)
+        if tok = "" then
+            fail s $"'{peek s}' cannot start a value"
+        elif tok = "true" then
+            VBool(true, line)
+        elif tok = "false" then
+            VBool(false, line)
         else
             match datetimeOrNone s tok with
             | Some d -> VDate(d, line)
@@ -626,9 +675,10 @@ and private tableNode (locals: HashSet<int * string>) (t: Tab) : Yaml.Node =
 
 /// a parsed document: the yaml node tree (a mapping at the top) and the
 /// offset-less datetimes in it, by (line, text)
-type Doc =
-    { Root: Yaml.Node
-      LocalDates: Set<int * string> }
+type Doc = {
+    Root: Yaml.Node
+    LocalDates: Set<int * string>
+}
 
 /// Parse a TOML document; an error is its line and message
 let parseDocAt (text: string) : Result<Doc, int * string> =
@@ -647,7 +697,8 @@ let parseDocAt (text: string) : Result<Doc, int * string> =
             | '#' ->
                 skipComment s
 
-                if not (eof s) then newline s
+                if not (eof s) then
+                    newline s
             | '\n'
             | '\r' -> newline s
             | '[' -> current <- header s root
@@ -658,7 +709,11 @@ let parseDocAt (text: string) : Result<Doc, int * string> =
 
         let locals = HashSet<int * string>()
         let node = tableNode locals root
-        Ok { Root = node; LocalDates = Set.ofSeq locals }
+
+        Ok {
+            Root = node
+            LocalDates = Set.ofSeq locals
+        }
     with TomlError(line, msg) ->
         Error(line, msg)
 

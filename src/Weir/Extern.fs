@@ -28,8 +28,7 @@ let refresh () =
 // as themselves only. [D:windows-v1]
 let private pathExtsOf (value: string option) : string list =
     if OperatingSystem.IsWindows() then
-        (value |> Option.defaultValue ".COM;.EXE;.BAT;.CMD")
-            .Split(';', StringSplitOptions.RemoveEmptyEntries)
+        (value |> Option.defaultValue ".COM;.EXE;.BAT;.CMD").Split(';', StringSplitOptions.RemoveEmptyEntries)
         |> List.ofArray
     else
         []
@@ -57,7 +56,10 @@ let private lastPair (pairs: (string * string) list) (name: string) : string opt
         else
             StringComparer.Ordinal
 
-    pairs |> List.rev |> List.tryFind (fun (k, _) -> cmp.Equals(k, name)) |> Option.map snd
+    pairs
+    |> List.rev
+    |> List.tryFind (fun (k, _) -> cmp.Equals(k, name))
+    |> Option.map snd
 
 let private isPathyName (prog: string) =
     prog.Contains '/'
@@ -67,7 +69,13 @@ let private isPathyName (prog: string) =
 /// means the child searches the PATH weir resolves on [D:overlay-path]
 let overlayPath (pairs: (string * string) list) : string option =
     match lastPair pairs "PATH" with
-    | Some v when v <> (Environment.GetEnvironmentVariable "PATH" |> Option.ofObj |> Option.defaultValue "") -> Some v
+    | Some v when
+        v
+        <> (Environment.GetEnvironmentVariable "PATH"
+            |> Option.ofObj
+            |> Option.defaultValue "")
+        ->
+        Some v
     | _ -> None
 
 /// a bare program on the given PATH (and the env's PATHEXT on Windows):
@@ -87,7 +95,11 @@ let resolveOn (pairs: (string * string) list) (pathValue: string) (prog: string)
             Some candidate
         else
             exts
-            |> List.tryPick (fun e -> if File.Exists(candidate + e) then Some(candidate + e) else None))
+            |> List.tryPick (fun e ->
+                if File.Exists(candidate + e) then
+                    Some(candidate + e)
+                else
+                    None))
 
 /// the file a command head names [D:path-which]: a bare name on the
 /// PATH its env sets, else weir's own — the spawn's rule [D:overlay-path]
@@ -111,36 +123,39 @@ let which (pairs: (string * string) list) (prog: string) : string option =
         let pathValue =
             match lastPair pairs "PATH" with
             | Some v -> v
-            | None -> Environment.GetEnvironmentVariable "PATH" |> Option.ofObj |> Option.defaultValue ""
+            | None ->
+                Environment.GetEnvironmentVariable "PATH"
+                |> Option.ofObj
+                |> Option.defaultValue ""
 
         resolveOn pairs pathValue prog
 
 let names () : Set<string> =
     lock cacheGate (fun () ->
-    match cache with
-    | Some s -> s
-    | None ->
-        let exts = pathExts ()
+        match cache with
+        | Some s -> s
+        | None ->
+            let exts = pathExts ()
 
-        let s =
-            pathDirs ()
-            |> Seq.collect (fun dir ->
-                try
-                    Directory.EnumerateFiles dir |> Seq.map Path.GetFileName
-                with _ ->
-                    Seq.empty)
-            |> Seq.collect (fun name ->
-                // a PATHEXT file answers to its bare name too
-                match
-                    exts
-                    |> List.tryFind (fun e -> name.EndsWith(e, StringComparison.OrdinalIgnoreCase))
-                with
-                | Some e -> [ name; name.Substring(0, name.Length - e.Length) ]
-                | None -> [ name ])
-            |> Set.ofSeq
+            let s =
+                pathDirs ()
+                |> Seq.collect (fun dir ->
+                    try
+                        Directory.EnumerateFiles dir |> Seq.map Path.GetFileName
+                    with _ ->
+                        Seq.empty)
+                |> Seq.collect (fun name ->
+                    // a PATHEXT file answers to its bare name too
+                    match
+                        exts
+                        |> List.tryFind (fun e -> name.EndsWith(e, StringComparison.OrdinalIgnoreCase))
+                    with
+                    | Some e -> [ name; name.Substring(0, name.Length - e.Length) ]
+                    | None -> [ name ])
+                |> Set.ofSeq
 
-        cache <- Some s
-        s)
+            cache <- Some s
+            s)
 
 let isPathy (prog: string) = isPathyName prog
 
@@ -191,7 +206,8 @@ let exists (prog: string) : bool =
                     let candidate = Path.Combine(dir, p)
 
                     File.Exists candidate
-                    || pathExts () |> List.exists (fun e -> File.Exists(candidate + e))))
+                    || pathExts () |> List.exists (fun e -> File.Exists(candidate + e)))
+        )
 
 /// `exists` under a command's env [D:overlay-path]: a PATH the env sets
 /// is the one searched, else weir's own

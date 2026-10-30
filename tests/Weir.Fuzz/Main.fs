@@ -84,12 +84,13 @@ let spanSoundCore (injected: string list) (physLine: int) (extent: int) : SpanVe
             SpanMiss
                 $"""the site at line {physLine} (extent {extent}) lost its report: {errs |> List.map (fun d -> d.Line, d.Col, d.Message)}"""
 
-let private cfg =
-    { FsCheckConfig.defaultConfig with
+let private cfg = {
+    FsCheckConfig.defaultConfig with
         maxTest = count
         endSize = 100
         replay = Some(seed, 1)
-        arbitrary = [ typeof<Arbs> ] }
+        arbitrary = [ typeof<Arbs> ]
+}
 
 let private showProgram (lines: string list) =
     lines |> List.map (fun l -> "  |" + l) |> String.concat "\n"
@@ -170,7 +171,10 @@ let private recoveryLaws (lines: string list) =
     if not (Set.isEmpty (Set.intersect (heads stmts) (heads partials))) then
         failtestf "a partial is also a stmt\non:\n%s" (showProgram lines)
 
-    if not partials.IsEmpty && not (diags |> List.exists (fun d -> d.Severity = "error")) then
+    if
+        not partials.IsEmpty
+        && not (diags |> List.exists (fun d -> d.Severity = "error"))
+    then
         failtestf "a partial without an error diagnostic\non:\n%s" (showProgram lines)
 
     let diags2, _, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" lines
@@ -280,10 +284,12 @@ let screenRun (label: string) (r: Runner.RunResult) : string list =
     if r.TimedOut then
         [] // a slow input is not a crash; the time axis is invariant 2's
     else
-        [ if r.Rc >= 128 then
-              $"{label}: exit {r.Rc} (a signal or crash)"
-          if (r.Out + r.Err).Contains "internal error" then
-              $"{label}: 'internal error' in the output" ]
+        [
+            if r.Rc >= 128 then
+                $"{label}: exit {r.Rc} (a signal or crash)"
+            if (r.Out + r.Err).Contains "internal error" then
+                $"{label}: 'internal error' in the output"
+        ]
 
 // every `check --json` position names a real line and sits at most one
 // past its last code point (the end-of-line slot an "expected …" points at)
@@ -300,14 +306,16 @@ let positionViolations (label: string) (source: string[]) (json: string) : strin
     | Some doc ->
         use doc = doc
 
-        [ for d in doc.RootElement.EnumerateArray() do
-              let line = d.GetProperty("line").GetInt32()
-              let col = d.GetProperty("col").GetInt32()
+        [
+            for d in doc.RootElement.EnumerateArray() do
+                let line = d.GetProperty("line").GetInt32()
+                let col = d.GetProperty("col").GetInt32()
 
-              if line < 1 || line > source.Length then
-                  $"{label}: line {line} of a {source.Length}-line file"
-              elif col < 1 || col > width source[line - 1] + 1 then
-                  $"{label}: {line}:{col} is past the end of its line ({width source[line - 1]} wide)" ]
+                if line < 1 || line > source.Length then
+                    $"{label}: line {line} of a {source.Length}-line file"
+                elif col < 1 || col > width source[line - 1] + 1 then
+                    $"{label}: {line}:{col} is past the end of its line ({width source[line - 1]} wide)"
+        ]
 
 // fmt never makes a checking file fail and never masks a non-layout
 // error; repairing a pure layout error is fmt's job
@@ -319,11 +327,13 @@ let private errorKeys (json: string) : (string * string) list option =
     try
         use doc = System.Text.Json.JsonDocument.Parse json
 
-        [ for d in doc.RootElement.EnumerateArray() do
-              if d.GetProperty("severity").GetString() = "error" then
-                  // positions move under fmt; the error is its code and words
-                  d.GetProperty("code").GetString(),
-                  System.Text.RegularExpressions.Regex.Replace(d.GetProperty("message").GetString(), "[0-9]+", "N") ]
+        [
+            for d in doc.RootElement.EnumerateArray() do
+                if d.GetProperty("severity").GetString() = "error" then
+                    // positions move under fmt; the error is its code and words
+                    d.GetProperty("code").GetString(),
+                    System.Text.RegularExpressions.Regex.Replace(d.GetProperty("message").GetString(), "[0-9]+", "N")
+        ]
         |> Some
     with _ ->
         None
@@ -337,12 +347,14 @@ let verdictViolations (rcBefore: int, jsonBefore: string) (rcAfter: int, jsonAft
             |> List.filter (fun k -> not (List.contains k after))
             |> List.distinct
 
-        [ if rcBefore = 0 && rcAfter <> 0 then
-              $"fmt made a checking file fail (check rc 0 -> {rcAfter})"
-          elif rcBefore <> 0 && rcAfter = 0 && before.IsEmpty then
-              $"fmt made a failing file check (rc {rcBefore} -> 0) with no error to repair"
-          for code, msg in masked do
-              $"fmt masked a non-layout error [{code}]: {msg}" ]
+        [
+            if rcBefore = 0 && rcAfter <> 0 then
+                $"fmt made a checking file fail (check rc 0 -> {rcAfter})"
+            elif rcBefore <> 0 && rcAfter = 0 && before.IsEmpty then
+                $"fmt made a failing file check (rc {rcBefore} -> 0) with no error to repair"
+            for code, msg in masked do
+                $"fmt masked a non-layout error [{code}]: {msg}"
+        ]
     | _ -> [] // unparsable output is the position judge's finding
 
 let hunt2Violations (lines: string list) : string list =
@@ -368,529 +380,543 @@ let hunt2Violations (lines: string list) : string list =
                 let fmt2 = Runner.runOn [ "fmt" ] file
                 let twice = System.IO.File.ReadAllLines file
 
-                [ yield! screenRun "check after fmt" chk2
-                  yield! checkPositions "check after fmt" once chk2
-                  yield! screenRun "second fmt" fmt2
-                  if not (chk.TimedOut || chk2.TimedOut || chk.Rc >= 128 || chk2.Rc >= 128) then
-                      for v in verdictViolations (chk.Rc, chk.Out) (chk2.Rc, chk2.Out) do
-                          $"{v}; formatted:\n{showProgram (List.ofArray once)}\nbefore: {chk.Out}\nafter: {chk2.Out}"
-                  if fmt2.Rc <> 0 then
-                      $"fmt refused its own output (rc {fmt2.Rc}): {fmt2.Err}"
-                  elif twice <> once then
-                      $"fmt is not idempotent; first:\n{showProgram (List.ofArray once)}\nsecond:\n{showProgram (List.ofArray twice)}" ]
+                [
+                    yield! screenRun "check after fmt" chk2
+                    yield! checkPositions "check after fmt" once chk2
+                    yield! screenRun "second fmt" fmt2
+                    if not (chk.TimedOut || chk2.TimedOut || chk.Rc >= 128 || chk2.Rc >= 128) then
+                        for v in verdictViolations (chk.Rc, chk.Out) (chk2.Rc, chk2.Out) do
+                            $"{v}; formatted:\n{showProgram (List.ofArray once)}\nbefore: {chk.Out}\nafter: {chk2.Out}"
+                    if fmt2.Rc <> 0 then
+                        $"fmt refused its own output (rc {fmt2.Rc}): {fmt2.Err}"
+                    elif twice <> once then
+                        $"fmt is not idempotent; first:\n{showProgram (List.ofArray once)}\nsecond:\n{showProgram (List.ofArray twice)}"
+                ]
 
-        [ yield! screenRun "run" run
-          yield! screenRun "check" chk
-          yield! checkPositions "check" source chk
-          yield! screenRun "fmt" fmt1
-          yield! afterFmt ])
+        [
+            yield! screenRun "run" run
+            yield! screenRun "check" chk
+            yield! checkPositions "check" source chk
+            yield! screenRun "fmt" fmt1
+            yield! afterFmt
+        ])
 
 [<Tests>]
 let tests =
-    testList
-        "Assembler fuzz"
-        [ metamorphic "blank insertion is output-neutral" (fun rnd p ->
-              Some(Transform.insertBlanks rnd (renderPlain p)))
+    testList "Assembler fuzz" [
+        metamorphic "blank insertion is output-neutral" (fun rnd p -> Some(Transform.insertBlanks rnd (renderPlain p)))
 
-          metamorphic "comment insertion is output-neutral" (fun rnd p ->
-              Some(Transform.insertComments rnd (renderPlain p)))
+        metamorphic "comment insertion is output-neutral" (fun rnd p ->
+            Some(Transform.insertComments rnd (renderPlain p)))
 
-          metamorphic "trailing comments are output-neutral" (fun rnd p ->
-              Some(Transform.appendTrailing rnd (renderPlain p)))
+        metamorphic "trailing comments are output-neutral" (fun rnd p ->
+            Some(Transform.appendTrailing rnd (renderPlain p)))
 
-          metamorphic "whole-block re-indent is output-neutral" (fun rnd p -> Transform.reindent rnd p)
+        metamorphic "whole-block re-indent is output-neutral" (fun rnd p -> Transform.reindent rnd p)
 
-          metamorphic "bare command RHS and $(...) agree" (fun rnd p -> Transform.cmdSigil rnd p)
+        metamorphic "bare command RHS and $(...) agree" (fun rnd p -> Transform.cmdSigil rnd p)
 
-          metamorphic "Stroustrup and inline bracket styles agree" (fun rnd p -> Transform.bracketStyle rnd p)
+        metamorphic "Stroustrup and inline bracket styles agree" (fun rnd p -> Transform.bracketStyle rnd p)
 
-          metamorphic "block siblings and single-line ';' agree" (fun rnd p -> Transform.joinSiblings rnd p)
+        metamorphic "block siblings and single-line ';' agree" (fun rnd p -> Transform.joinSiblings rnd p)
 
-          metamorphic "multiline lambdas and their single-line form agree" (fun rnd p -> Transform.lambdaSingle rnd p)
+        metamorphic "multiline lambdas and their single-line form agree" (fun rnd p -> Transform.lambdaSingle rnd p)
 
-          metamorphic "splat-of-literal and inline words agree [D:argv-splat]" (fun rnd p ->
-              Transform.splatInline rnd p)
+        metamorphic "splat-of-literal and inline words agree [D:argv-splat]" (fun rnd p -> Transform.splatInline rnd p)
 
-          // the laws must hold under composition, not just one at a
-          // time — composition is where equivalence laws break
-          metamorphic "all transforms composed stay output-neutral" (fun rnd p -> Some(Transform.composedAll rnd p))
+        // the laws must hold under composition, not just one at a
+        // time — composition is where equivalence laws break
+        metamorphic "all transforms composed stay output-neutral" (fun rnd p -> Some(Transform.composedAll rnd p))
 
-          // no value-headed pipe ≡ feed equivalence law here
-          // [D:drop-command-builtins]: feed is dropped, so there is no second
-          // spelling to compare. The value-headed pipe is pinned by e2e + unit.
+        // no value-headed pipe ≡ feed equivalence law here
+        // [D:drop-command-builtins]: feed is dropped, so there is no second
+        // spelling to compare. The value-headed pipe is pinned by e2e + unit.
 
-          // splat-in-reifier equivalence [D:splat-reifier-chains]:
-          // `echo m $@([ws]) | reifier` ≡ the inline-words spelling,
-          // byte-identical — the splat's elements ride the builtin's argv
-          // with word integrity intact. A dedicated generator (reifier
-          // chains are outside the main grammar's shape list, like the
-          // depth axis); adversarial words are pinned by unit + e2e.
-          testPropertyWithConfig cfg "splatted reifier chain ≡ inline words, byte-identical"
-          <| fun (NonNegativeInt s) ->
-              let rnd = Random s
+        // splat-in-reifier equivalence [D:splat-reifier-chains]:
+        // `echo m $@([ws]) | reifier` ≡ the inline-words spelling,
+        // byte-identical — the splat's elements ride the builtin's argv
+        // with word integrity intact. A dedicated generator (reifier
+        // chains are outside the main grammar's shape list, like the
+        // depth axis); adversarial words are pinned by unit + e2e.
+        testPropertyWithConfig cfg "splatted reifier chain ≡ inline words, byte-identical"
+        <| fun (NonNegativeInt s) ->
+            let rnd = Random s
 
-              let words = List.init (1 + rnd.Next 4) (fun _ -> $"w{rnd.Next 1000}")
+            let words = List.init (1 + rnd.Next 4) (fun _ -> $"w{rnd.Next 1000}")
 
-              let listLit =
-                  "[ " + (words |> List.map (fun w -> $"\"{w}\"") |> String.concat "; ") + " ]"
+            let listLit =
+                "[ " + (words |> List.map (fun w -> $"\"{w}\"") |> String.concat "; ") + " ]"
 
-              let inlineWords = String.concat " " words
+            let inlineWords = String.concat " " words
 
-              let reifier, reader =
-                  [ "complete", "r.stdout |> Seq.iter print"
+            let reifier, reader =
+                [
+                    "complete", "r.stdout |> Seq.iter print"
                     "complete", "print $\"rc={r.exitCode}\""
                     "succeeds", "print $\"ok={r}\""
-                    "exitCode", "print $\"rc={r}\"" ].[rnd.Next 4]
+                    "exitCode", "print $\"rc={r}\""
+                ]
+                    .[rnd.Next 4]
 
-              let splatted = [ $"let r = echo m0 $@({listLit}) | {reifier}"; reader ]
-              let plain = [ $"let r = echo m0 {inlineWords} | {reifier}"; reader ]
+            let splatted = [ $"let r = echo m0 $@({listLit}) | {reifier}"; reader ]
+            let plain = [ $"let r = echo m0 {inlineWords} | {reifier}"; reader ]
 
-              let r0 = Runner.runProgram splatted
-              let r1 = Runner.runProgram plain
+            let r0 = Runner.runProgram splatted
+            let r1 = Runner.runProgram plain
 
-              if r0.TimedOut || r1.TimedOut then
-                  failtestf "hang:\n%s" (showProgram splatted)
+            if r0.TimedOut || r1.TimedOut then
+                failtestf "hang:\n%s" (showProgram splatted)
 
-              if r0.Rc <> 0 then
-                  failtestf "splatted reifier rejected (rc=%d):\n%s\n%s" r0.Rc (showProgram splatted) r0.Err
+            if r0.Rc <> 0 then
+                failtestf "splatted reifier rejected (rc=%d):\n%s\n%s" r0.Rc (showProgram splatted) r0.Err
 
-              if (r1.Rc, r1.Out, r1.Err) <> (r0.Rc, r0.Out, r0.Err) then
-                  failtestf
-                      "splat ≠ inline\n--- splatted: %A\n%s\n--- inline: %A\n%s"
-                      (r0.Rc, r0.Out)
-                      (showProgram splatted)
-                      (r1.Rc, r1.Out)
-                      (showProgram plain)
+            if (r1.Rc, r1.Out, r1.Err) <> (r0.Rc, r0.Out, r0.Err) then
+                failtestf
+                    "splat ≠ inline\n--- splatted: %A\n%s\n--- inline: %A\n%s"
+                    (r0.Rc, r0.Out)
+                    (showProgram splatted)
+                    (r1.Rc, r1.Out)
+                    (showProgram plain)
 
-          testPropertyWithConfig cfg "the fast parser agrees with the grammar on generated programs and mutated neighbors [D:hand-parser]"
-          <| fun (p: Program) (NonNegativeInt s) ->
-              let rnd = Random s
-              let lines = renderPlain p
-              agreement lines
-              agreement (Mutate.deleteLine rnd lines)
-              agreement (Mutate.perturbIndent rnd lines)
-              agreement (Mutate.swapLines rnd lines)
+        testPropertyWithConfig
+            cfg
+            "the fast parser agrees with the grammar on generated programs and mutated neighbors [D:hand-parser]"
+        <| fun (p: Program) (NonNegativeInt s) ->
+            let rnd = Random s
+            let lines = renderPlain p
+            agreement lines
+            agreement (Mutate.deleteLine rnd lines)
+            agreement (Mutate.perturbIndent rnd lines)
+            agreement (Mutate.swapLines rnd lines)
 
-          testPropertyWithConfig cfg "assembly/check is total on generated programs and mutated neighbors"
-          <| fun (p: Program) (NonNegativeInt s) ->
-              let rnd = Random s
-              let lines = renderPlain p
-              totality lines
-              totality (Mutate.deleteLine rnd lines)
-              totality (Mutate.perturbIndent rnd lines)
-              totality (Mutate.duplicateLine rnd lines)
-              totality (Mutate.swapLines rnd lines)
-              totality (Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines))
-              totality (Mutate.swapLines rnd (Mutate.duplicateLine rnd lines))
+        testPropertyWithConfig cfg "assembly/check is total on generated programs and mutated neighbors"
+        <| fun (p: Program) (NonNegativeInt s) ->
+            let rnd = Random s
+            let lines = renderPlain p
+            totality lines
+            totality (Mutate.deleteLine rnd lines)
+            totality (Mutate.perturbIndent rnd lines)
+            totality (Mutate.duplicateLine rnd lines)
+            totality (Mutate.swapLines rnd lines)
+            totality (Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines))
+            totality (Mutate.swapLines rnd (Mutate.duplicateLine rnd lines))
 
-          // the recovery pass rides totality (the pass runs inside analyzeLines,
-          // so a throw there is a totality failure) and keeps its laws on the
-          // same inputs — the mutated neighbors are where the errors are
-          testPropertyWithConfig cfg "block recovery: partials never stmts, never without an error, never changing diagnostics"
-          <| fun (p: Program) (NonNegativeInt s) ->
-              let rnd = Random s
-              let lines = renderPlain p
-              recoveryLaws lines
-              recoveryLaws (Mutate.deleteLine rnd lines)
-              recoveryLaws (Mutate.swapLines rnd lines)
-              recoveryLaws (Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines))
+        // the recovery pass rides totality (the pass runs inside analyzeLines,
+        // so a throw there is a totality failure) and keeps its laws on the
+        // same inputs — the mutated neighbors are where the errors are
+        testPropertyWithConfig
+            cfg
+            "block recovery: partials never stmts, never without an error, never changing diagnostics"
+        <| fun (p: Program) (NonNegativeInt s) ->
+            let rnd = Random s
+            let lines = renderPlain p
+            recoveryLaws lines
+            recoveryLaws (Mutate.deleteLine rnd lines)
+            recoveryLaws (Mutate.swapLines rnd lines)
+            recoveryLaws (Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines))
 
-          // the depth axis runs SEQUENCED [D:fuzz-depth-sequenced]: each
-          // case is a CPU- and allocation-heavy pass bounded by wall clock,
-          // and run in parallel with its siblings the bound measures the
-          // contention — ~0.6s of work read as 15s+ on a 4-vCPU runner
-          testSequenced
-          <| testList
-              "depth axis"
-              [
-                // Invariant 2's depth axis [D:depth-guard]: the generator
-                // favors breadth, so extreme depth is pinned here explicitly —
-                // standing fixture seeds (each name records the failure class
-                // it guards against), plus a generated sweep.
-                test "deep parens diagnose-or-bound (was SEGV ~6000)" { depthDiagnoses "parens" (deepNest "(" ")" 20000) }
-                test "long operator spine diagnoses-or-bound (was SEGV in check)" { depthDiagnoses "opspine" (opSpine 50000) }
-                test "nested brackets diagnose-or-bound (was O(2^n))" { depthDiagnoses "brackets" (deepNest "[" "]" 2000) }
-                test "nested records diagnose-or-bound" { depthDiagnoses "records" (deepNest "{a=" "}" 2000) }
+        // the depth axis runs SEQUENCED [D:fuzz-depth-sequenced]: each
+        // case is a CPU- and allocation-heavy pass bounded by wall clock,
+        // and run in parallel with its siblings the bound measures the
+        // contention — ~0.6s of work read as 15s+ on a 4-vCPU runner
+        testSequenced
+        <| testList "depth axis" [
+            // Invariant 2's depth axis [D:depth-guard]: the generator
+            // favors breadth, so extreme depth is pinned here explicitly —
+            // standing fixture seeds (each name records the failure class
+            // it guards against), plus a generated sweep.
+            test "deep parens diagnose-or-bound (was SEGV ~6000)" { depthDiagnoses "parens" (deepNest "(" ")" 20000) }
+            test "long operator spine diagnoses-or-bound (was SEGV in check)" {
+                depthDiagnoses "opspine" (opSpine 50000)
+            }
+            test "nested brackets diagnose-or-bound (was O(2^n))" { depthDiagnoses "brackets" (deepNest "[" "]" 2000) }
+            test "nested records diagnose-or-bound" { depthDiagnoses "records" (deepNest "{a=" "}" 2000) }
 
-                // the type and pattern axes, plus
-                // index/let-in/fun/elif/field/sigil — every
-                // constructor that nests, per the fuzzer-grammar-membership
-                // rule [D:depth-guard]
-                test "deep seq<> type diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses
-                        "ty-seq"
-                        ("type T = { x: "
-                         + String.replicate 20000 "seq<"
-                         + "int"
-                         + String.replicate 20000 ">"
-                         + " }")
-                }
-                test "deep Option<> type diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses
-                        "ty-opt"
-                        ("type T = { x: "
-                         + String.replicate 20000 "Option<"
-                         + "int"
-                         + String.replicate 20000 ">"
-                         + " }")
-                }
-                test "deep Map<string,> type diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses
-                        "ty-map"
-                        ("type T = { x: "
-                         + String.replicate 20000 "Map<string, "
-                         + "int"
-                         + String.replicate 20000 ">"
-                         + " }")
-                }
-                test "deep anon-shape type diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses
-                        "ty-anon"
-                        ("type T = { x: "
-                         + String.replicate 20000 "{| a: "
-                         + "int"
-                         + String.replicate 20000 " |}"
-                         + " }")
-                }
-                test "deep paren pattern diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses
-                        "pat-paren"
-                        ("let v = match 1 with | "
-                         + String.replicate 20000 "("
-                         + "0"
-                         + String.replicate 20000 ")"
-                         + " -> 0 | _ -> 1")
-                }
-                test "deep tuple pattern diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses
-                        "pat-tuple"
-                        ("let v = match (1, 1) with | "
-                         + String.replicate 20000 "(1, "
-                         + "(a, b)"
-                         + String.replicate 20000 ")"
-                         + " -> a | _ -> 1")
-                }
-                test "deep constructor pattern diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses
-                        "pat-ctor"
-                        ("let v = match 1 with | "
-                         + String.replicate 20000 "Some ("
-                         + "x"
-                         + String.replicate 20000 ")"
-                         + " -> 1 | _ -> 0")
-                }
-                test "deep list pattern diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses
-                        "pat-list"
-                        ("let v = match [1] with | "
-                         + String.replicate 20000 "["
-                         + "0"
-                         + String.replicate 20000 "]"
-                         + " -> 0 | _ -> 1")
-                }
-                test "long cons-chain pattern diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses
-                        "pat-cons"
-                        ("let v = match [1] with | "
-                         + String.replicate 20000 "a :: "
-                         + "_"
-                         + " -> 1 | _ -> 0")
-                }
-                test "deep let-binder pattern diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses "pat-let" ("let " + String.replicate 20000 "(" + "x" + String.replicate 20000 ")" + " = 1")
-                }
-                test "deep lambda-param pattern diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses
-                        "pat-lambda"
-                        ("let f = fun "
-                         + String.replicate 20000 "("
-                         + "x"
-                         + String.replicate 20000 ")"
-                         + " -> x")
-                }
-                test "deep index chain diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses "index" ("let x = " + String.replicate 20000 "a[" + "0" + String.replicate 20000 "]")
-                }
-                test "long let-in chain diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses "letin" ("let x = " + String.replicate 20000 "let a = 1 in " + "1")
-                }
-                test "long fun chain diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses "fun" ("let x = " + String.replicate 20000 "fun a -> " + "1")
-                }
-                test "long elif chain diagnoses-or-bounds (was SEGV)" {
-                    // 5000 clauses: 10x the ceiling; each clause pays the full
-                    // stmtElem alternative cost, and 20000 runs into the hang
-                    // bound under parallel test load without adding coverage
-                    depthDiagnoses "elif" ("let x = if true then 1 " + String.replicate 5000 "elif true then 1 " + "else 2")
-                }
-                test "long field chain diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses "field" ("let x = a" + String.replicate 50000 ".b")
-                }
-                test "deep sigil nest diagnoses-or-bounds (was SEGV)" {
-                    depthDiagnoses "sigil" ("let x = " + String.replicate 5000 "$(echo " + "hi" + String.replicate 5000 ")")
-                }
+            // the type and pattern axes, plus
+            // index/let-in/fun/elif/field/sigil — every
+            // constructor that nests, per the fuzzer-grammar-membership
+            // rule [D:depth-guard]
+            test "deep seq<> type diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "ty-seq"
+                    ("type T = { x: "
+                     + String.replicate 20000 "seq<"
+                     + "int"
+                     + String.replicate 20000 ">"
+                     + " }")
+            }
+            test "deep Option<> type diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "ty-opt"
+                    ("type T = { x: "
+                     + String.replicate 20000 "Option<"
+                     + "int"
+                     + String.replicate 20000 ">"
+                     + " }")
+            }
+            test "deep Map<string,> type diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "ty-map"
+                    ("type T = { x: "
+                     + String.replicate 20000 "Map<string, "
+                     + "int"
+                     + String.replicate 20000 ">"
+                     + " }")
+            }
+            test "deep anon-shape type diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "ty-anon"
+                    ("type T = { x: "
+                     + String.replicate 20000 "{| a: "
+                     + "int"
+                     + String.replicate 20000 " |}"
+                     + " }")
+            }
+            test "deep paren pattern diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "pat-paren"
+                    ("let v = match 1 with | "
+                     + String.replicate 20000 "("
+                     + "0"
+                     + String.replicate 20000 ")"
+                     + " -> 0 | _ -> 1")
+            }
+            test "deep tuple pattern diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "pat-tuple"
+                    ("let v = match (1, 1) with | "
+                     + String.replicate 20000 "(1, "
+                     + "(a, b)"
+                     + String.replicate 20000 ")"
+                     + " -> a | _ -> 1")
+            }
+            test "deep constructor pattern diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "pat-ctor"
+                    ("let v = match 1 with | "
+                     + String.replicate 20000 "Some ("
+                     + "x"
+                     + String.replicate 20000 ")"
+                     + " -> 1 | _ -> 0")
+            }
+            test "deep list pattern diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "pat-list"
+                    ("let v = match [1] with | "
+                     + String.replicate 20000 "["
+                     + "0"
+                     + String.replicate 20000 "]"
+                     + " -> 0 | _ -> 1")
+            }
+            test "long cons-chain pattern diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "pat-cons"
+                    ("let v = match [1] with | "
+                     + String.replicate 20000 "a :: "
+                     + "_"
+                     + " -> 1 | _ -> 0")
+            }
+            test "deep let-binder pattern diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "pat-let"
+                    ("let " + String.replicate 20000 "(" + "x" + String.replicate 20000 ")" + " = 1")
+            }
+            test "deep lambda-param pattern diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses
+                    "pat-lambda"
+                    ("let f = fun "
+                     + String.replicate 20000 "("
+                     + "x"
+                     + String.replicate 20000 ")"
+                     + " -> x")
+            }
+            test "deep index chain diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses "index" ("let x = " + String.replicate 20000 "a[" + "0" + String.replicate 20000 "]")
+            }
+            test "long let-in chain diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses "letin" ("let x = " + String.replicate 20000 "let a = 1 in " + "1")
+            }
+            test "long fun chain diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses "fun" ("let x = " + String.replicate 20000 "fun a -> " + "1")
+            }
+            test "long elif chain diagnoses-or-bounds (was SEGV)" {
+                // 5000 clauses: 10x the ceiling; each clause pays the full
+                // stmtElem alternative cost, and 20000 runs into the hang
+                // bound under parallel test load without adding coverage
+                depthDiagnoses "elif" ("let x = if true then 1 " + String.replicate 5000 "elif true then 1 " + "else 2")
+            }
+            test "long field chain diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses "field" ("let x = a" + String.replicate 50000 ".b")
+            }
+            test "deep sigil nest diagnoses-or-bounds (was SEGV)" {
+                depthDiagnoses "sigil" ("let x = " + String.replicate 5000 "$(echo " + "hi" + String.replicate 5000 ")")
+            }
 
-                // the post-parse seam [D:depth-guard]: parse depth ~1, but each
-                // line doubles the inferred type — the inference budget must
-                // convert "no answer, forever" into a located diagnostic
-                test "the inference bomb diagnoses inside the budget (was: hang, forever)" {
-                    diagnosesWithinBound
-                        "infer-bomb"
-                        30000
-                        [ "let f0 x = (x, x)"
-                          "let f1 x = f0 (f0 x)"
-                          "let f2 x = f1 (f1 x)"
-                          "let f3 x = f2 (f2 x)"
-                          "let f4 x = f3 (f3 x)"
-                          "let f5 x = f4 (f4 x)"
-                          "let v = f5 1"
-                          "print \"done\"" ]
-                }
+            // the post-parse seam [D:depth-guard]: parse depth ~1, but each
+            // line doubles the inferred type — the inference budget must
+            // convert "no answer, forever" into a located diagnostic
+            test "the inference bomb diagnoses inside the budget (was: hang, forever)" {
+                diagnosesWithinBound "infer-bomb" 30000 [
+                    "let f0 x = (x, x)"
+                    "let f1 x = f0 (f0 x)"
+                    "let f2 x = f1 (f1 x)"
+                    "let f3 x = f2 (f2 x)"
+                    "let f4 x = f3 (f3 x)"
+                    "let f5 x = f4 (f4 x)"
+                    "let v = f5 1"
+                    "print \"done\""
+                ]
+            }
 
-                testPropertyWithConfig cfg "arbitrary over-ceiling depth diagnoses-or-bounds"
-                <| fun (NonNegativeInt s) ->
-                    let rnd = Random s
-                    let d = 600 + rnd.Next 4000 // above the 500 ceiling
+            testPropertyWithConfig cfg "arbitrary over-ceiling depth diagnoses-or-bounds"
+            <| fun (NonNegativeInt s) ->
+                let rnd = Random s
+                let d = 600 + rnd.Next 4000 // above the 500 ceiling
 
-                    let line =
-                        match rnd.Next 3 with
-                        | 0 -> deepNest "(" ")" d
-                        | 1 -> deepNest "[" "]" d
-                        | _ -> opSpine d
+                let line =
+                    match rnd.Next 3 with
+                    | 0 -> deepNest "(" ")" d
+                    | 1 -> deepNest "[" "]" d
+                    | _ -> opSpine d
 
-                    depthDiagnoses "generated" line
-              ]
+                depthDiagnoses "generated" line
+        ]
 
-          testPropertyWithConfig cfg "span soundness: an injected bad token is reported on its own line"
-          <| fun (p: Program) (NonNegativeInt s) ->
-              let rnd = Random s
-              let tagged = renderTagged defaultCfg p
+        testPropertyWithConfig cfg "span soundness: an injected bad token is reported on its own line"
+        <| fun (p: Program) (NonNegativeInt s) ->
+            let rnd = Random s
+            let tagged = renderTagged defaultCfg p
 
-              let eligible =
-                  tagged
-                  |> List.mapi (fun i (l, ok) -> i, l, ok)
-                  |> List.filter (fun (_, _, ok) -> ok)
+            let eligible =
+                tagged
+                |> List.mapi (fun i (l, ok) -> i, l, ok)
+                |> List.filter (fun (_, _, ok) -> ok)
 
-              match eligible with
-              | [] -> ()
-              | _ ->
-                  let (idx, line, _) = eligible[rnd.Next eligible.Length]
+            match eligible with
+            | [] -> ()
+            | _ ->
+                let (idx, line, _) = eligible[rnd.Next eligible.Length]
 
-                  let injected =
-                      tagged |> List.mapi (fun i (l, _) -> if i = idx then l + " ?!?" else l)
+                let injected =
+                    tagged |> List.mapi (fun i (l, _) -> if i = idx then l + " ?!?" else l)
 
-                  let physLine = idx + 1
-                  let extent = line.Length + 5
+                let physLine = idx + 1
+                let extent = line.Length + 5
 
-                  // [D:diag-arbitration]: the primary error lands at the
-                  // true physical site — no backtrack-note escape hatch;
-                  // the consumed-separator law [D:seq-commit][D:arm-commit]
-                  // covers the district-wrap class, so the assertion
-                  // holds the primary itself.
-                  match spanSoundCore injected physLine extent with
-                  | SpanOk -> ()
-                  | SpanNoDiag m -> failtestf "%s:\n%s" m (showProgram injected)
-                  | SpanMiss m ->
-                      if strictSpans then
-                          failtestf "%s\n%s" m (showProgram injected)
+                // [D:diag-arbitration]: the primary error lands at the
+                // true physical site — no backtrack-note escape hatch;
+                // the consumed-separator law [D:seq-commit][D:arm-commit]
+                // covers the district-wrap class, so the assertion
+                // holds the primary itself.
+                match spanSoundCore injected physLine extent with
+                | SpanOk -> ()
+                | SpanNoDiag m -> failtestf "%s:\n%s" m (showProgram injected)
+                | SpanMiss m ->
+                    if strictSpans then
+                        failtestf "%s\n%s" m (showProgram injected)
 
-          testPropertyWithConfig cfg "arbitration: a deeper second junk does not steal the first-reached error's site"
-          <| fun (p: Program) (NonNegativeInt s) ->
-              let rnd = Random s
-              let tagged = renderTagged defaultCfg p
+        testPropertyWithConfig cfg "arbitration: a deeper second junk does not steal the first-reached error's site"
+        <| fun (p: Program) (NonNegativeInt s) ->
+            let rnd = Random s
+            let tagged = renderTagged defaultCfg p
 
-              let eligible =
-                  tagged
-                  |> List.mapi (fun i (l, ok) -> i, l, ok)
-                  |> List.filter (fun (_, _, ok) -> ok)
+            let eligible =
+                tagged
+                |> List.mapi (fun i (l, ok) -> i, l, ok)
+                |> List.filter (fun (_, _, ok) -> ok)
 
-              match eligible with
-              | []
-              | [ _ ] -> () // need two distinct sites to arbitrate between
-              | _ ->
-                  // [D:diag-arbitration]: "furthest the parser reached", not
-                  // "latest in the file" — with two obstructions the first is
-                  // where the parse stops, so the shallower (first-reached)
-                  // junk owns the report; a deeper junk downstream must not
-                  // steal it or corrupt its position.
-                  let a = rnd.Next eligible.Length
-                  let mutable b = rnd.Next eligible.Length
+            match eligible with
+            | []
+            | [ _ ] -> () // need two distinct sites to arbitrate between
+            | _ ->
+                // [D:diag-arbitration]: "furthest the parser reached", not
+                // "latest in the file" — with two obstructions the first is
+                // where the parse stops, so the shallower (first-reached)
+                // junk owns the report; a deeper junk downstream must not
+                // steal it or corrupt its position.
+                let a = rnd.Next eligible.Length
+                let mutable b = rnd.Next eligible.Length
 
-                  while b = a do
-                      b <- rnd.Next eligible.Length
+                while b = a do
+                    b <- rnd.Next eligible.Length
 
-                  let (ia, _, _) = eligible[a]
-                  let (ib, _, _) = eligible[b]
-                  let lo, hi = min ia ib, max ia ib
+                let (ia, _, _) = eligible[a]
+                let (ib, _, _) = eligible[b]
+                let lo, hi = min ia ib, max ia ib
 
-                  let injected =
-                      tagged |> List.mapi (fun i (l, _) -> if i = lo || i = hi then l + " ?!?" else l)
+                let injected =
+                    tagged |> List.mapi (fun i (l, _) -> if i = lo || i = hi then l + " ?!?" else l)
 
-                  let firstLine = lo + 1
-                  let extent = (tagged[lo] |> fst).Length + 5
+                let firstLine = lo + 1
+                let extent = (tagged[lo] |> fst).Length + 5
 
-                  match spanSoundCore injected firstLine extent with
-                  | SpanOk -> ()
-                  | SpanNoDiag m -> failtestf "%s (second junk at line %d):\n%s" m (hi + 1) (showProgram injected)
-                  | SpanMiss m ->
-                      if strictSpans then
-                          failtestf "first-reached %s\n%s" m (showProgram injected)
+                match spanSoundCore injected firstLine extent with
+                | SpanOk -> ()
+                | SpanNoDiag m -> failtestf "%s (second junk at line %d):\n%s" m (hi + 1) (showProgram injected)
+                | SpanMiss m ->
+                    if strictSpans then
+                        failtestf "first-reached %s\n%s" m (showProgram injected)
 
-          // check agrees with run [PLAN-refactor-followups 1]: the
-          // most-repeated failure shape is the assume-resolver (check)
-          // and the hard resolver (run) disagreeing about what a name
-          // is — one predicate (Script.assumeResolver), so agreement
-          // needs a standing assertion. For every
-          // generated program: parse each logical line under both
-          // resolvers (same sexpr), then check under both (same
-          // verdict). Generated heads are echo/real, so the hard
-          // resolver resolves them exactly as the runner would.
-          testPropertyWithConfig
-              cfg
-              "check agrees with run: same parse, same verdict (the resolver seam)"
-              (fun (p: Program) ->
-                  let lines = renderPlain p
-                  let numbered = lines |> List.mapi (fun i l -> i + 1, l)
+        // check agrees with run [PLAN-refactor-followups 1]: the
+        // most-repeated failure shape is the assume-resolver (check)
+        // and the hard resolver (run) disagreeing about what a name
+        // is — one predicate (Script.assumeResolver), so agreement
+        // needs a standing assertion. For every
+        // generated program: parse each logical line under both
+        // resolvers (same sexpr), then check under both (same
+        // verdict). Generated heads are echo/real, so the hard
+        // resolver resolves them exactly as the runner would.
+        testPropertyWithConfig
+            cfg
+            "check agrees with run: same parse, same verdict (the resolver seam)"
+            (fun (p: Program) ->
+                let lines = renderPlain p
+                let numbered = lines |> List.mapi (fun i l -> i + 1, l)
 
-                  match Weir.Script.assemble numbered with
-                  | Error e -> failtestf "assemble: %s\n%s" e (showProgram lines)
-                  | Ok lls ->
-                      Weir.Extern.refresh ()
+                match Weir.Script.assemble numbered with
+                | Error e -> failtestf "assemble: %s\n%s" e (showProgram lines)
+                | Ok lls ->
+                    Weir.Extern.refresh ()
 
-                      let noImports: Weir.Script.ImportLoader =
-                          fun _ _ _ -> failwith "generated programs never import"
+                    let noImports: Weir.Script.ImportLoader =
+                        fun _ _ _ -> failwith "generated programs never import"
 
-                      let mutable ta = Weir.Builtins.typeEnv
-                      let mutable tb = Weir.Builtins.typeEnv
-                      let mutable stop = false
+                    let mutable ta = Weir.Builtins.typeEnv
+                    let mutable tb = Weir.Builtins.typeEnv
+                    let mutable stop = false
 
-                      for ll in lls do
-                          if not stop then
-                              let pa = Weir.Parser.parseLine (Weir.Script.assumeResolver ta) ll.Text
-                              let pb = Weir.Parser.parseLine (Weir.Script.resolver tb) ll.Text
+                    for ll in lls do
+                        if not stop then
+                            let pa = Weir.Parser.parseLine (Weir.Script.assumeResolver ta) ll.Text
+                            let pb = Weir.Parser.parseLine (Weir.Script.resolver tb) ll.Text
 
-                              (match pa, pb with
-                               | Ok sa, Ok sb ->
-                                   let xa = Weir.Ast.sexprStmt sa
-                                   let xb = Weir.Ast.sexprStmt sb
+                            (match pa, pb with
+                             | Ok sa, Ok sb ->
+                                 let xa = Weir.Ast.sexprStmt sa
+                                 let xb = Weir.Ast.sexprStmt sb
 
-                                   if xa <> xb then
-                                       failtestf
-                                           "PARSE DIVERGENCE on:\n  %s\nassume: %s\nhard:   %s\n%s"
-                                           ll.Text
-                                           xa
-                                           xb
-                                           (showProgram lines)
-                               | Error _, Error _ -> stop <- true // agreed rejection
-                               | Ok _, Error eb ->
-                                   failtestf
-                                       "VERDICT DIVERGENCE (assume accepts, hard rejects) on:\n  %s\nhard: %s\n%s"
-                                       ll.Text
-                                       eb
-                                       (showProgram lines)
-                               | Error ea, Ok _ ->
-                                   failtestf
-                                       "VERDICT DIVERGENCE (hard accepts, assume rejects) on:\n  %s\nassume: %s\n%s"
-                                       ll.Text
-                                       ea
-                                       (showProgram lines))
+                                 if xa <> xb then
+                                     failtestf
+                                         "PARSE DIVERGENCE on:\n  %s\nassume: %s\nhard:   %s\n%s"
+                                         ll.Text
+                                         xa
+                                         xb
+                                         (showProgram lines)
+                             | Error _, Error _ -> stop <- true // agreed rejection
+                             | Ok _, Error eb ->
+                                 failtestf
+                                     "VERDICT DIVERGENCE (assume accepts, hard rejects) on:\n  %s\nhard: %s\n%s"
+                                     ll.Text
+                                     eb
+                                     (showProgram lines)
+                             | Error ea, Ok _ ->
+                                 failtestf
+                                     "VERDICT DIVERGENCE (hard accepts, assume rejects) on:\n  %s\nassume: %s\n%s"
+                                     ll.Text
+                                     ea
+                                     (showProgram lines))
 
-                              if not stop then
-                                  let ca = Weir.Script.checkStatement true None Weir.Script.assumeResolver noImports ta ll
-                                  let cb = Weir.Script.checkStatement true None Weir.Script.resolver noImports tb ll
+                            if not stop then
+                                let ca =
+                                    Weir.Script.checkStatement true None Weir.Script.assumeResolver noImports ta ll
 
-                                  match ca, cb with
-                                  | Ok a, Ok b ->
-                                      ta <- a.Env
-                                      tb <- b.Env
-                                  | Error _, Error _ -> stop <- true // agreed rejection
-                                  | Ok _, Error d ->
-                                      failtestf
-                                          "CHECK DIVERGENCE (assume accepts, hard rejects) on:\n  %s\n%s\n%s"
-                                          ll.Text
-                                          d.Message
-                                          (showProgram lines)
-                                  | Error d, Ok _ ->
-                                      failtestf
-                                          "CHECK DIVERGENCE (hard accepts, assume rejects) on:\n  %s\n%s\n%s"
-                                          ll.Text
-                                          d.Message
-                                          (showProgram lines))
-          // [D:fuzz-hunt2-invariants] over the generated program, its
-          // mutated neighbors and an injected-junk twin — valid and
-          // invalid inputs alike, since the hunt's finds were on both
-          testPropertyWithConfig
-              cfg
-              "hunt-2 invariants: no crash or internal error, positions in range, fmt idempotent and verdict-preserving"
-          <| fun (p: Program) (NonNegativeInt s) ->
-              let rnd = Random s
-              let lines = renderPlain p
+                                let cb = Weir.Script.checkStatement true None Weir.Script.resolver noImports tb ll
 
-              let junk =
-                  let tagged = renderTagged defaultCfg p
-                  let eligible = tagged |> List.indexed |> List.filter (fun (_, (_, ok)) -> ok)
+                                match ca, cb with
+                                | Ok a, Ok b ->
+                                    ta <- a.Env
+                                    tb <- b.Env
+                                | Error _, Error _ -> stop <- true // agreed rejection
+                                | Ok _, Error d ->
+                                    failtestf
+                                        "CHECK DIVERGENCE (assume accepts, hard rejects) on:\n  %s\n%s\n%s"
+                                        ll.Text
+                                        d.Message
+                                        (showProgram lines)
+                                | Error d, Ok _ ->
+                                    failtestf
+                                        "CHECK DIVERGENCE (hard accepts, assume rejects) on:\n  %s\n%s\n%s"
+                                        ll.Text
+                                        d.Message
+                                        (showProgram lines))
+        // [D:fuzz-hunt2-invariants] over the generated program, its
+        // mutated neighbors and an injected-junk twin — valid and
+        // invalid inputs alike, since the hunt's finds were on both
+        testPropertyWithConfig
+            cfg
+            "hunt-2 invariants: no crash or internal error, positions in range, fmt idempotent and verdict-preserving"
+        <| fun (p: Program) (NonNegativeInt s) ->
+            let rnd = Random s
+            let lines = renderPlain p
 
-                  match eligible with
-                  | [] -> lines
-                  | _ ->
-                      let idx = fst eligible[rnd.Next eligible.Length]
-                      tagged |> List.mapi (fun i (l, _) -> if i = idx then l + " ?!?" else l)
+            let junk =
+                let tagged = renderTagged defaultCfg p
+                let eligible = tagged |> List.indexed |> List.filter (fun (_, (_, ok)) -> ok)
 
-              [ "generated", lines
+                match eligible with
+                | [] -> lines
+                | _ ->
+                    let idx = fst eligible[rnd.Next eligible.Length]
+                    tagged |> List.mapi (fun i (l, _) -> if i = idx then l + " ?!?" else l)
+
+            [
+                "generated", lines
                 "junk-injected", junk
                 "indent-perturbed", Mutate.perturbIndent rnd lines
                 "line-deleted", Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines)
-                "duplicated+swapped", Mutate.swapLines rnd (Mutate.duplicateLine rnd lines) ]
-              |> List.iter (fun (label, input) ->
-                  match hunt2Violations input with
-                  | [] -> ()
-                  | vs ->
-                      failtestf
-                          "the %s input breaks a hunt-2 invariant:\n  %s\n%s"
-                          label
-                          (String.concat "\n  " vs)
-                          (showProgram input))
+                "duplicated+swapped", Mutate.swapLines rnd (Mutate.duplicateLine rnd lines)
+            ]
+            |> List.iter (fun (label, input) ->
+                match hunt2Violations input with
+                | [] -> ()
+                | vs ->
+                    failtestf
+                        "the %s input breaks a hunt-2 invariant:\n  %s\n%s"
+                        label
+                        (String.concat "\n  " vs)
+                        (showProgram input))
 
-          testPropertyWithConfig cfg "fmt roundtrip: succeeds, idempotent, shape-preserving, output-neutral"
-          <| fun (p: Program) ->
-              let lines = renderPlain p
+        testPropertyWithConfig cfg "fmt roundtrip: succeeds, idempotent, shape-preserving, output-neutral"
+        <| fun (p: Program) ->
+            let lines = renderPlain p
 
-              match Weir.Fmt.formatLines lines with
-              | Error e -> failtestf "fmt refused a valid program: %s\n%s" e (showProgram lines)
-              | Ok fmted ->
-                  (match Weir.Fmt.formatLines fmted with
-                   | Error e -> failtestf "fmt output does not re-format: %s\n%s" e (showProgram fmted)
-                   | Ok fmted2 ->
-                       if fmted2 <> fmted then
-                           failtestf
-                               "fmt is not idempotent\n--- first:\n%s\n--- second:\n%s"
-                               (showProgram fmted)
-                               (showProgram fmted2))
+            match Weir.Fmt.formatLines lines with
+            | Error e -> failtestf "fmt refused a valid program: %s\n%s" e (showProgram lines)
+            | Ok fmted ->
+                (match Weir.Fmt.formatLines fmted with
+                 | Error e -> failtestf "fmt output does not re-format: %s\n%s" e (showProgram fmted)
+                 | Ok fmted2 ->
+                     if fmted2 <> fmted then
+                         failtestf
+                             "fmt is not idempotent\n--- first:\n%s\n--- second:\n%s"
+                             (showProgram fmted)
+                             (showProgram fmted2))
 
-                  if shapesOf fmted <> shapesOf lines then
-                      failtestf
-                          "fmt changed the parse shape\n--- original:\n%s\n--- formatted:\n%s"
-                          (showProgram lines)
-                          (showProgram fmted)
+                if shapesOf fmted <> shapesOf lines then
+                    failtestf
+                        "fmt changed the parse shape\n--- original:\n%s\n--- formatted:\n%s"
+                        (showProgram lines)
+                        (showProgram fmted)
 
-                  let r0 = Runner.runProgram lines
+                let r0 = Runner.runProgram lines
 
-                  if r0.Rc <> 0 then
-                      failtestf "base program rejected (rc=%d):\n%s\nstderr:\n%s" r0.Rc (showProgram lines) r0.Err
+                if r0.Rc <> 0 then
+                    failtestf "base program rejected (rc=%d):\n%s\nstderr:\n%s" r0.Rc (showProgram lines) r0.Err
 
-                  let r1 = Runner.runProgram fmted
+                let r1 = Runner.runProgram fmted
 
-                  if (r1.Rc, r1.Out, r1.Err) <> (r0.Rc, r0.Out, r0.Err) then
-                      failtestf
-                          "fmt changed behavior\n--- base (rc=%d) out %A err %A:\n%s\n--- formatted (rc=%d) out %A err %A:\n%s"
-                          r0.Rc
-                          r0.Out
-                          r0.Err
-                          (showProgram lines)
-                          r1.Rc
-                          r1.Out
-                          r1.Err
-                          (showProgram fmted) ]
+                if (r1.Rc, r1.Out, r1.Err) <> (r0.Rc, r0.Out, r0.Err) then
+                    failtestf
+                        "fmt changed behavior\n--- base (rc=%d) out %A err %A:\n%s\n--- formatted (rc=%d) out %A err %A:\n%s"
+                        r0.Rc
+                        r0.Out
+                        r0.Err
+                        (showProgram lines)
+                        r1.Rc
+                        r1.Out
+                        r1.Err
+                        (showProgram fmted)
+    ]
 
 
 // ---- positive controls [D:walk-findings] ----------------------------
@@ -904,109 +930,110 @@ let tests =
 // cannot drift to bring-up-only status.
 [<Tests>]
 let positiveControls =
-    testList
-        "Positive controls: the detectors themselves fire [D:walk-findings]"
-        [ test "invariant 1: an output-changing transform is DETECTED, named" {
-              match compareRuns [ "print \"control\"" ] [ "print \"control\""; "print \"EXTRA\"" ] with
-              | Error m -> Expect.stringContains m "transform changed behavior" "fails by NAME, not by throwing"
-              | Ok() -> failtest "the equality detector did not fire — invariant 1 is vacuous"
-          }
-          test "invariant 1: an rc-changing transform is detected too (all three channels)" {
-              match compareRuns [ "print \"ok\"" ] [ "fail \"boom\"" ] with
-              | Error m ->
-                  Expect.stringContains m "transform changed behavior" "rc + stderr changes fire the same detector"
-              | Ok() -> failtest "an rc change escaped the detector"
-          }
-          test "invariant 2: a throwing pipeline is DETECTED, named" {
-              match totalityCore 5000 "control pipeline" (fun () -> failwith "deliberate") with
-              | Error m -> Expect.stringContains m "control pipeline THREW" "the throw detector names itself"
-              | Ok() -> failtest "a throwing pipeline escaped the totality detector"
-          }
-          test "invariant 2: a hang is DETECTED within the bound, named" {
-              match totalityCore 50 "control pipeline" (fun () -> System.Threading.Thread.Sleep 500) with
-              | Error m -> Expect.stringContains m "exceeded 50ms" "the hang detector names the bound"
-              | Ok() -> failtest "a hang escaped the totality detector"
-          }
-          test "invariant 3: a claimed site the report is NOT at is DETECTED, named" {
-              // junk on line 1, site claimed at line 2 — the detector must
-              // refuse the claim, not hum along
-              match spanSoundCore [ "let a = 1 ?!?"; "print \"x\"" ] 2 20 with
-              | SpanMiss m -> Expect.stringContains m "lost its report" "the miss detector names itself"
-              | SpanOk -> failtest "a wrong-site claim escaped the span detector"
-              | SpanNoDiag m -> failtest $"expected a site miss, got no-diagnostic: {m}"
-          }
-          test "invariant 3: a clean program with a claimed bad site is DETECTED, named" {
-              // `a` is read, so the program is clean under the
-              // unused-binding law too [D:unused-bindings]
-              match spanSoundCore [ "let a = 1"; "print (show a)" ] 1 12 with
-              | SpanNoDiag m -> Expect.stringContains m "no diagnostic" "the no-diagnostic detector names itself"
-              | SpanOk -> failtest "a clean program cannot satisfy a bad-site claim"
-              | SpanMiss m -> failtest $"expected no-diagnostic, got a miss: {m}"
-          }
-          test "invariant 8: a crash exit and an internal error are DETECTED, named" {
-              let r: Runner.RunResult =
-                  { Rc = 134
-                    Out = ""
-                    Err = "internal error: boom"
-                    TimedOut = false }
+    testList "Positive controls: the detectors themselves fire [D:walk-findings]" [
+        test "invariant 1: an output-changing transform is DETECTED, named" {
+            match compareRuns [ "print \"control\"" ] [ "print \"control\""; "print \"EXTRA\"" ] with
+            | Error m -> Expect.stringContains m "transform changed behavior" "fails by NAME, not by throwing"
+            | Ok() -> failtest "the equality detector did not fire — invariant 1 is vacuous"
+        }
+        test "invariant 1: an rc-changing transform is detected too (all three channels)" {
+            match compareRuns [ "print \"ok\"" ] [ "fail \"boom\"" ] with
+            | Error m ->
+                Expect.stringContains m "transform changed behavior" "rc + stderr changes fire the same detector"
+            | Ok() -> failtest "an rc change escaped the detector"
+        }
+        test "invariant 2: a throwing pipeline is DETECTED, named" {
+            match totalityCore 5000 "control pipeline" (fun () -> failwith "deliberate") with
+            | Error m -> Expect.stringContains m "control pipeline THREW" "the throw detector names itself"
+            | Ok() -> failtest "a throwing pipeline escaped the totality detector"
+        }
+        test "invariant 2: a hang is DETECTED within the bound, named" {
+            match totalityCore 50 "control pipeline" (fun () -> System.Threading.Thread.Sleep 500) with
+            | Error m -> Expect.stringContains m "exceeded 50ms" "the hang detector names the bound"
+            | Ok() -> failtest "a hang escaped the totality detector"
+        }
+        test "invariant 3: a claimed site the report is NOT at is DETECTED, named" {
+            // junk on line 1, site claimed at line 2 — the detector must
+            // refuse the claim, not hum along
+            match spanSoundCore [ "let a = 1 ?!?"; "print \"x\"" ] 2 20 with
+            | SpanMiss m -> Expect.stringContains m "lost its report" "the miss detector names itself"
+            | SpanOk -> failtest "a wrong-site claim escaped the span detector"
+            | SpanNoDiag m -> failtest $"expected a site miss, got no-diagnostic: {m}"
+        }
+        test "invariant 3: a clean program with a claimed bad site is DETECTED, named" {
+            // `a` is read, so the program is clean under the
+            // unused-binding law too [D:unused-bindings]
+            match spanSoundCore [ "let a = 1"; "print (show a)" ] 1 12 with
+            | SpanNoDiag m -> Expect.stringContains m "no diagnostic" "the no-diagnostic detector names itself"
+            | SpanOk -> failtest "a clean program cannot satisfy a bad-site claim"
+            | SpanMiss m -> failtest $"expected no-diagnostic, got a miss: {m}"
+        }
+        test "invariant 8: a crash exit and an internal error are DETECTED, named" {
+            let r: Runner.RunResult = {
+                Rc = 134
+                Out = ""
+                Err = "internal error: boom"
+                TimedOut = false
+            }
 
-              let vs = screenRun "control" r
-              Expect.equal vs.Length 2 "both the exit and the text fire"
-              Expect.stringContains vs[0] "exit 134" "the crash judge names the exit"
-              Expect.stringContains vs[1] "internal error" "the text judge names the phrase"
-          }
-          test "invariant 8: a position past its line's end is DETECTED, named" {
-              let json =
-                  """[{"line":1,"col":5,"severity":"error"},{"line":3,"col":1,"severity":"error"}]"""
+            let vs = screenRun "control" r
+            Expect.equal vs.Length 2 "both the exit and the text fire"
+            Expect.stringContains vs[0] "exit 134" "the crash judge names the exit"
+            Expect.stringContains vs[1] "internal error" "the text judge names the phrase"
+        }
+        test "invariant 8: a position past its line's end is DETECTED, named" {
+            let json =
+                """[{"line":1,"col":5,"severity":"error"},{"line":3,"col":1,"severity":"error"}]"""
 
-              let vs = positionViolations "control" [| "abc" |] json
-              Expect.equal vs.Length 2 "both the column and the line fire"
-              Expect.stringContains vs[0] "past the end of its line" "the column judge names itself"
-              Expect.stringContains vs[1] "line 3 of a 1-line file" "the line judge names itself"
+            let vs = positionViolations "control" [| "abc" |] json
+            Expect.equal vs.Length 2 "both the column and the line fire"
+            Expect.stringContains vs[0] "past the end of its line" "the column judge names itself"
+            Expect.stringContains vs[1] "line 3 of a 1-line file" "the line judge names itself"
 
-              Expect.isEmpty
-                  (positionViolations "control" [| "abc" |] """[{"line":1,"col":4}]""")
-                  "one past the end is the end-of-line slot"
-          }
-          test "invariant 8: fmt failing a file or masking a non-layout error is DETECTED, named; a layout repair is not" {
-              let err code msg =
-                  $"""{{"line":1,"col":1,"severity":"error","code":"{code}","message":"{msg}"}}"""
+            Expect.isEmpty
+                (positionViolations "control" [| "abc" |] """[{"line":1,"col":4}]""")
+                "one past the end is the end-of-line slot"
+        }
+        test "invariant 8: fmt failing a file or masking a non-layout error is DETECTED, named; a layout repair is not" {
+            let err code msg =
+                $"""{{"line":1,"col":1,"severity":"error","code":"{code}","message":"{msg}"}}"""
 
-              let docAlign = err "doc-align" "this /// doc sits at column 7"
-              let typeErr = err "check" "expected int, got string"
+            let docAlign = err "doc-align" "this /// doc sits at column 7"
+            let typeErr = err "check" "expected int, got string"
 
-              let fails = verdictViolations (0, "[]") (1, $"[{typeErr}]")
-              Expect.equal fails.Length 1 "0 -> 1 fires"
-              Expect.stringContains fails[0] "made a checking file fail" "the fail judge names itself"
+            let fails = verdictViolations (0, "[]") (1, $"[{typeErr}]")
+            Expect.equal fails.Length 1 "0 -> 1 fires"
+            Expect.stringContains fails[0] "made a checking file fail" "the fail judge names itself"
 
-              let masked = verdictViolations (1, $"[{docAlign},{typeErr}]") (0, "[]")
-              Expect.equal masked.Length 1 "a non-layout error gone with the layout one fires"
-              Expect.stringContains masked[0] "masked a non-layout error [check]" "the mask judge names the code"
+            let masked = verdictViolations (1, $"[{docAlign},{typeErr}]") (0, "[]")
+            Expect.equal masked.Length 1 "a non-layout error gone with the layout one fires"
+            Expect.stringContains masked[0] "masked a non-layout error [check]" "the mask judge names the code"
 
-              let other = err "check" "other"
-              let maskedKept = verdictViolations (1, $"[{typeErr}]") (1, $"[{other}]")
-              Expect.equal maskedKept.Length 1 "a swapped error under an unchanged verdict fires"
+            let other = err "check" "other"
+            let maskedKept = verdictViolations (1, $"[{typeErr}]") (1, $"[{other}]")
+            Expect.equal maskedKept.Length 1 "a swapped error under an unchanged verdict fires"
 
-              let blank = verdictViolations (1, "[]") (0, "[]")
-              Expect.stringContains blank[0] "no error to repair" "1 -> 0 with nothing listed fires"
+            let blank = verdictViolations (1, "[]") (0, "[]")
+            Expect.stringContains blank[0] "no error to repair" "1 -> 0 with nothing listed fires"
 
-              Expect.isEmpty (verdictViolations (1, $"[{docAlign}]") (0, "[]")) "a pure layout repair is fmt's job"
+            Expect.isEmpty (verdictViolations (1, $"[{docAlign}]") (0, "[]")) "a pure layout repair is fmt's job"
 
-              Expect.isEmpty
-                  (verdictViolations (1, $"[{docAlign},{typeErr}]") (1, $"[{typeErr}]"))
-                  "the layout half repaired, the other kept"
-          }
-          test "invariant 8: the composed detector is clean on a clean program (not vacuously red)" {
-              Expect.isEmpty (hunt2Violations [ "let x = 1"; "print (show x)" ]) "a clean program has no violations"
-          }
-          test "invariant 4's shape language DISTINGUISHES (equality is not vacuous)" {
-              // the fmt roundtrip compares per-statement sexpr shapes; if
-              // shapesOf collapsed everything to one value the comparison
-              // would pass vacuously
-              let a = shapesOf [ "print \"a\"" ]
-              let b = shapesOf [ "let x = 1" ]
-              Expect.isTrue (a.IsSome && b.IsSome && a <> b) "two different programs must have different shapes"
-          } ]
+            Expect.isEmpty
+                (verdictViolations (1, $"[{docAlign},{typeErr}]") (1, $"[{typeErr}]"))
+                "the layout half repaired, the other kept"
+        }
+        test "invariant 8: the composed detector is clean on a clean program (not vacuously red)" {
+            Expect.isEmpty (hunt2Violations [ "let x = 1"; "print (show x)" ]) "a clean program has no violations"
+        }
+        test "invariant 4's shape language DISTINGUISHES (equality is not vacuous)" {
+            // the fmt roundtrip compares per-statement sexpr shapes; if
+            // shapesOf collapsed everything to one value the comparison
+            // would pass vacuously
+            let a = shapesOf [ "print \"a\"" ]
+            let b = shapesOf [ "let x = 1" ]
+            Expect.isTrue (a.IsSome && b.IsSome && a <> b) "two different programs must have different shapes"
+        }
+    ]
 
 // ---- rename round trip [D:lsp-rename] ---------------------------------
 // The oracle for "no occurrence missed": every value binder renamed to
@@ -1085,8 +1112,7 @@ let renameRoundTrip (sample: int option) (path: string) (lines: string list) : s
             let renamed = applyEdits lines edits nn
             let diags1, _, _, _, _ = Weir.Lsp.analyzeCached path renamed
 
-            let key (d: Weir.Script.Diagnostic) (msg: string) =
-                d.Line, d.Col, d.Severity, d.Code, msg
+            let key (d: Weir.Script.Diagnostic) (msg: string) = d.Line, d.Col, d.Severity, d.Code, msg
 
             let expected =
                 diags0 |> List.map (fun d -> key d ((wordRe old).Replace(d.Message, nn)))
@@ -1107,40 +1133,46 @@ let renameRoundTrip (sample: int option) (path: string) (lines: string list) : s
 
 [<Tests>]
 let renameTests =
-    testList
-        "Rename round trip [D:lsp-rename]"
-        [ testPropertyWithConfig cfg "every value binder, type, field and case of a generated program renames without losing an occurrence" (fun (p: Program) ->
-              match renameRoundTrip None "fuzz.weir" (renderPlain p) with
-              | [] -> ()
-              | vs -> failtest (String.concat "\n" vs))
-          test "every value binder, type, field and case of the repo corpus renames without losing an occurrence" {
-              let root =
-                  match Runner.repoRoot with
-                  | Some r -> r
-                  | None -> failtest "no repo root (weir.slnx) above the test binary"
+    testList "Rename round trip [D:lsp-rename]" [
+        testPropertyWithConfig
+            cfg
+            "every value binder, type, field and case of a generated program renames without losing an occurrence"
+            (fun (p: Program) ->
+                match renameRoundTrip None "fuzz.weir" (renderPlain p) with
+                | [] -> ()
+                | vs -> failtest (String.concat "\n" vs))
+        test "every value binder, type, field and case of the repo corpus renames without losing an occurrence" {
+            let root =
+                match Runner.repoRoot with
+                | Some r -> r
+                | None -> failtest "no repo root (weir.slnx) above the test binary"
 
-              let files =
-                  [ "examples"; "ci"; "tools" ]
-                  |> List.collect (fun d -> IO.Directory.GetFiles(IO.Path.Combine(root, d), "*.weir") |> Array.toList)
-                  |> List.sort
+            let files =
+                [ "examples"; "ci"; "tools" ]
+                |> List.collect (fun d -> IO.Directory.GetFiles(IO.Path.Combine(root, d), "*.weir") |> Array.toList)
+                |> List.sort
 
-              Expect.isGreaterThan files.Length 20 "the corpus is there"
+            Expect.isGreaterThan files.Length 20 "the corpus is there"
 
-              let vs =
-                  files
-                  |> List.collect (fun f -> renameRoundTrip (Some 16) f (IO.File.ReadAllLines f |> Array.toList))
+            let vs =
+                files
+                |> List.collect (fun f -> renameRoundTrip (Some 16) f (IO.File.ReadAllLines f |> Array.toList))
 
-              Expect.isEmpty vs (String.concat "\n" vs)
-          }
-          test "the round-trip detector fires: a rename that misses a use is DETECTED, named" {
-              // the detector's own control [D:walk-findings]: hand it a
-              // program whose rename is complete and whose occurrence set
-              // must therefore survive — then a doctored edit list that
-              // skips one use must change the diagnostics (an unused
-              // binder appears)
-              let lines = [ "let abc = 1"; "print (show abc)" ]
-              Expect.isEmpty (renameRoundTrip None "ctl.weir" lines) "the honest rename is clean"
-              let partial = applyEdits lines [ (1, 5, 3) ] "q99"
-              let diags, _, _, _, _ = Weir.Script.analyzeLines "ctl.weir" partial
-              Expect.isTrue (diags |> List.exists (fun d -> d.Severity = "error")) "a missed use is an error the detector would see"
-          } ]
+            Expect.isEmpty vs (String.concat "\n" vs)
+        }
+        test "the round-trip detector fires: a rename that misses a use is DETECTED, named" {
+            // the detector's own control [D:walk-findings]: hand it a
+            // program whose rename is complete and whose occurrence set
+            // must therefore survive — then a doctored edit list that
+            // skips one use must change the diagnostics (an unused
+            // binder appears)
+            let lines = [ "let abc = 1"; "print (show abc)" ]
+            Expect.isEmpty (renameRoundTrip None "ctl.weir" lines) "the honest rename is clean"
+            let partial = applyEdits lines [ (1, 5, 3) ] "q99"
+            let diags, _, _, _, _ = Weir.Script.analyzeLines "ctl.weir" partial
+
+            Expect.isTrue
+                (diags |> List.exists (fun d -> d.Severity = "error"))
+                "a missed use is an error the detector would see"
+        }
+    ]

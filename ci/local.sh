@@ -10,9 +10,10 @@
 #
 # Same configuration as CI [D:repro-gates]: the unit suite in Debug (a
 # Release-only run hides what Debug's larger frames overflow), the
-# dead-private check, and both bug-hunt repro harnesses. The image keeps
-# .git (ci/run.Dockerfile.dockerignore, unlike the root .dockerignore):
-# the build stamp, decision-keys and e2e's conflict-marker gate read git.
+# dead-private check, and both bug-hunt repro harnesses; the fantomas
+# check runs first [D:fantomas-pinned]. The image keeps .git
+# (ci/run.Dockerfile.dockerignore, unlike the root .dockerignore): the
+# build stamp, decision-keys and e2e's conflict-marker gate read git.
 #
 # The repo is copied into the image as build context, not bind-mounted:
 # bind mounts silently break with remote docker daemons (paths resolve on
@@ -30,4 +31,4 @@ ENGINE="${WEIR_CI_ENGINE:-docker}"
 "$ENGINE" run --rm \
     -v weir-nuget:/root/.nuget \
     weir-ci-run \
-    bash -ec 'dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug && ./publish.sh && ~/.local/bin/weir ci/decision-keys.weir && ci/e2e.sh && dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj && ci/skill-doc.sh && ~/.local/bin/weir tools/dead-privates.weir && ~/.local/bin/weir tools/dx-message-census.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/sweep-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt2-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r2-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r3-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r4-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r4f-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r5f-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r6f-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r7f-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/sig-score.weir --bin ~/.local/bin/weir && ci/fsharp-oracle.sh && ci/timing.sh'
+    bash -ec 'dotnet tool restore && dotnet fantomas --check src tests && dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug && ./publish.sh && ~/.local/bin/weir ci/decision-keys.weir && ci/e2e.sh && dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj && ci/skill-doc.sh && ~/.local/bin/weir tools/dead-privates.weir && ~/.local/bin/weir tools/dx-message-census.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/sweep-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt2-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r2-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r3-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r4-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r4f-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r5f-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r6f-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/hunt3r7f-repro.weir --bin ~/.local/bin/weir && ~/.local/bin/weir tools/sig-score.weir --bin ~/.local/bin/weir && ci/fsharp-oracle.sh && ci/timing.sh'

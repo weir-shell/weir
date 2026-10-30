@@ -22,17 +22,18 @@ open Weir.Contracts
 // inner, opts) [D:schema-deep-refs]
 let private pointerNames (key: string) : string list =
     let keywords =
-        set
-            [ "properties"
-              "items"
-              "additionalProperties"
-              "anyOf"
-              "oneOf"
-              "allOf"
-              "definitions"
-              "$defs"
-              "components"
-              "schemas" ]
+        set [
+            "properties"
+            "items"
+            "additionalProperties"
+            "anyOf"
+            "oneOf"
+            "allOf"
+            "definitions"
+            "$defs"
+            "components"
+            "schemas"
+        ]
 
     key.TrimStart('#').Split '/'
     |> Array.filter (fun seg -> seg <> "" && not (keywords.Contains seg) && not (Seq.forall Char.IsDigit seg))
@@ -58,19 +59,30 @@ let defStem (key: string) : string =
 let private opt (t: string) : string =
     if t.StartsWith "Option<" then t else $"Option<{t}>"
 
-let private kindsText (kinds: Set<string>) =
-    String.Join("/", Set.toList kinds)
+let private kindsText (kinds: Set<string>) = String.Join("/", Set.toList kinds)
 
 // how each JSON kind reads into the `Yaml` node, for the drafted-Yaml
 // notes [D:schema-bool-or-string] [D:schema-mixed-kinds]
 let private yamlCasesText (kinds: Set<string>) =
-    [ if kinds.Contains "boolean" then "a bool", "YBool b"
-      if kinds.Contains "number" then "a number", "YInt n or YFloat f"
-      elif kinds.Contains "integer" then "an int", "YInt n"
-      if kinds.Contains "string" then "a string", "YStr s"
-      if kinds.Contains "array" then "a sequence", "YSeq items"
-      if kinds.Contains "object" then "a mapping", "YMap entries" ]
-    |> List.mapi (fun i (what, case) -> if i = 0 then $"{what} reads as {case}" else $"{what} as {case}")
+    [
+        if kinds.Contains "boolean" then
+            "a bool", "YBool b"
+        if kinds.Contains "number" then
+            "a number", "YInt n or YFloat f"
+        elif kinds.Contains "integer" then
+            "an int", "YInt n"
+        if kinds.Contains "string" then
+            "a string", "YStr s"
+        if kinds.Contains "array" then
+            "a sequence", "YSeq items"
+        if kinds.Contains "object" then
+            "a mapping", "YMap entries"
+    ]
+    |> List.mapi (fun i (what, case) ->
+        if i = 0 then
+            $"{what} reads as {case}"
+        else
+            $"{what} as {case}")
     |> String.concat ", "
 
 let private enumText (values: string list) =
@@ -213,7 +225,8 @@ let generate
             // node whole, as a type array mixing them does: the first
             // variant would refuse every value of the other kind
             // [D:schema-anyof-mixed]
-            let kinds = alts |> List.map (jsonKinds Set.empty) |> Set.unionMany |> Set.remove "null"
+            let kinds =
+                alts |> List.map (jsonKinds Set.empty) |> Set.unionMany |> Set.remove "null"
 
             reg.AddNote $"{where}: anyOf allows {kindsText kinds} — drafted Yaml; {yamlCasesText kinds}"
             "Yaml"
@@ -232,8 +245,7 @@ let generate
                 | SScalar kinds -> kinds.Contains "null"
                 | _ -> false
 
-            reg.AddNote
-                $"{where}: format int-or-string — drafted Yaml; an int reads as YInt n, a string as YStr s"
+            reg.AddNote $"{where}: format int-or-string — drafted Yaml; an int reads as YInt n, a string as YStr s"
 
             if nullable then opt "Yaml" else "Yaml"
         | SUint64Format inner ->
@@ -255,9 +267,12 @@ let generate
             let core = Set.remove "null" kinds
 
             let text =
-                if core = Set.singleton "string" then "string"
-                elif core = Set.singleton "integer" then "int"
-                elif core = Set.singleton "boolean" then "bool"
+                if core = Set.singleton "string" then
+                    "string"
+                elif core = Set.singleton "integer" then
+                    "int"
+                elif core = Set.singleton "boolean" then
+                    "bool"
                 elif core = Set.singleton "number" || core = Set.ofList [ "integer"; "number" ] then
                     "float"
                 elif core = Set.ofList [ "integer"; "string" ] then
@@ -472,7 +487,13 @@ let generate
         // [D:schema-validation-keys]
         let shown (key: string option) (p: string) =
             let local =
-                p.Replace("additionalProperties.", "*.").Replace("properties.", "").Replace("items.", "[].").Replace("allOf.", "").Replace(".[]", "[]").TrimEnd('.')
+                p
+                    .Replace("additionalProperties.", "*.")
+                    .Replace("properties.", "")
+                    .Replace("items.", "[].")
+                    .Replace("allOf.", "")
+                    .Replace(".[]", "[]")
+                    .TrimEnd('.')
 
             match key, local with
             | None, "" -> "the schema root"
@@ -493,19 +514,23 @@ let generate
                 let listed = places |> List.truncate 5 |> String.concat ", "
 
                 let more =
-                    if places.Length > 5 then $" and {places.Length - 5} more" else ""
+                    if places.Length > 5 then
+                        $" and {places.Length - 5} more"
+                    else
+                        ""
 
                 $"not enforced: {kw} on {listed}{more}")
 
         Ok(Infer.renderDecls reserved decls, reg.Notes @ unenforced, top)
 
 /// what one generation produced — the CLI's whole answer
-type Generated =
-    { Text: string
-      ModuleName: string
-      TopType: string
-      TypeCount: int
-      NoteCount: int }
+type Generated = {
+    Text: string
+    ModuleName: string
+    TopType: string
+    TypeCount: int
+    NoteCount: int
+}
 
 /// the whole generated module text: provenance header (schema name +
 /// lock hash + source — no timestamp, so regeneration is byte-identical
@@ -534,19 +559,21 @@ let moduleText
     | Error e -> Error e
     | Ok(decls, notes, top) ->
         let header =
-            [ $"module {moduleName}"
-              $"// generated by `weir gen types` from schema {schemaName} ({lockSha256.Substring(0, 12)}…)"
-              $"// source: {url}"
-              "// user-owned after generation: edit freely — `weir gen types` again overwrites" ]
+            [
+                $"module {moduleName}"
+                $"// generated by `weir gen types` from schema {schemaName} ({lockSha256.Substring(0, 12)}…)"
+                $"// source: {url}"
+                "// user-owned after generation: edit freely — `weir gen types` again overwrites"
+            ]
             // a note quotes schema keys and values [D:error-data-escape]
             @ (notes |> List.map (fun n -> $"// note: {Weir.Types.quoteData n}"))
 
-        let text =
-            String.Join("\n", header) + "\n\n" + String.Join("\n\n", decls) + "\n"
+        let text = String.Join("\n", header) + "\n\n" + String.Join("\n\n", decls) + "\n"
 
-        Ok
-            { Text = text
-              ModuleName = moduleName
-              TopType = top
-              TypeCount = List.length decls
-              NoteCount = List.length notes }
+        Ok {
+            Text = text
+            ModuleName = moduleName
+            TopType = top
+            TypeCount = List.length decls
+            NoteCount = List.length notes
+        }

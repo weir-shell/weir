@@ -341,8 +341,18 @@ let private emptyFlow (lineNo: int) (raw: string) : Node option =
     match raw.Trim yamlWs with
     | "{}" -> Some(NMap([], lineNo))
     | "[]" -> Some(NSeq([], lineNo))
-    | t when t.StartsWith "{" && t.EndsWith "}" && t.Substring(1, t.Length - 2).Trim yamlWs = "" -> Some(NMap([], lineNo))
-    | t when t.StartsWith "[" && t.EndsWith "]" && t.Substring(1, t.Length - 2).Trim yamlWs = "" -> Some(NSeq([], lineNo))
+    | t when
+        t.StartsWith "{"
+        && t.EndsWith "}"
+        && t.Substring(1, t.Length - 2).Trim yamlWs = ""
+        ->
+        Some(NMap([], lineNo))
+    | t when
+        t.StartsWith "["
+        && t.EndsWith "]"
+        && t.Substring(1, t.Length - 2).Trim yamlWs = ""
+        ->
+        Some(NSeq([], lineNo))
     | _ -> None
 
 // split `key: value` / `key:` at the first unquoted `: ` (or `:` at EOL);
@@ -389,8 +399,11 @@ let splitKeyR (s: string) : Result<(string * string) option, string> =
 
         if rawKey = "" then
             Ok None
-        elif (rawKey.StartsWith "\"" && rawKey.EndsWith "\"" || rawKey.StartsWith "'" && rawKey.EndsWith "'")
-             && rawKey.Length >= 2 then
+        elif
+            (rawKey.StartsWith "\"" && rawKey.EndsWith "\""
+             || rawKey.StartsWith "'" && rawKey.EndsWith "'")
+            && rawKey.Length >= 2
+        then
             match scalarCore rawKey with
             | Ok(Some(key, _)) -> Ok(Some(key, rest))
             | Ok None -> Ok(Some("", rest))
@@ -410,8 +423,7 @@ let splitKey (s: string) : (string * string) option =
 let private plainKeys =
     System.Runtime.CompilerServices.ConditionalWeakTable<string, obj>()
 
-let private markPlainKey (key: string) =
-    plainKeys.AddOrUpdate(key, null)
+let private markPlainKey (key: string) = plainKeys.AddOrUpdate(key, null)
 
 let private isQuotedKey (line: string) =
     let t = line.TrimStart yamlWs
@@ -462,7 +474,10 @@ let private multilineQuoted
             // the line is an error, not a second value
             if frag.Substring(idx + 1).Trim yamlWs <> "" then
                 result <-
-                    Some(Error $"line {fragNo}: content after the closing {q} — the quoted value ends at its closing quote")
+                    Some(
+                        Error
+                            $"line {fragNo}: content after the closing {q} — the quoted value ends at its closing quote"
+                    )
             else
                 segs.Add(frag.Substring(0, idx))
                 result <- Some(Ok fragNo)
@@ -498,7 +513,12 @@ let private multilineQuoted
             if k < segs.Count - 1 && segs[k] = "" then
                 pendingNl <- pendingNl + 1
             else
-                sb.Append(if pendingNl > 0 then String.replicate pendingNl "\n" else " ")
+                sb.Append(
+                    if pendingNl > 0 then
+                        String.replicate pendingNl "\n"
+                    else
+                        " "
+                )
                 |> ignore
 
                 sb.Append segs[k] |> ignore
@@ -521,7 +541,9 @@ let private multilineQuoted
 /// forms, None for a non-header
 let blockHeaderIndicated (rest: string) : Result<bool * int option, string> option =
     let t = rest.Trim(yamlWs)
-    let keepPlus = "'|+' (keep all trailing newlines) is outside the yaml subset — use | (one trailing newline) or |- (none)"
+
+    let keepPlus =
+        "'|+' (keep all trailing newlines) is outside the yaml subset — use | (one trailing newline) or |- (none)"
 
     if t.StartsWith ">" then
         Some(Error "folded block scalars (>) are outside the yaml subset — use | (literal)")
@@ -542,8 +564,7 @@ let blockHeaderIndicated (rest: string) : Result<bool * int option, string> opti
         match digit, chomp with
         | _, Some '+' -> Some(Error keepPlus)
         | Some '0', _ -> Some(Error "a block scalar's indentation indicator is 1-9 — 0 is not allowed")
-        | Some d, (None | Some '-') when System.Char.IsDigit d ->
-            Some(Ok(chomp.IsNone, Some(int d - int '0')))
+        | Some d, (None | Some '-') when System.Char.IsDigit d -> Some(Ok(chomp.IsNone, Some(int d - int '0')))
         | None, None -> Some(Ok(true, None)) // clip: exactly one trailing newline
         | None, Some '-' -> Some(Ok(false, None)) // strip: none
         | _ -> Some(Error "a block scalar header takes no inline content — the content is the indented lines below")
@@ -610,7 +631,10 @@ let private blockScalar
         |> Seq.tryHead
         |> Option.map (snd >> indentOf)
 
-    match firstIndent |> Option.map (fun detected -> defaultArg (indicator |> Option.map ((+) parentIndent)) detected) with
+    match
+        firstIndent
+        |> Option.map (fun detected -> defaultArg (indicator |> Option.map ((+) parentIndent)) detected)
+    with
     | None -> Error $"line {headerNo}: a block scalar header needs an indented block below it"
     | Some cIndent ->
         match content |> Seq.tryFind (fun (_, l) -> not (isWsOnly l) && indentOf l < cIndent) with
@@ -687,202 +711,107 @@ let rec private parseBlock
             $"line {no}: yaml nesting is too deep (limit {maxDepth}) — the subset reads real manifests, not adversarial ladders"
     else
 
-    // a block value, with the extent guard: a dedented `#` line inside
-    // the extent would strand the deeper lines after it outside the
-    // content — refuse rather than silently drop them
-    let blockValue (no: int) (parentIndent: int) (keep: bool, indicator: int option) (i: int) (j: int) : Result<Node, string> =
-        let lastNo = blockLastNo rawSrc no parentIndent
+        // a block value, with the extent guard: a dedented `#` line inside
+        // the extent would strand the deeper lines after it outside the
+        // content — refuse rather than silently drop them
+        let blockValue
+            (no: int)
+            (parentIndent: int)
+            (keep: bool, indicator: int option)
+            (i: int)
+            (j: int)
+            : Result<Node, string> =
+            let lastNo = blockLastNo rawSrc no parentIndent
 
-        match lines[i + 1 .. j - 1] |> Array.tryFind (fun (n2, _) -> n2 > lastNo) with
-        | Some(n2, _) ->
-            Error
-                $"line {n2}: this line is inside the block scalar's extent but outside its content (a dedented line above it ended the block)"
-        | None -> blockScalar rawSrc no parentIndent keep indicator
+            match lines[i + 1 .. j - 1] |> Array.tryFind (fun (n2, _) -> n2 > lastNo) with
+            | Some(n2, _) ->
+                Error
+                    $"line {n2}: this line is inside the block scalar's extent but outside its content (a dedented line above it ended the block)"
+            | None -> blockScalar rawSrc no parentIndent keep indicator
 
-    // a quoted value whose closing quote sits on a later line
-    // [D:quoted-fold]: the continuation lines belong to the scalar and
-    // must never reach the block parser. None = not that form — the
-    // single-line paths handle it (a closed scalar, the other teachings,
-    // scalarCore's own unclosed error when no continuation exists)
-    let quotedValue (no: int) (parentIndent: int) (i: int) (j: int) (s: string) : Result<Node, string> option =
-        let t = s.Trim(yamlWs)
-        let dq = t.StartsWith "\""
+        // a quoted value whose closing quote sits on a later line
+        // [D:quoted-fold]: the continuation lines belong to the scalar and
+        // must never reach the block parser. None = not that form — the
+        // single-line paths handle it (a closed scalar, the other teachings,
+        // scalarCore's own unclosed error when no continuation exists)
+        let quotedValue (no: int) (parentIndent: int) (i: int) (j: int) (s: string) : Result<Node, string> option =
+            let t = s.Trim(yamlWs)
+            let dq = t.StartsWith "\""
 
-        if not (dq || t.StartsWith "'") then
-            None
-        else
-            match scalarCore s with
-            | Ok _ -> None
-            | Error msg when not (msg.StartsWith "unclosed") -> None
-            | Error _ ->
-                match multilineQuoted rawSrc no parentIndent (t.Substring 1) dq with
-                | Error e -> Some(Error e)
-                | Ok(node, lastNo) ->
-                    // the extent guard, as blockValue's: a deeper line
-                    // after the closing quote has no owner
-                    match lines[i + 1 .. j - 1] |> Array.tryFind (fun (n2, _) -> n2 > lastNo) with
-                    | Some(n2, _) ->
-                        Some(Error $"line {n2}: this line sits inside the quoted scalar's indentation but after its closing quote")
-                    | None -> Some(Ok node)
+            if not (dq || t.StartsWith "'") then
+                None
+            else
+                match scalarCore s with
+                | Ok _ -> None
+                | Error msg when not (msg.StartsWith "unclosed") -> None
+                | Error _ ->
+                    match multilineQuoted rawSrc no parentIndent (t.Substring 1) dq with
+                    | Error e -> Some(Error e)
+                    | Ok(node, lastNo) ->
+                        // the extent guard, as blockValue's: a deeper line
+                        // after the closing quote has no owner
+                        match lines[i + 1 .. j - 1] |> Array.tryFind (fun (n2, _) -> n2 > lastNo) with
+                        | Some(n2, _) ->
+                            Some(
+                                Error
+                                    $"line {n2}: this line sits inside the quoted scalar's indentation but after its closing quote"
+                            )
+                        | None -> Some(Ok node)
 
-    // is the (content) line at `k` a block-sequence item at exactly
-    // `col`? kubectl's zero-indent form puts a sequence at the same
-    // column as its parent mapping key
-    let isSeqAt (col: int) (k: int) =
-        k < fin
-        && indentOf (snd lines[k]) = col
-        && (let b = (snd lines[k]).Substring col
-            b.StartsWith "- " || b.TrimEnd(yamlWs) = "-")
+        // is the (content) line at `k` a block-sequence item at exactly
+        // `col`? kubectl's zero-indent form puts a sequence at the same
+        // column as its parent mapping key
+        let isSeqAt (col: int) (k: int) =
+            k < fin
+            && indentOf (snd lines[k]) = col
+            && (let b = (snd lines[k]).Substring col
+                b.StartsWith "- " || b.TrimEnd(yamlWs) = "-")
 
-    // the extent of a same-indent block sequence starting at `k`: the
-    // run of lines at indent >= col, stopping at the first line that
-    // dedents below `col` (a sibling mapping key sits at exactly `col`
-    // but is not a `- ` line, so it too begins the sequence's parse —
-    // the sequence loop itself stops on the first non-`- ` line at col)
-    let seqExtent (col: int) (k: int) =
-        let mutable e = k + 1
+        // the extent of a same-indent block sequence starting at `k`: the
+        // run of lines at indent >= col, stopping at the first line that
+        // dedents below `col` (a sibling mapping key sits at exactly `col`
+        // but is not a `- ` line, so it too begins the sequence's parse —
+        // the sequence loop itself stops on the first non-`- ` line at col)
+        let seqExtent (col: int) (k: int) =
+            let mutable e = k + 1
 
-        while e < fin && (indentOf (snd lines[e]) > col || isSeqAt col e) do
-            e <- e + 1
+            while e < fin && (indentOf (snd lines[e]) > col || isSeqAt col e) do
+                e <- e + 1
 
-        e
+            e
 
-    // every line in [start, fin) belongs to this block (the caller's
-    // extent), so one left of `indent` sits between the parent's level
-    // and this block's — no owner; dropping it would lose data
-    let misIndented (no: int) (col: int) =
-        $"line {no}: this line is indented less than the block it belongs to (its siblings start at column {col + 1}) — align it with them or with its parent"
+        // every line in [start, fin) belongs to this block (the caller's
+        // extent), so one left of `indent` sits between the parent's level
+        // and this block's — no owner; dropping it would lose data
+        let misIndented (no: int) (col: int) =
+            $"line {no}: this line is indented less than the block it belongs to (its siblings start at column {col + 1}) — align it with them or with its parent"
 
-    // a tab where indentation is read [D:yaml-ws]: YAML indents with
-    // spaces only, and reading the tab as nothing would flatten the
-    // nesting silently
-    let tabAt (raw: string) (ind: int) = ind < raw.Length && raw[ind] = '\t'
+        // a tab where indentation is read [D:yaml-ws]: YAML indents with
+        // spaces only, and reading the tab as nothing would flatten the
+        // nesting silently
+        let tabAt (raw: string) (ind: int) = ind < raw.Length && raw[ind] = '\t'
 
-    let tabIndented (no: int) =
-        $"line {no}: a tab indents this line — YAML indents with spaces only; replace the tabs with spaces"
+        let tabIndented (no: int) =
+            $"line {no}: a tab indents this line — YAML indents with spaces only; replace the tabs with spaces"
 
-    if start >= fin then
-        Ok(
-            NNull(
-                if start > 0 && start <= lines.Length then
-                    fst lines[start - 1]
-                else
-                    0
-            )
-        )
-    else
-        let firstNo, firstRaw = lines[start]
-        let firstBody = firstRaw.Substring indent
-
-        if tabAt firstRaw (indentOf firstRaw) then
-            Error(tabIndented firstNo)
-        elif firstBody.StartsWith "- " || firstBody.TrimEnd(yamlWs) = "-" then
-            // a block sequence: items at exactly this indent
-            let rec items i acc =
-                if i >= fin then
-                    Ok(List.rev acc)
-                else
-                    let no, raw = lines[i]
-                    let ind = indentOf raw
-
-                    if tabAt raw ind then
-                        Error(tabIndented no)
-                    elif ind < indent then
-                        Error(misIndented no indent)
-                    elif ind > indent then
-                        Error $"line {no}: unexpected indentation (a sequence item line must start with '- ')"
-                    elif not (raw.Substring(indent).StartsWith "- " || raw.Substring(indent).TrimEnd(yamlWs) = "-") then
-                        Error $"line {no}: expected a '- ' sequence item at this indentation"
+        if start >= fin then
+            Ok(
+                NNull(
+                    if start > 0 && start <= lines.Length then
+                        fst lines[start - 1]
                     else
-                        // the item's content: rest of this line at virtual
-                        // indent+2, plus deeper lines until the next sibling
-                        let mutable j = i + 1
-
-                        while j < fin && indentOf (snd lines[j]) > indent do
-                            j <- j + 1
-
-                        let inline' =
-                            raw.Substring(indent + (if raw.Substring(indent).TrimEnd(yamlWs) = "-" then 1 else 2))
-
-                        let itemR =
-                            match blockHeaderIndicated inline' with
-                            | Some(Error msg) -> Error $"line {no}: {msg}"
-                            | Some(Ok header) -> blockValue no indent header i j
-                            | None ->
-
-                                if inline'.Trim yamlWs = "" then
-                                    // the item is the nested block below (or null)
-                                    parseBlock rawSrc lines (i + 1) j (indent + 2) (depth + 1)
-                                else
-                                    let inlineT = inline'.TrimStart(yamlWs)
-
-                                    match (if j = i + 1 then emptyFlow no inline' else None) with
-                                    | Some node ->
-                                        // an empty flow collection as a sequence item
-                                        Ok node
-                                    | None when inlineT.StartsWith "- " || inlineT.TrimEnd(yamlWs) = "-" ->
-                                        // a sequence nested on the dash line, `- - x`, any
-                                        // depth — PyYAML's reading [D:yaml-inline-nested-seq]:
-                                        // the inner sequence's column is the one after the
-                                        // dash's gap, as a compact map item's is
-                                        let col = indent + 2 + indentOf inline'
-
-                                        // each level keeps its own copy of the line's rest, so a
-                                        // dash ladder retains about (col / 2) x its length:
-                                        // bound the product [D:yaml-inline-nested-seq]
-                                        if int64 col * int64 inlineT.Length > 32_000_000L then
-                                            Error
-                                                $"line {no}: yaml nesting is too deep for a line this long — split the item over several lines"
-                                        else
-                                            let shifted =
-                                                Array.append [| no, String.replicate col " " + inlineT |] lines[i + 1 .. j - 1]
-
-                                            parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
-                                    | None when
-                                        // populated flow in item position: `- {a: 1}`
-                                        // would otherwise be mis-split into a compact
-                                        // map key `{a` — route it to the scalar path so
-                                        // the block-only teaching fires [D:yaml-empty-flow]
-                                        (let t = inline'.Trim(yamlWs) in t.StartsWith "{" || t.StartsWith "[")
-                                        ->
-                                        parseScalar no inline'
-                                    | None ->
-
-                                    match splitKeyR inline' with
-                                    | Error msg -> Error $"line {no}: {msg}"
-                                    | Ok(Some _) ->
-                                        // compact map item: `- key: v` — the first
-                                        // entry lives on this line at the column
-                                        // after the dash's gap (`-   x: 1` puts its
-                                        // siblings at indent+4, the 4-indent style)
-                                        let col = indent + 2 + indentOf inline'
-
-                                        let shifted =
-                                            Array.append
-                                                [| no, String.replicate col " " + inline'.TrimStart(yamlWs) |]
-                                                lines[i + 1 .. j - 1]
-
-                                        parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
-                                    | Ok None ->
-                                        match quotedValue no indent i j inline' with
-                                        | Some r -> r
-                                        | None ->
-                                            if j > i + 1 then
-                                                Error $"line {no}: a scalar sequence item cannot have a nested block"
-                                            else
-                                                parseScalar no inline'
-
-                        match itemR with
-                        | Error e -> Error e
-                        | Ok item -> items j (item :: acc)
-
-            items start [] |> Result.map (fun its -> NSeq(its, firstNo))
+                        0
+                )
+            )
         else
-            match splitKeyR firstBody with
-            | Error msg -> Error $"line {firstNo}: {msg}"
-            | Ok(Some _) ->
-                // a block map: entries at exactly this indent
-                let rec entries i acc (seen: Set<string>) =
+            let firstNo, firstRaw = lines[start]
+            let firstBody = firstRaw.Substring indent
+
+            if tabAt firstRaw (indentOf firstRaw) then
+                Error(tabIndented firstNo)
+            elif firstBody.StartsWith "- " || firstBody.TrimEnd(yamlWs) = "-" then
+                // a block sequence: items at exactly this indent
+                let rec items i acc =
                     if i >= fin then
                         Ok(List.rev acc)
                     else
@@ -894,74 +823,191 @@ let rec private parseBlock
                         elif ind < indent then
                             Error(misIndented no indent)
                         elif ind > indent then
-                            Error $"line {no}: unexpected indentation"
+                            Error $"line {no}: unexpected indentation (a sequence item line must start with '- ')"
+                        elif
+                            not (
+                                raw.Substring(indent).StartsWith "- "
+                                || raw.Substring(indent).TrimEnd(yamlWs) = "-"
+                            )
+                        then
+                            Error $"line {no}: expected a '- ' sequence item at this indentation"
                         else
-                            match splitKeyR (raw.Substring indent) with
-                            | Error msg -> Error $"line {no}: {msg}"
-                            | Ok None -> Error $"line {no}: expected 'key: value' in this mapping"
-                            | Ok(Some(key, rest)) ->
-                                if not (isQuotedKey (raw.Substring indent)) then
-                                    markPlainKey key
+                            // the item's content: rest of this line at virtual
+                            // indent+2, plus deeper lines until the next sibling
+                            let mutable j = i + 1
 
-                                if seen.Contains key then
-                                    Error $"line {no}: duplicate key '{key}'"
-                                else
-                                    let mutable j = i + 1
+                            while j < fin && indentOf (snd lines[j]) > indent do
+                                j <- j + 1
 
-                                    while j < fin && indentOf (snd lines[j]) > indent do
-                                        j <- j + 1
+                            let inline' =
+                                raw.Substring(indent + (if raw.Substring(indent).TrimEnd(yamlWs) = "-" then 1 else 2))
 
-                                    // a valueless key followed by a block sequence at
-                                    // the same indent (kubectl's zero-indent form): the
-                                    // sequence is the value — consume its whole extent
-                                    let seqValue =
-                                        rest.Trim yamlWs = "" && j = i + 1 && isSeqAt indent (i + 1)
+                            let itemR =
+                                match blockHeaderIndicated inline' with
+                                | Some(Error msg) -> Error $"line {no}: {msg}"
+                                | Some(Ok header) -> blockValue no indent header i j
+                                | None ->
 
-                                    let jSeq = if seqValue then seqExtent indent (i + 1) else j
+                                    if inline'.Trim yamlWs = "" then
+                                        // the item is the nested block below (or null)
+                                        parseBlock rawSrc lines (i + 1) j (indent + 2) (depth + 1)
+                                    else
+                                        let inlineT = inline'.TrimStart(yamlWs)
 
-                                    let valueR =
-                                        match blockHeaderIndicated rest with
-                                        | Some(Error msg) -> Error $"line {no}: {msg}"
-                                        | Some(Ok header) -> blockValue no indent header i j
+                                        match (if j = i + 1 then emptyFlow no inline' else None) with
+                                        | Some node ->
+                                            // an empty flow collection as a sequence item
+                                            Ok node
+                                        | None when inlineT.StartsWith "- " || inlineT.TrimEnd(yamlWs) = "-" ->
+                                            // a sequence nested on the dash line, `- - x`, any
+                                            // depth — PyYAML's reading [D:yaml-inline-nested-seq]:
+                                            // the inner sequence's column is the one after the
+                                            // dash's gap, as a compact map item's is
+                                            let col = indent + 2 + indentOf inline'
+
+                                            // each level keeps its own copy of the line's rest, so a
+                                            // dash ladder retains about (col / 2) x its length:
+                                            // bound the product [D:yaml-inline-nested-seq]
+                                            if int64 col * int64 inlineT.Length > 32_000_000L then
+                                                Error
+                                                    $"line {no}: yaml nesting is too deep for a line this long — split the item over several lines"
+                                            else
+                                                let shifted =
+                                                    Array.append
+                                                        [| no, String.replicate col " " + inlineT |]
+                                                        lines[i + 1 .. j - 1]
+
+                                                parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
+                                        | None when
+                                            // populated flow in item position: `- {a: 1}`
+                                            // would otherwise be mis-split into a compact
+                                            // map key `{a` — route it to the scalar path so
+                                            // the block-only teaching fires [D:yaml-empty-flow]
+                                            (let t = inline'.Trim(yamlWs) in t.StartsWith "{" || t.StartsWith "[")
+                                            ->
+                                            parseScalar no inline'
                                         | None ->
 
-                                            if seqValue then
-                                                parseBlock rawSrc lines (i + 1) jSeq indent (depth + 1)
-                                            elif rest.Trim yamlWs = "" then
-                                                if j > i + 1 then
-                                                    parseBlock rawSrc lines (i + 1) j (indentOf (snd lines[i + 1])) (depth + 1)
-                                                else
-                                                    Ok(NNull no)
-                                            else
-                                                match quotedValue no indent i j rest with
+                                            match splitKeyR inline' with
+                                            | Error msg -> Error $"line {no}: {msg}"
+                                            | Ok(Some _) ->
+                                                // compact map item: `- key: v` — the first
+                                                // entry lives on this line at the column
+                                                // after the dash's gap (`-   x: 1` puts its
+                                                // siblings at indent+4, the 4-indent style)
+                                                let col = indent + 2 + indentOf inline'
+
+                                                let shifted =
+                                                    Array.append
+                                                        [| no, String.replicate col " " + inline'.TrimStart(yamlWs) |]
+                                                        lines[i + 1 .. j - 1]
+
+                                                parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
+                                            | Ok None ->
+                                                match quotedValue no indent i j inline' with
                                                 | Some r -> r
                                                 | None ->
                                                     if j > i + 1 then
                                                         Error
-                                                            $"line {no}: '{key}' has both an inline value and a nested block"
+                                                            $"line {no}: a scalar sequence item cannot have a nested block"
                                                     else
-                                                        match emptyFlow no rest with
-                                                        | Some node -> Ok node
-                                                        | None -> parseScalar no rest
+                                                        parseScalar no inline'
 
-                                    match valueR with
-                                    | Error e -> Error e
-                                    | Ok v -> entries jSeq ((key, v) :: acc) (seen.Add key)
+                            match itemR with
+                            | Error e -> Error e
+                            | Ok item -> items j (item :: acc)
 
-                entries start [] Set.empty |> Result.map (fun es -> NMap(es, firstNo))
-            | Ok None ->
-                match blockHeaderIndicated firstBody with
-                | Some(Error msg) -> Error $"line {firstNo}: {msg}"
-                | Some(Ok header) ->
-                    // a whole-document block scalar: `|` at the doc root
-                    blockValue firstNo indent header start fin
-                | None ->
-                    if fin > start + 1 then
-                        Error $"line {firstNo}: expected 'key:' or '- ' at this indentation"
-                    else
-                        match emptyFlow firstNo firstBody with
-                        | Some node -> Ok node
-                        | None -> parseScalar firstNo firstBody
+                items start [] |> Result.map (fun its -> NSeq(its, firstNo))
+            else
+                match splitKeyR firstBody with
+                | Error msg -> Error $"line {firstNo}: {msg}"
+                | Ok(Some _) ->
+                    // a block map: entries at exactly this indent
+                    let rec entries i acc (seen: Set<string>) =
+                        if i >= fin then
+                            Ok(List.rev acc)
+                        else
+                            let no, raw = lines[i]
+                            let ind = indentOf raw
+
+                            if tabAt raw ind then
+                                Error(tabIndented no)
+                            elif ind < indent then
+                                Error(misIndented no indent)
+                            elif ind > indent then
+                                Error $"line {no}: unexpected indentation"
+                            else
+                                match splitKeyR (raw.Substring indent) with
+                                | Error msg -> Error $"line {no}: {msg}"
+                                | Ok None -> Error $"line {no}: expected 'key: value' in this mapping"
+                                | Ok(Some(key, rest)) ->
+                                    if not (isQuotedKey (raw.Substring indent)) then
+                                        markPlainKey key
+
+                                    if seen.Contains key then
+                                        Error $"line {no}: duplicate key '{key}'"
+                                    else
+                                        let mutable j = i + 1
+
+                                        while j < fin && indentOf (snd lines[j]) > indent do
+                                            j <- j + 1
+
+                                        // a valueless key followed by a block sequence at
+                                        // the same indent (kubectl's zero-indent form): the
+                                        // sequence is the value — consume its whole extent
+                                        let seqValue = rest.Trim yamlWs = "" && j = i + 1 && isSeqAt indent (i + 1)
+
+                                        let jSeq = if seqValue then seqExtent indent (i + 1) else j
+
+                                        let valueR =
+                                            match blockHeaderIndicated rest with
+                                            | Some(Error msg) -> Error $"line {no}: {msg}"
+                                            | Some(Ok header) -> blockValue no indent header i j
+                                            | None ->
+
+                                                if seqValue then
+                                                    parseBlock rawSrc lines (i + 1) jSeq indent (depth + 1)
+                                                elif rest.Trim yamlWs = "" then
+                                                    if j > i + 1 then
+                                                        parseBlock
+                                                            rawSrc
+                                                            lines
+                                                            (i + 1)
+                                                            j
+                                                            (indentOf (snd lines[i + 1]))
+                                                            (depth + 1)
+                                                    else
+                                                        Ok(NNull no)
+                                                else
+                                                    match quotedValue no indent i j rest with
+                                                    | Some r -> r
+                                                    | None ->
+                                                        if j > i + 1 then
+                                                            Error
+                                                                $"line {no}: '{key}' has both an inline value and a nested block"
+                                                        else
+                                                            match emptyFlow no rest with
+                                                            | Some node -> Ok node
+                                                            | None -> parseScalar no rest
+
+                                        match valueR with
+                                        | Error e -> Error e
+                                        | Ok v -> entries jSeq ((key, v) :: acc) (seen.Add key)
+
+                    entries start [] Set.empty |> Result.map (fun es -> NMap(es, firstNo))
+                | Ok None ->
+                    match blockHeaderIndicated firstBody with
+                    | Some(Error msg) -> Error $"line {firstNo}: {msg}"
+                    | Some(Ok header) ->
+                        // a whole-document block scalar: `|` at the doc root
+                        blockValue firstNo indent header start fin
+                    | None ->
+                        if fin > start + 1 then
+                            Error $"line {firstNo}: expected 'key:' or '- ' at this indentation"
+                        else
+                            match emptyFlow firstNo firstBody with
+                            | Some node -> Ok node
+                            | None -> parseScalar firstNo firstBody
 
 /// Parse numbered raw lines into documents (`---` separated, indent-0
 /// separators only; a leading `---` is allowed, a `...` ends a document)
@@ -1036,7 +1082,10 @@ let numberLines (elements: seq<string>) : (int * string) list =
 
             parts
             |> Seq.mapi (fun i (l: string) ->
-                if i < parts.Length - 1 && l.EndsWith "\r" then l.Substring(0, l.Length - 1) else l))
+                if i < parts.Length - 1 && l.EndsWith "\r" then
+                    l.Substring(0, l.Length - 1)
+                else
+                    l))
     |> Seq.mapi (fun i l -> i + 1, l)
     |> List.ofSeq
 
@@ -1053,7 +1102,11 @@ let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
 // weir's own reader (Int64/Double parse) is checked directly so the
 // write side can never drift from it
 let private looksNumeric (s: string) =
-    let r = if s.Length > 0 && (s[0] = '-' || s[0] = '+') then s.Substring 1 else s
+    let r =
+        if s.Length > 0 && (s[0] = '-' || s[0] = '+') then
+            s.Substring 1
+        else
+            s
 
     (r.Length > 0
      && (System.Char.IsDigit r[0]
@@ -1073,47 +1126,48 @@ let private ambiguousPlain =
     // go-yaml v2's y/Y/n/N), null forms, the float specials (.inf/.nan
     // families) — a reader types those as floats — and 1.1's merge
     // `<<` and value `=` keys [D:yaml-plain-resolvers]
-    set
-        [ "y"
-          "Y"
-          "n"
-          "N"
-          "<<"
-          "="
-          "true"
-          "false"
-          "yes"
-          "no"
-          "on"
-          "off"
-          "null"
-          "~"
-          "True"
-          "False"
-          "Yes"
-          "No"
-          "On"
-          "Off"
-          "Null"
-          "TRUE"
-          "FALSE"
-          "YES"
-          "NO"
-          "ON"
-          "OFF"
-          "NULL"
-          ".inf"
-          ".Inf"
-          ".INF"
-          "+.inf"
-          "+.Inf"
-          "+.INF"
-          "-.inf"
-          "-.Inf"
-          "-.INF"
-          ".nan"
-          ".NaN"
-          ".NAN" ]
+    set [
+        "y"
+        "Y"
+        "n"
+        "N"
+        "<<"
+        "="
+        "true"
+        "false"
+        "yes"
+        "no"
+        "on"
+        "off"
+        "null"
+        "~"
+        "True"
+        "False"
+        "Yes"
+        "No"
+        "On"
+        "Off"
+        "Null"
+        "TRUE"
+        "FALSE"
+        "YES"
+        "NO"
+        "ON"
+        "OFF"
+        "NULL"
+        ".inf"
+        ".Inf"
+        ".INF"
+        "+.inf"
+        "+.Inf"
+        "+.INF"
+        "-.inf"
+        "-.Inf"
+        "-.INF"
+        ".nan"
+        ".NaN"
+        ".NAN"
+    ]
 
 // the quotes a plain spelling needs to read back as the same text at
 // all — the part of the law that is not about a reader's type
@@ -1136,9 +1190,7 @@ let private structuralQuote (s: string) =
        |> Seq.exists (fun c -> System.Char.IsControl c || c = '\u2028' || c = '\u2029')
 
 let private needsQuote (s: string) =
-    structuralQuote s
-    || ambiguousPlain.Contains s
-    || looksNumeric s // "007", "1e5", "1.5" must not re-read as numbers
+    structuralQuote s || ambiguousPlain.Contains s || looksNumeric s // "007", "1e5", "1.5" must not re-read as numbers
 
 /// Render a string scalar per the quoting law [D:yaml-v1]: plain when a
 /// reader cannot mis-type it, double-quoted otherwise — the

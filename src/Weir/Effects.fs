@@ -50,41 +50,41 @@ let effectfulModules =
     Set [ "File"; "Dir"; "Env"; "Args"; "Proc"; "Net"; "Log"; "Term"; "Color" ]
 
 let effectfulQualified =
-    Set
-        [ "Http.send"
-          "Http.expect"
-          "Http.query"
-          "Path.glob"
-          // reads PATH and the filesystem [D:path-which]
-          "Path.which"
-          "Path.tempRoot"
-          "Path.newTempDir"
-          // the home/XDG dirs read the environment [D:purity-ambient]
-          "Path.home"
-          "Path.configHome"
-          "Path.stateHome"
-          "Path.cacheHome"
-          "Instant.now"
-          // nondeterministic generators [D:uuid]: randomness is ambient
-          // input like the clock; Uuid.v5 is a pure function of its args
-          "Uuid.v4"
-          "Uuid.v7"
-          "Uuid.v7At"
-          "Duration.sleep"
-          // Self.stdin is a per-run value injected by Script (not a
-          // Builtins member), so the effect walk sees a plain variable
-          // — classified here or nowhere. Reading it drains the live
-          // one-shot fd: ambient input, an effect. Its siblings
-          // (Self.args/pid/scriptPath/entryPath) are per-run constants
-          // and stay pure-admissible [D:pure-stdin-ctors]
-          "Self.stdin"
-          // Self.prompt is a static builtin under the Self name [D:prompt]:
-          // reads stdin, writes stderr — ambient input like Self.stdin
-          "Self.prompt" ]
+    Set [
+        "Http.send"
+        "Http.expect"
+        "Http.query"
+        "Path.glob"
+        // reads PATH and the filesystem [D:path-which]
+        "Path.which"
+        "Path.tempRoot"
+        "Path.newTempDir"
+        // the home/XDG dirs read the environment [D:purity-ambient]
+        "Path.home"
+        "Path.configHome"
+        "Path.stateHome"
+        "Path.cacheHome"
+        "Instant.now"
+        // nondeterministic generators [D:uuid]: randomness is ambient
+        // input like the clock; Uuid.v5 is a pure function of its args
+        "Uuid.v4"
+        "Uuid.v7"
+        "Uuid.v7At"
+        "Duration.sleep"
+        // Self.stdin is a per-run value injected by Script (not a
+        // Builtins member), so the effect walk sees a plain variable
+        // — classified here or nowhere. Reading it drains the live
+        // one-shot fd: ambient input, an effect. Its siblings
+        // (Self.args/pid/scriptPath/entryPath) are per-run constants
+        // and stay pure-admissible [D:pure-stdin-ctors]
+        "Self.stdin"
+        // Self.prompt is a static builtin under the Self name [D:prompt]:
+        // reads stdin, writes stderr — ambient input like Self.stdin
+        "Self.prompt"
+    ]
 
 // `cd` writes the process's directory, `pwd` reads it [D:purity-ambient]
-let effectfulBare =
-    Set [ "ls"; "glob"; "print"; "printerr"; "exit"; "cd"; "pwd" ]
+let effectfulBare = Set [ "ls"; "glob"; "print"; "printerr"; "exit"; "cd"; "pwd" ]
 
 // the library desugars [D:desugar-namespace]: `|`-prefixed keys that a
 // rewrite (for, ranges, retry/poll) targets at a plain library member,
@@ -96,28 +96,29 @@ let effectfulBare =
 // the Purity/Can classifiers) so the sugar's meaning and its
 // classification cannot drift — Builtins.internalAliases resolves each
 // triple to its Value from the same list.
-let libraryDesugars: (string * string * string) list =
-    [ "|seqIter", "Seq", "iter"
-      // `pfor` [D:pfor]
-      "|seqPiter", "Seq", "piter"
-      "|seqMap", "Seq", "map"
-      "|seqFreeze", "Seq", "freeze"
-      "|seqAppend", "Seq", "append"
-      "|seqRange", "Seq", "range"
-      "|seqItem", "Seq", "item"
-      // `xs[^n]` [D:range-slicing]: classified as Seq.item; its value is
-      // the from-end twin (Builtins.internalAliases)
-      "|seqItemFromEnd", "Seq", "item"
-      "|retryDefaults", "Retry", "defaults"
-      "|pollDefaults", "Poll", "defaults"
-      // repeat's desugar base [D:repeat]: internal only (interval is
-      // required, so Repeat has no public defaults) — read as the record
-      // value it is
-      "|repeatDefaults", "Repeat", "defaults"
-      // a typed `~` in a command word [D:tilde]
-      "|home", "Path", "home"
-      // `NAME=value cmd`'s overlay items [D:env-prefix]
-      "|envPair", "Env", "pair" ]
+let libraryDesugars: (string * string * string) list = [
+    "|seqIter", "Seq", "iter"
+    // `pfor` [D:pfor]
+    "|seqPiter", "Seq", "piter"
+    "|seqMap", "Seq", "map"
+    "|seqFreeze", "Seq", "freeze"
+    "|seqAppend", "Seq", "append"
+    "|seqRange", "Seq", "range"
+    "|seqItem", "Seq", "item"
+    // `xs[^n]` [D:range-slicing]: classified as Seq.item; its value is
+    // the from-end twin (Builtins.internalAliases)
+    "|seqItemFromEnd", "Seq", "item"
+    "|retryDefaults", "Retry", "defaults"
+    "|pollDefaults", "Poll", "defaults"
+    // repeat's desugar base [D:repeat]: internal only (interval is
+    // required, so Repeat has no public defaults) — read as the record
+    // value it is
+    "|repeatDefaults", "Repeat", "defaults"
+    // a typed `~` in a command word [D:tilde]
+    "|home", "Path", "home"
+    // `NAME=value cmd`'s overlay items [D:env-prefix]
+    "|envPair", "Env", "pair"
+]
 
 // a `|`-desugar key → its qualified target member (Some "Seq.iter"),
 // or None when the name is not a library desugar (a command reifier, or
@@ -159,7 +160,16 @@ let rec effectfulName (n: string) =
 // and Purity.effectPhrase (the teaching vocabulary) read, so the two
 // cannot drift.
 let fsWriteMembers =
-    Set [ "write"; "writeAtomic"; "append"; "copy"; "create"; "delete"; "deleteAll"; "move" ]
+    Set [
+        "write"
+        "writeAtomic"
+        "append"
+        "copy"
+        "create"
+        "delete"
+        "deleteAll"
+        "move"
+    ]
 
 // the safe HTTP methods — the per-method net split's source of truth,
 // shared by the check-time literal path and eval-time resolution. Method

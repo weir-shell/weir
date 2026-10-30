@@ -33,7 +33,9 @@ let private evalOnce (input: string) : int =
         // a directive is a prompt (or script-head) thing: named, never an
         // expected-token dump [D:directive-diagnostic]
         let word =
-            (srcLines |> List.find (fun l -> l.StartsWith "#")).Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries).[0]
+            (srcLines |> List.find (fun l -> l.StartsWith "#"))
+                .Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+                .[0]
 
         Console.Error.WriteLine
             $"weir -e: {word} is a directive — -e evaluates weir code and takes none (the REPL's directives work at the weir prompt)"
@@ -157,7 +159,8 @@ let private evalOnce (input: string) : int =
                                 match chk.Kind with
                                 | Script.KType(decl, validator) ->
                                     execAll (Eval.declare venv decl validator) (idx + 1) tail
-                                | Script.KLet(name, _, te) -> execAll (Map.add name (Eval.eval venv te) venv) (idx + 1) tail
+                                | Script.KLet(name, _, te) ->
+                                    execAll (Map.add name (Eval.eval venv te) venv) (idx + 1) tail
                                 | Script.KLetPat(pat, _, te) ->
                                     let bindings = Eval.bindPattern pat (Eval.eval venv te)
                                     execAll (bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv) (idx + 1) tail
@@ -344,8 +347,7 @@ let main argv =
             let known = set [ "--json"; "--can"; "--strict" ]
 
             let usage (why: string) =
-                Console.Error.WriteLine
-                    $"weir check: {why}\nusage: weir check [--json] [--can [--strict]] <script>"
+                Console.Error.WriteLine $"weir check: {why}\nusage: weir check [--json] [--can [--strict]] <script>"
 
                 2
 
@@ -430,7 +432,9 @@ let main argv =
                  Console.Error.WriteLine $"weir add sig: {lockText e}"
                  1)
         | "add" :: "sig" :: _ ->
-            Console.Error.WriteLine "usage: weir add sig [--global] <tool>   generate a signature from the installed binary (--global: into the user dir, for the REPL's Tab everywhere)"
+            Console.Error.WriteLine
+                "usage: weir add sig [--global] <tool>   generate a signature from the installed binary (--global: into the user dir, for the REPL's Tab everywhere)"
+
             2
         | "add" :: "module" :: spec :: flags when
             (match flags with
@@ -523,7 +527,8 @@ let main argv =
                              | Some old when old <> hash ->
                                  // a re-add is the update path: the sha
                                  // pair signals there is a diff to review
-                                 Console.WriteLine $"updated module {name}: {old.Substring(0, 12)}… → {hash.Substring(0, 12)}…"
+                                 Console.WriteLine
+                                     $"updated module {name}: {old.Substring(0, 12)}… → {hash.Substring(0, 12)}…"
                              | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
                              | None ->
                                  Console.WriteLine
@@ -559,7 +564,9 @@ let main argv =
                     match checked' with
                     | Error e ->
                         // the error names the source files, not the scratch copy
-                        let e = e.Replace(scratch + string IO.Path.DirectorySeparatorChar, Http.redactUrl baseUrl)
+                        let e =
+                            e.Replace(scratch + string IO.Path.DirectorySeparatorChar, Http.redactUrl baseUrl)
+
                         Console.Error.WriteLine $"weir add module: {lockText e}; nothing was written"
                         1
                     | Ok memberCount ->
@@ -573,7 +580,8 @@ let main argv =
                             let n = List.length files
 
                             (match prior with
-                             | Some old when old = hash -> Console.WriteLine $"module {name}: unchanged ({n} files, {shortSha hash})"
+                             | Some old when old = hash ->
+                                 Console.WriteLine $"module {name}: unchanged ({n} files, {shortSha hash})"
                              | Some _ ->
                                  // the R4 update path, per file: the sha pairs
                                  // say where the diff to review is
@@ -581,7 +589,8 @@ let main argv =
 
                                  for p, o, nw in changes do
                                      match o, nw with
-                                     | Some a, Some b when a <> b -> Console.WriteLine $"  {quoteData p}: {shortSha a} → {shortSha b}"
+                                     | Some a, Some b when a <> b ->
+                                         Console.WriteLine $"  {quoteData p}: {shortSha a} → {shortSha b}"
                                      | None, Some b -> Console.WriteLine $"  {quoteData p}: added ({shortSha b})"
                                      | Some _, None -> Console.WriteLine $"  {quoteData p}: removed"
                                      | _ -> ()
@@ -723,7 +732,9 @@ let main argv =
                      | Error e -> fail1 e
                      | Ok entries ->
                          match entries |> List.tryFind (fun e -> e.Kind = "schema" && e.Name = name) with
-                         | None -> fail1 $"no locked schema '{quoteData name}' — add it: weir add schema <url> --as {quoteData name}"
+                         | None ->
+                             fail1
+                                 $"no locked schema '{quoteData name}' — add it: weir add schema <url> --as {quoteData name}"
                          | Some entry ->
                              // gen types writes weir source, so it is the
                              // highest-value consumer of the lock-read
@@ -734,136 +745,140 @@ let main argv =
                              | Error refusal -> fail1 refusal
                              | Ok file ->
 
-                             if not (IO.File.Exists file) then
-                                 fail1 $"schema '{quoteData name}': no {quoteData file} — the lock records it; run `weir restore`"
-                             else
-                                 let bytes = IO.File.ReadAllBytes file
-                                 let actual = Contracts.sha256Hex bytes
-
-                                 if actual <> entry.Sha256 then
-                                     // generation must be reproducible from the lock:
-                                     // a drifted file would stamp a hash the bytes
-                                     // do not carry
+                                 if not (IO.File.Exists file) then
                                      fail1
-                                         $"schema '{quoteData name}': the vendored file hashes {actual.Substring(0, 12)}… but the lock records {entry.Sha256.Substring(0, 12)}… — `weir restore` repairs it, or re-add"
+                                         $"schema '{quoteData name}': no {quoteData file} — the lock records it; run `weir restore`"
                                  else
-                                     match Contracts.parseSchema name (Text.Encoding.UTF8.GetString bytes) with
-                                     | Error e -> fail1 e
-                                     | Ok doc ->
-                                         // prelude registration populates the builtin
-                                         // nominal set the taken-name guard reads
-                                         Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv |> ignore
-                                         let taken = Infer.takenTypeNames Check.builtinTypeNames.Keys
-                                         let asName = Map.tryFind "--as" m
+                                     let bytes = IO.File.ReadAllBytes file
+                                     let actual = Contracts.sha256Hex bytes
 
-                                         let asNameOk =
-                                             match asName with
-                                             | None -> Ok()
-                                             | Some n when
-                                                 n.Length > 0
-                                                 && Char.IsUpper n[0]
-                                                 && n |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_')
-                                                 ->
-                                                 if Set.contains n taken then
-                                                     Error $"'--as {quoteData n}' is a builtin type name — pick another"
-                                                 else
-                                                     Ok()
-                                             | Some n ->
-                                                 Error
-                                                     $"'--as {quoteData n}' must be a type name: an uppercase letter first, then letters, digits or _"
-
-                                         match asNameOk with
+                                     if actual <> entry.Sha256 then
+                                         // generation must be reproducible from the lock:
+                                         // a drifted file would stamp a hash the bytes
+                                         // do not carry
+                                         fail1
+                                             $"schema '{quoteData name}': the vendored file hashes {actual.Substring(0, 12)}… but the lock records {entry.Sha256.Substring(0, 12)}… — `weir restore` repairs it, or re-add"
+                                     else
+                                         match Contracts.parseSchema name (Text.Encoding.UTF8.GetString bytes) with
                                          | Error e -> fail1 e
-                                         | Ok() ->
-                                             match
-                                                 SchemaTypes.moduleText
-                                                     Parser.keywords
-                                                     (Set.ofSeq Check.builtinTypeNames.Keys)
-                                                     name
-                                                     asName
-                                                     entry.Sha256
-                                                     entry.Url
-                                                     doc
-                                             with
+                                         | Ok doc ->
+                                             // prelude registration populates the builtin
+                                             // nominal set the taken-name guard reads
+                                             Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv |> ignore
+                                             let taken = Infer.takenTypeNames Check.builtinTypeNames.Keys
+                                             let asName = Map.tryFind "--as" m
+
+                                             let asNameOk =
+                                                 match asName with
+                                                 | None -> Ok()
+                                                 | Some n when
+                                                     n.Length > 0
+                                                     && Char.IsUpper n[0]
+                                                     && n |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_')
+                                                     ->
+                                                     if Set.contains n taken then
+                                                         Error
+                                                             $"'--as {quoteData n}' is a builtin type name — pick another"
+                                                     else
+                                                         Ok()
+                                                 | Some n ->
+                                                     Error
+                                                         $"'--as {quoteData n}' must be a type name: an uppercase letter first, then letters, digits or _"
+
+                                             match asNameOk with
                                              | Error e -> fail1 e
-                                             | Ok gen ->
-                                                 // add-validates [D:add-validates]: the emitted
-                                                 // module must check before anything lands — a
-                                                 // schema producing unrepresentable weir refuses
-                                                 // with the located reason
-                                                 let tmp =
-                                                     IO.Path.Combine(
-                                                         IO.Path.GetTempPath(),
-                                                         $"weir-gentypes-{Guid.NewGuid():N}.weir"
-                                                     )
+                                             | Ok() ->
+                                                 match
+                                                     SchemaTypes.moduleText
+                                                         Parser.keywords
+                                                         (Set.ofSeq Check.builtinTypeNames.Keys)
+                                                         name
+                                                         asName
+                                                         entry.Sha256
+                                                         entry.Url
+                                                         doc
+                                                 with
+                                                 | Error e -> fail1 e
+                                                 | Ok gen ->
+                                                     // add-validates [D:add-validates]: the emitted
+                                                     // module must check before anything lands — a
+                                                     // schema producing unrepresentable weir refuses
+                                                     // with the located reason
+                                                     let tmp =
+                                                         IO.Path.Combine(
+                                                             IO.Path.GetTempPath(),
+                                                             $"weir-gentypes-{Guid.NewGuid():N}.weir"
+                                                         )
 
-                                                 IO.File.WriteAllText(tmp, gen.Text)
-                                                 let checked' = Script.checkVendoredModule tmp
+                                                     IO.File.WriteAllText(tmp, gen.Text)
+                                                     let checked' = Script.checkVendoredModule tmp
 
-                                                 (try
-                                                     IO.File.Delete tmp
-                                                  with _ ->
-                                                      ())
+                                                     (try
+                                                         IO.File.Delete tmp
+                                                      with _ ->
+                                                          ())
 
-                                                 match checked' with
-                                                 | Error e ->
-                                                     let e = e.Replace(tmp, "<generated>")
+                                                     match checked' with
+                                                     | Error e ->
+                                                         let e = e.Replace(tmp, "<generated>")
 
-                                                     fail1
-                                                         $"the generated module does not check: {e} — this is a generator bug; nothing was written"
-                                                 | Ok _ ->
-                                                     match Map.tryFind "--out" m with
-                                                     | Some "-" ->
-                                                         Console.Out.Write gen.Text
-                                                         0
-                                                     | out ->
-                                                         let dest, importPath, confineWrite =
-                                                             match out with
-                                                             // --out is a user-chosen path (combined as
-                                                             // given, not confined — the user controls
-                                                             // it); the default .weir/types/ path is
-                                                             // vendor-directory territory and confines
-                                                             // through a symlinked `types` dir
-                                                             // [D:lockfile-symlink-confinement]
-                                                             | Some p -> IO.Path.GetFullPath p, $"\"{p}\"", false
-                                                             | None ->
-                                                                 IO.Path.Combine(weirDir, "types", name + ".weir"),
-                                                                 $"\"weir:{name}\"",
-                                                                 true
+                                                         fail1
+                                                             $"the generated module does not check: {e} — this is a generator bug; nothing was written"
+                                                     | Ok _ ->
+                                                         match Map.tryFind "--out" m with
+                                                         | Some "-" ->
+                                                             Console.Out.Write gen.Text
+                                                             0
+                                                         | out ->
+                                                             let dest, importPath, confineWrite =
+                                                                 match out with
+                                                                 // --out is a user-chosen path (combined as
+                                                                 // given, not confined — the user controls
+                                                                 // it); the default .weir/types/ path is
+                                                                 // vendor-directory territory and confines
+                                                                 // through a symlinked `types` dir
+                                                                 // [D:lockfile-symlink-confinement]
+                                                                 | Some p -> IO.Path.GetFullPath p, $"\"{p}\"", false
+                                                                 | None ->
+                                                                     IO.Path.Combine(weirDir, "types", name + ".weir"),
+                                                                     $"\"weir:{name}\"",
+                                                                     true
 
-                                                         let writeRes =
-                                                             if confineWrite then
-                                                                 Contracts.writeConfined
-                                                                     weirDir
-                                                                     dest
-                                                                     (Text.Encoding.UTF8.GetBytes gen.Text)
-                                                             else
-                                                                 IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest)
-                                                                 |> ignore
+                                                             let writeRes =
+                                                                 if confineWrite then
+                                                                     Contracts.writeConfined
+                                                                         weirDir
+                                                                         dest
+                                                                         (Text.Encoding.UTF8.GetBytes gen.Text)
+                                                                 else
+                                                                     IO.Directory.CreateDirectory(
+                                                                         IO.Path.GetDirectoryName dest
+                                                                     )
+                                                                     |> ignore
 
-                                                                 IO.File.WriteAllText(dest, gen.Text)
-                                                                 Ok()
+                                                                     IO.File.WriteAllText(dest, gen.Text)
+                                                                     Ok()
 
-                                                         match writeRes with
-                                                         | Error w -> fail1 w
-                                                         | Ok() ->
+                                                             match writeRes with
+                                                             | Error w -> fail1 w
+                                                             | Ok() ->
 
-                                                         let notes =
-                                                             if gen.NoteCount = 0 then
-                                                                 ""
-                                                             else
-                                                                 $", {gen.NoteCount} note(s) inside"
+                                                                 let notes =
+                                                                     if gen.NoteCount = 0 then
+                                                                         ""
+                                                                     else
+                                                                         $", {gen.NoteCount} note(s) inside"
 
-                                                         Console.WriteLine
-                                                             $"generated {quoteData dest} — {gen.TypeCount} type(s){notes}; user-owned (re-run to regenerate)"
+                                                                 Console.WriteLine
+                                                                     $"generated {quoteData dest} — {gen.TypeCount} type(s){notes}; user-owned (re-run to regenerate)"
 
-                                                         Console.WriteLine
-                                                             $"import it:  import {quoteData importPath} as {gen.ModuleName}"
+                                                                 Console.WriteLine
+                                                                     $"import it:  import {quoteData importPath} as {gen.ModuleName}"
 
-                                                         Console.WriteLine
-                                                             $"read with:  from json {gen.ModuleName}.{gen.TopType} / from yaml {gen.ModuleName}.{gen.TopType}  (or the bare name, while no other import declares it)"
+                                                                 Console.WriteLine
+                                                                     $"read with:  from json {gen.ModuleName}.{gen.TopType} / from yaml {gen.ModuleName}.{gen.TopType}  (or the bare name, while no other import declares it)"
 
-                                                         0)
+                                                                 0)
         | "gen" :: _ ->
             Console.Error.WriteLine
                 "usage: weir gen types --schema <name> [--as <TypeName>] [--out <path>|-]   generate weir types from a locked schema"
@@ -885,10 +900,22 @@ let main argv =
             Console.Error.WriteLine "weir --version takes no arguments"
             2
         | opt :: _ when opt.StartsWith "-" && opt <> "--help" && opt <> "-h" ->
-            let spellings =
-                [ "-e"; "--help"; "--version"; "check"; "fmt"; "lsp"; "add"; "gen"; "restore"; "verify" ]
+            let spellings = [
+                "-e"
+                "--help"
+                "--version"
+                "check"
+                "fmt"
+                "lsp"
+                "add"
+                "gen"
+                "restore"
+                "verify"
+            ]
 
-            Console.Error.WriteLine $"weir: unknown option '{quoteData opt}'{didYouMean opt spellings} (weir --help for usage)"
+            Console.Error.WriteLine
+                $"weir: unknown option '{quoteData opt}'{didYouMean opt spellings} (weir --help for usage)"
+
             2
         | args ->
             let usage =

@@ -17,34 +17,43 @@ let isUserName (n: string) =
 // shape, so it gets the teaching rather than the generic no-such-record
 // error), the provenance sentence, what the record reports, and a
 // ground-typed anonymous example ([D:anon-literals] refuses `[]`).
-type Receipt =
-    { Article: string
-      Derived: string list
-      Source: string
-      Reports: string
-      Anon: string }
+type Receipt = {
+    Article: string
+    Derived: string list
+    Source: string
+    Reports: string
+    Anon: string
+}
 
 let receipts: Map<string, Receipt> =
-    Map
-        [ "Completed",
-          { Article = "a"
+    Map [
+        "Completed",
+        {
+            Article = "a"
             Derived = [ "ok" ]
             Source = "a Completed is what '| complete' returns — run a command to get one (sh -c \"exit 3\" | complete)"
             Reports = "a run that happened (ok follows exitCode)"
-            Anon = "{| exitCode = 3 |}" }
-          "FileRow",
-          { Article = "a"
+            Anon = "{| exitCode = 3 |}"
+        }
+        "FileRow",
+        {
+            Article = "a"
             Derived = [ "hidden" ]
             Source =
-              "a FileRow is what 'ls', 'Dir.stat' and 'File.stat' return — stat a path to get one (File.stat \"a.txt\")"
+                "a FileRow is what 'ls', 'Dir.stat' and 'File.stat' return — stat a path to get one (File.stat \"a.txt\")"
             Reports = "a path as it was seen"
-            Anon = "{| name = \"a.txt\"; path = \"a.txt\" |}" }
-          "HttpResponse",
-          { Article = "an"
+            Anon = "{| name = \"a.txt\"; path = \"a.txt\" |}"
+        }
+        "HttpResponse",
+        {
+            Article = "an"
             Derived = []
-            Source = "an HttpResponse is what 'Http.send' returns — send a request to get one (Http.get url |> Http.send)"
+            Source =
+                "an HttpResponse is what 'Http.send' returns — send a request to get one (Http.get url |> Http.send)"
             Reports = "a response that arrived"
-            Anon = "{| status = 200 |}" } ]
+            Anon = "{| status = 200 |}"
+        }
+    ]
 
 let isReceipt (typeName: string) = Map.containsKey typeName receipts
 
@@ -82,7 +91,8 @@ module CodePoints =
         && System.Char.IsLowSurrogate s[i + 1]
 
     let private hasSurrogate (s: string) =
-        System.MemoryExtensions.IndexOfAnyInRange(System.MemoryExtensions.AsSpan s, '\uD800', '\uDFFF') >= 0
+        System.MemoryExtensions.IndexOfAnyInRange(System.MemoryExtensions.AsSpan s, '\uD800', '\uDFFF')
+        >= 0
 
     let private walkLength (s: string) : int =
         if not (hasSurrogate s) then
@@ -163,7 +173,11 @@ module CodePoints =
             | _ when not (hasSurrogate s) ->
                 memo.SetTarget s
                 null
-            | _ -> indexes.GetValue(s, System.Runtime.CompilerServices.ConditionalWeakTable<string, Index>.CreateValueCallback build)
+            | _ ->
+                indexes.GetValue(
+                    s,
+                    System.Runtime.CompilerServices.ConditionalWeakTable<string, Index>.CreateValueCallback build
+                )
 
     /// the number of entries in the index table (tests: plain strings add none)
     let indexedForTest () : int = Seq.length indexes
@@ -228,34 +242,130 @@ module CodePoints =
 module CellWidth =
     // East_Asian_Width W and F, Unicode 16.0, as inclusive (lo, hi) ranges
     // (generated from the UCD; planes 2 and 3 are wide whole)
-    let private wide: (int * int)[] =
-        [|
-        0x1100, 0x115F; 0x231A, 0x231B; 0x2329, 0x232A; 0x23E9, 0x23EC; 0x23F0, 0x23F0;
-        0x23F3, 0x23F3; 0x25FD, 0x25FE; 0x2614, 0x2615; 0x2630, 0x2637; 0x2648, 0x2653;
-        0x267F, 0x267F; 0x268A, 0x268F; 0x2693, 0x2693; 0x26A1, 0x26A1; 0x26AA, 0x26AB;
-        0x26BD, 0x26BE; 0x26C4, 0x26C5; 0x26CE, 0x26CE; 0x26D4, 0x26D4; 0x26EA, 0x26EA;
-        0x26F2, 0x26F3; 0x26F5, 0x26F5; 0x26FA, 0x26FA; 0x26FD, 0x26FD; 0x2705, 0x2705;
-        0x270A, 0x270B; 0x2728, 0x2728; 0x274C, 0x274C; 0x274E, 0x274E; 0x2753, 0x2755;
-        0x2757, 0x2757; 0x2795, 0x2797; 0x27B0, 0x27B0; 0x27BF, 0x27BF; 0x2B1B, 0x2B1C;
-        0x2B50, 0x2B50; 0x2B55, 0x2B55; 0x2E80, 0x2E99; 0x2E9B, 0x2EF3; 0x2F00, 0x2FD5;
-        0x2FF0, 0x303E; 0x3041, 0x3096; 0x3099, 0x30FF; 0x3105, 0x312F; 0x3131, 0x318E;
-        0x3190, 0x31E5; 0x31EF, 0x321E; 0x3220, 0x3247; 0x3250, 0xA48C; 0xA490, 0xA4C6;
-        0xA960, 0xA97C; 0xAC00, 0xD7A3; 0xF900, 0xFAFF; 0xFE10, 0xFE19; 0xFE30, 0xFE52;
-        0xFE54, 0xFE66; 0xFE68, 0xFE6B; 0xFF01, 0xFF60; 0xFFE0, 0xFFE6; 0x16FE0, 0x16FE4;
-        0x16FF0, 0x16FF1; 0x17000, 0x187F7; 0x18800, 0x18CD5; 0x18CFF, 0x18D08; 0x1AFF0, 0x1AFF3;
-        0x1AFF5, 0x1AFFB; 0x1AFFD, 0x1AFFE; 0x1B000, 0x1B122; 0x1B132, 0x1B132; 0x1B150, 0x1B152;
-        0x1B155, 0x1B155; 0x1B164, 0x1B167; 0x1B170, 0x1B2FB; 0x1D300, 0x1D356; 0x1D360, 0x1D376;
-        0x1F004, 0x1F004; 0x1F0CF, 0x1F0CF; 0x1F18E, 0x1F18E; 0x1F191, 0x1F19A; 0x1F200, 0x1F202;
-        0x1F210, 0x1F23B; 0x1F240, 0x1F248; 0x1F250, 0x1F251; 0x1F260, 0x1F265; 0x1F300, 0x1F320;
-        0x1F32D, 0x1F335; 0x1F337, 0x1F37C; 0x1F37E, 0x1F393; 0x1F3A0, 0x1F3CA; 0x1F3CF, 0x1F3D3;
-        0x1F3E0, 0x1F3F0; 0x1F3F4, 0x1F3F4; 0x1F3F8, 0x1F43E; 0x1F440, 0x1F440; 0x1F442, 0x1F4FC;
-        0x1F4FF, 0x1F53D; 0x1F54B, 0x1F54E; 0x1F550, 0x1F567; 0x1F57A, 0x1F57A; 0x1F595, 0x1F596;
-        0x1F5A4, 0x1F5A4; 0x1F5FB, 0x1F64F; 0x1F680, 0x1F6C5; 0x1F6CC, 0x1F6CC; 0x1F6D0, 0x1F6D2;
-        0x1F6D5, 0x1F6D7; 0x1F6DC, 0x1F6DF; 0x1F6EB, 0x1F6EC; 0x1F6F4, 0x1F6FC; 0x1F7E0, 0x1F7EB;
-        0x1F7F0, 0x1F7F0; 0x1F90C, 0x1F93A; 0x1F93C, 0x1F945; 0x1F947, 0x1F9FF; 0x1FA70, 0x1FA7C;
-        0x1FA80, 0x1FA89; 0x1FA8F, 0x1FAC6; 0x1FACE, 0x1FADC; 0x1FADF, 0x1FAE9; 0x1FAF0, 0x1FAF8;
-        0x20000, 0x2FFFD; 0x30000, 0x3FFFD
-        |]
+    let private wide: (int * int)[] = [|
+        0x1100, 0x115F
+        0x231A, 0x231B
+        0x2329, 0x232A
+        0x23E9, 0x23EC
+        0x23F0, 0x23F0
+        0x23F3, 0x23F3
+        0x25FD, 0x25FE
+        0x2614, 0x2615
+        0x2630, 0x2637
+        0x2648, 0x2653
+        0x267F, 0x267F
+        0x268A, 0x268F
+        0x2693, 0x2693
+        0x26A1, 0x26A1
+        0x26AA, 0x26AB
+        0x26BD, 0x26BE
+        0x26C4, 0x26C5
+        0x26CE, 0x26CE
+        0x26D4, 0x26D4
+        0x26EA, 0x26EA
+        0x26F2, 0x26F3
+        0x26F5, 0x26F5
+        0x26FA, 0x26FA
+        0x26FD, 0x26FD
+        0x2705, 0x2705
+        0x270A, 0x270B
+        0x2728, 0x2728
+        0x274C, 0x274C
+        0x274E, 0x274E
+        0x2753, 0x2755
+        0x2757, 0x2757
+        0x2795, 0x2797
+        0x27B0, 0x27B0
+        0x27BF, 0x27BF
+        0x2B1B, 0x2B1C
+        0x2B50, 0x2B50
+        0x2B55, 0x2B55
+        0x2E80, 0x2E99
+        0x2E9B, 0x2EF3
+        0x2F00, 0x2FD5
+        0x2FF0, 0x303E
+        0x3041, 0x3096
+        0x3099, 0x30FF
+        0x3105, 0x312F
+        0x3131, 0x318E
+        0x3190, 0x31E5
+        0x31EF, 0x321E
+        0x3220, 0x3247
+        0x3250, 0xA48C
+        0xA490, 0xA4C6
+        0xA960, 0xA97C
+        0xAC00, 0xD7A3
+        0xF900, 0xFAFF
+        0xFE10, 0xFE19
+        0xFE30, 0xFE52
+        0xFE54, 0xFE66
+        0xFE68, 0xFE6B
+        0xFF01, 0xFF60
+        0xFFE0, 0xFFE6
+        0x16FE0, 0x16FE4
+        0x16FF0, 0x16FF1
+        0x17000, 0x187F7
+        0x18800, 0x18CD5
+        0x18CFF, 0x18D08
+        0x1AFF0, 0x1AFF3
+        0x1AFF5, 0x1AFFB
+        0x1AFFD, 0x1AFFE
+        0x1B000, 0x1B122
+        0x1B132, 0x1B132
+        0x1B150, 0x1B152
+        0x1B155, 0x1B155
+        0x1B164, 0x1B167
+        0x1B170, 0x1B2FB
+        0x1D300, 0x1D356
+        0x1D360, 0x1D376
+        0x1F004, 0x1F004
+        0x1F0CF, 0x1F0CF
+        0x1F18E, 0x1F18E
+        0x1F191, 0x1F19A
+        0x1F200, 0x1F202
+        0x1F210, 0x1F23B
+        0x1F240, 0x1F248
+        0x1F250, 0x1F251
+        0x1F260, 0x1F265
+        0x1F300, 0x1F320
+        0x1F32D, 0x1F335
+        0x1F337, 0x1F37C
+        0x1F37E, 0x1F393
+        0x1F3A0, 0x1F3CA
+        0x1F3CF, 0x1F3D3
+        0x1F3E0, 0x1F3F0
+        0x1F3F4, 0x1F3F4
+        0x1F3F8, 0x1F43E
+        0x1F440, 0x1F440
+        0x1F442, 0x1F4FC
+        0x1F4FF, 0x1F53D
+        0x1F54B, 0x1F54E
+        0x1F550, 0x1F567
+        0x1F57A, 0x1F57A
+        0x1F595, 0x1F596
+        0x1F5A4, 0x1F5A4
+        0x1F5FB, 0x1F64F
+        0x1F680, 0x1F6C5
+        0x1F6CC, 0x1F6CC
+        0x1F6D0, 0x1F6D2
+        0x1F6D5, 0x1F6D7
+        0x1F6DC, 0x1F6DF
+        0x1F6EB, 0x1F6EC
+        0x1F6F4, 0x1F6FC
+        0x1F7E0, 0x1F7EB
+        0x1F7F0, 0x1F7F0
+        0x1F90C, 0x1F93A
+        0x1F93C, 0x1F945
+        0x1F947, 0x1F9FF
+        0x1FA70, 0x1FA7C
+        0x1FA80, 0x1FA89
+        0x1FA8F, 0x1FAC6
+        0x1FACE, 0x1FADC
+        0x1FADF, 0x1FAE9
+        0x1FAF0, 0x1FAF8
+        0x20000, 0x2FFFD
+        0x30000, 0x3FFFD
+    |]
 
     let private isWide (cp: int) =
         // binary search over the ranges
@@ -345,8 +455,7 @@ module CellWidth =
                     | true, r -> r
                     | _ -> System.Text.Rune.ReplacementChar
 
-                let step =
-                    if System.Char.IsSurrogatePair(s, i) then 2 else 1
+                let step = if System.Char.IsSurrogatePair(s, i) then 2 else 1
 
                 let cp = r.Value
 
@@ -414,7 +523,12 @@ let private sanitizeWith (strict: bool) (s: string) : string =
     // U+2066..2069, LRM/RLM (U+200E/200F) and ALM (U+061C)
     let bidi (c: char) =
         let n = int c
-        (n >= 0x202A && n <= 0x202E) || (n >= 0x2066 && n <= 0x2069) || n = 0x200E || n = 0x200F || n = 0x061C
+
+        (n >= 0x202A && n <= 0x202E)
+        || (n >= 0x2066 && n <= 0x2069)
+        || n = 0x200E
+        || n = 0x200F
+        || n = 0x061C
 
     // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
     // (< 0x20) except TAB, LF and CR [D:tty-cr-pass], and the C1 range
@@ -546,7 +660,10 @@ let regexCodePoints (pat: string) : string =
 
     let wrapClass (cls: string) =
         let neg = cls.Length > 2 && cls[1] = '^'
-        let body = cls.Substring((if neg then 2 else 1), cls.Length - (if neg then 3 else 2))
+
+        let body =
+            cls.Substring((if neg then 2 else 1), cls.Length - (if neg then 3 else 2))
+
         let astral = ResizeArray<string>()
         let rest = System.Text.StringBuilder()
         let mutable k = 0
@@ -571,22 +688,23 @@ let regexCodePoints (pat: string) : string =
             let bmp = if neg then $"[^{rest}]" else $"[{rest}]"
             let bmpTakes = rest <> "" && takesSurrogate bmp
 
-            let alts =
-                [ if neg then
-                      yield (if astral.Count = 0 then pair else $"(?!{lits}){pair}")
-                  else
-                      if astral.Count > 0 then
-                          yield lits
+            let alts = [
+                if neg then
+                    yield (if astral.Count = 0 then pair else $"(?!{lits}){pair}")
+                else
+                    if astral.Count > 0 then
+                        yield lits
 
-                      if bmpTakes then
-                          yield pair
-                  if rest = "" then
-                      if neg then
-                          yield $"{notSurrogate}[\\s\\S]"
-                  elif bmpTakes || neg then
-                      yield $"{notSurrogate}{bmp}"
-                  else
-                      yield bmp ]
+                    if bmpTakes then
+                        yield pair
+                if rest = "" then
+                    if neg then
+                        yield $"{notSurrogate}[\\s\\S]"
+                elif bmpTakes || neg then
+                    yield $"{notSurrogate}{bmp}"
+                else
+                    yield bmp
+            ]
 
             "(?:" + System.String.Join("|", alts) + ")"
 
@@ -790,10 +908,11 @@ let drainAnonDefs () : (string * (string * Ty) list) list =
 /// help render tints name/types/punctuation structurally at composition;
 /// plain (id everywhere) is the hover and piped spelling. One
 /// composition — never a second signature formatter.
-type SigStyle =
-    { Name: string -> string
-      Ty: string -> string
-      Punct: string -> string }
+type SigStyle = {
+    Name: string -> string
+    Ty: string -> string
+    Punct: string -> string
+}
 
 let plainSigStyle: SigStyle = { Name = id; Ty = id; Punct = id }
 
@@ -929,9 +1048,7 @@ let normalizeDiagVars (msg: string) : string =
         msg
     else
         let used =
-            letterVarRe.Matches msg
-            |> Seq.map (fun m -> m.Groups[1].Value[0])
-            |> Set.ofSeq
+            letterVarRe.Matches msg |> Seq.map (fun m -> m.Groups[1].Value[0]) |> Set.ofSeq
 
         let pool =
             [ 'a' .. 'z' ] |> List.filter (fun c -> not (used.Contains c)) |> Array.ofList
@@ -948,12 +1065,9 @@ let normalizeDiagVars (msg: string) : string =
 
                     let r =
                         // every letter already spelled: keep the name
-                        if pool.Length = 0 then
-                            m.Value
-                        elif i < pool.Length then
-                            $"'{pool[i]}"
-                        else
-                            $"'{pool[i % pool.Length]}{i / pool.Length}"
+                        if pool.Length = 0 then m.Value
+                        elif i < pool.Length then $"'{pool[i]}"
+                        else $"'{pool[i % pool.Length]}{i / pool.Length}"
 
                     mapping[m.Value] <- r
                     r
@@ -1002,40 +1116,44 @@ type Cls =
 
 // Cs: constraints on quantified vars — `Eq a => a -> a -> bool` is
 // { Forall = {a}; Cs = [a, {Eq}]; Ty = a -> a -> bool }.
-type Scheme =
-    { Forall: Set<string>
-      Cs: Map<string, Set<Cls>>
-      Ty: Ty
-      // row-field provenance [D:row-provenance]: quantified row var ->
-      // (field, physLine, physCol, len) of the access that demanded it
-      // — translated to physical positions at generalization (spans die
-      // at statement boundaries), rehydrated at instantiation, reported
-      // by the row-vs-record discharge
-      RowOrigins: Map<string, (string * int * int * int) list>
-      // hole-default provenance (PLAN-dx-review D6): the physical
-      // (line, col) of each bare interpolation hole whose var took the
-      // string default at this statement's boundary — a later call-site
-      // mismatch names the defaulting decision instead of blaming the
-      // call
-      HoleDefaults: (int * int) list }
+type Scheme = {
+    Forall: Set<string>
+    Cs: Map<string, Set<Cls>>
+    Ty: Ty
+    // row-field provenance [D:row-provenance]: quantified row var ->
+    // (field, physLine, physCol, len) of the access that demanded it
+    // — translated to physical positions at generalization (spans die
+    // at statement boundaries), rehydrated at instantiation, reported
+    // by the row-vs-record discharge
+    RowOrigins: Map<string, (string * int * int * int) list>
+    // hole-default provenance (PLAN-dx-review D6): the physical
+    // (line, col) of each bare interpolation hole whose var took the
+    // string default at this statement's boundary — a later call-site
+    // mismatch names the defaulting decision instead of blaming the
+    // call
+    HoleDefaults: (int * int) list
+}
 
-let generalize (ty: Ty) : Scheme =
-    { Forall = tyVars ty
-      Cs = Map.empty
-      Ty = ty
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let generalize (ty: Ty) : Scheme = {
+    Forall = tyVars ty
+    Cs = Map.empty
+    Ty = ty
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
 // generalization with the checker's constraint residue: only
 // constraints on vars actually quantified ride into the scheme
 let generalizeWith (cs: Map<string, Set<Cls>>) (ty: Ty) : Scheme =
     let fa = tyVars ty
 
-    { Forall = fa
-      Cs = cs |> Map.filter (fun v _ -> fa.Contains v)
-      Ty = ty
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+    {
+        Forall = fa
+        Cs = cs |> Map.filter (fun v _ -> fa.Contains v)
+        Ty = ty
+        RowOrigins = Map.empty
+        HoleDefaults = []
+    }
 
 // generalizeWith + row origins [D:row-provenance], filtered like Cs:
 // only origins for quantified row vars ride into the scheme; hole
@@ -1048,18 +1166,21 @@ let generalizeWithOrigins
     : Scheme =
     let fa = tyVars ty
 
-    { Forall = fa
-      Cs = cs |> Map.filter (fun v _ -> fa.Contains v)
-      Ty = ty
-      RowOrigins = origins |> Map.filter (fun v _ -> fa.Contains v)
-      HoleDefaults = holeDefaults }
+    {
+        Forall = fa
+        Cs = cs |> Map.filter (fun v _ -> fa.Contains v)
+        Ty = ty
+        RowOrigins = origins |> Map.filter (fun v _ -> fa.Contains v)
+        HoleDefaults = holeDefaults
+    }
 
-let mono (ty: Ty) : Scheme =
-    { Forall = Set.empty
-      Cs = Map.empty
-      Ty = ty
-      RowOrigins = Map.empty
-      HoleDefaults = [] }
+let mono (ty: Ty) : Scheme = {
+    Forall = Set.empty
+    Cs = Map.empty
+    Ty = ty
+    RowOrigins = Map.empty
+    HoleDefaults = []
+}
 
 // attribute arguments [D:attributes]: literal-only, the splice family
 type AttrArg =
@@ -1072,23 +1193,24 @@ type AttrArg =
     // a size literal (10MiB) — stored as bytes [D:size]
     | ASize of int64
 
-type RecordDef =
-    { Name: string
-      Params: string list
-      Fields: (string * Ty) list
-      // check-time data, fully erased [D:attributes] — never reaches
-      // eval, Value, show, json, or equatability
-      Attrs: Map<string, (string * AttrArg option) list>
-      // the `[<Ord n>]` fields by ascending n [D:derived-ord]: the
-      // record's ordering key, empty when nothing is numbered; the
-      // unnumbered fields take no part. Check-time data like Attrs
-      OrdKey: string list
-      // field -> the `///` doc's first line, the derived --help text
-      // [D:doc-help]. `--help` reads this instead of the retired
-      // [<Doc>] attribute; hover still reads the full doc out-of-band.
-      // Same check-time-erased nature as Attrs. The key "" holds the
-      // type's own doc, its first paragraph [D:help-case-docs].
-      Docs: Map<string, string> }
+type RecordDef = {
+    Name: string
+    Params: string list
+    Fields: (string * Ty) list
+    // check-time data, fully erased [D:attributes] — never reaches
+    // eval, Value, show, json, or equatability
+    Attrs: Map<string, (string * AttrArg option) list>
+    // the `[<Ord n>]` fields by ascending n [D:derived-ord]: the
+    // record's ordering key, empty when nothing is numbered; the
+    // unnumbered fields take no part. Check-time data like Attrs
+    OrdKey: string list
+    // field -> the `///` doc's first line, the derived --help text
+    // [D:doc-help]. `--help` reads this instead of the retired
+    // [<Doc>] attribute; hover still reads the full doc out-of-band.
+    // Same check-time-erased nature as Attrs. The key "" holds the
+    // type's own doc, its first paragraph [D:help-case-docs].
+    Docs: Map<string, string>
+}
 
 /// The wire-key attribute's single reader [D:wire-keys]: a field
 /// carrying [<Wire "…">] uses that string as its adapter key
@@ -1165,32 +1287,33 @@ let xmlElem (def: RecordDef) (field: string) (fallback: string) : string =
         |> Option.defaultValue fallback
     | None -> fallback
 
-type UnionDef =
-    { Name: string
-      Params: string list
-      Cases: (string * Ty option) list
-      // the wire discriminator [D:wire-unions]: Some field-name when
-      // the union is tagged — the key that admits it at the json/yaml
-      // boundaries. CaseWires holds only the [<Wire>] overrides (a
-      // case's tag value defaults to its name — caseWire resolves);
-      // OtherCase names the [<Other>] fallback. All three inert when
-      // Tag is None.
-      Tag: string option
-      CaseWires: Map<string, string>
-      OtherCase: string option
-      // a validated type [D:validated-types]: Some id when the union
-      // declares `validate` — the id keys the runtime's derived
-      // `create`, which every wire boundary runs (one per checked
-      // declaration, so two imports' same-named types never share one)
-      Validated: string option
-      // the `[<Ord n>]` cases by ascending n [D:derived-ord]: the union
-      // orders by this position, then payload; empty when none is
-      // numbered (every case is numbered or none)
-      OrdKey: string list
-      // case -> the `///` doc's first line, a subcommand's --help text,
-      // and "" -> the type's own doc [D:help-case-docs]; check-time-erased
-      // like RecordDef.Docs
-      Docs: Map<string, string> }
+type UnionDef = {
+    Name: string
+    Params: string list
+    Cases: (string * Ty option) list
+    // the wire discriminator [D:wire-unions]: Some field-name when
+    // the union is tagged — the key that admits it at the json/yaml
+    // boundaries. CaseWires holds only the [<Wire>] overrides (a
+    // case's tag value defaults to its name — caseWire resolves);
+    // OtherCase names the [<Other>] fallback. All three inert when
+    // Tag is None.
+    Tag: string option
+    CaseWires: Map<string, string>
+    OtherCase: string option
+    // a validated type [D:validated-types]: Some id when the union
+    // declares `validate` — the id keys the runtime's derived
+    // `create`, which every wire boundary runs (one per checked
+    // declaration, so two imports' same-named types never share one)
+    Validated: string option
+    // the `[<Ord n>]` cases by ascending n [D:derived-ord]: the union
+    // orders by this position, then payload; empty when none is
+    // numbered (every case is numbered or none)
+    OrdKey: string list
+    // case -> the `///` doc's first line, a subcommand's --help text,
+    // and "" -> the type's own doc [D:help-case-docs]; check-time-erased
+    // like RecordDef.Docs
+    Docs: Map<string, string>
+}
 
 /// the variable a validated type's derived `create` evaluates through
 /// [D:validated-types]: the prefix plus the declaration's id — `|` makes
@@ -1245,66 +1368,69 @@ type TypeDef =
 
 // The non-closed schemes of one value map [D:env-open-index] — valid only
 // while `For` is the env's own Values instance
-type OpenIndex =
-    { For: Map<string, Scheme>
-      Open: Map<string, Scheme> }
+type OpenIndex = {
+    For: Map<string, Scheme>
+    Open: Map<string, Scheme>
+}
 
 [<NoEquality; NoComparison>]
-type TypeEnv =
-    { Values: Map<string, Scheme>
-      // generalization walks only these [D:env-open-index]; an env whose
-      // Values moved without bindValue has a stale index and is rescanned
-      OpenIndex: OpenIndex option
-      // purity of earlier top-level bindings [D:pure-stage1]: written by
-      // the checked-statement pipeline's post-check layer (the classifier
-      // lives after Builtins, so Check.fs itself never computes it),
-      // carried here so every consumer that threads the env — scripts,
-      // modules, the REPL — gets `pure` transitivity for free
-      PureBindings: Map<string, bool>
-      // earlier top-level FUNCTIONS whose body reaches a plan refusal
-      // (a command, a Proc member, Plan.apply) -> that refusal's
-      // message, so a call inside `plan` refuses through the helper as
-      // `pure` does through PureBindings [D:plan-helper-refusal]
-      PlanRefused: Map<string, string>
-      // earlier top-level FUNCTIONS whose body reaches `cmd | exec`, so
-      // a call inside a resource scope, always block or fan-out arm
-      // refuses through the helper [D:exec-scope-transitive]
-      ExecHelpers: Set<string>
-      Modules: Map<string, Map<string, Scheme>>
-      Types: Map<string, TypeDef>
-      // the record types the file passes to a typed boundary — type name
-      // -> "Args.load"/"Env.load" — so an unbound field name can teach
-      // loading it. Empty outside a file check/run.
-      LoadTargets: Map<string, string>
-      // imported modules [D:modules-v1]: alias -> each type that module
-      // declares -> its key in `Types`. The key is the plain name while
-      // no other import declares that name, else the qualified one
-      // ("A.T") [D:qualified-type-names]; `A.T` resolves through here,
-      // a bare name through `Types`. Empty for single-file.
-      ModuleTypes: Map<string, Map<string, string>>
-      // every imported type's identity [D:transitive-types]: its name in
-      // this env -> "Module.Name@absPath" of the module that declared
-      // it, so the same type reached twice is one type, and a type
-      // reached only transitively can yield its plain name
-      TypeOrigins: Map<string, string>
-      // imported modules' private members [D:module-signatures]:
-      // alias -> unsigned member name -> its inferred scheme. Never
-      // resolvable — carried so the import-of-private error can teach
-      // the migration (the signature to add, type included). Empty
-      // for builtin modules and single-file runs.
-      ModulePrivate: Map<string, Map<string, Scheme>>
-      // anonymous literal defs minted mid-statement [D:anon-literals]:
-      // a literal's canonical name exists only after inference — too
-      // late for the withAnonDefs pre-walk — so the check arm writes
-      // it here; `{ env with … }` copies share the instance, making
-      // the def visible to the rest of the statement (to json's
-      // admitted walk, field access, pattern rows). The arm also
-      // pushes to pendingAnonDefs, so the next statement's drain
-      // persists it into Types proper. Replaced fresh per typecheck
-      // entry — one run is one thread.
-      AnonLitDefs: System.Collections.Generic.Dictionary<string, TypeDef> }
+type TypeEnv = {
+    Values: Map<string, Scheme>
+    // generalization walks only these [D:env-open-index]; an env whose
+    // Values moved without bindValue has a stale index and is rescanned
+    OpenIndex: OpenIndex option
+    // purity of earlier top-level bindings [D:pure-stage1]: written by
+    // the checked-statement pipeline's post-check layer (the classifier
+    // lives after Builtins, so Check.fs itself never computes it),
+    // carried here so every consumer that threads the env — scripts,
+    // modules, the REPL — gets `pure` transitivity for free
+    PureBindings: Map<string, bool>
+    // earlier top-level FUNCTIONS whose body reaches a plan refusal
+    // (a command, a Proc member, Plan.apply) -> that refusal's
+    // message, so a call inside `plan` refuses through the helper as
+    // `pure` does through PureBindings [D:plan-helper-refusal]
+    PlanRefused: Map<string, string>
+    // earlier top-level FUNCTIONS whose body reaches `cmd | exec`, so
+    // a call inside a resource scope, always block or fan-out arm
+    // refuses through the helper [D:exec-scope-transitive]
+    ExecHelpers: Set<string>
+    Modules: Map<string, Map<string, Scheme>>
+    Types: Map<string, TypeDef>
+    // the record types the file passes to a typed boundary — type name
+    // -> "Args.load"/"Env.load" — so an unbound field name can teach
+    // loading it. Empty outside a file check/run.
+    LoadTargets: Map<string, string>
+    // imported modules [D:modules-v1]: alias -> each type that module
+    // declares -> its key in `Types`. The key is the plain name while
+    // no other import declares that name, else the qualified one
+    // ("A.T") [D:qualified-type-names]; `A.T` resolves through here,
+    // a bare name through `Types`. Empty for single-file.
+    ModuleTypes: Map<string, Map<string, string>>
+    // every imported type's identity [D:transitive-types]: its name in
+    // this env -> "Module.Name@absPath" of the module that declared
+    // it, so the same type reached twice is one type, and a type
+    // reached only transitively can yield its plain name
+    TypeOrigins: Map<string, string>
+    // imported modules' private members [D:module-signatures]:
+    // alias -> unsigned member name -> its inferred scheme. Never
+    // resolvable — carried so the import-of-private error can teach
+    // the migration (the signature to add, type included). Empty
+    // for builtin modules and single-file runs.
+    ModulePrivate: Map<string, Map<string, Scheme>>
+    // anonymous literal defs minted mid-statement [D:anon-literals]:
+    // a literal's canonical name exists only after inference — too
+    // late for the withAnonDefs pre-walk — so the check arm writes
+    // it here; `{ env with … }` copies share the instance, making
+    // the def visible to the rest of the statement (to json's
+    // admitted walk, field access, pattern rows). The arm also
+    // pushes to pendingAnonDefs, so the next statement's drain
+    // persists it into Types proper. Replaced fresh per typecheck
+    // entry — one run is one thread.
+    AnonLitDefs: System.Collections.Generic.Dictionary<string, TypeDef>
+}
 
-let private schemeIsClosed (sch: Scheme) : bool = Set.isEmpty (tyVars sch.Ty - sch.Forall)
+let private schemeIsClosed (sch: Scheme) : bool =
+    Set.isEmpty (tyVars sch.Ty - sch.Forall)
 
 /// The env's non-closed schemes [D:env-open-index]: generalization needs
 /// only the schemes with free vars, and scanning the whole env per let
@@ -1319,9 +1445,14 @@ let openSchemes (env: TypeEnv) : Map<string, Scheme> =
 let indexed (env: TypeEnv) : TypeEnv =
     match env.OpenIndex with
     | Some ix when obj.ReferenceEquals(ix.For, env.Values) -> env
-    | _ ->
-        { env with
-            OpenIndex = Some { For = env.Values; Open = openSchemes env } }
+    | _ -> {
+        env with
+            OpenIndex =
+                Some {
+                    For = env.Values
+                    Open = openSchemes env
+                }
+      }
 
 /// Bind one value name, keeping the index current in O(log n)
 /// [D:env-open-index]
@@ -1329,12 +1460,19 @@ let bindValue (name: string) (sch: Scheme) (env: TypeEnv) : TypeEnv =
     let values = Map.add name sch env.Values
     let opened = openSchemes env
 
-    { env with
-        Values = values
-        OpenIndex =
-            Some
-                { For = values
-                  Open = if schemeIsClosed sch then Map.remove name opened else Map.add name sch opened } }
+    {
+        env with
+            Values = values
+            OpenIndex =
+                Some {
+                    For = values
+                    Open =
+                        if schemeIsClosed sch then
+                            Map.remove name opened
+                        else
+                            Map.add name sch opened
+                }
+    }
 
 /// The single type-name lookup [D:anon-literals]: declared/registered
 /// types first, then the mid-statement anonymous-literal table —
@@ -1379,10 +1517,7 @@ let didYouMean (name: string) (candidates: seq<string>) : string =
 // cmd-not-found spelling); the fix's edit replaces the typo
 let didYouMeanTarget (msg: string) : (string * string) option =
     let m =
-        System.Text.RegularExpressions.Regex.Match(
-            msg,
-            @"(?:'([^']+)'[^']*|: ([^\s']+))\. Did you mean '([^']+)'\?"
-        )
+        System.Text.RegularExpressions.Regex.Match(msg, @"(?:'([^']+)'[^']*|: ([^\s']+))\. Did you mean '([^']+)'\?")
 
     if m.Success then
         let typo =
@@ -1423,10 +1558,11 @@ module Color =
 // palette — name bold (the known-head tint), types in the casing-law
 // yellow (33), punctuation dim — so a #help signature reads like the
 // line the user types; plainSigStyle stays the hover/piped byte surface
-let sigTintStyle: SigStyle =
-    { Name = Color.bold true
-      Ty = Color.yellow true
-      Punct = Color.dim true }
+let sigTintStyle: SigStyle = {
+    Name = Color.bold true
+    Ty = Color.yellow true
+    Punct = Color.dim true
+}
 
 // the waiting indicator [D:waiting-indicator]: whoever owns the terminal
 // and is working draws the progress — so it wraps only weir's own
@@ -1590,10 +1726,12 @@ let formatSize (totalBytes: int64) : string =
             uint64 totalBytes
 
     let unitOf =
-        [ 1024UL * 1024UL * 1024UL * 1024UL, "TiB"
-          1024UL * 1024UL * 1024UL, "GiB"
-          1024UL * 1024UL, "MiB"
-          1024UL, "KiB" ]
+        [
+            1024UL * 1024UL * 1024UL * 1024UL, "TiB"
+            1024UL * 1024UL * 1024UL, "GiB"
+            1024UL * 1024UL, "MiB"
+            1024UL, "KiB"
+        ]
         |> List.tryFind (fun (u, _) -> b >= u)
 
     match unitOf with
@@ -1642,16 +1780,17 @@ let parseSize (text: string) : Result<int64, string> =
     let neg = t.StartsWith "-"
     let t = if neg then (t.Substring 1).TrimStart() else t
 
-    let units =
-        [ "TiB", 1024L * 1024L * 1024L * 1024L
-          "GiB", 1024L * 1024L * 1024L
-          "MiB", 1024L * 1024L
-          "KiB", 1024L
-          "TB", 1000_000_000_000L
-          "GB", 1000_000_000L
-          "MB", 1000_000L
-          "KB", 1000L
-          "B", 1L ]
+    let units = [
+        "TiB", 1024L * 1024L * 1024L * 1024L
+        "GiB", 1024L * 1024L * 1024L
+        "MiB", 1024L * 1024L
+        "KiB", 1024L
+        "TB", 1000_000_000_000L
+        "GB", 1000_000_000L
+        "MB", 1000_000L
+        "KB", 1000L
+        "B", 1L
+    ]
 
     let m =
         System.Text.RegularExpressions.Regex.Match(t, "^([0-9]+)(?:\.([0-9]+))? ?([A-Za-z]+)$")
@@ -1717,12 +1856,13 @@ let formatDuration (totalMs: int64) : string =
 // to UTC on the way in; fractional seconds truncate to ms) and the
 // bare date (midnight UTC). Only this format list is accepted — never
 // the platform parser's leniency (invariant M/d/yyyy must not slip in).
-let private instantFormats =
-    [| "yyyy-MM-dd'T'HH:mm:ssK"
-       "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK"
-       "yyyy-MM-dd'T'HH:mm:ss"
-       "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF"
-       "yyyy-MM-dd" |]
+let private instantFormats = [|
+    "yyyy-MM-dd'T'HH:mm:ssK"
+    "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK"
+    "yyyy-MM-dd'T'HH:mm:ss"
+    "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF"
+    "yyyy-MM-dd"
+|]
 
 // RFC 3339 (and so TOML) also spells the separator as a space and the
 // fraction past .NET's 7 digits (nanoseconds); both normalize into the
@@ -1748,6 +1888,7 @@ let private instantEmptyFrac =
 
 let parseInstantMs (text: string) : Result<int64, string> =
     let t = text.Trim()
+
     let norm =
         instantSpaceSep.Replace(t, "$1T$2")
         |> fun n -> instantLowerZ.Replace(n, "$1Z")
@@ -1931,19 +2072,20 @@ let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
              | 'b' ->
                  // the invariant month abbreviations — openssl's enddate,
                  // most access logs
-                 let names =
-                     [| "Jan"
-                        "Feb"
-                        "Mar"
-                        "Apr"
-                        "May"
-                        "Jun"
-                        "Jul"
-                        "Aug"
-                        "Sep"
-                        "Oct"
-                        "Nov"
-                        "Dec" |]
+                 let names = [|
+                     "Jan"
+                     "Feb"
+                     "Mar"
+                     "Apr"
+                     "May"
+                     "Jun"
+                     "Jul"
+                     "Aug"
+                     "Sep"
+                     "Oct"
+                     "Nov"
+                     "Dec"
+                 |]
 
                  if ti + 3 <= text.Length then
                      let w = text.Substring(ti, 3)
@@ -2044,7 +2186,12 @@ let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
         // the three failures are told apart so the message blames the
         // part that is wrong: the date/time itself, the offset's shape,
         // or the UTC result the offset shifts past the Instant range
-        match (try Ok(System.DateTime(y, mo, d, h, mi, sec, frac)) with _ -> Error()) with
+        match
+            (try
+                Ok(System.DateTime(y, mo, d, h, mi, sec, frac))
+             with _ ->
+                 Error())
+        with
         | Error() -> Error $"not a real date/time: {dateText}"
         | Ok local ->
             if not offShapeOk then
@@ -2075,7 +2222,10 @@ let parseDurationMs (text: string) : Result<int64, string> =
     // after the sign — so the minimum Duration show prints reads back
     let rec go (i: int) (acc: bigint) =
         if i >= body.Length then
-            if i = 0 then Error $"not a duration: '{excerpt text}'" else Ok acc
+            if i = 0 then
+                Error $"not a duration: '{excerpt text}'"
+            else
+                Ok acc
         else
             let j0 = i
             let mutable j = i
@@ -2153,10 +2303,19 @@ let parseDurationMs (text: string) : Result<int64, string> =
 type RawBmpEncoder() =
     inherit System.Text.Encodings.Web.JavaScriptEncoder()
     let inner = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    let allow (u: int) = u >= 0x80 && u <= 0xFFFF && not (u >= 0xD800 && u <= 0xDFFF)
-    override _.MaxOutputCharactersPerInputCharacter = inner.MaxOutputCharactersPerInputCharacter
-    override _.WillEncode(u) = if allow u then false else inner.WillEncode u
-    override _.FindFirstCharacterToEncode(text, textLength) = inner.FindFirstCharacterToEncode(text, textLength)
+
+    let allow (u: int) =
+        u >= 0x80 && u <= 0xFFFF && not (u >= 0xD800 && u <= 0xDFFF)
+
+    override _.MaxOutputCharactersPerInputCharacter =
+        inner.MaxOutputCharactersPerInputCharacter
+
+    override _.WillEncode(u) =
+        if allow u then false else inner.WillEncode u
+
+    override _.FindFirstCharacterToEncode(text, textLength) =
+        inner.FindFirstCharacterToEncode(text, textLength)
+
     override _.TryEncodeUnicodeScalar(u, buffer, bufferLength, written) =
         inner.TryEncodeUnicodeScalar(u, buffer, bufferLength, &written)
 
@@ -2211,10 +2370,10 @@ let private parseJsonBoundedWith
 /// parse one JSON document under the bound: Error (Some why) for a
 /// valid document nested past it, Error None for text that is not JSON
 let parseJsonBounded (text: string) : Result<System.Text.Json.JsonDocument, string option> =
-    parseJsonBoundedWith
-        (fun o -> System.Text.Json.JsonDocument.Parse(text, o))
-        (fun () -> System.Text.Encoding.UTF8.GetBytes text)
+    parseJsonBoundedWith (fun o -> System.Text.Json.JsonDocument.Parse(text, o)) (fun () ->
+        System.Text.Encoding.UTF8.GetBytes text)
 
 /// parseJsonBounded over UTF-8 bytes
 let parseJsonBytesBounded (bytes: byte array) : Result<System.Text.Json.JsonDocument, string option> =
-    parseJsonBoundedWith (fun o -> System.Text.Json.JsonDocument.Parse(System.ReadOnlyMemory<byte> bytes, o)) (fun () -> bytes)
+    parseJsonBoundedWith (fun o -> System.Text.Json.JsonDocument.Parse(System.ReadOnlyMemory<byte> bytes, o)) (fun () ->
+        bytes)

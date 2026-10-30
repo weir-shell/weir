@@ -133,6 +133,11 @@ jobs:
           path: ~/.nuget/packages
           key: nuget-linux-${{ hashFiles('**/*.fsproj') }}
           restore-keys: nuget-linux-
+      # F# formatting is a gate [D:fantomas-pinned]: the pinned fantomas,
+      # the repo .editorconfig; drift fails here, `dotnet fantomas src tests`
+      # is the repair
+      - name: fantomas check
+        run: dotnet tool restore && dotnet fantomas --check src tests
       # Debug, stated [D:repro-gates]: Debug frames are larger, so a deep
       # recursion that Release survives overflows here — ci/local.sh runs
       # the same configuration

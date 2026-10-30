@@ -36,11 +36,12 @@ let stripComment (line: string) : string =
 
 /// The doc lines attached to one declaration, with the physical
 /// (1-based line, 1-based col, length) of the name they document.
-type DocAttach =
-    { Line: int
-      Col: int
-      Len: int
-      Doc: string list }
+type DocAttach = {
+    Line: int
+    Col: int
+    Len: int
+    Doc: string list
+}
 
 let private isDocLine (raw: string) : bool = raw.TrimStart().StartsWith "///"
 
@@ -88,11 +89,16 @@ let private declName (code: string) : (int * int) option =
         else
             from
 
-    if trimmed.StartsWith "let " then identAt (indent + 3)
-    elif trimmed.StartsWith "type " then identAt (indent + 4)
-    elif trimmed.StartsWith "|" then identAt (afterAttrs (indent + 1))
-    elif trimmed = "" then None
-    else identAt (afterAttrs indent)
+    if trimmed.StartsWith "let " then
+        identAt (indent + 3)
+    elif trimmed.StartsWith "type " then
+        identAt (indent + 4)
+    elif trimmed.StartsWith "|" then
+        identAt (afterAttrs (indent + 1))
+    elif trimmed = "" then
+        None
+    else
+        identAt (afterAttrs indent)
 
 // In-string mask over a line — true where a char sits inside any
 // string kind (plain/single/verbatim/triple). The scanner family's
@@ -215,7 +221,10 @@ let private leadingTabCol (raw: string) : int option =
     while i < raw.Length && raw[i] = ' ' do
         i <- i + 1
 
-    if i < raw.Length && raw[i] = '\t' then Some(i + 1) else None
+    if i < raw.Length && raw[i] = '\t' then
+        Some(i + 1)
+    else
+        None
 
 let private leadingSpaces (s: string) : int =
     let mutable i = 0
@@ -300,42 +309,44 @@ let stripInitDirectives (lines: string list) : string list =
 
     let mutable inBlock = false
 
-    [ for l in lines do
-          let t = l.Trim()
+    [
+        for l in lines do
+            let t = l.Trim()
 
-          if inBlock then
-              if t = "}" then
-                  inBlock <- false
-                  yield ""
-              else
-                  let m = fieldStart.Match l
+            if inBlock then
+                if t = "}" then
+                    inBlock <- false
+                    yield ""
+                else
+                    let m = fieldStart.Match l
 
-                  if m.Success then
-                      // `<indent>key = value` -> `let <binder> = value`; when the
-                      // indent is 4, `let ` + a same-length binder keeps the value
-                      // column exact (columns matter for hover/completion)
-                      let indent = m.Groups.[1].Value
-                      let binder = sameLenBinder m.Groups.[2].Value
+                    if m.Success then
+                        // `<indent>key = value` -> `let <binder> = value`; when the
+                        // indent is 4, `let ` + a same-length binder keeps the value
+                        // column exact (columns matter for hover/completion)
+                        let indent = m.Groups.[1].Value
+                        let binder = sameLenBinder m.Groups.[2].Value
 
-                      if indent.Length = 4 then
-                          yield "let " + binder + m.Groups.[3].Value + m.Groups.[4].Value
-                      else
-                          yield "let " + binder + " = " + m.Groups.[4].Value
-                  else
-                      yield l // a continuation line (list entry) is part of the value
-          elif t = "#init" then
-              yield ""
-          elif t.StartsWith "#session" then
-              inBlock <- t.EndsWith "{"
-              yield ""
-          elif t = "#alias" || t.StartsWith "#alias " then
-              yield ""
-          elif l.StartsWith "#" then
-              // any other directive line is splitInit's to report
-              // [D:directive-diagnostic]
-              yield ""
-          else
-              yield l ]
+                        if indent.Length = 4 then
+                            yield "let " + binder + m.Groups.[3].Value + m.Groups.[4].Value
+                        else
+                            yield "let " + binder + " = " + m.Groups.[4].Value
+                    else
+                        yield l // a continuation line (list entry) is part of the value
+            elif t = "#init" then
+                yield ""
+            elif t.StartsWith "#session" then
+                inBlock <- t.EndsWith "{"
+                yield ""
+            elif t = "#alias" || t.StartsWith "#alias " then
+                yield ""
+            elif l.StartsWith "#" then
+                // any other directive line is splitInit's to report
+                // [D:directive-diagnostic]
+                yield ""
+            else
+                yield l
+    ]
 
 
 /// a col-0 `else`/`elif` line continues its open `if` [D:toplevel-if-else]
@@ -376,15 +387,16 @@ type MarkerKind =
     // lines, relative indentation behind the sentinel)
     | Heredoc
 
-type PieceClass =
-    { Kind: PieceKind
-      Marker: MarkerKind
-      OpensCompound: bool
-      ClosesBrace: bool
-      ClosesParen: bool
-      StartsField: bool
-      StartsTypeField: bool
-      BraceDelta: int }
+type PieceClass = {
+    Kind: PieceKind
+    Marker: MarkerKind
+    OpensCompound: bool
+    ClosesBrace: bool
+    ClosesParen: bool
+    StartsField: bool
+    StartsTypeField: bool
+    BraceDelta: int
+}
 
 let private isIdentToken (t: string) =
     t.Length > 0
@@ -410,13 +422,19 @@ let armArrowIndex (s: string) : int option =
         let c = s[i]
 
         if inStr then
-            if c = '\\' then i <- i + 1
-            elif c = '"' then inStr <- false
+            if c = '\\' then
+                i <- i + 1
+            elif c = '"' then
+                inStr <- false
         else
             match c with
             | '"' -> inStr <- true
-            | '(' | '[' | '{' -> depth <- depth + 1
-            | ')' | ']' | '}' -> depth <- depth - 1
+            | '('
+            | '['
+            | '{' -> depth <- depth + 1
+            | ')'
+            | ']'
+            | '}' -> depth <- depth - 1
             | '-' when depth = 0 && s[i + 1] = '>' -> found <- i
             | _ -> ()
 
@@ -430,7 +448,9 @@ let armArrowIndex (s: string) : int option =
 /// expression — not a block-let head awaiting its body on the next
 /// same-indent line. A `for`/`pfor` takes its own `in`.
 let private hasInlineIn (piece: string) : bool =
-    let isWord c = System.Char.IsLetterOrDigit c || c = '_'
+    let isWord c =
+        System.Char.IsLetterOrDigit c || c = '_'
+
     let mutable depth = 0
     let mutable inStr = false
     let mutable i = 0
@@ -442,8 +462,10 @@ let private hasInlineIn (piece: string) : bool =
         let c = piece[i]
 
         if inStr then
-            if c = '\\' then i <- i + 1
-            elif c = '"' then inStr <- false
+            if c = '\\' then
+                i <- i + 1
+            elif c = '"' then
+                inStr <- false
 
             i <- i + 1
         elif c = '"' then
@@ -486,8 +508,8 @@ let private hasInlineIn (piece: string) : bool =
 
     openLets <= 0 && not lastWasIn
 
-let classifyPiece (piece: string) : PieceClass =
-    { Kind =
+let classifyPiece (piece: string) : PieceClass = {
+    Kind =
         if piece.StartsWith "|" then
             PieceKind.PipeHead
         elif
@@ -507,11 +529,11 @@ let classifyPiece (piece: string) : PieceClass =
             PieceKind.LetHead
         else
             PieceKind.Plain
-      Marker =
+    Marker =
         if isYamlMarkerPiece piece then MarkerKind.Yaml
         elif isHeredocMarkerPiece piece then MarkerKind.Heredoc
         else MarkerKind.NoMarker
-      OpensCompound =
+    OpensCompound =
         // within/for block heads close-and-wrap exactly like the
         // conditionals [D:dedent-join] — same machine, two more
         // members, not a fifth alignment stack (let-prefixed forms
@@ -530,20 +552,21 @@ let classifyPiece (piece: string) : PieceClass =
         || piece.StartsWith "poll "
         // and repeat [D:repeat]
         || piece.StartsWith "repeat "
-      ClosesBrace = piece.StartsWith "}"
-      ClosesParen = piece.StartsWith ")"
-      StartsField =
+    ClosesBrace = piece.StartsWith "}"
+    ClosesParen = piece.StartsWith ")"
+    StartsField =
         (match piece.IndexOf '=' with
          | i when i > 0 -> isIdentToken (piece.Substring(0, i).TrimEnd())
          | _ -> false)
-      // type-declaration fields carry `:` not `=`; attribute lines
-      // start their field [D:multiline-brackets]
-      StartsTypeField =
+    // type-declaration fields carry `:` not `=`; attribute lines
+    // start their field [D:multiline-brackets]
+    StartsTypeField =
         piece.StartsWith "[<"
         || (match piece.IndexOf ':' with
             | i when i > 0 -> isIdentToken (piece.Substring(0, i).TrimEnd())
             | _ -> false)
-      BraceDelta = braceDelta piece }
+    BraceDelta = braceDelta piece
+}
 
 /// The multiline-lambda opener [D:multiline-lambda]: a line ends with
 /// `->` while its innermost unclosed paren opens a `fun` — `(fun r ->`
@@ -648,35 +671,35 @@ let private endsInBinderHeadSeg (marker: string) (lastSeg: string) : bool =
         false
     else
 
-    // the head may sit mid-segment (behind a let, a lambda arrow, a
-    // pipe) — find its last occurrence outside strings (the one
-    // scanner), then require the binder-`=` shape; the tail then runs to
-    // the segment's end, which is the thing a space join would feed
-    let lastStart =
-        foldOutsideStrings
-            (fun acc i _ ->
-                if
-                    i + marker.Length <= lastSeg.Length
-                    && lastSeg.Substring(i, marker.Length) = marker
-                    // word-bounded: an identifier merely ending in the
-                    // letters must not trip it (the `do` rule's argument)
-                    && (i = 0
-                        || not (System.Char.IsLetterOrDigit lastSeg[i - 1] || lastSeg[i - 1] = '_'))
-                then
-                    i
-                else
-                    acc)
-            -1
-            lastSeg
+        // the head may sit mid-segment (behind a let, a lambda arrow, a
+        // pipe) — find its last occurrence outside strings (the one
+        // scanner), then require the binder-`=` shape; the tail then runs to
+        // the segment's end, which is the thing a space join would feed
+        let lastStart =
+            foldOutsideStrings
+                (fun acc i _ ->
+                    if
+                        i + marker.Length <= lastSeg.Length
+                        && lastSeg.Substring(i, marker.Length) = marker
+                        // word-bounded: an identifier merely ending in the
+                        // letters must not trip it (the `do` rule's argument)
+                        && (i = 0
+                            || not (System.Char.IsLetterOrDigit lastSeg[i - 1] || lastSeg[i - 1] = '_'))
+                    then
+                        i
+                    else
+                        acc)
+                -1
+                lastSeg
 
-    lastStart >= 0
-    && (let rest = lastSeg.Substring(lastStart + marker.Length)
+        lastStart >= 0
+        && (let rest = lastSeg.Substring(lastStart + marker.Length)
 
-        match rest.IndexOf '=' with
-        | -1 -> false
-        | eq ->
-            rest.Substring(0, eq).Trim()
-            |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
+            match rest.IndexOf '=' with
+            | -1 -> false
+            | eq ->
+                rest.Substring(0, eq).Trim()
+                |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
 
 // the last segment of a full logical-line text (after the last sibling
 // sentinel) — the whole-text callers (dangleOpensBlock on a short piece)
@@ -760,10 +783,10 @@ let opensIndentedBody (before: string) : bool =
             |> List.exists (fun w ->
                 t.EndsWith w
                 && t.Length > w.Length
-                && (System.Char.IsLetterOrDigit t[t.Length - w.Length - 1] || t[t.Length - w.Length - 1] = '_'))
+                && (System.Char.IsLetterOrDigit t[t.Length - w.Length - 1]
+                    || t[t.Length - w.Length - 1] = '_'))
 
-        let comparison =
-            [ "=="; "<="; ">="; "!=" ] |> List.exists t.EndsWith
+        let comparison = [ "=="; "<="; ">="; "!=" ] |> List.exists t.EndsWith
 
         let fieldEq = t.EndsWith "=" && braceDelta t > 0
 
@@ -864,11 +887,12 @@ let docAttachments (lines: string list) : DocAttach list =
             if not (List.isEmpty pending) then
                 match declName code with
                 | Some(col, len) ->
-                    acc.Add
-                        { Line = ln
-                          Col = col
-                          Len = len
-                          Doc = List.rev pending } // reverse the consed run
+                    acc.Add {
+                        Line = ln
+                        Col = col
+                        Len = len
+                        Doc = List.rev pending
+                    } // reverse the consed run
                 | None -> ()
 
             pending <- [])
@@ -886,36 +910,54 @@ let retiredDistrictMarker (piece: string) : bool =
         false
     else
 
-    let lastToken =
-        match piece.LastIndexOf ' ' with
-        | -1 -> piece
-        | i -> piece.Substring(i + 1)
+        let lastToken =
+            match piece.LastIndexOf ' ' with
+            | -1 -> piece
+            | i -> piece.Substring(i + 1)
 
-    // the district marker ended a COMMAND line; a `!name` after an
-    // expression-position token (or alone) is C negation, which the
-    // parser teaches as `not` [D:left-to-right-ops]
-    let before =
-        let rest = piece.Substring(0, piece.Length - lastToken.Length).TrimEnd()
+        // the district marker ended a COMMAND line; a `!name` after an
+        // expression-position token (or alone) is C negation, which the
+        // parser teaches as `not` [D:left-to-right-ops]
+        let before =
+            let rest = piece.Substring(0, piece.Length - lastToken.Length).TrimEnd()
 
-        match rest.LastIndexOf ' ' with
-        | -1 -> rest
-        | i -> rest.Substring(i + 1)
+            match rest.LastIndexOf ' ' with
+            | -1 -> rest
+            | i -> rest.Substring(i + 1)
 
-    // (a standalone `!e`, or one after then/else/->, was a district header
-    // and keeps its retirement teaching)
-    let negationSlot =
-        // an operator's operand too: `1 + !x` is the negation slip
-        List.contains
-            before
-            [ "="; "("; "&&"; "||"; "<-"; ","; "["; "not"; "=="; "<>"; "+"; "-"; "*"; "/"; "%"; "<"; ">"; "<="; ">=" ]
-        || before.EndsWith "("
+        // (a standalone `!e`, or one after then/else/->, was a district header
+        // and keeps its retirement teaching)
+        let negationSlot =
+            // an operator's operand too: `1 + !x` is the negation slip
+            List.contains before [
+                "="
+                "("
+                "&&"
+                "||"
+                "<-"
+                ","
+                "["
+                "not"
+                "=="
+                "<>"
+                "+"
+                "-"
+                "*"
+                "/"
+                "%"
+                "<"
+                ">"
+                "<="
+                ">="
+            ]
+            || before.EndsWith "("
 
-    piece = "!"
-    || piece.EndsWith " !"
-    || (lastToken.StartsWith "!"
-        && not (lastToken.Contains "(")
-        && isIdentToken (lastToken.Substring 1)
-        && not negationSlot)
+        piece = "!"
+        || piece.EndsWith " !"
+        || (lastToken.StartsWith "!"
+            && not (lastToken.Contains "(")
+            && isIdentToken (lastToken.Substring 1)
+            && not negationSlot)
 
 let private markerOpener (m: MarkerKind) : (string * int * bool) option =
     match m with
@@ -932,33 +974,36 @@ let private markerOpener (m: MarkerKind) : (string * int * bool) option =
 // per statement made every collection walk them all. Equality is the
 // line's text and segments only, as before the fields moved here.
 [<CustomEquality; NoComparison>]
-type LogicalLine =
-    { Text: string
-      Head: int
-      Segments: (int * int * int) list
-      // where each segment's own text ends, aligned with Segments (the
-      // join text after it is no physical column); empty for a line not
-      // from the assembler
-      Ends: int[]
-      // translate's index, built on first use; it names the Text,
-      // Segments and Ends it was built from, so a copy never reads a
-      // stale one
-      mutable PosIndex: obj }
+type LogicalLine = {
+    Text: string
+    Head: int
+    Segments: (int * int * int) list
+    // where each segment's own text ends, aligned with Segments (the
+    // join text after it is no physical column); empty for a line not
+    // from the assembler
+    Ends: int[]
+    // translate's index, built on first use; it names the Text,
+    // Segments and Ends it was built from, so a copy never reads a
+    // stale one
+    mutable PosIndex: obj
+} with
 
     override this.Equals(other) =
         match other with
         | :? LogicalLine as o -> this.Text = o.Text && this.Head = o.Head && this.Segments = o.Segments
         | _ -> false
 
-    override this.GetHashCode() = hash (this.Text, this.Head, this.Segments)
+    override this.GetHashCode() =
+        hash (this.Text, this.Head, this.Segments)
 
 // a one-physical-line LogicalLine — the REPL's and -e's spelling
-let singleLine (text: string) : LogicalLine =
-    { Text = text
-      Head = 1
-      Segments = [ (0, 1, 0) ]
-      Ends = [||]
-      PosIndex = null }
+let singleLine (text: string) : LogicalLine = {
+    Text = text
+    Head = 1
+    Segments = [ (0, 1, 0) ]
+    Ends = [||]
+    PosIndex = null
+}
 
 // Block lets — F# light syntax at the assembly layer, the same way F#'s own
 // lexer implements it (token insertion at offside boundaries): a continuation
@@ -1141,14 +1186,21 @@ let bracketFold
                                         k <- k + 1
 
                                         while k < piece.Length && piece[k] <> '"' do
-                                            if piece[k] = '\\' then k <- k + 1
+                                            if piece[k] = '\\' then
+                                                k <- k + 1
+
                                             k <- k + 1
                                     elif ch = '(' then
                                         depth <- depth + 1
                                     elif ch = ')' then
                                         depth <- depth - 1
-                                        if depth < 0 then stop <- true
-                                    elif depth = 0 && (ch = '=' || ch = ';' || ch = '{' || ch = '}' || ch = '[' || ch = ']') then
+
+                                        if depth < 0 then
+                                            stop <- true
+                                    elif
+                                        depth = 0
+                                        && (ch = '=' || ch = ';' || ch = '{' || ch = '}' || ch = '[' || ch = ']')
+                                    then
                                         stop <- true
                                     elif
                                         depth = 0
@@ -1219,31 +1271,33 @@ let bracketFold
 //   LastSegStart — index just past the last sibling sentinel (or 0): the
 //                 proc/serve binder-head scan runs over the last segment
 //                 only, never the whole growing text (LastIndexOf was O(N)).
-type private PendBuf =
-    { Sb: System.Text.StringBuilder
-      // the statement's first physical line (LogicalLine.Head)
-      Head: int
-      Segments: (int * int * int) list
-      // where each segment's own text ends (aligned with Segments): the
-      // synthetic join text after it is no physical column
-      Ends: int list
-      // index of the last non-whitespace char in Sb, or -1
-      LastNonWs: int
-      // index just past the last sibling sentinel (Parser.sibSep) in Sb, or 0
-      LastSegStart: int }
+type private PendBuf = {
+    Sb: System.Text.StringBuilder
+    // the statement's first physical line (LogicalLine.Head)
+    Head: int
+    Segments: (int * int * int) list
+    // where each segment's own text ends (aligned with Segments): the
+    // synthetic join text after it is no physical column
+    Ends: int list
+    // index of the last non-whitespace char in Sb, or -1
+    LastNonWs: int
+    // index just past the last sibling sentinel (Parser.sibSep) in Sb, or 0
+    LastSegStart: int
+}
 
-type private District =
-    { MarkerIndent: int
-      MarkerLine: int
-      Opener: string
-      Strip: int
-      Yaml: bool
-      // the marker kind that armed this district — errors name its word
-      Marker: MarkerKind
-      Active: int option
-      // a heredoc's outdented `//` line, transparent only if the block
-      // ends there — further content makes it an outdent error
-      OutdentedComment: int option }
+type private District = {
+    MarkerIndent: int
+    MarkerLine: int
+    Opener: string
+    Strip: int
+    Yaml: bool
+    // the marker kind that armed this district — errors name its word
+    Marker: MarkerKind
+    Active: int option
+    // a heredoc's outdented `//` line, transparent only if the block
+    // ends there — further content makes it an outdent error
+    OutdentedComment: int option
+}
 
 // content after an outdented heredoc comment: the comment sat inside the
 // block, where every line is content — refuse like any outdent
@@ -1258,54 +1312,56 @@ let private heredocCommentGap (dst: District) : string option =
 // a plain head, a `| pat ->` arm, an `else` [D:arm-blocks]
 let private armDistrict (marker: MarkerKind) (indent: int) (lineNo: int) : District option =
     markerOpener marker
-    |> Option.map (fun (opener, strip, isYaml) ->
-        { MarkerIndent = indent
-          MarkerLine = lineNo
-          Opener = opener
-          Strip = strip
-          Yaml = isYaml
-          Marker = marker
-          Active = None
-          OutdentedComment = None })
+    |> Option.map (fun (opener, strip, isYaml) -> {
+        MarkerIndent = indent
+        MarkerLine = lineNo
+        Opener = opener
+        Strip = strip
+        Yaml = isYaml
+        Marker = marker
+        Active = None
+        OutdentedComment = None
+    })
 
-type private Pend =
-    { Buf: PendBuf
-      Lets: (int * int) list
-      LastIndent: int
-      // sibling pipe columns, innermost first [D:pipe-alignment]: a
-      // consecutive `|` line must sit exactly on a group column; the
-      // first pipe after a non-pipe line opens a group. Per group:
-      // (groupCol, bodyCol, isForward, parenDepth) [D:match-pipe-offside]. isForward =
-      // a `|>` group vs a bare `|` (match/union arm) group; bodyCol = the
-      // arm body's column (after the arm `->`; for a dangling arm resolved
-      // to the body line's indent when it arrives; MaxValue until then).
-      // A forward `|>` landing on a bare arm group: at the `|` it closes
-      // the match, at or under the body it extends the arm, left of the
-      // body it is rejected.
-      // The 4th element is the paren depth at open: a line whose closers
-      // drop below it ends the group — `(match … | _ -> x)` leaves no arm
-      // group behind [D:compound-paren-prune]
-      PipeGroups: (int * int * bool * int) list
-      LastWasPipe: bool
-      District: District option
-      // (headIndent, textStart, parenDepthAtOpen) [D:compound-paren-prune]
-      Compounds: (int * int * int) list
-      ParenDepth: int
-      // the indent where the current statement started (statement = a
-      // sibling/`in` join, or the first line after a dangling head) —
-      // the lambda pop restores to this level, so a block sibling after
-      // the `)` sequences while a fold's init still applies
-      // [D:multiline-lambda]
-      StmtLevel: int
-      PrevDangles: bool
-      // open multiline lambdas (opening line, opener indent, paren depth
-      // before the open, statement level to restore on pop), innermost
-      // first [D:multiline-lambda] — popped by paren balance; the user's
-      // `)` is the closer
-      Lambdas: (int * int * int * int) list
-      // still-open brackets (kind, opening line, sibling-entry column)
-      // [D:multiline-brackets] [D:field-alignment]
-      Brackets: (char * int * int option) list }
+type private Pend = {
+    Buf: PendBuf
+    Lets: (int * int) list
+    LastIndent: int
+    // sibling pipe columns, innermost first [D:pipe-alignment]: a
+    // consecutive `|` line must sit exactly on a group column; the
+    // first pipe after a non-pipe line opens a group. Per group:
+    // (groupCol, bodyCol, isForward, parenDepth) [D:match-pipe-offside]. isForward =
+    // a `|>` group vs a bare `|` (match/union arm) group; bodyCol = the
+    // arm body's column (after the arm `->`; for a dangling arm resolved
+    // to the body line's indent when it arrives; MaxValue until then).
+    // A forward `|>` landing on a bare arm group: at the `|` it closes
+    // the match, at or under the body it extends the arm, left of the
+    // body it is rejected.
+    // The 4th element is the paren depth at open: a line whose closers
+    // drop below it ends the group — `(match … | _ -> x)` leaves no arm
+    // group behind [D:compound-paren-prune]
+    PipeGroups: (int * int * bool * int) list
+    LastWasPipe: bool
+    District: District option
+    // (headIndent, textStart, parenDepthAtOpen) [D:compound-paren-prune]
+    Compounds: (int * int * int) list
+    ParenDepth: int
+    // the indent where the current statement started (statement = a
+    // sibling/`in` join, or the first line after a dangling head) —
+    // the lambda pop restores to this level, so a block sibling after
+    // the `)` sequences while a fold's init still applies
+    // [D:multiline-lambda]
+    StmtLevel: int
+    PrevDangles: bool
+    // open multiline lambdas (opening line, opener indent, paren depth
+    // before the open, statement level to restore on pop), innermost
+    // first [D:multiline-lambda] — popped by paren balance; the user's
+    // `)` is the closer
+    Lambdas: (int * int * int * int) list
+    // still-open brackets (kind, opening line, sibling-entry column)
+    // [D:multiline-brackets] [D:field-alignment]
+    Brackets: (char * int * int option) list
+}
 
 // The join algebra: every way a continuation line attaches to the
 // pending statement, its inserted text in one place. joinedStart
@@ -1348,9 +1404,11 @@ let private bufAppend (b: PendBuf) (s: string) : PendBuf =
     b.Sb.Append s |> ignore
     let nonWs, segStart = scanTail b.Sb from b.LastNonWs b.LastSegStart
 
-    { b with
-        LastNonWs = nonWs
-        LastSegStart = segStart }
+    {
+        b with
+            LastNonWs = nonWs
+            LastSegStart = segStart
+    }
 
 let private bufLen (b: PendBuf) : int = b.Sb.Length
 
@@ -1485,12 +1543,13 @@ let private bufEndsInEnvHead (b: PendBuf) : bool =
 
 // materialize a LogicalLine from a finished pending buffer (segments are
 // reversed at the boundary exactly as before)
-let private bufToLL (b: PendBuf) : LogicalLine =
-    { Text = b.Sb.ToString()
-      Head = b.Head
-      Segments = List.rev b.Segments
-      Ends = List.rev b.Ends |> List.toArray
-      PosIndex = null }
+let private bufToLL (b: PendBuf) : LogicalLine = {
+    Text = b.Sb.ToString()
+    Head = b.Head
+    Segments = List.rev b.Segments
+    Ends = List.rev b.Ends |> List.toArray
+    PosIndex = null
+}
 
 // a line's segments re-pointed at the physical indents in `indents`
 // (line -> leading spaces): assembly recovery re-indents a misaligned
@@ -1498,14 +1557,16 @@ let private bufToLL (b: PendBuf) : LogicalLine =
 // [D:recovery-physical-indent]
 let withPhysicalIndents (indents: Map<int, int>) (ll: LogicalLine) : LogicalLine =
     if ll.Segments |> List.exists (fun (_, l, _) -> indents.ContainsKey l) then
-        { ll with
-            Segments =
-                ll.Segments
-                |> List.map (fun (js, l, i) ->
-                    match indents.TryFind l with
-                    | Some phys -> js, l, phys
-                    | None -> js, l, i)
-            PosIndex = null }
+        {
+            ll with
+                Segments =
+                    ll.Segments
+                    |> List.map (fun (js, l, i) ->
+                        match indents.TryFind l with
+                        | Some phys -> js, l, phys
+                        | None -> js, l, i)
+                PosIndex = null
+        }
     else
         ll
 
@@ -1514,12 +1575,14 @@ let private bufNew (text: string) (lineNo: int) (indent: int) : PendBuf =
     let sb = System.Text.StringBuilder(text)
     let nonWs, segStart = scanTail sb 0 -1 0
 
-    { Sb = sb
-      Head = lineNo
-      Segments = [ (0, lineNo, indent) ]
-      Ends = [ text.Length ]
-      LastNonWs = nonWs
-      LastSegStart = segStart }
+    {
+        Sb = sb
+        Head = lineNo
+        Segments = [ (0, lineNo, indent) ]
+        Ends = [ text.Length ]
+        LastNonWs = nonWs
+        LastSegStart = segStart
+    }
 
 let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (indent: int) : PendBuf =
     // joinedStart derives from bufLen at the same point the old code read
@@ -1551,11 +1614,12 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
 
             let nonWs, segStart = scanTail b.Sb 0 -1 0
 
-            let b =
-                { b with
+            let b = {
+                b with
                     LastNonWs = nonWs
                     LastSegStart = segStart
-                    Ends = b.Ends |> List.map (min b.Sb.Length) }
+                    Ends = b.Ends |> List.map (min b.Sb.Length)
+            }
 
             bufAppend b (opener + piece + ")")
         | JDistrictSibling opener -> bufAppend b (" ; " + opener + piece + ")")
@@ -1565,11 +1629,12 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
             b.Sb.Remove(b.Sb.Length - 1, 1) |> ignore
             let nonWs, segStart = scanTail b.Sb 0 -1 0
 
-            let b =
-                { b with
+            let b = {
+                b with
                     LastNonWs = nonWs
                     LastSegStart = segStart
-                    Ends = b.Ends |> List.map (min b.Sb.Length) }
+                    Ends = b.Ends |> List.map (min b.Sb.Length)
+            }
 
             bufAppend b (" " + piece + ")")
         | JYamlLine rel -> bufAppend b (Parser.sibSepStr + String(' ', rel) + piece)
@@ -1582,9 +1647,11 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
         | JDistrictPipe -> bufLen b - 1
         | _ -> bufLen b
 
-    { b with
-        Segments = (joinedStart, lineNo, indent) :: b.Segments
-        Ends = pieceEnd :: b.Ends }
+    {
+        b with
+            Segments = (joinedStart, lineNo, indent) :: b.Segments
+            Ends = pieceEnd :: b.Ends
+    }
 
 // onMisaligned (line, siblings' column) fires before a sibling-alignment
 // error — the recovering assembler re-indents that line instead of
@@ -1665,9 +1732,13 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
             | Some p when not p.Brackets.IsEmpty -> braceOpen p
             | Some { Lambdas = (oline, _, _, _) :: _ } ->
                 Error $"line {oline}: this lambda's '(' is still open when the statement ends — close the paren"
-            | Some { District = Some { Active = None
-                                       MarkerLine = mLine
-                                       Marker = m } } ->
+            | Some {
+                       District = Some {
+                                           Active = None
+                                           MarkerLine = mLine
+                                           Marker = m
+                                       }
+                   } ->
                 let what =
                     match m with
                     | MarkerKind.Heredoc -> "'<<<'"
@@ -1693,14 +1764,19 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
             b.Sb.Insert(ts, "(") |> ignore
             b.Sb.Append ")" |> ignore
 
-            { b with
-                LastNonWs = b.Sb.Length - 1
-                LastSegStart = (if b.LastSegStart >= ts then b.LastSegStart + 1 else b.LastSegStart)
-                Segments =
-                    b.Segments
-                    |> List.map (fun (js, l, i) -> (if js >= ts then js + 1 else js), l, i)
-                Ends =
-                    List.map2 (fun (js, _, _) e -> if js >= ts || e > ts then e + 1 else e) b.Segments b.Ends }
+            {
+                b with
+                    LastNonWs = b.Sb.Length - 1
+                    LastSegStart =
+                        (if b.LastSegStart >= ts then
+                             b.LastSegStart + 1
+                         else
+                             b.LastSegStart)
+                    Segments =
+                        b.Segments
+                        |> List.map (fun (js, l, i) -> (if js >= ts then js + 1 else js), l, i)
+                    Ends = List.map2 (fun (js, _, _) e -> if js >= ts || e > ts then e + 1 else e) b.Segments b.Ends
+            }
 
         let folded =
             numbered
@@ -1739,11 +1815,14 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             // content keeps it, so it rides as an empty
                             // verbatim line; the template parser skips blanks
                             // everywhere outside a block scalar's content
-                            | Some({ District = Some { Active = Some _; Yaml = true } } as p) ->
+                            | Some({
+                                       District = Some { Active = Some _; Yaml = true }
+                                   } as p) ->
                                 Ok(
-                                    Some
-                                        { p with
-                                            Buf = applyJoin (JYamlLine 0) p.Buf "" lineNo 0 },
+                                    Some {
+                                        p with
+                                            Buf = applyJoin (JYamlLine 0) p.Buf "" lineNo 0
+                                    },
                                     acc,
                                     blankSinceHead
                                 )
@@ -1762,25 +1841,33 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             // a comment-shaped block line is content, so it
                             // obeys the content indentation rule
                             // [D:spaces-only-indent]
-                            | Some { District = Some { Yaml = true; MarkerIndent = m } } when
-                                (leadingTabCol raw).IsSome
-                                && leadingSpacesTabs raw > m
-                                ->
+                            | Some {
+                                       District = Some { Yaml = true; MarkerIndent = m }
+                                   } when (leadingTabCol raw).IsSome && leadingSpacesTabs raw > m ->
                                 Error(tabIndentError lineNo raw)
-                            | Some({ District = Some({ Active = Some bse
-                                                       Yaml = true
-                                                       MarkerIndent = m } as dst) } as p) when
-                                (let ind = leadingSpaces raw in ind > m && ind >= bse)
-                                ->
+                            | Some({
+                                       District = Some({
+                                                           Active = Some bse
+                                                           Yaml = true
+                                                           MarkerIndent = m
+                                                       } as dst)
+                                   } as p) when (let ind = leadingSpaces raw in ind > m && ind >= bse) ->
                                 let ind = leadingSpaces raw
 
                                 if (heredocCommentGap dst).IsSome then
                                     Error (heredocCommentGap dst).Value
                                 else
                                     Ok(
-                                        Some
-                                            { p with
-                                                Buf = applyJoin (JYamlLine(ind - bse)) p.Buf (raw.Substring ind) lineNo ind },
+                                        Some {
+                                            p with
+                                                Buf =
+                                                    applyJoin
+                                                        (JYamlLine(ind - bse))
+                                                        p.Buf
+                                                        (raw.Substring ind)
+                                                        lineNo
+                                                        ind
+                                        },
                                         acc,
                                         blankSinceHead
                                     )
@@ -1794,31 +1881,49 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             // so a leading one stays transparent there (an
                             // inserted comment must not fix the block base —
                             // the fuzzer's comment-neutrality invariant)
-                            | Some({ District = Some({ Active = None
-                                                       Yaml = true
-                                                       Marker = MarkerKind.Heredoc
-                                                       MarkerIndent = m } as dst) } as p) when
-                                leadingSpaces raw > m
-                                ->
+                            | Some({
+                                       District = Some({
+                                                           Active = None
+                                                           Yaml = true
+                                                           Marker = MarkerKind.Heredoc
+                                                           MarkerIndent = m
+                                                       } as dst)
+                                   } as p) when leadingSpaces raw > m ->
                                 let ind = leadingSpaces raw
 
                                 Ok(
-                                    Some
-                                        { p with
+                                    Some {
+                                        p with
                                             Buf = applyJoin (JYamlLine 0) p.Buf (raw.Substring ind) lineNo ind
                                             LastIndent = ind
-                                            District = Some { dst with Active = Some ind } },
+                                            District = Some { dst with Active = Some ind }
+                                    },
                                     acc,
                                     blankSinceHead
                                 )
                             // an outdented `//` inside an ACTIVE heredoc: transparent
                             // only if the block ends here; content after it makes it
                             // an outdent error (pasted code lost its comment)
-                            | Some({ District = Some({ Active = Some _
-                                                       Yaml = true
-                                                       Marker = MarkerKind.Heredoc
-                                                       OutdentedComment = None } as dst) } as p) ->
-                                Ok(Some { p with District = Some { dst with OutdentedComment = Some lineNo } }, acc, blankSinceHead)
+                            | Some({
+                                       District = Some({
+                                                           Active = Some _
+                                                           Yaml = true
+                                                           Marker = MarkerKind.Heredoc
+                                                           OutdentedComment = None
+                                                       } as dst)
+                                   } as p) ->
+                                Ok(
+                                    Some {
+                                        p with
+                                            District =
+                                                Some {
+                                                    dst with
+                                                        OutdentedComment = Some lineNo
+                                                }
+                                    },
+                                    acc,
+                                    blankSinceHead
+                                )
                             | Some p -> Ok(Some p, acc, blankSinceHead)
                             | None -> Ok(None, acc, blankSinceHead)
                         elif
@@ -1862,7 +1967,10 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                     let rawPiece = raw.Substring indent
 
                                     let piece =
-                                        if obj.ReferenceEquals(raw, code) then rawPiece else code.Substring indent
+                                        if obj.ReferenceEquals(raw, code) then
+                                            rawPiece
+                                        else
+                                            code.Substring indent
 
                                     let cls = classifyPiece piece
 
@@ -1960,11 +2068,12 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                             | Ok anchored ->
                                                 bracketFold lineNo indent anchored piece
                                                 |> Result.bind (fun brackets ->
-                                                    let joinedP =
-                                                        { p with
+                                                    let joinedP = {
+                                                        p with
                                                             Buf = applyJoin join p.Buf piece lineNo indent
                                                             LastIndent = indent
-                                                            Brackets = brackets }
+                                                            Brackets = brackets
+                                                    }
 
                                                     if not brackets.IsEmpty then
                                                         Ok(Some joinedP, acc, blankSinceHead)
@@ -2006,15 +2115,16 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                     kept
 
                                                             Ok(
-                                                                Some
-                                                                    { joinedP with
+                                                                Some {
+                                                                    joinedP with
                                                                         LastIndent = backTo
                                                                         StmtLevel = stmtLevel
                                                                         ParenDepth = depth
                                                                         Lambdas = kept
                                                                         Compounds =
                                                                             p.Compounds
-                                                                            |> List.filter (fun (_, _, d) -> d <= depth)
+                                                                            |> List.filter (fun (_, _, d) ->
+                                                                                d <= depth)
                                                                         PipeGroups =
                                                                             if popped.IsEmpty then
                                                                                 p.PipeGroups
@@ -2025,7 +2135,11 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                                 |> List.filter (fun (_, _, _, d) ->
                                                                                     d <= depth)
                                                                         LastWasPipe =
-                                                                            if popped.IsEmpty then p.LastWasPipe else false },
+                                                                            if popped.IsEmpty then
+                                                                                p.LastWasPipe
+                                                                            else
+                                                                                false
+                                                                },
                                                                 acc,
                                                                 blankSinceHead
                                                             ))
@@ -2037,11 +2151,12 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                 // the first yaml line fixes the block base; it rides
                                                 // at relative indent 0 [D:yaml-district]
                                                 Ok(
-                                                    Some
-                                                        { p with
+                                                    Some {
+                                                        p with
                                                             Buf = applyJoin (JYamlLine 0) p.Buf rawPiece lineNo indent
                                                             LastIndent = indent
-                                                            District = Some { dst with Active = Some indent } },
+                                                            District = Some { dst with Active = Some indent }
+                                                    },
                                                     acc,
                                                     blankSinceHead
                                                 )
@@ -2060,8 +2175,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                         $"line {lineNo}: this {noun} line outdents below the block's first line"
                                                 else
                                                     Ok(
-                                                        Some
-                                                            { p with
+                                                        Some {
+                                                            p with
                                                                 Buf =
                                                                     applyJoin
                                                                         (JYamlLine(indent - bse))
@@ -2069,15 +2184,16 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                         rawPiece
                                                                         lineNo
                                                                         indent
-                                                                LastIndent = indent },
+                                                                LastIndent = indent
+                                                        },
                                                         acc,
                                                         blankSinceHead
                                                     )
                                             | Some({ Active = None } as dst) when indent > dst.MarkerIndent ->
                                                 districtLineCheck lineNo cls
                                                 |> Result.map (fun () ->
-                                                    Some
-                                                        { p with
+                                                    Some {
+                                                        p with
                                                             Buf =
                                                                 applyJoin
                                                                     (JDistrictOpen(dst.Strip, dst.Opener))
@@ -2086,12 +2202,15 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                     lineNo
                                                                     indent
                                                             LastIndent = indent
-                                                            District = Some { dst with Active = Some indent } },
+                                                            District = Some { dst with Active = Some indent }
+                                                    },
                                                     acc,
                                                     blankSinceHead)
-                                            | Some { Active = None
-                                                     MarkerLine = mLine
-                                                     Marker = m } ->
+                                            | Some {
+                                                       Active = None
+                                                       MarkerLine = mLine
+                                                       Marker = m
+                                                   } ->
                                                 let what =
                                                     match m with
                                                     | MarkerKind.Heredoc -> "'<<<'"
@@ -2101,18 +2220,19 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                             | Some({ Active = Some d } as dst) when indent > dst.MarkerIndent ->
                                                 if cls.Kind = PieceKind.PipeHead then
                                                     Ok(
-                                                        Some
-                                                            { p with
+                                                        Some {
+                                                            p with
                                                                 Buf = applyJoin JDistrictPipe p.Buf piece lineNo indent
-                                                                LastIndent = indent },
+                                                                LastIndent = indent
+                                                        },
                                                         acc,
                                                         blankSinceHead
                                                     )
                                                 elif indent = d then
                                                     districtLineCheck lineNo cls
                                                     |> Result.map (fun () ->
-                                                        Some
-                                                            { p with
+                                                        Some {
+                                                            p with
                                                                 Buf =
                                                                     applyJoin
                                                                         (JDistrictSibling dst.Opener)
@@ -2120,7 +2240,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                         piece
                                                                         lineNo
                                                                         indent
-                                                                LastIndent = indent },
+                                                                LastIndent = indent
+                                                        },
                                                         acc,
                                                         blankSinceHead)
                                                 else
@@ -2137,11 +2258,12 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                 // (silent corruption); appending districtClose marks
                                                 // the extent, and districtTail stops there so the
                                                 // expression grammar resumes on the reprocessed line.
-                                                go
-                                                    { p with
+                                                go {
+                                                    p with
                                                         District = None
                                                         Buf = bufAppend p.Buf Parser.districtCloseStr
-                                                        LastIndent = dst.MarkerIndent }
+                                                        LastIndent = dst.MarkerIndent
+                                                }
                                             // the multiline lambda's closer and leak guard
                                             // [D:multiline-lambda]: a `)`-headed line continues
                                             // the statement at any indent; any other line at or
@@ -2188,8 +2310,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
 
                                                         bracketFold lineNo indent [] piece
                                                         |> Result.map (fun brackets ->
-                                                            Some
-                                                                { p with
+                                                            Some {
+                                                                p with
                                                                     Buf =
                                                                         applyJoin
                                                                             (if
@@ -2214,10 +2336,13 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                         |> List.filter (fun (_, _, d) -> d <= depth)
                                                                     PipeGroups =
                                                                         p.PipeGroups
-                                                                        |> List.skipWhile (fun (g, _, _, _) -> g > backTo)
-                                                                        |> List.filter (fun (_, _, _, d) -> d <= depth)
+                                                                        |> List.skipWhile (fun (g, _, _, _) ->
+                                                                            g > backTo)
+                                                                        |> List.filter (fun (_, _, _, d) ->
+                                                                            d <= depth)
                                                                     LastWasPipe = false
-                                                                    Brackets = brackets },
+                                                                    Brackets = brackets
+                                                            },
                                                             acc,
                                                             blankSinceHead)
                                             | None ->
@@ -2236,7 +2361,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                     | _ ->
                                                         // deeper groups close at this line's column
                                                         let groups =
-                                                            p.PipeGroups |> List.skipWhile (fun (g, _, _, _) -> g > indent)
+                                                            p.PipeGroups
+                                                            |> List.skipWhile (fun (g, _, _, _) -> g > indent)
 
                                                         // the arm body's column [D:match-pipe-offside]: the
                                                         // token after the arm `->` for an inline body;
@@ -2290,7 +2416,10 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                 | _ ->
                                                                     // at or under the body: extend the arm
                                                                     // body, opening a forward group
-                                                                    Ok(false, (indent, indent, true, p.ParenDepth) :: groups)
+                                                                    Ok(
+                                                                        false,
+                                                                        (indent, indent, true, p.ParenDepth) :: groups
+                                                                    )
                                                             elif not p.LastWasPipe || p.PrevDangles then
                                                                 // first pipe after a non-pipe line
                                                                 // opens a group — anchored at or
@@ -2318,7 +2447,10 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                     | _ ->
                                                                         Ok(
                                                                             false,
-                                                                            (indent, (if isFwd then indent else bodyCol), isFwd, p.ParenDepth)
+                                                                            (indent,
+                                                                             (if isFwd then indent else bodyCol),
+                                                                             isFwd,
+                                                                             p.ParenDepth)
                                                                             :: groups
                                                                         )
                                                             else
@@ -2389,7 +2521,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                     groups
 
                                                             let pipeGroups =
-                                                                unpruned |> List.filter (fun (_, _, _, d) -> d <= depth)
+                                                                unpruned
+                                                                |> List.filter (fun (_, _, _, d) -> d <= depth)
 
                                                             let lastIndent, stmtLevel =
                                                                 match poppedL with
@@ -2399,8 +2532,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                     restore, restore
 
                                                             Ok(
-                                                                Some
-                                                                    { p with
+                                                                Some {
+                                                                    p with
                                                                         Buf =
                                                                             applyJoin
                                                                                 // until/always join at the sentinel:
@@ -2440,7 +2573,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                         Compounds =
                                                                             compounds
                                                                             |> List.filter (fun (_, _, d) ->
-                                                                                d <= depth) },
+                                                                                d <= depth)
+                                                                },
                                                                 acc,
                                                                 blankSinceHead
                                                             )
@@ -2493,9 +2627,17 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                 rest, JIn
                                                             // a proc head's block joins sentineled even in
                                                             // the dangle position [D:scoped-procs]
-                                                            | _ when bufEndsInProcHead buf || bufEndsInServeHead buf || bufEndsInEnvHead buf ->
+                                                            | _ when
+                                                                bufEndsInProcHead buf
+                                                                || bufEndsInServeHead buf
+                                                                || bufEndsInEnvHead buf
+                                                                ->
                                                                 p.Lets, JStmtSibling
-                                                            | _ when p.PrevDangles && indent > p.LastIndent && bufEndsInBareRepeat buf ->
+                                                            | _ when
+                                                                p.PrevDangles
+                                                                && indent > p.LastIndent
+                                                                && bufEndsInBareRepeat buf
+                                                                ->
                                                                 p.Lets, JStmtSibling
                                                             // the first line after a dangling head opens its
                                                             // body — a stale statement level from an earlier
@@ -2587,8 +2729,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
 
                                                             bracketFold lineNo indent [] piece
                                                             |> Result.map (fun brackets ->
-                                                                Some
-                                                                    { p with
+                                                                Some {
+                                                                    p with
                                                                         Buf = joined
                                                                         Lets = lets
                                                                         LastIndent = lastIndent
@@ -2613,8 +2755,10 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                              | pg -> pg)
                                                                             |> List.skipWhile (fun (g, _, _, _) ->
                                                                                 g > lastIndent)
-                                                                            |> List.filter (fun (_, _, _, d) -> d <= depth)
-                                                                        LastWasPipe = false },
+                                                                            |> List.filter (fun (_, _, _, d) ->
+                                                                                d <= depth)
+                                                                        LastWasPipe = false
+                                                                },
                                                                 acc,
                                                                 blankSinceHead)
 
@@ -2651,34 +2795,35 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                             |> Result.bind (fun acc ->
                                 bracketFold lineNo 0 [] rawT
                                 |> Result.map (fun brackets ->
-                                    Some
-                                        { Buf =
+                                    Some {
+                                        Buf =
                                             match joinedBuf with
                                             | Some b -> applyJoin JSpace b rawT lineNo 0
                                             | None -> bufNew raw lineNo 0
-                                          Lets = []
-                                          LastIndent = 0
-                                          District = armDistrict cls.Marker 0 lineNo
-                                          // a fresh logical-line head that opens a
-                                          // compound is tracked too [D:match-pipe-offside]
-                                          // — so a later dedented `|>` can wrap it
-                                          // `(match …) |> f`; a sibling head already is
-                                          Compounds =
-                                              if cls.OpensCompound && joinedBuf.IsNone then
-                                                  [ (0, 0, 0) ]
-                                              else
-                                                  []
-                                          ParenDepth = parenDelta rawT
-                                          StmtLevel = 0
-                                          PrevDangles = dangleOpensBlock rawT
-                                          Lambdas =
+                                        Lets = []
+                                        LastIndent = 0
+                                        District = armDistrict cls.Marker 0 lineNo
+                                        // a fresh logical-line head that opens a
+                                        // compound is tracked too [D:match-pipe-offside]
+                                        // — so a later dedented `|>` can wrap it
+                                        // `(match …) |> f`; a sibling head already is
+                                        Compounds =
+                                            if cls.OpensCompound && joinedBuf.IsNone then
+                                                [ (0, 0, 0) ]
+                                            else
+                                                []
+                                        ParenDepth = parenDelta rawT
+                                        StmtLevel = 0
+                                        PrevDangles = dangleOpensBlock rawT
+                                        Lambdas =
                                             (if lambdaOpens rawT then
                                                  [ (lineNo, 0, parenDelta rawT - 1, 0) ]
                                              else
                                                  [])
-                                          PipeGroups = []
-                                          LastWasPipe = false
-                                          Brackets = brackets },
+                                        PipeGroups = []
+                                        LastWasPipe = false
+                                        Brackets = brackets
+                                    },
                                     acc,
                                     false)))
                 (Ok(None, [], false))
@@ -2693,8 +2838,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
 // pending statement) is "not yet countable" -> None. The piped REPL's
 // continuation oracle: an added line that keeps the count merged into the
 // pending statement; one that raises it started a new statement.
-let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
-    assembleWith (fun _ _ -> ()) numbered
+let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> = assembleWith (fun _ _ -> ()) numbered
 
 /// an assembly error's location [D:assembly-col]: the line its message
 /// names and that line's first non-blank column, with the message's
@@ -2752,7 +2896,12 @@ let pipedAttaches (buf: string list) (next: string) : bool =
         // a complete buffer plus a column-0 line that is pending on its
         // own (a heredoc/yaml opener, `let f x =`): the new statement
         // is what waits for more, not the old one [D:repl-multiline]
-        | Some _, None when next.Length > 0 && next[0] <> ' ' && next[0] <> '\t' && statementCount [ next ] = None ->
+        | Some _, None when
+            next.Length > 0
+            && next[0] <> ' '
+            && next[0] <> '\t'
+            && statementCount [ next ] = None
+            ->
             false
         | _, None -> true
         | None, Some _ -> true
@@ -2761,17 +2910,18 @@ let pipedAttaches (buf: string list) (next: string) : bool =
 // a logical line's segment index, built once per line: translate is called
 // per typed node, and a linear scan per call made a long statement
 // quadratic (a 64k-line heredoc)
-type private SegIndex =
-    { Starts: int[]
-      Lines: int[]
-      Indents: int[]
-      // where each segment's own text ends — the synthetic join text
-      // between it and the next segment is no physical column
-      Ends: int[]
-      // what it was built from [D:line-pos-cache]
-      ForText: string
-      ForSegments: (int * int * int) list
-      ForEnds: int[] }
+type private SegIndex = {
+    Starts: int[]
+    Lines: int[]
+    Indents: int[]
+    // where each segment's own text ends — the synthetic join text
+    // between it and the next segment is no physical column
+    Ends: int[]
+    // what it was built from [D:line-pos-cache]
+    ForText: string
+    ForSegments: (int * int * int) list
+    ForEnds: int[]
+}
 
 let private buildSegIndex (ll: LogicalLine) : SegIndex =
     let segs = List.toArray ll.Segments
@@ -2782,15 +2932,21 @@ let private buildSegIndex (ll: LogicalLine) : SegIndex =
         if ll.Ends.Length = starts.Length then
             ll.Ends
         else
-            Array.init starts.Length (fun i -> if i + 1 < starts.Length then starts[i + 1] else ll.Text.Length)
+            Array.init starts.Length (fun i ->
+                if i + 1 < starts.Length then
+                    starts[i + 1]
+                else
+                    ll.Text.Length)
 
-    { Starts = starts
-      Lines = segs |> Array.map (fun (_, l, _) -> l)
-      Indents = segs |> Array.map (fun (_, _, i) -> i)
-      Ends = ends
-      ForText = ll.Text
-      ForSegments = ll.Segments
-      ForEnds = ll.Ends }
+    {
+        Starts = starts
+        Lines = segs |> Array.map (fun (_, l, _) -> l)
+        Indents = segs |> Array.map (fun (_, _, i) -> i)
+        Ends = ends
+        ForText = ll.Text
+        ForSegments = ll.Segments
+        ForEnds = ll.Ends
+    }
 
 let private segIndexOf (ll: LogicalLine) : SegIndex =
     match ll.PosIndex with
@@ -2832,8 +2988,10 @@ let translate (ll: LogicalLine) (col: int) : int * int =
         joinedIdx > ix.Ends[i]
         && next < ix.Starts.Length
         && (let mutable k = joinedIdx
+
             while k < ix.Starts[next] && ll.Text[k] = '(' do
                 k <- k + 1
+
             k = ix.Starts[next])
     then
         ix.Lines[next], ix.Indents[next] + 1
@@ -2934,9 +3092,12 @@ let private interpMasks (line: string) : bool[] * bool[] =
                     i <- i + 2
                 elif c = '"' then
                     str[i] <- true
-                    stack <- (if i > 0 && line[i - 1] = '@' then 'V'
-                              elif i > 0 && line[i - 1] = '$' then '$'
-                              else '"') :: stack
+
+                    stack <-
+                        (if i > 0 && line[i - 1] = '@' then 'V'
+                         elif i > 0 && line[i - 1] = '$' then '$'
+                         else '"')
+                        :: stack
                 elif c = '\'' && not (Scan.isTyvarTick line i) then
                     str[i] <- true
                     stack <- '\'' :: stack
@@ -3024,17 +3185,21 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                         // never a keyword, a form, or an alias
                         Some(if Extern.exists word then "34" else "31")
                     | slot ->
-                        if slot <> Complete.HeadSlot.No
-                           && i < line.Length
-                           && line[i] = '='
-                           && not (i + 1 < line.Length && line[i + 1] = '=') then
+                        if
+                            slot <> Complete.HeadSlot.No
+                            && i < line.Length
+                            && line[i] = '='
+                            && not (i + 1 < line.Length && line[i + 1] = '=')
+                        then
                             // an env-prefix name is not a head [D:env-prefix]
                             None
-                        elif slot = Complete.HeadSlot.Stage
-                             && (word = "and" || word = "or")
-                             && (match Complete.lastStage (line.Substring(0, start)) with
-                                 | Some(_, true) -> true
-                                 | _ -> false) then
+                        elif
+                            slot = Complete.HeadSlot.Stage
+                            && (word = "and" || word = "or")
+                            && (match Complete.lastStage (line.Substring(0, start)) with
+                                | Some(_, true) -> true
+                                | _ -> false)
+                        then
                             Some "34" // the chain words read as keywords [D:cmd-chaining]
                         elif Weir.Parser.keywords.Contains word then
                             // keywords: blue — the red family (31/35 render
@@ -3138,10 +3303,11 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
 
 // a `#sig` head directive [D:command-signatures]: tool + optional
 // override path + its physical line (so errors can name the declaration)
-type SigDecl =
-    { Tool: string
-      Override: string option
-      Line: int }
+type SigDecl = {
+    Tool: string
+    Override: string option
+    Line: int
+}
 
 // shebang/#sig peeling — one derivation for the runner and the
 // check-side analyzeLines. The head block takes #sig lines; a #-line
@@ -3164,19 +3330,23 @@ let private scriptBody (rawLines: string list) : string list * int * SigDecl lis
 
             let decl =
                 match t.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray with
-                | [ "#sig"; tool ] ->
-                    { Tool = tool
-                      Override = None
-                      Line = off + 1 }
-                | [ "#sig"; tool; path ] when path.StartsWith "\"" && path.EndsWith "\"" && path.Length > 1 ->
-                    { Tool = tool
-                      Override = Some(path.Substring(1, path.Length - 2))
-                      Line = off + 1 }
+                | [ "#sig"; tool ] -> {
+                    Tool = tool
+                    Override = None
+                    Line = off + 1
+                  }
+                | [ "#sig"; tool; path ] when path.StartsWith "\"" && path.EndsWith "\"" && path.Length > 1 -> {
+                    Tool = tool
+                    Override = Some(path.Substring(1, path.Length - 2))
+                    Line = off + 1
+                  }
                 | _ ->
                     // malformed: carry the raw for the diagnostic
-                    { Tool = ""
-                      Override = Some t
-                      Line = off + 1 }
+                    {
+                        Tool = ""
+                        Override = Some t
+                        Line = off + 1
+                    }
 
             sigs.Add decl
             rest <- tail
@@ -3203,40 +3373,42 @@ type CheckedStmt =
 // merge into the importer's tenv; Body replays at exec to build the
 // module's values. AbsPath is the path as reached; the identity is its
 // real path [D:module-once].
-and LoadedModule =
-    { Alias: string
-      // the module's own name (declared or filename-derived), independent
-      // of a site's `as` — a cached module re-aliases from this [D:modules-v1]
-      NaturalName: string
-      AbsPath: string
-      TypeDefs: (string * TypeDef) list
-      Members: (string * Scheme) list
-      // unsigned members [D:module-signatures]: never resolvable from an
-      // importer — carried so the import-of-private error can suggest
-      // the signature to add (type included)
-      PrivateMembers: (string * Scheme) list
-      TypeNames: string list
-      // each TypeDefs entry's identity [D:transitive-types]
-      TypeOrigins: (string * string) list
-      // each statement with its logical line [D:can-report]: the line
-      // carries the segment table, so a capability inside a module can
-      // name its own file:line:col like any diagnostic
-      Body: (LogicalLine * CheckedStmt) list
-      // each signed member's /// doc, read from its signature [D:module-signatures]
-      MemberDocs: Map<string, string list>
-      // a prompt import may take an alias an earlier import holds — the
-      // session's reload [D:repl-import]; scripts and -e never set it
-      MayRebind: bool }
+and LoadedModule = {
+    Alias: string
+    // the module's own name (declared or filename-derived), independent
+    // of a site's `as` — a cached module re-aliases from this [D:modules-v1]
+    NaturalName: string
+    AbsPath: string
+    TypeDefs: (string * TypeDef) list
+    Members: (string * Scheme) list
+    // unsigned members [D:module-signatures]: never resolvable from an
+    // importer — carried so the import-of-private error can suggest
+    // the signature to add (type included)
+    PrivateMembers: (string * Scheme) list
+    TypeNames: string list
+    // each TypeDefs entry's identity [D:transitive-types]
+    TypeOrigins: (string * string) list
+    // each statement with its logical line [D:can-report]: the line
+    // carries the segment table, so a capability inside a module can
+    // name its own file:line:col like any diagnostic
+    Body: (LogicalLine * CheckedStmt) list
+    // each signed member's /// doc, read from its signature [D:module-signatures]
+    MemberDocs: Map<string, string list>
+    // a prompt import may take an alias an earlier import holds — the
+    // session's reload [D:repl-import]; scripts and -e never set it
+    MayRebind: bool
+}
 
 // an import failure [D:modules-v1]. File=Some for a module-content error —
 // reported at the module's own site (Line/Col into that file) plus an
 // "imported here" note at the import line; File=None for an import-statement
 // error (self-import, missing file, not-a-module) reported at the import line.
-and ImportError =
-    { File: string option
-      Line: int
-      Col: int
-      Message: string }
+and ImportError = {
+    File: string option
+    Line: int
+    Col: int
+    Message: string
+}
 
 // resolves an `import` to a checked module, or an ImportError [D:modules-v1].
 // The caller binds it to the importing file's directory; the script-only
@@ -3250,18 +3422,19 @@ and ImportLoader = string -> Span -> string option -> Result<LoadedModule, Impor
 // type side is a Modules entry, the value side mangled "Self.member" keys
 // — module access checks `EField {EVar "Self"} field` -> TEVar "Self.field"
 let selfMembers: Map<string, Scheme> =
-    Map
-        [ "pid", generalize TInt
-          "args", generalize (TSeq TStr)
-          "stdin", generalize (TSeq TStr)
-          // scriptPath = the file's own path (a module sees its own);
-          // entryPath = the invoked script's, a process fact like args/stdin
-          // — the same for every file in the run [D:modules-v1] (decision 12)
-          "scriptPath", generalize TStr
-          "entryPath", generalize TStr
-          // the interactive read [D:prompt] — static (Builtins holds the
-          // value under the mangled key); grouped here, not bare
-          "prompt", generalize (TFun(TStr, TStr)) ]
+    Map [
+        "pid", generalize TInt
+        "args", generalize (TSeq TStr)
+        "stdin", generalize (TSeq TStr)
+        // scriptPath = the file's own path (a module sees its own);
+        // entryPath = the invoked script's, a process fact like args/stdin
+        // — the same for every file in the run [D:modules-v1] (decision 12)
+        "scriptPath", generalize TStr
+        "entryPath", generalize TStr
+        // the interactive read [D:prompt] — static (Builtins holds the
+        // value under the mangled key); grouped here, not bare
+        "prompt", generalize (TFun(TStr, TStr))
+    ]
 
 // the #session prompt's status domain [D:prompt-status-arg]: records
 // are nominal and init.weir admits no signatures, so a provider's
@@ -3291,9 +3464,10 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
 
     let typeEnv, valueEnv = Prelude.extend typeEnv Builtins.valueEnv
 
-    let typeEnv =
-        { typeEnv with
-            Modules = typeEnv.Modules |> Map.add "Self" selfMembers }
+    let typeEnv = {
+        typeEnv with
+            Modules = typeEnv.Modules |> Map.add "Self" selfMembers
+    }
 
     let stdinStream =
         // one enumeration [D:prompt]: stdin is a live stream — a second
@@ -3347,15 +3521,16 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
 
 // the base resolver over a type env — one constructor behind the
 // script/fmt/REPL/CLI call sites
-let resolver (typeEnv: TypeEnv) : Parser.Resolver =
-    { IsKnown = fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules
-      IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
-      IsExternal = Extern.exists
-      ExternalNames = (fun () -> Extern.names () :> seq<string>)
-      BareHome = (fun n -> Map.tryFind n Builtins.bareAliasHomes)
-      // scripts/fmt/CLI carry no aliases (REPL-only) — the REPL overrides
-      // this field with its session alias table [D:command-head-alias]
-      AliasHead = fun _ -> None }
+let resolver (typeEnv: TypeEnv) : Parser.Resolver = {
+    IsKnown = fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules
+    IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
+    IsExternal = Extern.exists
+    ExternalNames = (fun () -> Extern.names () :> seq<string>)
+    BareHome = (fun n -> Map.tryFind n Builtins.bareAliasHomes)
+    // scripts/fmt/CLI carry no aliases (REPL-only) — the REPL overrides
+    // this field with its session alias table [D:command-head-alias]
+    AliasHead = fun _ -> None
+}
 
 let private located (path: string) (lineNo: int) (msg: string) : string =
     let msg =
@@ -3460,11 +3635,12 @@ let discardError (ty: Ty) : string option =
 // declaration. Line/Col are the sig's own physical site (mismatch and
 // orphan errors name it); Scheme is the sig type generalized (the
 // paired implementation's check refines its Cs).
-type MemberSig =
-    { Ty: Ty
-      Scheme: Scheme
-      Line: int
-      Col: int }
+type MemberSig = {
+    Ty: Ty
+    Scheme: Scheme
+    Line: int
+    Col: int
+}
 
 // the module-signature context a module check threads [D:module-signatures]:
 // None = script/REPL/-e, where the form refuses with the teaching.
@@ -3472,18 +3648,20 @@ type MemberSig =
 // signed (re-implementation guard); Implemented = every module-own
 // binder so far (the sig-after-impl guard); SigLines = each signature's
 // line, where its /// doc lives (one doc home).
-type SigContext =
-    { Pending: Map<string, MemberSig>
-      Signed: Set<string>
-      Implemented: Set<string>
-      SigLines: Map<string, int> }
+type SigContext = {
+    Pending: Map<string, MemberSig>
+    Signed: Set<string>
+    Implemented: Set<string>
+    SigLines: Map<string, int>
+}
 
 module SigContext =
-    let empty =
-        { Pending = Map.empty
-          Signed = Set.empty
-          Implemented = Set.empty
-          SigLines = Map.empty }
+    let empty = {
+        Pending = Map.empty
+        Signed = Set.empty
+        Implemented = Set.empty
+        SigLines = Map.empty
+    }
 
 type CheckedKind =
     | KType of decl: Decl * validator: (string * Check.TypedExpr) option
@@ -3508,31 +3686,33 @@ type StmtTag =
     | Cmd
     | Expr
 
-type StmtDiag =
-    { PhysLine: int
-      PhysCol: int
-      PhysEnd: (int * int) option // physical end of the span, when known
-      Tag: StmtTag option // None for parse failures (kind unknown)
-      HasCol: bool // false only for col-less parse failures
-      Span: Span option // None for parse failures
-      Parse: bool // parse error (FParsec text) vs type error (message)
-      Message: string
-      // multi-file [D:modules-v1]: File=Some when PhysLine/PhysCol point
-      // into another file (a module's own error site); Note carries an
-      // extra (line, col, message) in the current file (the import-line
-      // "imported here"). Both default to None (single-file).
-      File: string option
-      Note: (int * int * string) option
-      // related sites in the SAME file as the primary [D:diagnostic-tags]
-      Related: (int * int * string) list
-      // the runner prints warnings even when the discard gate then
-      // errors (standing behavior) — they travel with the diag
-      Warnings: (int * int * string) list }
+type StmtDiag = {
+    PhysLine: int
+    PhysCol: int
+    PhysEnd: (int * int) option // physical end of the span, when known
+    Tag: StmtTag option // None for parse failures (kind unknown)
+    HasCol: bool // false only for col-less parse failures
+    Span: Span option // None for parse failures
+    Parse: bool // parse error (FParsec text) vs type error (message)
+    Message: string
+    // multi-file [D:modules-v1]: File=Some when PhysLine/PhysCol point
+    // into another file (a module's own error site); Note carries an
+    // extra (line, col, message) in the current file (the import-line
+    // "imported here"). Both default to None (single-file).
+    File: string option
+    Note: (int * int * string) option
+    // related sites in the SAME file as the primary [D:diagnostic-tags]
+    Related: (int * int * string) list
+    // the runner prints warnings even when the discard gate then
+    // errors (standing behavior) — they travel with the diag
+    Warnings: (int * int * string) list
+}
 
-type CheckedStatement =
-    { Kind: CheckedKind
-      Env: TypeEnv // the env AFTER this statement (bindings added)
-      Warnings: (int * int * string) list } // physical line, col, message
+type CheckedStatement = {
+    Kind: CheckedKind
+    Env: TypeEnv // the env AFTER this statement (bindings added)
+    Warnings: (int * int * string) list
+} // physical line, col, message
 
 // gateExprs: scripts apply the statement rule (values must be bound or
 // printed); the REPL and -e echo values instead — the same pipeline,
@@ -3544,41 +3724,44 @@ let private caseNameSets =
     System.Runtime.CompilerServices.ConditionalWeakTable<Map<string, TypeDef>, Set<string>>()
 
 let private caseNameSet =
-    System.Runtime.CompilerServices.ConditionalWeakTable<Map<string, TypeDef>, Set<string>>.CreateValueCallback(fun types ->
-        types
-        |> Seq.collect (fun (KeyValue(_, def)) ->
-            match def with
-            | Union u -> u.Cases |> List.map fst
-            | Record _ -> [])
-        |> Set.ofSeq)
+    System.Runtime.CompilerServices.ConditionalWeakTable<Map<string, TypeDef>, Set<string>>.CreateValueCallback
+        (fun types ->
+            types
+            |> Seq.collect (fun (KeyValue(_, def)) ->
+                match def with
+                | Union u -> u.Cases |> List.map fst
+                | Record _ -> [])
+            |> Set.ofSeq)
 
 let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
     // a union case of any known type (an ambiguous imported one
     // included) is an expression head, never a program — so check
     // reaches the runner's "module-qualified here" verdict [D:assume-resolver]
-    { resolver tenv with
-        IsExternal =
-            fun n ->
-                Extern.exists n
-                // a path head that does not exist yet (`./gen.sh`, built
-                // earlier in the script) is the PATH rule's: check warns,
-                // run errors [D:path-head-warn]. Only path-led words — no
-                // expression starts with '/' or '.', while `total/2` is
-                // arithmetic
-                || ((n.StartsWith "./" || n.StartsWith "../" || n.StartsWith "/")
-                    && not (n.Contains '\000'))
-                || (n.Length > 0
-                    && System.Char.IsLetter n[0]
-                    && not (Parser.isKeyword n)
-                    // a declared type or module is never a command — else the
-                    // named literal `Ctx { .. }` / `Paths.Ctx { .. }` mis-parses
-                    // under check's assume-command rule [D:modules-v1]
-                    && not (Map.containsKey n tenv.Types)
-                    && not (Map.containsKey n tenv.Modules)
-                    // an import's type, its bare name ambiguous [D:qualified-type-names]
-                    && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> owned.ContainsKey n))
-                    && not (caseNameSets.GetValue(tenv.Types, caseNameSet).Contains n)
-                    && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
+    {
+        resolver tenv with
+            IsExternal =
+                fun n ->
+                    Extern.exists n
+                    // a path head that does not exist yet (`./gen.sh`, built
+                    // earlier in the script) is the PATH rule's: check warns,
+                    // run errors [D:path-head-warn]. Only path-led words — no
+                    // expression starts with '/' or '.', while `total/2` is
+                    // arithmetic
+                    || ((n.StartsWith "./" || n.StartsWith "../" || n.StartsWith "/")
+                        && not (n.Contains '\000'))
+                    || (n.Length > 0
+                        && System.Char.IsLetter n[0]
+                        && not (Parser.isKeyword n)
+                        // a declared type or module is never a command — else the
+                        // named literal `Ctx { .. }` / `Paths.Ctx { .. }` mis-parses
+                        // under check's assume-command rule [D:modules-v1]
+                        && not (Map.containsKey n tenv.Types)
+                        && not (Map.containsKey n tenv.Modules)
+                        // an import's type, its bare name ambiguous [D:qualified-type-names]
+                        && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> owned.ContainsKey n))
+                        && not (caseNameSets.GetValue(tenv.Types, caseNameSet).Contains n)
+                        && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-'))
+    }
 
 // mkR builds the resolver from the current env per statement, so
 // script-defined names are known at parse time — bindings shadow PATH
@@ -3599,6 +3782,7 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
             .Replace("\\u001f", ";")
             .Replace(Parser.fieldSepStr, ";")
             .Replace("\\u001d", ";")
+
     let lines = msg.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
     let isCaret (l: string) =
@@ -3670,7 +3854,10 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     // token straddling the break is missed, and the list reads better whole.
     // `!` likewise: a guard that only teaches `not` (prefix `!` is not weir)
     let bannedTokens =
-        Parser.foreignKeywordWords |> List.map (fun w -> "'" + w + "'") |> Set.ofList |> Set.add "'!'"
+        Parser.foreignKeywordWords
+        |> List.map (fun w -> "'" + w + "'")
+        |> Set.ofList
+        |> Set.add "'!'"
 
     let rebuildExpecting (ls: string list) : string list =
         // FParsec wraps the list at whatever width it likes — sometimes
@@ -3776,7 +3963,11 @@ let private renameTy (m: System.Collections.Generic.IReadOnlyDictionary<string, 
                 | _ -> n
 
             let args' = goList args
-            if same n' n && same args' args then ty else TNamed(n', args')
+
+            if same n' n && same args' args then
+                ty
+            else
+                TNamed(n', args')
         | TFun(a, b) ->
             let a' = go a
             let b' = go b
@@ -3804,7 +3995,11 @@ let private renameTy (m: System.Collections.Generic.IReadOnlyDictionary<string, 
 
 let private renameScheme (m: System.Collections.Generic.IReadOnlyDictionary<string, string>) (sch: Scheme) : Scheme =
     let ty = renameTy m sch.Ty
-    if obj.ReferenceEquals(ty, sch.Ty) then sch else { sch with Ty = ty }
+
+    if obj.ReferenceEquals(ty, sch.Ty) then
+        sch
+    else
+        { sch with Ty = ty }
 
 let private renameDef (m: System.Collections.Generic.IReadOnlyDictionary<string, string>) (def: TypeDef) : TypeDef =
     let changed (a: Ty) (b: Ty) = not (obj.ReferenceEquals(a, b))
@@ -3818,8 +4013,7 @@ let private renameDef (m: System.Collections.Generic.IReadOnlyDictionary<string,
         else
             def
     | Union u ->
-        let cases =
-            u.Cases |> List.map (fun (c, p) -> c, p |> Option.map (renameTy m))
+        let cases = u.Cases |> List.map (fun (c, p) -> c, p |> Option.map (renameTy m))
 
         let caseChanged (_, a) (_, b) =
             match a, b with
@@ -3835,15 +4029,30 @@ let private renameEnvTypes (m: Map<string, string>) (tenv: TypeEnv) : TypeEnv =
     if Map.isEmpty m then
         tenv
     else
-        let key n = Map.tryFind n m |> Option.defaultValue n
+        let key n =
+            Map.tryFind n m |> Option.defaultValue n
 
-        { tenv with
-            Values = tenv.Values |> Map.map (fun _ sch -> renameScheme m sch)
-            Modules = tenv.Modules |> Map.map (fun _ ms -> ms |> Map.map (fun _ sch -> renameScheme m sch))
-            ModulePrivate = tenv.ModulePrivate |> Map.map (fun _ ms -> ms |> Map.map (fun _ sch -> renameScheme m sch))
-            Types = tenv.Types |> Map.toList |> List.map (fun (n, d) -> key n, renameDef m d) |> Map.ofList
-            ModuleTypes = tenv.ModuleTypes |> Map.map (fun _ owned -> owned |> Map.map (fun _ k -> key k))
-            TypeOrigins = tenv.TypeOrigins |> Map.toList |> List.map (fun (n, o) -> key n, o) |> Map.ofList }
+        {
+            tenv with
+                Values = tenv.Values |> Map.map (fun _ sch -> renameScheme m sch)
+                Modules =
+                    tenv.Modules
+                    |> Map.map (fun _ ms -> ms |> Map.map (fun _ sch -> renameScheme m sch))
+                ModulePrivate =
+                    tenv.ModulePrivate
+                    |> Map.map (fun _ ms -> ms |> Map.map (fun _ sch -> renameScheme m sch))
+                Types =
+                    tenv.Types
+                    |> Map.toList
+                    |> List.map (fun (n, d) -> key n, renameDef m d)
+                    |> Map.ofList
+                ModuleTypes = tenv.ModuleTypes |> Map.map (fun _ owned -> owned |> Map.map (fun _ k -> key k))
+                TypeOrigins =
+                    tenv.TypeOrigins
+                    |> Map.toList
+                    |> List.map (fun (n, o) -> key n, o)
+                    |> Map.ofList
+        }
 
 // "A.Pt@/abs/a.weir" -> "A.Pt", made unique against the env's types
 let private qualifiedFree (tenv: TypeEnv) (origin: string) : string =
@@ -3857,7 +4066,10 @@ let private qualifiedFree (tenv: TypeEnv) (origin: string) : string =
 
 let private isTransitive (tenv: TypeEnv) (n: string) =
     tenv.TypeOrigins.ContainsKey n
-    && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> owned |> Map.exists (fun _ k -> k = n)))
+    && not (
+        tenv.ModuleTypes
+        |> Map.exists (fun _ owned -> owned |> Map.exists (fun _ k -> k = n))
+    )
 
 /// a transitive type named `n` gives its plain name up (see above)
 let yieldTransitive (n: string) (tenv: TypeEnv) : TypeEnv =
@@ -3869,7 +4081,10 @@ let yieldTransitive (n: string) (tenv: TypeEnv) : TypeEnv =
 // "A" + "T" -> "A.T", made unique against the env's types and `taken`
 let private qualifiedKey (tenv: TypeEnv) (taken: Set<string>) (alias: string) (n: string) : string =
     let rec free (c: string) =
-        if Map.containsKey c tenv.Types || taken.Contains c then free (c + "'") else c
+        if Map.containsKey c tenv.Types || taken.Contains c then
+            free (c + "'")
+        else
+            c
 
     free (alias + "." + n)
 
@@ -3908,7 +4123,9 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
 
     // the aliases already declaring a type named n
     let ownersOf (t: TypeEnv) (n: string) =
-        t.ModuleTypes |> Map.toList |> List.choose (fun (a, owned) -> Map.tryFind n owned |> Option.map (fun k -> a, k))
+        t.ModuleTypes
+        |> Map.toList
+        |> List.choose (fun (a, owned) -> Map.tryFind n owned |> Option.map (fun k -> a, k))
 
     // each own type claims its key, moving another import's holder of the
     // plain name to that holder's qualified key
@@ -3996,19 +4213,26 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
             | _ when n' <> n && Map.containsKey n' tenv.Types && not (own.Contains n) -> None
             | _ -> Some(n', renameDef subst d))
 
-    let origins =
-        lm.TypeOrigins |> List.map (fun (n, o) -> rename n, o)
+    let origins = lm.TypeOrigins |> List.map (fun (n, o) -> rename n, o)
 
-    { tenv with
-        Modules = Map.add lm.Alias (lm.Members |> List.map (fun (n, s) -> n, renameScheme subst s) |> Map.ofList) tenv.Modules
-        Types = typeDefs |> List.fold (fun ts (n, d) -> Map.add n d ts) tenv.Types
-        ModuleTypes = Map.add lm.Alias ownKeys tenv.ModuleTypes
-        TypeOrigins = origins |> List.fold (fun m (n, o) -> Map.add n o m) tenv.TypeOrigins
-        ModulePrivate =
-            Map.add
-                lm.Alias
-                (lm.PrivateMembers |> List.map (fun (n, s) -> n, renameScheme subst s) |> Map.ofList)
-                tenv.ModulePrivate }
+    {
+        tenv with
+            Modules =
+                Map.add
+                    lm.Alias
+                    (lm.Members |> List.map (fun (n, s) -> n, renameScheme subst s) |> Map.ofList)
+                    tenv.Modules
+            Types = typeDefs |> List.fold (fun ts (n, d) -> Map.add n d ts) tenv.Types
+            ModuleTypes = Map.add lm.Alias ownKeys tenv.ModuleTypes
+            TypeOrigins = origins |> List.fold (fun m (n, o) -> Map.add n o m) tenv.TypeOrigins
+            ModulePrivate =
+                Map.add
+                    lm.Alias
+                    (lm.PrivateMembers
+                     |> List.map (fun (n, s) -> n, renameScheme subst s)
+                     |> Map.ofList)
+                    tenv.ModulePrivate
+    }
 
 let rec private checkStatementCore
     (gateExprs: bool)
@@ -4030,23 +4254,26 @@ let rec private checkStatementCore
                 let pl, pc = translate ll terr.Span.Start.Col
                 pl, pc, Some(translate ll terr.Span.End.Col)
 
-        { PhysLine = physLine
-          PhysCol = physCol
-          PhysEnd = physEnd
-          Tag = Some tag
-          HasCol = true
-          Span = Some terr.Span
-          Parse = false
-          Message = terr.Message
-          File = None
-          Note = None
-          Related = []
-          Warnings = [] }
+        {
+            PhysLine = physLine
+            PhysCol = physCol
+            PhysEnd = physEnd
+            Tag = Some tag
+            HasCol = true
+            Span = Some terr.Span
+            Parse = false
+            Message = terr.Message
+            File = None
+            Note = None
+            Related = []
+            Warnings = []
+        }
 
-    let warningsOf te =
-        [ for w in Check.warnings te do
-              let physLine, physCol = translate ll w.Span.Start.Col
-              physLine, physCol, w.Message ]
+    let warningsOf te = [
+        for w in Check.warnings te do
+            let physLine, physCol = translate ll w.Span.Start.Col
+            physLine, physCol, w.Message
+    ]
 
     // physical translator for the checker's boundary-crossing
     // positions [D:row-provenance]; reset so non-statement consumers
@@ -4090,7 +4317,11 @@ let rec private checkStatementCore
             (n = prog && not suggested) || (not exact && prog.StartsWith(n + "-"))
 
         match missingHeads with
-        | (prog, span) :: rest when (match onlyName with Some n -> namesHead n prog | None -> true) ->
+        | (prog, span) :: rest when
+            (match onlyName with
+             | Some n -> namesHead n prog
+             | None -> true)
+            ->
             let physLine, physCol = translate ll span.Start.Col
 
             let others =
@@ -4100,15 +4331,15 @@ let rec private checkStatementCore
                     let joined = String.concat ", " more
                     $" (also missing: {joined})"
 
-            Some
-                { PhysLine = physLine
-                  PhysCol = physCol
-                  PhysEnd = Some(translate ll span.End.Col)
-                  Tag = None
-                  HasCol = true
-                  Span = Some span
-                  Parse = true
-                  Message =
+            Some {
+                PhysLine = physLine
+                PhysCol = physCol
+                PhysEnd = Some(translate ll span.End.Col)
+                Tag = None
+                HasCol = true
+                Span = Some span
+                Parse = true
+                Message =
                     (match Map.tryFind prog Builtins.bareAliasHomes with
                      | Some home ->
                          $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
@@ -4137,10 +4368,11 @@ let rec private checkStatementCore
                              $"no executable at {prog}{others} — weir resolves command names before running; if the script creates it, name it at run time — `let tool = \"{prog}\"` then `^$tool`"
                          | _ ->
                              $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or, if it only exists when the script runs, name it at run time — `let tool = \"{prog}\"` then `^$tool`")
-                  File = None
-                  Note = None
-                  Related = []
-                  Warnings = [] }
+                File = None
+                Note = None
+                Related = []
+                Warnings = []
+            }
         | _ -> None
 
     let missingCommandDiag = missingCommandDiagWith false
@@ -4195,19 +4427,20 @@ let rec private checkStatementCore
                         l, c, true
                     | None -> ll.Head, 1, false
 
-                Error
-                    { PhysLine = physLine
-                      PhysCol = physCol
-                      PhysEnd = None
-                      Tag = None
-                      HasCol = hasCol
-                      Span = None
-                      Parse = true
-                      Message = cleanParseDump ll f.Message
-                      File = None
-                      Note = None
-                      Related = []
-                      Warnings = [] }
+                Error {
+                    PhysLine = physLine
+                    PhysCol = physCol
+                    PhysEnd = None
+                    Tag = None
+                    HasCol = hasCol
+                    Span = None
+                    Parse = true
+                    Message = cleanParseDump ll f.Message
+                    File = None
+                    Note = None
+                    Related = []
+                    Warnings = []
+                }
         | Ok(SType decl) ->
             // a local declaration takes its name from a transitive type
             // [D:transitive-types], and in the REPL from an import's own
@@ -4221,24 +4454,26 @@ let rec private checkStatementCore
                 let validator =
                     match decl.Validate, Types.typeDefFor tenv' decl.Name with
                     | Some v, Some(Union { Validated = Some id }) ->
-                        Check.typecheckValidator tenv' decl.Name v |> Result.map (fun te -> Some(id, te))
+                        Check.typecheckValidator tenv' decl.Name v
+                        |> Result.map (fun te -> Some(id, te))
                     | _ -> Ok None
 
                 match validator with
                 | Error terr -> Error(typed StmtTag.Type terr)
                 | Ok validator ->
-                    Ok
-                        { Kind = KType(decl, validator)
-                          Env = tenv'
-                          Warnings = [] }
+                    Ok {
+                        Kind = KType(decl, validator)
+                        Env = tenv'
+                        Warnings = []
+                    }
         | Ok(SSig(name, ty, nameSpan)) ->
             let sigErr msg =
                 Error(
-                    typed
-                        StmtTag.Let
-                        { Span = nameSpan
-                          Message = msg
-                          Origin = None }
+                    typed StmtTag.Let {
+                        Span = nameSpan
+                        Message = msg
+                        Origin = None
+                    }
                 )
 
             match sigCtx with
@@ -4264,29 +4499,32 @@ let rec private checkStatementCore
                         | Ok(tenv', ty) ->
                             let line, col = translate ll nameSpan.Start.Col
 
-                            Ok
-                                { Kind =
+                            Ok {
+                                Kind =
                                     KSig(
                                         name,
-                                        { Ty = ty
-                                          Scheme = generalize ty
-                                          Line = line
-                                          Col = col }
+                                        {
+                                            Ty = ty
+                                            Scheme = generalize ty
+                                            Line = line
+                                            Col = col
+                                        }
                                     )
-                                  Env = tenv'
-                                  Warnings = [] }
+                                Env = tenv'
+                                Warnings = []
+                            }
         | Ok(SLetPat({ PKind = PWildcard } as pat, _)) when gateExprs ->
             // a bare `_` binder discards anonymously — binding is how
             // weir silences raise-on-nonzero, so the discard gets a name
             // [D:unused-bindings]; gateExprs scopes the refusal with the
             // discard family (the REPL and -e keep their echo regime)
             Error(
-                typed
-                    StmtTag.LetPat
-                    { Span = pat.PSpan
-                      Message =
+                typed StmtTag.LetPat {
+                    Span = pat.PSpan
+                    Message =
                         "a bare '_' binder discards its value anonymously — name the discard (let _r = …) so the intent survives a grep"
-                      Origin = None }
+                    Origin = None
+                }
             )
         | Ok(SLetPat(pat, e)) ->
             // a destructuring let cannot implement a signature
@@ -4308,12 +4546,12 @@ let rec private checkStatementCore
             match sigClash with
             | Some n ->
                 Error(
-                    typed
-                        StmtTag.LetPat
-                        { Span = pat.PSpan
-                          Message =
+                    typed StmtTag.LetPat {
+                        Span = pat.PSpan
+                        Message =
                             $"'{n}' has a signature, and a signature pairs with a plain implementation — write 'let {n} … = …'"
-                          Origin = None }
+                        Origin = None
+                    }
                 )
             | None ->
                 // anonymous adapter shapes persist their defs [D:anon-records]
@@ -4322,11 +4560,11 @@ let rec private checkStatementCore
                 match Check.typecheckBinder tenv pat e with
                 | Error terr -> typedOrMissing StmtTag.LetPat terr
                 | Ok(te, schemes) ->
-                    Ok
-                        { Kind = KLetPat(pat, schemes, te)
-                          Env =
-                            schemes |> List.fold (fun e (n, sch) -> bindValue n sch e) tenv
-                          Warnings = warningsOf te }
+                    Ok {
+                        Kind = KLetPat(pat, schemes, te)
+                        Env = schemes |> List.fold (fun e (n, sch) -> bindValue n sch e) tenv
+                        Warnings = warningsOf te
+                    }
         | Ok(SLet(name, e)) ->
             // SLet carries the name as a bare string, so re-derive its own
             // columns from the statement text (grammar: ws `let` ws name)
@@ -4335,10 +4573,13 @@ let rec private checkStatementCore
                 let m = Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+")
 
                 if m.Success then
-                    { Start = { Line = 1; Col = m.Length + 1 }
-                      End =
-                        { Line = 1
-                          Col = m.Length + 1 + name.Length } }
+                    {
+                        Start = { Line = 1; Col = m.Length + 1 }
+                        End = {
+                            Line = 1
+                            Col = m.Length + 1 + name.Length
+                        }
+                    }
                 else
                     e.Span
 
@@ -4352,13 +4593,14 @@ let rec private checkStatementCore
                 // implementation's constraint residue)
                 // the signature line rides as related [D:diagnostic-tags]
                 let sigErrAt (span: Span) msg =
-                    Error
-                        { typed
-                              StmtTag.Let
-                              { Span = span
-                                Message = msg
-                                Origin = None } with
-                            Related = [ sd.Line, sd.Col, $"the signature declares {formatTy sd.Ty}" ] }
+                    Error {
+                        typed StmtTag.Let {
+                            Span = span
+                            Message = msg
+                            Origin = None
+                        } with
+                            Related = [ sd.Line, sd.Col, $"the signature declares {formatTy sd.Ty}" ]
+                    }
 
                 match Check.checkBinderName nameSpan name with
                 | Error terr -> Error(typed StmtTag.Let terr)
@@ -4381,7 +4623,10 @@ let rec private checkStatementCore
                             | ELetPat(_, _, b)
                             | ESeq(_, b) -> endsInCommand b
                             | ECmd _ -> true
-                            | EPipe(_, stage) -> (match stage.Kind with ECmd _ -> true | _ -> false)
+                            | EPipe(_, stage) ->
+                                (match stage.Kind with
+                                 | ECmd _ -> true
+                                 | _ -> false)
                             | _ -> false
 
                         let hint =
@@ -4406,11 +4651,11 @@ let rec private checkStatementCore
                             ($"the implementation of '{name}' is less general than its signature: "
                              + $"'{v1} and '{v2} (line {sd.Line}) are forced to one type here — the signature promises they stay independent")
                     | Ok(te, scheme) ->
-                        Ok
-                            { Kind = KLet(name, scheme, te)
-                              Env =
-                                bindValue name scheme tenv
-                              Warnings = warningsOf te }
+                        Ok {
+                            Kind = KLet(name, scheme, te)
+                            Env = bindValue name scheme tenv
+                            Warnings = warningsOf te
+                        }
             | None ->
                 match sigCtx with
                 | Some sc when Set.contains name sc.Signed ->
@@ -4418,12 +4663,12 @@ let rec private checkStatementCore
                     // last binding win at replay while the export keeps the
                     // signature's, so the split is refused
                     Error(
-                        typed
-                            StmtTag.Let
-                            { Span = nameSpan
-                              Message =
+                        typed StmtTag.Let {
+                            Span = nameSpan
+                            Message =
                                 $"'{name}' already implements its signature — one implementation per signed member"
-                              Origin = None }
+                            Origin = None
+                        }
                     )
                 | _ ->
                     match
@@ -4434,11 +4679,11 @@ let rec private checkStatementCore
                     | Ok(te, cs, origins, holeDefaults) ->
                         let scheme = generalizeWithOrigins cs origins holeDefaults te.Ty
 
-                        Ok
-                            { Kind = KLet(name, scheme, te)
-                              Env =
-                                bindValue name scheme tenv
-                              Warnings = warningsOf te }
+                        Ok {
+                            Kind = KLet(name, scheme, te)
+                            Env = bindValue name scheme tenv
+                            Warnings = warningsOf te
+                        }
         | Ok(SCmd e) ->
             let tenv = Check.withAnonDefs tenv e
 
@@ -4470,7 +4715,9 @@ let rec private checkStatementCore
                 // (the caret's place) but ends where the command did — before
                 // its start; it runs on to the statement's last node
                 let wholeSpan =
-                    let rec spans (t: Check.TypedExpr) = t.Span :: (Check.childExprs t |> List.collect spans)
+                    let rec spans (t: Check.TypedExpr) =
+                        t.Span :: (Check.childExprs t |> List.collect spans)
+
                     let key (p: Pos) = p.Line, p.Col
                     let all = spans te |> List.filter (fun sp -> sp.Start.Line > 0)
 
@@ -4478,47 +4725,52 @@ let rec private checkStatementCore
                     | [] -> te.Span
                     | _ ->
                         let last = all |> List.map (fun sp -> sp.End) |> List.maxBy key
-                        if key last > key te.Span.End then { te.Span with End = last } else te.Span
+
+                        if key last > key te.Span.End then
+                            { te.Span with End = last }
+                        else
+                            te.Span
 
                 match te.Ty with
                 | TBool ->
                     Error(
-                        typed
-                            StmtTag.Cmd
-                            { Span = wholeSpan
-                              Message =
+                        typed StmtTag.Cmd {
+                            Span = wholeSpan
+                            Message =
                                 "this statement computes a bool and discards it — bind it "
                                 + "(let ok = ... | succeeds) or use it in a condition"
-                              Origin = None }
+                            Origin = None
+                        }
                     )
                 // `set +e; cmd; rc=$?` muscle memory lands here [D:exit-reifiers]
                 | TInt when exitCodeSpine te ->
                     Error(
-                        typed
-                            StmtTag.Cmd
-                            { Span = wholeSpan
-                              Message =
+                        typed StmtTag.Cmd {
+                            Span = wholeSpan
+                            Message =
                                 "this statement computes the exit code and discards it — bind it "
                                 + "(let rc = <command> | exitCode), match on it, or drop '| exitCode' if you don't need the code"
-                              Origin = None }
+                            Origin = None
+                        }
                     )
                 // `| complete` captures a Completed record — reading it is
                 // the point, so discarding it is the family mistake
                 | TNamed("Completed", _) ->
                     Error(
-                        typed
-                            StmtTag.Cmd
-                            { Span = wholeSpan
-                              Message =
+                        typed StmtTag.Cmd {
+                            Span = wholeSpan
+                            Message =
                                 "this statement computes a Completed record and discards it — bind it "
                                 + "(let r = ... | complete) or read a field (.exitCode, .stdout)"
-                              Origin = None }
+                            Origin = None
+                        }
                     )
                 | _ ->
-                    Ok
-                        { Kind = KCmd te
-                          Env = tenv
-                          Warnings = warningsOf te }
+                    Ok {
+                        Kind = KCmd te
+                        Env = tenv
+                        Warnings = warningsOf te
+                    }
         | Ok(SExpr e) ->
             // statement position demands unit, so a commandish tail arms
             // [D:within-scopes] — reaching through scopes and let-ins.
@@ -4532,6 +4784,7 @@ let rec private checkStatementCore
                 | ECmd _
                 | EPipe(_, { Kind = ECmd _ }) -> e
                 | _ -> Check.armTail e
+
             let tenv = Check.withAnonDefs tenv e
 
             match Check.typecheck tenv e with
@@ -4565,25 +4818,28 @@ let rec private checkStatementCore
                 | Some msg ->
                     let msg = msg + dropClause
 
-                    Error
-                        { typed
-                              StmtTag.Expr
-                              { Span = e.Span
-                                Message = msg
-                                Origin = None } with
-                            Warnings = warningsOf te }
+                    Error {
+                        typed StmtTag.Expr {
+                            Span = e.Span
+                            Message = msg
+                            Origin = None
+                        } with
+                            Warnings = warningsOf te
+                    }
                 | None ->
-                    Ok
-                        { Kind = KExpr te
-                          Env = tenv
-                          Warnings = warningsOf te }
+                    Ok {
+                        Kind = KExpr te
+                        Env = tenv
+                        Warnings = warningsOf te
+                    }
         | Ok(SModule(nameOpt, kwSpan)) ->
             // the marker adds no bindings; decl-only enforcement and the
             // running-a-module error are the caller's (loadModule / run)
-            Ok
-                { Kind = KModule(nameOpt, kwSpan)
-                  Env = tenv
-                  Warnings = [] }
+            Ok {
+                Kind = KModule(nameOpt, kwSpan)
+                Env = tenv
+                Warnings = []
+            }
         | Ok(SImport(path, pathSpan, aliasOpt)) ->
             let importLine, importCol = translate ll pathSpan.Start.Col
 
@@ -4592,100 +4848,106 @@ let rec private checkStatementCore
             // line; an import-statement error reports at the import line
             let importDiag (e: ImportError) =
                 match e.File with
-                | Some mf ->
-                    { PhysLine = e.Line
-                      PhysCol = e.Col
-                      PhysEnd = None
-                      Tag = None
-                      HasCol = true
-                      Span = None
-                      Parse = false
-                      Message = e.Message
-                      File = Some mf
-                      // point at this level's import; the outermost (entry)
-                      // level runs last, so its note (in the entry file) wins
-                      Note = Some(importLine, importCol, "imported here")
-                      Related = []
-                      Warnings = [] }
-                | None ->
-                    { PhysLine = importLine
-                      PhysCol = importCol
-                      PhysEnd = Some(translate ll pathSpan.End.Col)
-                      Tag = None
-                      HasCol = true
-                      Span = Some pathSpan
-                      Parse = false
-                      Message = e.Message
-                      File = None
-                      Note = None
-                      Related = []
-                      Warnings = [] }
+                | Some mf -> {
+                    PhysLine = e.Line
+                    PhysCol = e.Col
+                    PhysEnd = None
+                    Tag = None
+                    HasCol = true
+                    Span = None
+                    Parse = false
+                    Message = e.Message
+                    File = Some mf
+                    // point at this level's import; the outermost (entry)
+                    // level runs last, so its note (in the entry file) wins
+                    Note = Some(importLine, importCol, "imported here")
+                    Related = []
+                    Warnings = []
+                  }
+                | None -> {
+                    PhysLine = importLine
+                    PhysCol = importCol
+                    PhysEnd = Some(translate ll pathSpan.End.Col)
+                    Tag = None
+                    HasCol = true
+                    Span = Some pathSpan
+                    Parse = false
+                    Message = e.Message
+                    File = None
+                    Note = None
+                    Related = []
+                    Warnings = []
+                  }
 
             let stmtErr msg =
-                importDiag
-                    { File = None
-                      Line = 0
-                      Col = 0
-                      Message = msg }
+                importDiag {
+                    File = None
+                    Line = 0
+                    Col = 0
+                    Message = msg
+                }
 
             match loadImport path pathSpan (aliasOpt |> Option.map fst) with
             | Error e -> Error(importDiag e)
             | Ok lm ->
-            // a session re-import [D:repl-import]: the alias an earlier
-            // import holds is unbound first, then the import proceeds as
-            // fresh — its types, members and privates replace the old. Its
-            // own type keys leave Types/TypeOrigins too, else the new
-            // module's same-origin types would join the stale defs
-            // [D:qualified-type-names]; a key another import still names
-            // stays
-            let tenv =
-                if lm.MayRebind && tenv.ModuleTypes.ContainsKey lm.Alias then
-                    let others = tenv.ModuleTypes |> Map.remove lm.Alias
+                // a session re-import [D:repl-import]: the alias an earlier
+                // import holds is unbound first, then the import proceeds as
+                // fresh — its types, members and privates replace the old. Its
+                // own type keys leave Types/TypeOrigins too, else the new
+                // module's same-origin types would join the stale defs
+                // [D:qualified-type-names]; a key another import still names
+                // stays
+                let tenv =
+                    if lm.MayRebind && tenv.ModuleTypes.ContainsKey lm.Alias then
+                        let others = tenv.ModuleTypes |> Map.remove lm.Alias
 
-                    let dropped =
-                        tenv.ModuleTypes[lm.Alias]
-                        |> Map.values
-                        |> Seq.filter (fun k ->
-                            tenv.TypeOrigins.ContainsKey k
-                            && not (others |> Map.exists (fun _ owned -> owned |> Map.exists (fun _ k' -> k' = k))))
-                        |> Set.ofSeq
+                        let dropped =
+                            tenv.ModuleTypes[lm.Alias]
+                            |> Map.values
+                            |> Seq.filter (fun k ->
+                                tenv.TypeOrigins.ContainsKey k
+                                && not (others |> Map.exists (fun _ owned -> owned |> Map.exists (fun _ k' -> k' = k))))
+                            |> Set.ofSeq
 
-                    { tenv with
-                        Types = tenv.Types |> Map.filter (fun k _ -> not (dropped.Contains k))
-                        TypeOrigins = tenv.TypeOrigins |> Map.filter (fun k _ -> not (dropped.Contains k))
-                        Modules = Map.remove lm.Alias tenv.Modules
-                        ModuleTypes = Map.remove lm.Alias tenv.ModuleTypes
-                        ModulePrivate = Map.remove lm.Alias tenv.ModulePrivate }
-                else
-                    tenv
+                        {
+                            tenv with
+                                Types = tenv.Types |> Map.filter (fun k _ -> not (dropped.Contains k))
+                                TypeOrigins = tenv.TypeOrigins |> Map.filter (fun k _ -> not (dropped.Contains k))
+                                Modules = Map.remove lm.Alias tenv.Modules
+                                ModuleTypes = Map.remove lm.Alias tenv.ModuleTypes
+                                ModulePrivate = Map.remove lm.Alias tenv.ModulePrivate
+                        }
+                    else
+                        tenv
 
-            match lm with
-            | lm when Map.containsKey lm.Alias tenv.Modules ->
-                Error(
-                    stmtErr
-                        $"the name '{lm.Alias}' is already a module in scope; import it under a different name with 'as'"
-                )
-            // an alias spelled like a union case in scope (`as Some`) would
-            // read as the constructor at every use — refused, as a second
-            // module of one name is
-            | lm when
-                tenv.Types
-                |> Map.exists (fun _ def ->
-                    match def with
-                    | Union u -> u.Cases |> List.exists (fun (c, _) -> c = lm.Alias)
-                    | _ -> false)
-                ->
-                Error(
-                    stmtErr
-                        $"the name '{lm.Alias}' is a union case in scope; import the module under a different name with 'as'"
-                )
-            | lm ->
-                // a type name another import or a local declaration holds is
-                // no clash: mergeModule keys it [D:qualified-type-names]
-                Ok
-                    { Kind = KImport lm
-                      Env = mergeModule tenv lm
-                      Warnings = [] }
+                match lm with
+                | lm when Map.containsKey lm.Alias tenv.Modules ->
+                    Error(
+                        stmtErr
+                            $"the name '{lm.Alias}' is already a module in scope; import it under a different name with 'as'"
+                    )
+                // an alias spelled like a union case in scope (`as Some`) would
+                // read as the constructor at every use — refused, as a second
+                // module of one name is
+                | lm when
+                    tenv.Types
+                    |> Map.exists (fun _ def ->
+                        match def with
+                        | Union u -> u.Cases |> List.exists (fun (c, _) -> c = lm.Alias)
+                        | _ -> false)
+                    ->
+                    Error(
+                        stmtErr
+                            $"the name '{lm.Alias}' is a union case in scope; import the module under a different name with 'as'"
+                    )
+                | lm ->
+                    // a type name another import or a local declaration holds is
+                    // no clash: mergeModule keys it [D:qualified-type-names]
+                    Ok {
+                        Kind = KImport lm
+                        Env = mergeModule tenv lm
+                        Warnings = []
+                    }
     finally
         Check.toPhys.Value <- None
 
@@ -4707,7 +4969,10 @@ let checkStatement
     : Result<CheckedStatement, StmtDiag> =
     checkStatementCore gateExprs sigCtx mkR loadImport tenv ll
     // no checker var reaches the author [D:user-language-messages]
-    |> Result.mapError (fun d -> { d with Message = Types.normalizeDiagVars d.Message })
+    |> Result.mapError (fun d -> {
+        d with
+            Message = Types.normalizeDiagVars d.Message
+    })
     |> Result.bind (fun st ->
         let teTag =
             match st.Kind with
@@ -4739,27 +5004,29 @@ let checkStatement
             | Some(span, message) ->
                 let physLine, physCol = translate ll span.Start.Col
 
-                Error
-                    { PhysLine = physLine
-                      PhysCol = physCol
-                      PhysEnd = Some(translate ll span.End.Col)
-                      Tag = Some tag
-                      HasCol = true
-                      Span = Some span
-                      Parse = false
-                      Message = message
-                      File = None
-                      Note = None
-                      Related = []
-                      Warnings = [] }
+                Error {
+                    PhysLine = physLine
+                    PhysCol = physCol
+                    PhysEnd = Some(translate ll span.End.Col)
+                    Tag = Some tag
+                    HasCol = true
+                    Span = Some span
+                    Parse = false
+                    Message = message
+                    File = None
+                    Note = None
+                    Related = []
+                    Warnings = []
+                }
             | None ->
                 match st.Kind with
                 | KLet(name, _, te) ->
-                    Ok
-                        { st with
-                            Env =
-                                { st.Env with
-                                    PureBindings = Map.add name (Purity.isPureExpr tenv.PureBindings te) st.Env.PureBindings
+                    Ok {
+                        st with
+                            Env = {
+                                st.Env with
+                                    PureBindings =
+                                        Map.add name (Purity.isPureExpr tenv.PureBindings te) st.Env.PureBindings
                                     PlanRefused =
                                         match Purity.planRefusalOf tenv.PlanRefused te with
                                         | Some why -> Map.add name why st.Env.PlanRefused
@@ -4768,7 +5035,9 @@ let checkStatement
                                         if Purity.execHelperOf tenv.ExecHelpers te then
                                             Set.add name st.Env.ExecHelpers
                                         else
-                                            Set.remove name st.Env.ExecHelpers } }
+                                            Set.remove name st.Env.ExecHelpers
+                            }
+                    }
                 | _ -> Ok st)
 
 // ---- unused bindings [D:unused-bindings]: whole-file threading ------------
@@ -4781,13 +5050,14 @@ let checkStatement
 // pass for the whole file — one real error beats N echoes (matching
 // the hole scheme).
 
-type UnusedFinding =
-    { ULine: int
-      UCol: int
-      UEndCol: int
-      UMessage: string
-      // the rebinding site of the shadow variant [D:diagnostic-tags]
-      URelated: (int * int * string) list }
+type UnusedFinding = {
+    ULine: int
+    UCol: int
+    UEndCol: int
+    UMessage: string
+    // the rebinding site of the shadow variant [D:diagnostic-tags]
+    URelated: (int * int * string) list
+}
 
 /// the bare `_` binder's message — the one unused-binding variant that is
 /// misnamed, not unnecessary: the structured marker tag consumers test
@@ -4797,7 +5067,9 @@ let bareDiscardMessage =
 
 type UnusedTracker() =
     // pending top-level binders: name -> (physLine, physCol, physEndCol, used)
-    let pending = System.Collections.Generic.Dictionary<string, int * int * int * bool>()
+    let pending =
+        System.Collections.Generic.Dictionary<string, int * int * int * bool>()
+
     let found = ResizeArray<UnusedFinding>()
     let mutable poisoned = false
 
@@ -4817,12 +5089,17 @@ type UnusedTracker() =
             let l, c = translate ll u.USpan.Start.Col
             let _, ec = translate ll u.USpan.End.Col
 
-            found.Add
-                { ULine = l
-                  UCol = c
-                  UEndCol = max (c + 1) ec
-                  UMessage = if u.UBareWildcard then bareDiscardMessage else plainMsg u.UName
-                  URelated = [] }
+            found.Add {
+                ULine = l
+                UCol = c
+                UEndCol = max (c + 1) ec
+                UMessage =
+                    if u.UBareWildcard then
+                        bareDiscardMessage
+                    else
+                        plainMsg u.UName
+                URelated = []
+            }
 
     /// register a top-level binder; an unread pending binder of the
     /// same name errors at the earlier binder (the shadow rule —
@@ -4834,13 +5111,14 @@ type UnusedTracker() =
 
             (match pending.TryGetValue name with
              | true, (ol, oc, oe, false) ->
-                 found.Add
-                     { ULine = ol
-                       UCol = oc
-                       UEndCol = oe
-                       UMessage =
+                 found.Add {
+                     ULine = ol
+                     UCol = oc
+                     UEndCol = oe
+                     UMessage =
                          $"'{name}' is bound but never used before being rebound at line {l} — read it, or name it '_{name}' to keep it deliberately"
-                       URelated = [ l, c, $"'{name}' is rebound here" ] }
+                     URelated = [ l, c, $"'{name}' is rebound here" ]
+                 }
              | _ -> ())
 
             pending[name] <- (l, c, max (c + 1) ec, false)
@@ -4895,18 +5173,21 @@ type UnusedTracker() =
         if poisoned then
             []
         else
-            let flushed =
-                [ for KeyValue(name, (l, c, e, used)) in pending do
-                      if not used && not (Set.contains name signedNames) then
-                          { ULine = l
+            let flushed = [
+                for KeyValue(name, (l, c, e, used)) in pending do
+                    if not used && not (Set.contains name signedNames) then
+                        {
+                            ULine = l
                             UCol = c
                             UEndCol = e
                             UMessage =
-                              if isModule then
-                                  $"'{name}' is bound but never used — an unsigned module member is private dead code: use it, export it with a signature (let {name} : …), or name it '_{name}'"
-                              else
-                                  plainMsg name
-                            URelated = [] } ]
+                                if isModule then
+                                    $"'{name}' is bound but never used — an unsigned module member is private dead code: use it, export it with a signature (let {name} : …), or name it '_{name}'"
+                                else
+                                    plainMsg name
+                            URelated = []
+                        }
+            ]
 
             (List.ofSeq found) @ flushed |> List.sortBy (fun f -> f.ULine, f.UCol)
 
@@ -4919,11 +5200,12 @@ type UnusedTracker() =
 // exits 0. Poisoned (any errored statement) = silent, the unused
 // check's rule: one real error beats advisory noise.
 
-type ReenumFinding =
-    { RLine: int
-      RCol: int
-      REndCol: int
-      RMessage: string }
+type ReenumFinding = {
+    RLine: int
+    RCol: int
+    REndCol: int
+    RMessage: string
+}
 
 type ReenumTracker() =
     // top-level tracked names -> their pulls [D:reenum-indirect];
@@ -4971,12 +5253,13 @@ type ReenumTracker() =
                     let l, c = translate ll span.Start.Col
                     let _, ec = translate ll span.End.Col
 
-                    found.Add
-                        { RLine = l
-                          RCol = c
-                          REndCol = max (c + 1) ec
-                          RMessage =
-                            $"possible re-enumeration: '{name}'{note} is command-backed and unforced — each pull re-runs '{cmd}'; snapshot one run: {repair}" }
+                    found.Add {
+                        RLine = l
+                        RCol = c
+                        REndCol = max (c + 1) ec
+                        RMessage =
+                            $"possible re-enumeration: '{name}'{note} is command-backed and unforced — each pull re-runs '{cmd}'; snapshot one run: {repair}"
+                    }
 
     member _.Poison() = poisoned <- true
 
@@ -5033,11 +5316,12 @@ type ReenumTracker() =
 // command/effect `let`, so the pairing cannot arise there — the tracker is
 // only fed for scripts.
 
-type TempDirFinding =
-    { TLine: int
-      TCol: int
-      TEndCol: int
-      TMessage: string }
+type TempDirFinding = {
+    TLine: int
+    TCol: int
+    TEndCol: int
+    TMessage: string
+}
 
 type TempDirTracker() =
     // top-level newTempDir binders: name -> id
@@ -5056,8 +5340,7 @@ type TempDirTracker() =
     /// walk one statement tree: a delete of an open binder (top-level or a
     /// qualifying block-local) warns once at the delete site
     let consume (ll: LogicalLine) (te: Check.TypedExpr) =
-        let tracked0 =
-            tracked |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+        let tracked0 = tracked |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
 
         for ev in Check.tempDirEvents fresh tracked0 te do
             match ev with
@@ -5073,15 +5356,16 @@ type TempDirTracker() =
                     let _, ec = translate ll span.End.Col
                     let deleteCall = if isAll then "Dir.deleteAll" else "Dir.delete"
 
-                    found.Add
-                        { TLine = l
-                          TCol = c
-                          TEndCol = max (c + 1) ec
-                          TMessage =
+                    found.Add {
+                        TLine = l
+                        TCol = c
+                        TEndCol = max (c + 1) ec
+                        TMessage =
                             $"'{name}' is a Path.newTempDir directory later removed with {deleteCall} — "
                             + $"use a 'within tmp {name}' block instead: it removes the directory on scope exit "
                             + "AND on Ctrl+C/kill, which a manual delete misses (newTempDir is for a directory "
-                            + "that must OUTLIVE the scope)" }
+                            + "that must OUTLIVE the scope)"
+                    }
 
     member _.Poison() = poisoned <- true
 
@@ -5117,15 +5401,20 @@ type TempDirTracker() =
 let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
     let te, ve = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
 
-    { te with
-        Modules = te.Modules |> Map.add "Self" selfMembers },
+    {
+        te with
+            Modules = te.Modules |> Map.add "Self" selfMembers
+    },
     ve |> Map.add "Self.scriptPath" (Eval.VStr absPath)
 
 // the lock as `weir:` resolution reads it [D:add-module-closure]: a
 // closure module's entry file is recorded there, so the checker and the
 // LSP read lock.json — once per (path, mtime, length), not per import
 let private lockReads =
-    System.Collections.Concurrent.ConcurrentDictionary<string, DateTime * int64 * Result<Contracts.LockEntry list, string>>()
+    System.Collections.Concurrent.ConcurrentDictionary<
+        string,
+        DateTime * int64 * Result<Contracts.LockEntry list, string>
+     >()
 
 let private readLockCached (weirDir: string) : Result<Contracts.LockEntry list, string> =
     let p = IO.Path.Combine(weirDir, "lock.json")
@@ -5133,7 +5422,11 @@ let private readLockCached (weirDir: string) : Result<Contracts.LockEntry list, 
     let stamp =
         try
             let fi = IO.FileInfo p
-            if fi.Exists then fi.LastWriteTimeUtc, fi.Length else DateTime.MinValue, -1L
+
+            if fi.Exists then
+                fi.LastWriteTimeUtc, fi.Length
+            else
+                DateTime.MinValue, -1L
         with _ ->
             DateTime.MinValue, -1L
 
@@ -5303,8 +5596,14 @@ type SourceFault =
 let private unsizedCap = 16 * 1024 * 1024
 
 let private readSourceBytes (path: string) : byte[] =
-    use fs = new IO.FileStream(path, IO.FileMode.Open, IO.FileAccess.Read, IO.FileShare.ReadWrite)
-    let sized = try fs.Length with _ -> 0L
+    use fs =
+        new IO.FileStream(path, IO.FileMode.Open, IO.FileAccess.Read, IO.FileShare.ReadWrite)
+
+    let sized =
+        try
+            fs.Length
+        with _ ->
+            0L
 
     if sized > 0L then
         use ms = new IO.MemoryStream(int sized)
@@ -5342,7 +5641,13 @@ let splitSourceText (text: string) : string list =
         match text[i] with
         | '\r' ->
             acc.Add(text.Substring(start, i - start))
-            i <- if i + 1 < text.Length && text[i + 1] = '\n' then i + 2 else i + 1
+
+            i <-
+                if i + 1 < text.Length && text[i + 1] = '\n' then
+                    i + 2
+                else
+                    i + 1
+
             start <- i
         | '\n' ->
             acc.Add(text.Substring(start, i - start))
@@ -5374,7 +5679,10 @@ let private decodeSourceLines (bytes: byte[]) : string list =
             // its column the code points before it on that line, plus one
             let at = start + max 0 ex.Index
             let lineStart = (Array.LastIndexOf(bytes, 10uy, max 0 (at - 1)) + 1) |> max start
-            let line = 1 + (bytes[start .. at - 1] |> Array.sumBy (fun b -> if b = 10uy then 1 else 0))
+
+            let line =
+                1 + (bytes[start .. at - 1] |> Array.sumBy (fun b -> if b = 10uy then 1 else 0))
+
             let prefix = Text.Encoding.UTF8.GetString(bytes, lineStart, at - lineStart)
             let col = 1 + (prefix.EnumerateRunes() |> Seq.length)
             raise (BadUtf8(line, col))
@@ -5412,7 +5720,8 @@ let readEntryScript (path: string) : Result<string list, string> =
         | PermissionDenied -> $"cannot read {quoteData path}: permission denied"
         | NotRegular -> $"cannot read {quoteData path}: not a regular file — a script is a text file"
         | IoFault m -> $"cannot read {quoteData path}: {quoteData m}"
-        | InvalidUtf8(l, c) -> $"{quoteData path}:{l}:{c}: invalid UTF-8 — a source file must be UTF-8; this byte is not")
+        | InvalidUtf8(l, c) ->
+            $"{quoteData path}:{l}:{c}: invalid UTF-8 — a source file must be UTF-8; this byte is not")
 
 // buffer-over-disk [D:modules-v1]: when the LSP sets this, an imported file's
 // content is read through it (open editor buffers first, then disk) so an
@@ -5467,10 +5776,11 @@ let internal readImportSource (absPath: string) : ImportRead =
 // a module's source as the check takes it, read and assembled once
 // [D:parallel-imports]: discovery reads a file for its import lines and
 // the check that follows takes the same body instead of reading again
-type internal PreparedSource =
-    { Read: ImportRead
-      // for ISource: the numbered body and its assembly
-      Body: ((int * string) list * Result<LogicalLine list, string>) option }
+type internal PreparedSource = {
+    Read: ImportRead
+    // for ISource: the numbered body and its assembly
+    Body: ((int * string) list * Result<LogicalLine list, string>) option
+}
 
 let internal prepareSource (absPath: string) : PreparedSource =
     let read = readImportSource absPath
@@ -5480,8 +5790,10 @@ let internal prepareSource (absPath: string) : PreparedSource =
         let body, bodyOffset, _ = scriptBody rawLines
         let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
 
-        { Read = read
-          Body = Some(numbered, assemble numbered) } // raw lines: assemble classifies/strips internally [D:content-bytes]
+        {
+            Read = read
+            Body = Some(numbered, assemble numbered)
+        } // raw lines: assemble classifies/strips internally [D:content-bytes]
     | _ -> { Read = read; Body = None }
 
 type private LoadState =
@@ -5502,7 +5814,9 @@ type ModuleLoads() =
     let states = Collections.Generic.Dictionary<string, LoadState>()
     // (key, absPath, deps, run) in load order; a worker takes the first
     // still pending whose deps are all done
-    let plan = ResizeArray<string * string * string list * (unit -> Result<LoadedModule, ImportError>)>()
+    let plan =
+        ResizeArray<string * string * string list * (unit -> Result<LoadedModule, ImportError>)>()
+
     let sources = Collections.Generic.Dictionary<string, PreparedSource>()
     let parentCwd = Session.Cwd()
     let mutable active = 0
@@ -5520,7 +5834,8 @@ type ModuleLoads() =
              | _ -> false)
             && deps |> List.forall isDone)
 
-    let me () = Threading.Thread.CurrentThread.ManagedThreadId
+    let me () =
+        Threading.Thread.CurrentThread.ManagedThreadId
 
     // under the gate
     let finish (key: string) (absPath: string) (result: unit -> Result<LoadedModule, ImportError>) =
@@ -5631,9 +5946,10 @@ type ModuleLoads() =
         let realias (r: Result<LoadedModule, ImportError>) =
             match r with
             | Ok cached ->
-                Ok
-                    { cached with
-                        Alias = importAs |> Option.defaultValue cached.NaturalName }
+                Ok {
+                    cached with
+                        Alias = importAs |> Option.defaultValue cached.NaturalName
+                }
             | Error _ -> r
 
         let claim =
@@ -5696,11 +6012,12 @@ let rec loadModuleCachedWith
 
     // an import-statement error reports at the import line (File=None)
     let stmt msg =
-        Error
-            { File = None
-              Line = 0
-              Col = 0
-              Message = msg }
+        Error {
+            File = None
+            Line = 0
+            Col = 0
+            Message = msg
+        }
 
     let notAModule =
         stmt $"{quoteData absPath} is not a module; add `module` at the top, or invoke it as a command"
@@ -5724,351 +6041,377 @@ let rec loadModuleCachedWith
         stmt $"import cycle: {quoteData loop}"
     else
 
-    // a diamond's shared module is checked once (re-aliased per import
-    // site), by whichever thread asks first [D:parallel-imports]
-    loads.Run key absPath importAs (fun () ->
+        // a diamond's shared module is checked once (re-aliased per import
+        // site), by whichever thread asks first [D:parallel-imports]
+        loads.Run key absPath importAs (fun () ->
 
-    // read the source once [D:lockfile-confinement] — no Exists/read race,
-    // and present-but-unreadable is its own located diagnostic, not a crash
-    let prepared = loads.TakeSource absPath
+            // read the source once [D:lockfile-confinement] — no Exists/read race,
+            // and present-but-unreadable is its own located diagnostic, not a crash
+            let prepared = loads.TakeSource absPath
 
-    match prepared.Read with
-    | IAbsent ->
-        if path.StartsWith "weir:" then
-            let n = path.Substring 5
+            match prepared.Read with
+            | IAbsent ->
+                if path.StartsWith "weir:" then
+                    let n = path.Substring 5
 
-            stmt
-                $"no vendored module '{quoteData n}' ({quoteData absPath}) — vendor it: weir add module {quoteData n} (an official library module, its latest release; @<tag> pins one), or <host>/<org>/<repo>//<file>@<ref> --as {quoteData n} (a generated types module lands here via: weir gen types --schema {quoteData n})"
-        else
-            stmt $"cannot resolve import: no file at {quoteData absPath}"
-    | IUnreadable reason -> stmt $"cannot read import {quoteData absPath}: {quoteData reason}"
-    | IBadUtf8(l, c) ->
-        Error
-            { File = Some absPath
-              Line = l
-              Col = c
-              Message = "invalid UTF-8 — a source file must be UTF-8; this byte is not" }
-    | ISource rawLines ->
-        let numbered, assembled = prepared.Body.Value
-
-        match assembled with
-        | Error msg -> stmt (assemblyErrorLocated absPath numbered msg)
-        | Ok [] -> notAModule
-        | Ok(first :: rest) ->
-            let baseTenv, _ = moduleBaseEnvs absPath
-
-            match Parser.parseLineFull (mkR baseTenv) first.Text with
-            | Ok(SModule(declName, _)) ->
-                let natural = declName |> Option.orElseWith (fun () -> deriveModuleName absPath)
-
-                match importAs |> Option.orElse natural with
-                | None ->
                     stmt
-                        $"cannot derive a module name from '{quoteData (IO.Path.GetFileName absPath)}'; name it (module Name) or import it as a name (import \"…\" as Name)"
-                | Some alias ->
-                    // transitive: a reached module's own imports resolve, sharing
-                    // the cache, with this module pushed on the chain
-                    let childLoader: ImportLoader =
-                        fun p _ a -> loadModuleCachedWith false mkR loads (key :: chain) absPath p a
+                        $"no vendored module '{quoteData n}' ({quoteData absPath}) — vendor it: weir add module {quoteData n} (an official library module, its latest release; @<tag> pins one), or <host>/<org>/<repo>//<file>@<ref> --as {quoteData n} (a generated types module lands here via: weir gen types --schema {quoteData n})"
+                else
+                    stmt $"cannot resolve import: no file at {quoteData absPath}"
+            | IUnreadable reason -> stmt $"cannot read import {quoteData absPath}: {quoteData reason}"
+            | IBadUtf8(l, c) ->
+                Error {
+                    File = Some absPath
+                    Line = l
+                    Col = c
+                    Message = "invalid UTF-8 — a source file must be UTF-8; this byte is not"
+                }
+            | ISource rawLines ->
+                let numbered, assembled = prepared.Body.Value
 
-                    // a module-content error reports at the module's own site
-                    let at line col msg : Result<_, ImportError> =
-                        Error
-                            { File = Some absPath
-                              Line = line
-                              Col = col
-                              Message = msg }
+                match assembled with
+                | Error msg -> stmt (assemblyErrorLocated absPath numbered msg)
+                | Ok [] -> notAModule
+                | Ok(first :: rest) ->
+                    let baseTenv, _ = moduleBaseEnvs absPath
 
-                    // unused bindings in the module's own text
-                    // [D:unused-bindings]: signed members exempt at flush
-                    let moduleUnused = UnusedTracker()
+                    match Parser.parseLineFull (mkR baseTenv) first.Text with
+                    | Ok(SModule(declName, _)) ->
+                        let natural = declName |> Option.orElseWith (fun () -> deriveModuleName absPath)
 
-                    // first declaration per type name: line * came-from-import
-                    // — a module refuses a duplicate as a script does
-                    // [D:dup-type-decl]
-                    let declaredTypes = System.Collections.Generic.Dictionary<string, int * bool>()
-
-                    // helpers: the module's command-reaching functions and
-                    // lazy command values so far, in declaration order
-                    let rec go
-                        (tenv: TypeEnv)
-                        (sc: SigContext)
-                        (helpers: Map<string, int>)
-                        (implLines: (string * int) list)
-                        (accBody: (LogicalLine * CheckedStmt) list)
-                        (stmts: LogicalLine list)
-                        =
-                        match stmts with
-                        | [] -> Ok(tenv, sc, List.rev implLines, List.rev accBody)
-                        | (ll: LogicalLine) :: tail ->
-                            match checkStatement true (Some sc) mkR childLoader tenv ll with
-                            | Error d ->
-                                // a deeper module's error (File already set)
-                                // propagates unchanged; this module's own error
-                                // takes this module's site
-                                match d.File with
-                                | Some _ ->
-                                    Error
-                                        { File = d.File
-                                          Line = d.PhysLine
-                                          Col = d.PhysCol
-                                          Message = d.Message }
-                                | None -> at d.PhysLine d.PhysCol d.Message
-                            | Ok chk ->
-                                let eagerHelper =
-                                    match chk.Kind with
-                                    | KLet(_, _, te)
-                                    | KLetPat(_, _, te) -> Check.eagerCommandHelper helpers te
-                                    | _ -> None
-
-                                let runsNow =
-                                    match chk.Kind with
-                                    | KLet(_, _, te)
-                                    | KLetPat(_, _, te) -> Check.commandRunsNow helpers te
-                                    | _ -> None
-
-                                match chk.Kind with
-                                | KType(decl, _) when declaredTypes.ContainsKey decl.Name ->
-                                    let firstLine, viaImport = declaredTypes[decl.Name]
-
-                                    at
-                                        ll.Head
-                                        1
-                                        (if viaImport then
-                                             $"type '{decl.Name}' is already provided by the import at line {firstLine}; rename one"
-                                         else
-                                             $"type '{decl.Name}' is already declared at line {firstLine}")
-                                | KType(decl, validator) ->
-                                    declaredTypes[decl.Name] <- (ll.Head, false)
-                                    go chk.Env sc helpers implLines ((ll, CType(decl, validator)) :: accBody) tail
-                                | KImport lm ->
-                                    for tn in lm.TypeNames do
-                                        if not (declaredTypes.ContainsKey tn) then
-                                            declaredTypes[tn] <- (ll.Head, true)
-
-                                    go chk.Env sc helpers implLines ((ll, CImport lm) :: accBody) tail
-                                | KSig(name, sd) ->
-                                    // the sig binds nothing yet [D:module-signatures];
-                                    // the paired implementation is the value
-                                    let sc' =
-                                        { sc with
-                                            Pending = Map.add name sd sc.Pending
-                                            Signed = Set.add name sc.Signed
-                                            SigLines = Map.add name sd.Line sc.SigLines }
-
-                                    go chk.Env sc' helpers implLines accBody tail
-                                | KLet _
-                                | KLetPat _ when runsNow.IsSome -> at ll.Head 1 (commandAtImport runsNow.Value)
-                                | KLet(name, _, _) when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport name eagerHelper.Value)
-                                | KLetPat _ when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport "f" eagerHelper.Value)
-                                | KLet(name, _, te) ->
-                                    let sc' =
-                                        { sc with
-                                            Pending = Map.remove name sc.Pending
-                                            Implemented = Set.add name sc.Implemented }
-
-                                    let implLines' =
-                                        if Set.contains name sc.Signed then
-                                            (name, ll.Head) :: implLines
-                                        else
-                                            implLines
-
-                                    moduleUnused.Feed ll chk
-
-                                    go
-                                        chk.Env
-                                        sc'
-                                        (Check.recordCommandBinding helpers name te)
-                                        implLines'
-                                        ((ll, CLet(name, te)) :: accBody)
-                                        tail
-                                | KLetPat(pat, schemes, te) ->
-                                    let sc' =
-                                        { sc with
-                                            Implemented =
-                                                schemes |> List.fold (fun s (n, _) -> Set.add n s) sc.Implemented }
-
-                                    moduleUnused.Feed ll chk
-                                    go chk.Env sc' helpers implLines ((ll, CLetPat(pat, te)) :: accBody) tail
-                                | KModule _ -> at ll.Head 1 "a file has at most one 'module' marker, and it comes first"
-                                | KCmd _
-                                | KExpr _ ->
-                                    at
-                                        ll.Head
-                                        1
-                                        "a module declares only — 'type' and 'let', no commands or bare expressions"
-
-                    match go baseTenv SigContext.empty Map.empty [] [] rest with
-                    | Error e -> Error e
-                    | Ok(finalTenv, sc, implLines, moduleBody) ->
-                        // sig without impl = check error at the sig
-                        // [D:module-signatures]; impl without sig = private
-                        let orphan =
-                            sc.Pending |> Map.toList |> List.sortBy (fun (_, sd) -> sd.Line) |> List.tryHead
-
-                        // a signed member's /// doc belongs on the signature
-                        // (one home) [D:module-signatures]
-                        let docOnImpl =
-                            lazy
-                                (docAttachments rawLines
-                                 |> List.tryPick (fun d ->
-                                     implLines
-                                     |> List.tryFind (fun (_, implLine) -> d.Line = implLine)
-                                     |> Option.map (fun (n, _) -> n, d)))
-
-                        let lawError =
-                            match orphan with
-                            | Some(name, sd) ->
-                                Some(
-                                    sd.Line,
-                                    sd.Col,
-                                    $"signature without implementation — no 'let {name} … = …' follows in this module"
-                                )
-                            | None ->
-                                match docOnImpl.Value with
-                                | Some(name, d) ->
-                                    Some(
-                                        max 1 (d.Line - List.length d.Doc),
-                                        1,
-                                        $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)"
-                                    )
-                                | None when not sigContract ->
-                                    // an unsigned member the module never reads is
-                                    // dead private code [D:unused-bindings]
-                                    match moduleUnused.Flush sc.Signed true |> List.tryHead with
-                                    | Some f -> Some(f.ULine, f.UCol, f.UMessage)
-                                    | None -> None
-                                | None -> None
-
-                        match lawError with
-                        | Some(l, c, msg) -> at l c msg
+                        match importAs |> Option.orElse natural with
                         | None ->
+                            stmt
+                                $"cannot derive a module name from '{quoteData (IO.Path.GetFileName absPath)}'; name it (module Name) or import it as a name (import \"…\" as Name)"
+                        | Some alias ->
+                            // transitive: a reached module's own imports resolve, sharing
+                            // the cache, with this module pushed on the chain
+                            let childLoader: ImportLoader =
+                                fun p _ a -> loadModuleCachedWith false mkR loads (key :: chain) absPath p a
 
-                            // a module's own types (from its Body's decls); what it
-                            // imported crosses only as reachableDefs below, never as
-                            // its own [D:transitive-types]; Members already exclude
-                            // imported ones (those live under Modules[·], not Values)
-                            let typeDefs =
-                                moduleBody
-                                |> List.choose (function
-                                    | _, CType(decl, _) ->
-                                        Map.tryFind decl.Name finalTenv.Types |> Option.map (fun d -> decl.Name, d)
-                                    | _ -> None)
+                            // a module-content error reports at the module's own site
+                            let at line col msg : Result<_, ImportError> =
+                                Error {
+                                    File = Some absPath
+                                    Line = line
+                                    Col = col
+                                    Message = msg
+                                }
 
-                            // the export split [D:module-signatures]: the signature
-                            // is the export — signed members and declared types'
-                            // constructors cross; unsigned members stay private
-                            // (carried for the import-of-private error only)
-                            let ctorNames =
-                                typeDefs
-                                |> List.collect (fun (_, d) ->
-                                    match d with
-                                    | Union u -> u.Cases |> List.map fst
-                                    | Record _ -> [])
-                                |> Set.ofList
+                            // unused bindings in the module's own text
+                            // [D:unused-bindings]: signed members exempt at flush
+                            let moduleUnused = UnusedTracker()
 
-                            // own = declared in this body, a builtin's name
-                            // included — exported, reachable qualified
-                            // (`Doc.Text`); the bare name stays the builtin
-                            // [D:module-builtin-names]
-                            let declared =
-                                moduleBody
-                                |> List.collect (function
-                                    | _, CLet(n, _) -> [ n ]
-                                    | _, CLetPat(p, _) -> Parser.patLeafNames p
-                                    | _ -> [])
-                                |> Set.ofList
-                                |> Set.union ctorNames
+                            // first declaration per type name: line * came-from-import
+                            // — a module refuses a duplicate as a script does
+                            // [D:dup-type-decl]
+                            let declaredTypes = System.Collections.Generic.Dictionary<string, int * bool>()
 
-                            let ownMembers =
-                                finalTenv.Values
-                                |> Map.toList
-                                |> List.filter (fun (n, _) -> declared.Contains n)
+                            // helpers: the module's command-reaching functions and
+                            // lazy command values so far, in declaration order
+                            let rec go
+                                (tenv: TypeEnv)
+                                (sc: SigContext)
+                                (helpers: Map<string, int>)
+                                (implLines: (string * int) list)
+                                (accBody: (LogicalLine * CheckedStmt) list)
+                                (stmts: LogicalLine list)
+                                =
+                                match stmts with
+                                | [] -> Ok(tenv, sc, List.rev implLines, List.rev accBody)
+                                | (ll: LogicalLine) :: tail ->
+                                    match checkStatement true (Some sc) mkR childLoader tenv ll with
+                                    | Error d ->
+                                        // a deeper module's error (File already set)
+                                        // propagates unchanged; this module's own error
+                                        // takes this module's site
+                                        match d.File with
+                                        | Some _ ->
+                                            Error {
+                                                File = d.File
+                                                Line = d.PhysLine
+                                                Col = d.PhysCol
+                                                Message = d.Message
+                                            }
+                                        | None -> at d.PhysLine d.PhysCol d.Message
+                                    | Ok chk ->
+                                        let eagerHelper =
+                                            match chk.Kind with
+                                            | KLet(_, _, te)
+                                            | KLetPat(_, _, te) -> Check.eagerCommandHelper helpers te
+                                            | _ -> None
 
-                            let members =
-                                ownMembers
-                                |> List.filter (fun (n, _) -> Set.contains n sc.Signed || Set.contains n ctorNames)
+                                        let runsNow =
+                                            match chk.Kind with
+                                            | KLet(_, _, te)
+                                            | KLetPat(_, _, te) -> Check.commandRunsNow helpers te
+                                            | _ -> None
 
-                            let privateMembers =
-                                ownMembers
-                                |> List.filter (fun (n, _) ->
-                                    not (Set.contains n sc.Signed) && not (Set.contains n ctorNames))
+                                        match chk.Kind with
+                                        | KType(decl, _) when declaredTypes.ContainsKey decl.Name ->
+                                            let firstLine, viaImport = declaredTypes[decl.Name]
 
-                            // an imported type reachable from what this module
-                            // exports (a signature, an own type's field or case)
-                            // crosses with it, so an importer can read, show and
-                            // compare the values it receives; it is not this
-                            // module's type (TypeNames: no qualified literal, no
-                            // re-export under this alias) [D:transitive-types]
-                            let reachableDefs =
-                                let own = typeDefs |> List.map fst |> Set.ofList
+                                            at
+                                                ll.Head
+                                                1
+                                                (if viaImport then
+                                                     $"type '{decl.Name}' is already provided by the import at line {firstLine}; rename one"
+                                                 else
+                                                     $"type '{decl.Name}' is already declared at line {firstLine}")
+                                        | KType(decl, validator) ->
+                                            declaredTypes[decl.Name] <- (ll.Head, false)
 
-                                let rec walk (seen: Set<string>) (ty: Ty) =
-                                    match ty with
-                                    | TFun(a, b) -> walk (walk seen a) b
-                                    | TSeq t -> walk seen t
-                                    | TTuple ts -> ts |> List.fold walk seen
-                                    | TRowVar(_, fields) -> fields |> List.map snd |> List.fold walk seen
-                                    | TNamed(n, args) ->
-                                        let seen = args |> List.fold walk seen
+                                            go
+                                                chk.Env
+                                                sc
+                                                helpers
+                                                implLines
+                                                ((ll, CType(decl, validator)) :: accBody)
+                                                tail
+                                        | KImport lm ->
+                                            for tn in lm.TypeNames do
+                                                if not (declaredTypes.ContainsKey tn) then
+                                                    declaredTypes[tn] <- (ll.Head, true)
 
-                                        if seen.Contains n || Map.containsKey n baseTenv.Types then
-                                            seen
-                                        else
-                                            match Map.tryFind n finalTenv.Types with
-                                            | Some def -> defTys def |> List.fold walk (Set.add n seen)
-                                            | None -> seen
-                                    | _ -> seen
+                                            go chk.Env sc helpers implLines ((ll, CImport lm) :: accBody) tail
+                                        | KSig(name, sd) ->
+                                            // the sig binds nothing yet [D:module-signatures];
+                                            // the paired implementation is the value
+                                            let sc' = {
+                                                sc with
+                                                    Pending = Map.add name sd sc.Pending
+                                                    Signed = Set.add name sc.Signed
+                                                    SigLines = Map.add name sd.Line sc.SigLines
+                                            }
 
-                                and defTys (def: TypeDef) =
-                                    match def with
-                                    | Record rd -> rd.Fields |> List.map snd
-                                    | Union u -> u.Cases |> List.choose snd
+                                            go chk.Env sc' helpers implLines accBody tail
+                                        | KLet _
+                                        | KLetPat _ when runsNow.IsSome -> at ll.Head 1 (commandAtImport runsNow.Value)
+                                        | KLet(name, _, _) when eagerHelper.IsSome ->
+                                            at ll.Head 1 (helperAtImport name eagerHelper.Value)
+                                        | KLetPat _ when eagerHelper.IsSome ->
+                                            at ll.Head 1 (helperAtImport "f" eagerHelper.Value)
+                                        | KLet(name, _, te) ->
+                                            let sc' = {
+                                                sc with
+                                                    Pending = Map.remove name sc.Pending
+                                                    Implemented = Set.add name sc.Implemented
+                                            }
 
-                                let roots =
-                                    (members |> List.map (fun (_, sch) -> sch.Ty))
-                                    @ (typeDefs |> List.collect (snd >> defTys))
+                                            let implLines' =
+                                                if Set.contains name sc.Signed then
+                                                    (name, ll.Head) :: implLines
+                                                else
+                                                    implLines
 
-                                roots
-                                |> List.fold walk own
-                                |> Set.filter (fun n -> not (own.Contains n))
-                                |> Set.toList
-                                |> List.choose (fun n -> Map.tryFind n finalTenv.Types |> Option.map (fun d -> n, d))
+                                            moduleUnused.Feed ll chk
 
-                            let loaded =
-                                { Alias = alias
-                                  NaturalName = natural |> Option.defaultValue alias
-                                  AbsPath = absPath
-                                  TypeDefs = typeDefs @ reachableDefs
-                                  Members = members
-                                  PrivateMembers = privateMembers
-                                  MemberDocs =
-                                      let byLine =
-                                          docAttachments rawLines |> List.map (fun d -> d.Line, d.Doc) |> Map.ofList
+                                            go
+                                                chk.Env
+                                                sc'
+                                                (Check.recordCommandBinding helpers name te)
+                                                implLines'
+                                                ((ll, CLet(name, te)) :: accBody)
+                                                tail
+                                        | KLetPat(pat, schemes, te) ->
+                                            let sc' = {
+                                                sc with
+                                                    Implemented =
+                                                        schemes
+                                                        |> List.fold (fun s (n, _) -> Set.add n s) sc.Implemented
+                                            }
 
-                                      sc.SigLines
-                                      |> Map.toList
-                                      |> List.choose (fun (n, l) -> Map.tryFind l byLine |> Option.map (fun d -> n, d))
-                                      |> Map.ofList
-                                  TypeNames = typeDefs |> List.map fst
-                                  TypeOrigins =
-                                      let ownOrigin n =
-                                          $"{natural |> Option.defaultValue alias}.{n}@{absPath}"
+                                            moduleUnused.Feed ll chk
+                                            go chk.Env sc' helpers implLines ((ll, CLetPat(pat, te)) :: accBody) tail
+                                        | KModule _ ->
+                                            at ll.Head 1 "a file has at most one 'module' marker, and it comes first"
+                                        | KCmd _
+                                        | KExpr _ ->
+                                            at
+                                                ll.Head
+                                                1
+                                                "a module declares only — 'type' and 'let', no commands or bare expressions"
 
-                                      (typeDefs |> List.map (fun (n, _) -> n, ownOrigin n))
-                                      @ (reachableDefs
-                                         // an anonymous shape carries no origin: same-shape
-                                         // anonymous types are one type, from any module
-                                         // [D:anon-literals]
-                                         |> List.filter (fun (n, _) -> not (n.StartsWith "{|"))
-                                         |> List.map (fun (n, _) ->
-                                             n, Map.tryFind n finalTenv.TypeOrigins |> Option.defaultValue (ownOrigin n)))
-                                  Body = moduleBody
-                                  MayRebind = false }
+                            match go baseTenv SigContext.empty Map.empty [] [] rest with
+                            | Error e -> Error e
+                            | Ok(finalTenv, sc, implLines, moduleBody) ->
+                                // sig without impl = check error at the sig
+                                // [D:module-signatures]; impl without sig = private
+                                let orphan =
+                                    sc.Pending |> Map.toList |> List.sortBy (fun (_, sd) -> sd.Line) |> List.tryHead
 
-                            Ok loaded
-            | Ok _ -> notAModule
-            | Error _ -> notAModule)
+                                // a signed member's /// doc belongs on the signature
+                                // (one home) [D:module-signatures]
+                                let docOnImpl =
+                                    lazy
+                                        (docAttachments rawLines
+                                         |> List.tryPick (fun d ->
+                                             implLines
+                                             |> List.tryFind (fun (_, implLine) -> d.Line = implLine)
+                                             |> Option.map (fun (n, _) -> n, d)))
+
+                                let lawError =
+                                    match orphan with
+                                    | Some(name, sd) ->
+                                        Some(
+                                            sd.Line,
+                                            sd.Col,
+                                            $"signature without implementation — no 'let {name} … = …' follows in this module"
+                                        )
+                                    | None ->
+                                        match docOnImpl.Value with
+                                        | Some(name, d) ->
+                                            Some(
+                                                max 1 (d.Line - List.length d.Doc),
+                                                1,
+                                                $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)"
+                                            )
+                                        | None when not sigContract ->
+                                            // an unsigned member the module never reads is
+                                            // dead private code [D:unused-bindings]
+                                            match moduleUnused.Flush sc.Signed true |> List.tryHead with
+                                            | Some f -> Some(f.ULine, f.UCol, f.UMessage)
+                                            | None -> None
+                                        | None -> None
+
+                                match lawError with
+                                | Some(l, c, msg) -> at l c msg
+                                | None ->
+
+                                    // a module's own types (from its Body's decls); what it
+                                    // imported crosses only as reachableDefs below, never as
+                                    // its own [D:transitive-types]; Members already exclude
+                                    // imported ones (those live under Modules[·], not Values)
+                                    let typeDefs =
+                                        moduleBody
+                                        |> List.choose (function
+                                            | _, CType(decl, _) ->
+                                                Map.tryFind decl.Name finalTenv.Types
+                                                |> Option.map (fun d -> decl.Name, d)
+                                            | _ -> None)
+
+                                    // the export split [D:module-signatures]: the signature
+                                    // is the export — signed members and declared types'
+                                    // constructors cross; unsigned members stay private
+                                    // (carried for the import-of-private error only)
+                                    let ctorNames =
+                                        typeDefs
+                                        |> List.collect (fun (_, d) ->
+                                            match d with
+                                            | Union u -> u.Cases |> List.map fst
+                                            | Record _ -> [])
+                                        |> Set.ofList
+
+                                    // own = declared in this body, a builtin's name
+                                    // included — exported, reachable qualified
+                                    // (`Doc.Text`); the bare name stays the builtin
+                                    // [D:module-builtin-names]
+                                    let declared =
+                                        moduleBody
+                                        |> List.collect (function
+                                            | _, CLet(n, _) -> [ n ]
+                                            | _, CLetPat(p, _) -> Parser.patLeafNames p
+                                            | _ -> [])
+                                        |> Set.ofList
+                                        |> Set.union ctorNames
+
+                                    let ownMembers =
+                                        finalTenv.Values
+                                        |> Map.toList
+                                        |> List.filter (fun (n, _) -> declared.Contains n)
+
+                                    let members =
+                                        ownMembers
+                                        |> List.filter (fun (n, _) ->
+                                            Set.contains n sc.Signed || Set.contains n ctorNames)
+
+                                    let privateMembers =
+                                        ownMembers
+                                        |> List.filter (fun (n, _) ->
+                                            not (Set.contains n sc.Signed) && not (Set.contains n ctorNames))
+
+                                    // an imported type reachable from what this module
+                                    // exports (a signature, an own type's field or case)
+                                    // crosses with it, so an importer can read, show and
+                                    // compare the values it receives; it is not this
+                                    // module's type (TypeNames: no qualified literal, no
+                                    // re-export under this alias) [D:transitive-types]
+                                    let reachableDefs =
+                                        let own = typeDefs |> List.map fst |> Set.ofList
+
+                                        let rec walk (seen: Set<string>) (ty: Ty) =
+                                            match ty with
+                                            | TFun(a, b) -> walk (walk seen a) b
+                                            | TSeq t -> walk seen t
+                                            | TTuple ts -> ts |> List.fold walk seen
+                                            | TRowVar(_, fields) -> fields |> List.map snd |> List.fold walk seen
+                                            | TNamed(n, args) ->
+                                                let seen = args |> List.fold walk seen
+
+                                                if seen.Contains n || Map.containsKey n baseTenv.Types then
+                                                    seen
+                                                else
+                                                    match Map.tryFind n finalTenv.Types with
+                                                    | Some def -> defTys def |> List.fold walk (Set.add n seen)
+                                                    | None -> seen
+                                            | _ -> seen
+
+                                        and defTys (def: TypeDef) =
+                                            match def with
+                                            | Record rd -> rd.Fields |> List.map snd
+                                            | Union u -> u.Cases |> List.choose snd
+
+                                        let roots =
+                                            (members |> List.map (fun (_, sch) -> sch.Ty))
+                                            @ (typeDefs |> List.collect (snd >> defTys))
+
+                                        roots
+                                        |> List.fold walk own
+                                        |> Set.filter (fun n -> not (own.Contains n))
+                                        |> Set.toList
+                                        |> List.choose (fun n ->
+                                            Map.tryFind n finalTenv.Types |> Option.map (fun d -> n, d))
+
+                                    let loaded = {
+                                        Alias = alias
+                                        NaturalName = natural |> Option.defaultValue alias
+                                        AbsPath = absPath
+                                        TypeDefs = typeDefs @ reachableDefs
+                                        Members = members
+                                        PrivateMembers = privateMembers
+                                        MemberDocs =
+                                            let byLine =
+                                                docAttachments rawLines
+                                                |> List.map (fun d -> d.Line, d.Doc)
+                                                |> Map.ofList
+
+                                            sc.SigLines
+                                            |> Map.toList
+                                            |> List.choose (fun (n, l) ->
+                                                Map.tryFind l byLine |> Option.map (fun d -> n, d))
+                                            |> Map.ofList
+                                        TypeNames = typeDefs |> List.map fst
+                                        TypeOrigins =
+                                            let ownOrigin n =
+                                                $"{natural |> Option.defaultValue alias}.{n}@{absPath}"
+
+                                            (typeDefs |> List.map (fun (n, _) -> n, ownOrigin n))
+                                            @ (reachableDefs
+                                               // an anonymous shape carries no origin: same-shape
+                                               // anonymous types are one type, from any module
+                                               // [D:anon-literals]
+                                               |> List.filter (fun (n, _) -> not (n.StartsWith "{|"))
+                                               |> List.map (fun (n, _) ->
+                                                   n,
+                                                   Map.tryFind n finalTenv.TypeOrigins
+                                                   |> Option.defaultValue (ownOrigin n)))
+                                        Body = moduleBody
+                                        MayRebind = false
+                                    }
+
+                                    Ok loaded
+                    | Ok _ -> notAModule
+                    | Error _ -> notAModule)
 
 // the module-body replayer [D:modules-v1]: evaluate a checked module's Body
 // in its own clean env (Self.scriptPath is the module's; process facts ride
@@ -6199,8 +6542,7 @@ let importsOfSource (bytes: byte[]) : (int * int * string) list =
                     | _ -> None
                 else
                     None)
-    with _ ->
-        []
+    with _ -> []
 
 let private repoSegments (p: string) = p.Split '/' |> List.ofArray
 
@@ -6222,7 +6564,10 @@ let private normRepoPath (segs: string list) : string list option =
 /// escaping the repo root refuse, located at file:line:col. A file is
 /// fetched once (a cycle is the loader's error at validation). Returns
 /// (repo path, bytes) in discovery order, the entry first.
-let walkVendorClosure (fetch: string -> Result<byte[], string>) (entry: string) : Result<(string * byte[]) list, string> =
+let walkVendorClosure
+    (fetch: string -> Result<byte[], string>)
+    (entry: string)
+    : Result<(string * byte[]) list, string> =
     match normRepoPath (repoSegments entry) with
     | None
     | Some [] -> Error $"'{quoteData entry}' is not a file inside the repo"
@@ -6339,7 +6684,12 @@ let importAnchor (path: string) : string =
 // read once, for the check to take; an entry that cannot be read
 // schedules nothing.
 let private discoverImports (mkR: TypeEnv -> Parser.Resolver) (loads: ModuleLoads) (entryAbs: string) : unit =
-    match (if importWorkerBound > 1 then (loads.Prepare entryAbs).Body else None) with
+    match
+        (if importWorkerBound > 1 then
+             (loads.Prepare entryAbs).Body
+         else
+             None)
+    with
     | Some(_, Ok entryLines) ->
         let r = mkR (fst (moduleBaseEnvs entryAbs))
 
@@ -6347,7 +6697,12 @@ let private discoverImports (mkR: TypeEnv -> Parser.Resolver) (loads: ModuleLoad
             lls
             |> List.choose (fun ll ->
                 if ll.Text.TrimStart().StartsWith "import" then
-                    match (try Some(Parser.parseLineFull r ll.Text) with _ -> None) with
+                    match
+                        (try
+                            Some(Parser.parseLineFull r ll.Text)
+                         with _ ->
+                             None)
+                    with
                     | Some(Ok(SImport(p, _, alias))) -> Some(p, alias |> Option.map fst)
                     | _ -> None
                 else
@@ -6366,7 +6721,11 @@ let private discoverImports (mkR: TypeEnv -> Parser.Resolver) (loads: ModuleLoad
                     let absPath = resolveImportPathRaw importerAbs path
                     let key = realPath absPath
 
-                    if vendoredNameFault path || (vendoredFault importerAbs path).IsSome || key = importerKey then
+                    if
+                        vendoredNameFault path
+                        || (vendoredFault importerAbs path).IsSome
+                        || key = importerKey
+                    then
                         ()
                     elif List.contains key chain then
                         chain |> List.iter (tainted.Add >> ignore)
@@ -6382,11 +6741,12 @@ let private discoverImports (mkR: TypeEnv -> Parser.Resolver) (loads: ModuleLoad
                             | Some childDeps ->
                                 deps.Add key
 
-                                loads.Schedule
-                                    [ key,
-                                      absPath,
-                                      childDeps,
-                                      fun () -> loadModuleCachedWith false mkR loads chain importerAbs path alias ]
+                                loads.Schedule [
+                                    key,
+                                    absPath,
+                                    childDeps,
+                                    fun () -> loadModuleCachedWith false mkR loads chain importerAbs path alias
+                                ]
                             | None -> taint <- true
                         | _ -> ()
                 with _ ->
@@ -6430,11 +6790,12 @@ let sessionImportLoader: ImportLoader =
 // #infer source, a completion repair, a test harness) refuses it
 let scriptOnlyImport: ImportLoader =
     fun _ _ _ ->
-        Error
-            { File = None
-              Line = 0
-              Col = 0
-              Message = "import is a statement of its own — not available here" }
+        Error {
+            File = None
+            Line = 0
+            Col = 0
+            Message = "import is a statement of its own — not available here"
+        }
 
 // ---- completion in context [D:entry-complete] ---------------------------
 // The REPL's multi-line entry and the LSP's document share one repair:
@@ -6466,7 +6827,10 @@ let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list opt
         let prefix = word.Substring(dot + 1)
         let shorthand = head = "_"
 
-        if not shorthand && not (Char.IsLower head[0] && not (Map.containsKey head env.Values)) then
+        if
+            not shorthand
+            && not (Char.IsLower head[0] && not (Map.containsKey head env.Values))
+        then
             None
         else
             let before = pre.Substring(0, ws)
@@ -6570,34 +6934,37 @@ let entryContext (env: TypeEnv) (lines: string list) : TypeEnv * string option =
 // a machine-applicable repair [D:structured-fixes]: 1-based physical
 // positions in Diagnostic.File, end-exclusive, every edit relative to
 // the unedited text; Family keys the editor's source.fixAll grouping
-type FixEdit =
-    { Line: int
-      Col: int
-      EndLine: int
-      EndCol: int
-      NewText: string }
+type FixEdit = {
+    Line: int
+    Col: int
+    EndLine: int
+    EndCol: int
+    NewText: string
+}
 
-type Fix =
-    { Title: string
-      Edits: FixEdit list
-      Family: string option }
+type Fix = {
+    Title: string
+    Edits: FixEdit list
+    Family: string option
+}
 
-type Diagnostic =
-    { File: string
-      Line: int
-      Col: int
-      EndLine: int option
-      EndCol: int option
-      Severity: string // "error" | "warning"
-      Code: string
-      Message: string
-      // related sites (file, line, col, message) — the signature a
-      // mismatch is measured against, the import an imported error
-      // came through, the rebinding that shadows an unread binder
-      // [D:diagnostic-tags]; additive, so every consumer stays
-      // position-identical [D:one-pipeline]
-      Related: (string * int * int * string) list
-      Fix: Fix option }
+type Diagnostic = {
+    File: string
+    Line: int
+    Col: int
+    EndLine: int option
+    EndCol: int option
+    Severity: string // "error" | "warning"
+    Code: string
+    Message: string
+    // related sites (file, line, col, message) — the signature a
+    // mismatch is measured against, the import an imported error
+    // came through, the rebinding that shadows an unread binder
+    // [D:diagnostic-tags]; additive, so every consumer stays
+    // position-identical [D:one-pipeline]
+    Related: (string * int * int * string) list
+    Fix: Fix option
+}
 
 let private codeOf (parse: bool) (msg: string) : string =
     if parse then
@@ -6644,15 +7011,19 @@ let private replaceWithFix (spanText: string) (msg: string) (line: int) (col: in
             )
 
         if m.Success then
-            Some
-                { Title = $"Replace with '{suggestion}'"
-                  Edits =
-                    [ { Line = line
+            Some {
+                Title = $"Replace with '{suggestion}'"
+                Edits = [
+                    {
+                        Line = line
                         Col = col + m.Index
                         EndLine = line
                         EndCol = col + m.Index + typo.Length
-                        NewText = suggestion } ]
-                  Family = None }
+                        NewText = suggestion
+                    }
+                ]
+                Family = None
+            }
         else
             None
     | None -> None
@@ -6675,18 +7046,20 @@ let fixOf
     let lineText (l: int) =
         if l >= 1 && l <= lines.Length then lines[l - 1] else ""
 
-    let insertAt l c text =
-        { Line = l
-          Col = c
-          EndLine = l
-          EndCol = c
-          NewText = text }
+    let insertAt l c text = {
+        Line = l
+        Col = c
+        EndLine = l
+        EndCol = c
+        NewText = text
+    }
 
     let one title edits =
-        Some
-            { Title = title
-              Edits = edits
-              Family = None }
+        Some {
+            Title = title
+            Edits = edits
+            Family = None
+        }
 
     let indentOf (s: string) = s.Length - s.TrimStart().Length
 
@@ -6735,13 +7108,15 @@ let fixOf
                 else
                     string (Char.ToLowerInvariant name[0]) + name.Substring 1
 
-            one
-                $"Rename to '{renamed}'"
-                [ { Line = line
+            one $"Rename to '{renamed}'" [
+                {
+                    Line = line
                     Col = col
                     EndLine = line
                     EndCol = col + name.Length
-                    NewText = renamed } ]
+                    NewText = renamed
+                }
+            ]
         else
             None
     | "non-exhaustive" ->
@@ -6807,12 +7182,12 @@ let fixOf
                 | Some i when el > line && closesLine el ec ->
                     let pad = String(' ', i)
 
-                    one
-                        title
-                        [ insertAt
-                              el
-                              ((lineText el).Length + 1)
-                              (arms |> List.map (fun a -> "\n" + pad + a) |> String.concat "") ]
+                    one title [
+                        insertAt
+                            el
+                            ((lineText el).Length + 1)
+                            (arms |> List.map (fun a -> "\n" + pad + a) |> String.concat "")
+                    ]
                 | _ -> one title [ insertAt el ec (arms |> List.map (fun a -> " " + a) |> String.concat "") ]
         | _ -> None
     | "check" when msg.StartsWith "an if without an else" ->
@@ -6895,15 +7270,19 @@ let fixOf
     | _ ->
         match Check.qualifyTarget msg with
         | Some(bare, qualified) ->
-            Some
-                { Title = $"Qualify: {qualified}"
-                  Edits =
-                    [ { Line = line
+            Some {
+                Title = $"Qualify: {qualified}"
+                Edits = [
+                    {
+                        Line = line
                         Col = col
                         EndLine = line
                         EndCol = col + bare.Length
-                        NewText = qualified } ]
-                  Family = Some "qualify" }
+                        NewText = qualified
+                    }
+                ]
+                Family = Some "qualify"
+            }
         | None ->
             match spanText with
             | Some t -> replaceWithFix t msg line col
@@ -7020,27 +7399,32 @@ let private docMisalignments (path: string) (lines: string list) : Diagnostic li
                          let di = indent arr[k]
 
                          if di <> anchor then
-                             diags.Add
-                                 { File = path
-                                   Line = k + 1
-                                   Col = di + 1
-                                   EndLine = None
-                                   EndCol = None
-                                   Severity = "error"
-                                   Code = "doc-align"
-                                   Related = []
-                                   Fix =
-                                     Some
-                                         { Title = "Align doc comment"
-                                           Edits =
-                                             [ { Line = k + 1
+                             diags.Add {
+                                 File = path
+                                 Line = k + 1
+                                 Col = di + 1
+                                 EndLine = None
+                                 EndCol = None
+                                 Severity = "error"
+                                 Code = "doc-align"
+                                 Related = []
+                                 Fix =
+                                     Some {
+                                         Title = "Align doc comment"
+                                         Edits = [
+                                             {
+                                                 Line = k + 1
                                                  Col = 1
                                                  EndLine = k + 1
                                                  EndCol = di + 1
-                                                 NewText = String(' ', anchor) } ]
-                                           Family = Some "doc-align" }
-                                   Message =
-                                     $"this /// doc sits at column {di + 1}, but the declaration it documents is at column {anchor + 1} — a doc aligns with what it describes" }
+                                                 NewText = String(' ', anchor)
+                                             }
+                                         ]
+                                         Family = Some "doc-align"
+                                     }
+                                 Message =
+                                     $"this /// doc sits at column {di + 1}, but the declaration it documents is at column {anchor + 1} — a doc aligns with what it describes"
+                             }
                  | None -> ())
 
             runStart <- -1)
@@ -7132,16 +7516,18 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
                 let l1, c1 = translate ll sp.Start.Col
                 let l2, c2 = translate ll (max sp.Start.Col (sp.End.Col - 1))
 
-                { File = path
-                  Line = l1
-                  Col = c1
-                  EndLine = Some l2
-                  EndCol = Some(c2 + 1)
-                  Severity = "error"
-                  Code = "schema"
-                  Related = []
-                  Fix = None
-                  Message = msg }
+                {
+                    File = path
+                    Line = l1
+                    Col = c1
+                    EndLine = Some l2
+                    EndCol = Some(c2 + 1)
+                    Severity = "error"
+                    Code = "schema"
+                    Related = []
+                    Fix = None
+                    Message = msg
+                }
 
             match loadSchema name with
             | Error e -> [ mk dspan e ]
@@ -7167,24 +7553,26 @@ type SigArity =
 // derivation is a convention, and a signature records a foreign tool's
 // facts); Literals: dash-spelled words matched whole (`-plaintext`,
 // find's `-name`) [D:sig-conventions]
-type SigSurface =
-    { Longs: Map<string, SigArity>
-      Shorts: Map<string, SigArity>
-      Literals: Map<string, SigArity>
-      // what a value-taking flag's value completes to, keyed by spelling
-      // as typed (`--file`, `-F`, `-name`); absent = nothing
-      // [D:sig-arg-complete]
-      Values: Map<string, SigValue> }
+type SigSurface = {
+    Longs: Map<string, SigArity>
+    Shorts: Map<string, SigArity>
+    Literals: Map<string, SigArity>
+    // what a value-taking flag's value completes to, keyed by spelling
+    // as typed (`--file`, `-F`, `-name`); absent = nothing
+    // [D:sig-arg-complete]
+    Values: Map<string, SigValue>
+}
 
 and SigValue =
     | VPath
     | VChoices of string list
 
-let emptySigSurface =
-    { Longs = Map.empty
-      Shorts = Map.empty
-      Literals = Map.empty
-      Values = Map.empty }
+let emptySigSurface = {
+    Longs = Map.empty
+    Shorts = Map.empty
+    Literals = Map.empty
+    Values = Map.empty
+}
 
 // a loaded signature's checkable surface. Subs: kebab-cased subcommand
 // -> (long-flag set, short set), the globals folded in (what completion
@@ -7192,40 +7580,41 @@ let emptySigSurface =
 // Surfaces carries the same cases with arity, Globals the `type Globals`
 // record checked at every level, and the module lets the tool's
 // convention [D:sig-conventions].
-type SigInfo =
-    { Tool: string
-      DeclLine: int
-      Exhaustive: bool
-      Subs: Map<string, Set<string> * Set<string>>
-      Surfaces: Map<string, SigSurface>
-      Globals: SigSurface option
-      // "gnu" (default), "go", "find" [D:sig-conventions]
-      Convention: string
-      // GNU getopt's unique-prefix longs (`--verb` for `--verbose`)
-      Abbreviations: bool
-      // `--no-x` for any switch `--x` (node)
-      Negatable: bool
-      // a single-dash word no shorts spell is the tool's own value
-      // (kill's `-<signal>`: `-TERM`) [D:sig-help-shapes]
-      DashWords: bool
-      // a multi-letter single-dash word is a bundle of shorts, read letter
-      // by letter — what a generated signature states [D:sig-help-shapes]
-      Bundles: bool
-      // case keys whose first operand ends the tool's own options
-      // (`docker run IMAGE …`, an interpreter's script) [D:sig-operand-stop]
-      StopAtOperand: Set<string>
-      // case keys whose flags no source could list (git log's revision
-      // options): reaching one ends the check [D:sig-unwalked]
-      Unchecked: Set<string>
-      // the resolved sig file, its recorded version, and each surface's
-      // record type name — what hover/definition need to reach the
-      // declaration site [D:lsp-cross-file]
-      SigPath: string
-      Version: string
-      SubRecords: Map<string, string>
-      // the REPL's dynamic values: "" none, "git", "cobra"
-      // [D:sig-dynamic-complete]
-      Dynamic: string }
+type SigInfo = {
+    Tool: string
+    DeclLine: int
+    Exhaustive: bool
+    Subs: Map<string, Set<string> * Set<string>>
+    Surfaces: Map<string, SigSurface>
+    Globals: SigSurface option
+    // "gnu" (default), "go", "find" [D:sig-conventions]
+    Convention: string
+    // GNU getopt's unique-prefix longs (`--verb` for `--verbose`)
+    Abbreviations: bool
+    // `--no-x` for any switch `--x` (node)
+    Negatable: bool
+    // a single-dash word no shorts spell is the tool's own value
+    // (kill's `-<signal>`: `-TERM`) [D:sig-help-shapes]
+    DashWords: bool
+    // a multi-letter single-dash word is a bundle of shorts, read letter
+    // by letter — what a generated signature states [D:sig-help-shapes]
+    Bundles: bool
+    // case keys whose first operand ends the tool's own options
+    // (`docker run IMAGE …`, an interpreter's script) [D:sig-operand-stop]
+    StopAtOperand: Set<string>
+    // case keys whose flags no source could list (git log's revision
+    // options): reaching one ends the check [D:sig-unwalked]
+    Unchecked: Set<string>
+    // the resolved sig file, its recorded version, and each surface's
+    // record type name — what hover/definition need to reach the
+    // declaration site [D:lsp-cross-file]
+    SigPath: string
+    Version: string
+    SubRecords: Map<string, string>
+    // the REPL's dynamic values: "" none, "git", "cobra"
+    // [D:sig-dynamic-complete]
+    Dynamic: string
+}
 
 // a value word that names a file: the field's name or a spelling has a
 // path word, or its doc's first line does [D:sig-arg-complete] —
@@ -7291,29 +7680,43 @@ let private sigSurface (choicesOf: string -> string list option) (def: RecordDef
                 if dashed then
                     acc
                 else
-                    { acc with
-                        Longs = Map.add (Weir.Argv.kebabFlag f) a acc.Longs }
+                    {
+                        acc with
+                            Longs = Map.add (Weir.Argv.kebabFlag f) a acc.Longs
+                    }
 
             let acc =
                 wires
                 |> List.fold
                     (fun (acc: SigSurface) (w: string) ->
                         if w.StartsWith "--" then
-                            { acc with
-                                Longs = Map.add (w.Substring 2) a acc.Longs }
+                            {
+                                acc with
+                                    Longs = Map.add (w.Substring 2) a acc.Longs
+                            }
                         elif w.StartsWith "-" && w.Length = 2 then
-                            { acc with
-                                Shorts = Map.add (w.Substring 1) a acc.Shorts }
+                            {
+                                acc with
+                                    Shorts = Map.add (w.Substring 1) a acc.Shorts
+                            }
                         elif w.StartsWith "-" then
-                            { acc with
-                                Literals = Map.add w a acc.Literals }
+                            {
+                                acc with
+                                    Literals = Map.add w a acc.Literals
+                            }
                         else
-                            { acc with Longs = Map.add w a acc.Longs })
+                            {
+                                acc with
+                                    Longs = Map.add w a acc.Longs
+                            })
                     acc
 
             let acc =
                 match shortOf f with
-                | Some sh -> { acc with Shorts = Map.add sh a acc.Shorts }
+                | Some sh -> {
+                    acc with
+                        Shorts = Map.add sh a acc.Shorts
+                  }
                 | None -> acc
 
             // the value's completion, under every spelling this field took
@@ -7352,30 +7755,38 @@ let private sigSurface (choicesOf: string -> string list option) (def: RecordDef
                     @ (wires |> List.map (fun w -> if w.StartsWith "-" then w else "--" + w))
                     @ (shortOf f |> Option.map (fun sh -> "-" + sh) |> Option.toList)
 
-                { acc with
-                    Values = spelled |> List.fold (fun m k -> Map.add k v m) acc.Values })
+                {
+                    acc with
+                        Values = spelled |> List.fold (fun m k -> Map.add k v m) acc.Values
+                })
         emptySigSurface
 
 // later spellings never displace earlier ones: a case's own flag keeps
 // its arity over a global of the same name
 let private mergeSurface (a: SigSurface) (b: SigSurface) : SigSurface =
     let into (m: Map<string, SigArity>) (n: Map<string, SigArity>) =
-        n |> Map.fold (fun acc k v -> if Map.containsKey k acc then acc else Map.add k v acc) m
+        n
+        |> Map.fold (fun acc k v -> if Map.containsKey k acc then acc else Map.add k v acc) m
 
-    { Longs = into a.Longs b.Longs
-      Shorts = into a.Shorts b.Shorts
-      Literals = into a.Literals b.Literals
-      Values =
-        b.Values
-        |> Map.fold
-            (fun acc k v ->
-                let ownedByA =
-                    Map.containsKey k a.Literals
-                    || (k.StartsWith "--" && Map.containsKey (k.Substring 2) a.Longs)
-                    || (k.Length = 2 && Map.containsKey (k.Substring 1) a.Shorts)
+    {
+        Longs = into a.Longs b.Longs
+        Shorts = into a.Shorts b.Shorts
+        Literals = into a.Literals b.Literals
+        Values =
+            b.Values
+            |> Map.fold
+                (fun acc k v ->
+                    let ownedByA =
+                        Map.containsKey k a.Literals
+                        || (k.StartsWith "--" && Map.containsKey (k.Substring 2) a.Longs)
+                        || (k.Length = 2 && Map.containsKey (k.Substring 1) a.Shorts)
 
-                if Map.containsKey k acc || ownedByA then acc else Map.add k v acc)
-            a.Values }
+                    if Map.containsKey k acc || ownedByA then
+                        acc
+                    else
+                        Map.add k v acc)
+                a.Values
+    }
 
 let private surfaceSets (s: SigSurface) : Set<string> * Set<string> =
     (s.Longs |> Map.keys |> Set.ofSeq), (s.Shorts |> Map.keys |> Set.ofSeq)
@@ -7475,11 +7886,16 @@ let resolveSigFile (scriptDir: string) (decl: SigDecl) : Result<string, string> 
                 | Ok entries ->
                     let rel = "sigs/" + sigFileName decl.Tool
 
-                    if entries |> List.exists (fun e -> e.Kind = "sig" && e.Name = decl.Tool && e.Path.Replace('\\', '/') = rel) then
+                    if
+                        entries
+                        |> List.exists (fun e ->
+                            e.Kind = "sig" && e.Name = decl.Tool && e.Path.Replace('\\', '/') = rel)
+                    then
                         None
                     else
                         entries
-                        |> List.tryFind (fun e -> e.Kind = "sig" && e.Name <> decl.Tool && e.Path.Replace('\\', '/') = rel)
+                        |> List.tryFind (fun e ->
+                            e.Kind = "sig" && e.Name <> decl.Tool && e.Path.Replace('\\', '/') = rel)
                         |> Option.map (fun e -> e.Name)
                 | Error _ -> None
 
@@ -7532,17 +7948,18 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
     let diags = ResizeArray<Diagnostic>()
     let infos = ResizeArray<SigInfo>()
 
-    let mk (line: int) (msg: string) : Diagnostic =
-        { File = path
-          Line = line
-          Col = 1
-          EndLine = None
-          EndCol = None
-          Severity = "error"
-          Code = "sig"
-          Related = []
-          Fix = None
-          Message = msg }
+    let mk (line: int) (msg: string) : Diagnostic = {
+        File = path
+        Line = line
+        Col = 1
+        EndLine = None
+        EndCol = None
+        Severity = "error"
+        Code = "sig"
+        Related = []
+        Fix = None
+        Message = msg
+    }
 
     let scriptDir =
         try
@@ -7582,7 +7999,11 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                     else
                         $"generate it: weir add sig {quoteData decl.Tool}"
 
-                diags.Add(mk decl.Line $"#sig {quoteData decl.Tool}: no {quoteData sigFile} (searched from {quoteData scriptDir}) — {hint}")
+                diags.Add(
+                    mk
+                        decl.Line
+                        $"#sig {quoteData decl.Tool}: no {quoteData sigFile} (searched from {quoteData scriptDir}) — {hint}"
+                )
             | Ok sigFile ->
                 let absScript = IO.Path.GetFullPath path
 
@@ -7628,7 +8049,11 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 lls
                                 |> List.choose (fun ll ->
                                     let m = Text.RegularExpressions.Regex.Match(ll.Text, @"^type\s+(\w+)")
-                                    if m.Success then Some(m.Groups[1].Value, fieldDocsFor raw ll) else None)
+
+                                    if m.Success then
+                                        Some(m.Groups[1].Value, fieldDocsFor raw ll)
+                                    else
+                                        None)
                                 |> Map.ofList
                             | Error _ -> Map.empty
                         with _ ->
@@ -7718,23 +8143,25 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                     let info surfaces subRecords =
                         let g = globals |> Option.defaultValue emptySigSurface
 
-                        { Tool = decl.Tool
-                          DeclLine = decl.Line
-                          Exhaustive = letBool "exhaustive" |> Option.defaultValue false
-                          Subs = surfaces |> Map.map (fun _ sf -> surfaceSets (mergeSurface sf g))
-                          Surfaces = surfaces
-                          Globals = globals
-                          Convention = convention
-                          Abbreviations = letBool "abbreviations" |> Option.defaultValue false
-                          Negatable = letBool "negatable" |> Option.defaultValue false
-                          DashWords = letBool "dashWords" |> Option.defaultValue false
-                          Bundles = letBool "bundles" |> Option.defaultValue false
-                          StopAtOperand = keysOf "stopAtOperand"
-                          Unchecked = keysOf "unchecked"
-                          SigPath = sigFile
-                          Version = letStr "version" |> Option.defaultValue ""
-                          SubRecords = subRecords
-                          Dynamic = dynamic }
+                        {
+                            Tool = decl.Tool
+                            DeclLine = decl.Line
+                            Exhaustive = letBool "exhaustive" |> Option.defaultValue false
+                            Subs = surfaces |> Map.map (fun _ sf -> surfaceSets (mergeSurface sf g))
+                            Surfaces = surfaces
+                            Globals = globals
+                            Convention = convention
+                            Abbreviations = letBool "abbreviations" |> Option.defaultValue false
+                            Negatable = letBool "negatable" |> Option.defaultValue false
+                            DashWords = letBool "dashWords" |> Option.defaultValue false
+                            Bundles = letBool "bundles" |> Option.defaultValue false
+                            StopAtOperand = keysOf "stopAtOperand"
+                            Unchecked = keysOf "unchecked"
+                            SigPath = sigFile
+                            Version = letStr "version" |> Option.defaultValue ""
+                            SubRecords = subRecords
+                            Dynamic = dynamic
+                        }
 
                     match lm.TypeDefs |> List.tryFind (fun (n, _) -> n = "Cmd") with
                     | None ->
@@ -7744,7 +8171,9 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 $"#sig {quoteData decl.Tool}: the signature declares no type `Cmd` — the command surface is the type named Cmd (a union of subcommands, or a record of flags)"
                         )
                     | Some(_, Record rd) ->
-                        infos.Add(info (Map [ "", sigSurface (recordOf "Cmd" |> Option.defaultValue rd) ]) (Map [ "", "Cmd" ]))
+                        infos.Add(
+                            info (Map [ "", sigSurface (recordOf "Cmd" |> Option.defaultValue rd) ]) (Map [ "", "Cmd" ])
+                        )
                     | Some(_, Union ud) ->
                         let surfaces =
                             ud.Cases
@@ -7810,18 +8239,20 @@ let private sigRootSurface (si: SigInfo) : SigSurface option =
         | [] -> None
         | c0 :: rest ->
             let inter (pick: SigSurface -> Map<string, 'v>) =
-                pick c0 |> Map.filter (fun k _ -> rest |> List.forall (fun c -> Map.containsKey k (pick c)))
+                pick c0
+                |> Map.filter (fun k _ -> rest |> List.forall (fun c -> Map.containsKey k (pick c)))
 
             let longs = inter (fun c -> c.Longs)
 
             if longs.IsEmpty then
                 None
             else
-                Some
-                    { Longs = longs
-                      Shorts = inter (fun c -> c.Shorts)
-                      Literals = inter (fun c -> c.Literals)
-                      Values = inter (fun c -> c.Values) }
+                Some {
+                    Longs = longs
+                    Shorts = inter (fun c -> c.Shorts)
+                    Literals = inter (fun c -> c.Literals)
+                    Values = inter (fun c -> c.Values)
+                }
 
 /// the surface a case key checks (and completes) against: its own
 /// flags and the Globals; "" is the top level
@@ -7930,7 +8361,8 @@ let sigCmdDiagnostics
 
                     // a scoped surface names its case in the warning, as
                     // typed (`gh issue list`) [D:scoped-sigs]
-                    let toolAndSub (typed: string list) = quoteData (String.concat " " (si.Tool :: typed))
+                    let toolAndSub (typed: string list) =
+                        quoteData (String.concat " " (si.Tool :: typed))
 
                     let sev = if si.Exhaustive then "error" else "warning"
 
@@ -7961,19 +8393,21 @@ let sigCmdDiagnostics
                         let l1, c1 = translate ll sp.Start.Col
                         let l2, c2 = translate ll (max sp.Start.Col (sp.End.Col - 1))
 
-                        { File = path
-                          Line = l1
-                          Col = c1
-                          EndLine = Some l2
-                          EndCol = Some(c2 + 1)
-                          Severity = sev
-                          Code = "sig"
-                          Related = []
-                          Fix =
-                            (let s0 = max 0 (min ll.Text.Length (sp.Start.Col - 1))
-                             let s1 = max s0 (min ll.Text.Length (sp.End.Col - 1))
-                             replaceWithFix (ll.Text.Substring(s0, s1 - s0)) msg l1 c1)
-                          Message = msg }
+                        {
+                            File = path
+                            Line = l1
+                            Col = c1
+                            EndLine = Some l2
+                            EndCol = Some(c2 + 1)
+                            Severity = sev
+                            Code = "sig"
+                            Related = []
+                            Fix =
+                                (let s0 = max 0 (min ll.Text.Length (sp.Start.Col - 1))
+                                 let s1 = max s0 (min ll.Text.Length (sp.End.Col - 1))
+                                 replaceWithFix (ll.Text.Substring(s0, s1 - s0)) msg l1 c1)
+                            Message = msg
+                        }
 
                     // did-you-mean over the spellings the convention takes
                     // [D:sig-conventions]: shorts count (`--H` -> `-H`), a
@@ -7995,10 +8429,11 @@ let sigCmdDiagnostics
                         |> Option.defaultValue ""
 
                     let spellings (sf: SigSurface) =
-                        Seq.concat
-                            [ sf.Longs |> Map.keys |> Seq.map (fun l -> "--" + l)
-                              sf.Shorts |> Map.keys |> Seq.map (fun s -> "-" + s)
-                              sf.Literals |> Map.keys |> Seq.map id ]
+                        Seq.concat [
+                            sf.Longs |> Map.keys |> Seq.map (fun l -> "--" + l)
+                            sf.Shorts |> Map.keys |> Seq.map (fun s -> "-" + s)
+                            sf.Literals |> Map.keys |> Seq.map id
+                        ]
 
                     // the value-word step after a flag: 0 none, 1 the next
                     // word, 2 the tool's options end here, 3 the next word,
@@ -8011,7 +8446,9 @@ let sigCmdDiagnostics
                         | ARest -> if attached then 2 else 3
 
                     let unknown (sf: SigSurface) typed (shown: string) (sp: Span) =
-                        mk sp $"unknown flag '{quoteData shown}' for {toolAndSub typed}{dym shown (spellings sf)} {note}"
+                        mk
+                            sp
+                            $"unknown flag '{quoteData shown}' for {toolAndSub typed}{dym shown (spellings sf)} {note}"
 
                     // one flag word against one surface: the diagnostics and
                     // the value-word step
@@ -8028,10 +8465,12 @@ let sigCmdDiagnostics
                             let bare = name.TrimStart '-'
 
                             let hit =
-                                [ Map.tryFind bare sf.Longs
-                                  Map.tryFind bare sf.Shorts
-                                  Map.tryFind ("-" + bare) sf.Literals
-                                  Map.tryFind ("--" + bare) sf.Literals ]
+                                [
+                                    Map.tryFind bare sf.Longs
+                                    Map.tryFind bare sf.Shorts
+                                    Map.tryFind ("-" + bare) sf.Literals
+                                    Map.tryFind ("--" + bare) sf.Literals
+                                ]
                                 |> List.tryPick id
 
                             match hit with
@@ -8039,28 +8478,38 @@ let sigCmdDiagnostics
                             | None when name.StartsWith "---" -> [ unknown sf typed name sp ], 0
                             | None ->
                                 let goSpellings =
-                                    spellings sf |> Seq.map (fun s -> (if name.StartsWith "--" then "--" else "-") + s.TrimStart '-')
+                                    spellings sf
+                                    |> Seq.map (fun s ->
+                                        (if name.StartsWith "--" then "--" else "-") + s.TrimStart '-')
 
-                                [ mk sp $"unknown flag '{quoteData name}' for {toolAndSub typed}{dym name goSpellings} {note}" ], 0
+                                [
+                                    mk
+                                        sp
+                                        $"unknown flag '{quoteData name}' for {toolAndSub typed}{dym name goSpellings} {note}"
+                                ],
+                                0
                         | "find" ->
                             // whole words: a predicate (`-name`), a listed
                             // `--help`; a one-letter option may carry its
                             // value attached (`-O3`)
                             let exact =
-                                [ Map.tryFind name sf.Literals
-                                  (if name.StartsWith "--" then
-                                       Map.tryFind (name.Substring 2) sf.Longs
-                                   elif name.Length = 2 then
-                                       Map.tryFind (name.Substring 1) sf.Shorts
-                                   else
-                                       None) ]
+                                [
+                                    Map.tryFind name sf.Literals
+                                    (if name.StartsWith "--" then
+                                         Map.tryFind (name.Substring 2) sf.Longs
+                                     elif name.Length = 2 then
+                                         Map.tryFind (name.Substring 1) sf.Shorts
+                                     else
+                                         None)
+                                ]
                                 |> List.tryPick id
 
                             let glued () =
                                 Seq.append
                                     (sf.Shorts |> Map.toSeq |> Seq.map (fun (k, a) -> "-" + k, a))
                                     (sf.Literals |> Map.toSeq |> Seq.filter (fun (k, _) -> k.Length = 2))
-                                |> Seq.tryFind (fun (k, a) -> (a = AOne || a = AOpt) && w.StartsWith k && w.Length > 2)
+                                |> Seq.tryFind (fun (k, a) ->
+                                    (a = AOne || a = AOpt) && w.StartsWith k && w.Length > 2)
 
                             match exact with
                             | Some a -> [], after a attached
@@ -8083,7 +8532,9 @@ let sigCmdDiagnostics
                                 // getopt_long's unique prefix [D:sig-conventions]
                                 let abbreviated () =
                                     if si.Abbreviations && long.Length >= 2 then
-                                        match sf.Longs |> Map.toList |> List.filter (fun (k, _) -> k.StartsWith long) with
+                                        match
+                                            sf.Longs |> Map.toList |> List.filter (fun (k, _) -> k.StartsWith long)
+                                        with
                                         | [ (_, a) ] -> Some a
                                         | _ -> None
                                     else
@@ -8112,7 +8563,8 @@ let sigCmdDiagnostics
                                 | None when older && w.Length > 2 -> [], 0
                                 // a single letter is never the tool's value word
                                 // (no signal is one letter): `kill -x` is a typo
-                                | None when si.DashWords && w.Length > 2 && not (sf.Shorts.ContainsKey(string w[1])) -> [], 0
+                                | None when si.DashWords && w.Length > 2 && not (sf.Shorts.ContainsKey(string w[1])) ->
+                                    [], 0
                                 | None ->
                                     // a bundle, letter by letter: a value-taking
                                     // letter takes the rest of the word (`-n5`,
@@ -8127,7 +8579,12 @@ let sigCmdDiagnostics
                                             | None ->
                                                 let inWord = if w.Length > 2 then $" (in '{quoteData w}')" else ""
 
-                                                [ mk sp $"unknown flag '-{quoteData (string c)}'{inWord} for {toolAndSub typed} {note}" ], 0
+                                                [
+                                                    mk
+                                                        sp
+                                                        $"unknown flag '-{quoteData (string c)}'{inWord} for {toolAndSub typed} {note}"
+                                                ],
+                                                0
                                             | Some ANone -> bundle (i + 1)
                                             | Some a -> [], after a (i + 1 < w.Length)
 
@@ -8150,7 +8607,11 @@ let sigCmdDiagnostics
                         |> List.tryPick (fun n ->
                             let toks = run |> List.truncate n
                             let k = String.concat "-" (if key = "" then toks else key :: toks)
-                            if Map.containsKey k si.Surfaces then Some(n, k, toks) else None)
+
+                            if Map.containsKey k si.Surfaces then
+                                Some(n, k, toks)
+                            else
+                                None)
 
                     // where the rest of the line lands, diagnostics aside:
                     // flags step over their known values, operands descend
@@ -8171,7 +8632,8 @@ let sigCmdDiagnostics
                         | _ ->
                             if hasChildren key then
                                 match subAt key ws with
-                                | Some(n, k, toks) when not (Set.contains k si.Unchecked) -> reach k (typed @ toks) (List.skip n ws)
+                                | Some(n, k, toks) when not (Set.contains k si.Unchecked) ->
+                                    reach k (typed @ toks) (List.skip n ws)
                                 | _ -> key, typed
                             else
                                 key, typed
@@ -8213,7 +8675,8 @@ let sigCmdDiagnostics
                                             | Some r -> Some(r, false)
                                             | None ->
                                                 match rest with
-                                                | (Some v, _) :: tail when not (isFlag v) -> deeper tail |> Option.map (fun r -> r, true)
+                                                | (Some v, _) :: tail when not (isFlag v) ->
+                                                    deeper tail |> Option.map (fun r -> r, true)
                                                 | _ -> None
 
                                         match landed with
@@ -8260,26 +8723,27 @@ let sigCmdDiagnostics
 /// commands whose job is to take a command: a continuation under one of
 /// these is the wrapped command's own words [D:continued-command]
 let commandWrappers: Set<string> =
-    set
-        [ "sudo"
-          "doas"
-          "env"
-          "xargs"
-          "time"
-          "nice"
-          "nohup"
-          "timeout"
-          "exec"
-          "command"
-          "watch"
-          "ssh"
-          "parallel"
-          "flock"
-          "chroot"
-          "strace"
-          "stdbuf"
-          "setsid"
-          "unbuffer" ]
+    set [
+        "sudo"
+        "doas"
+        "env"
+        "xargs"
+        "time"
+        "nice"
+        "nohup"
+        "timeout"
+        "exec"
+        "command"
+        "watch"
+        "ssh"
+        "parallel"
+        "flock"
+        "chroot"
+        "strace"
+        "stdbuf"
+        "setsid"
+        "unbuffer"
+    ]
 
 /// what weir resolves as a program in head position: a PATH lookup and
 /// the builtin command heads (the REPL adds its alias table)
@@ -8288,11 +8752,12 @@ let resolvesAsProgram (w: string) : bool =
 
 /// one hit: the continuation word's physical (line, col, endCol) and the
 /// message
-type ContinuedCommand =
-    { CLine: int
-      CCol: int
-      CEndCol: int
-      CMessage: string }
+type ContinuedCommand = {
+    CLine: int
+    CCol: int
+    CEndCol: int
+    CMessage: string
+}
 
 /// every command in the statement whose argv takes the first word of a
 /// continuation line that names a program
@@ -8346,11 +8811,16 @@ let continuedCommands
         | Check.TEStr w when w <> "" && spaceJoined (a.Span.Start.Col - 1) ->
             let first = ll.Text[a.Span.Start.Col - 1]
 
-            if first = '"' || first = '\'' || first = '@' || first = '$' then None
-            elif w.StartsWith "^" && w.Length > 1 then Some w
-            elif w.StartsWith "-" || w.Contains '/' then None
-            elif resolves w then Some w
-            else None
+            if first = '"' || first = '\'' || first = '@' || first = '$' then
+                None
+            elif w.StartsWith "^" && w.Length > 1 then
+                Some w
+            elif w.StartsWith "-" || w.Contains '/' then
+                None
+            elif resolves w then
+                Some w
+            else
+                None
         | _ -> None
 
     let hits (head: string) (exempt: bool) (headSpan: Span) (args: Check.TypedExpr list) =
@@ -8372,11 +8842,13 @@ let continuedCommands
                     let line, col = translate ll a.Span.Start.Col
                     let word = w.TrimStart '^'
 
-                    { CLine = line
-                      CCol = col
-                      CEndCol = col + w.Length
-                      CMessage =
-                        $"this indented line continues `{shown}` — its words become its arguments, and `{word}` looks like a second command: dedent the line to run it on its own, or quote the word if it really is an argument" }))
+                    {
+                        CLine = line
+                        CCol = col
+                        CEndCol = col + w.Length
+                        CMessage =
+                            $"this indented line continues `{shown}` — its words become its arguments, and `{word}` looks like a second command: dedent the line to run it on its own, or quote the word if it really is an argument"
+                    }))
 
     // a reified argv: the literal chunks are TEList descendants
     // (a splatted argv is a Seq.append fold)
@@ -8452,17 +8924,18 @@ let continuedCommandDiagnostics
         | KSig _
         | KModule _
         | KImport _ -> [])
-    |> List.map (fun h ->
-        { File = path
-          Line = h.CLine
-          Col = h.CCol
-          EndLine = Some h.CLine
-          EndCol = Some h.CEndCol
-          Severity = "warning"
-          Code = "continued-command"
-          Related = []
-          Fix = None
-          Message = h.CMessage })
+    |> List.map (fun h -> {
+        File = path
+        Line = h.CLine
+        Col = h.CCol
+        EndLine = Some h.CLine
+        EndCol = Some h.CEndCol
+        Severity = "warning"
+        Code = "continued-command"
+        Related = []
+        Fix = None
+        Message = h.CMessage
+    })
 
 // ---- signature-driven argument completion [D:sig-arg-complete] -------------
 // One completer for the REPL's Tab and the LSP: subcommand words, a
@@ -8496,7 +8969,9 @@ module SigComplete =
         for c in s do
             if quote <> ' ' then
                 cur.Append c |> ignore
-                if c = quote then quote <- ' '
+
+                if c = quote then
+                    quote <- ' '
             elif c = '"' || c = '\'' then
                 quote <- c
                 cur.Append c |> ignore
@@ -8524,9 +8999,14 @@ module SigComplete =
     // its arity and the spelling its value is recorded under — the
     // checker's checkFlag lookups, diagnostics aside
     let private flagArity (si: SigInfo) (sf: SigSurface) (name: string) : (SigArity * string) option =
-        let long k = Map.tryFind k sf.Longs |> Option.map (fun a -> a, "--" + k)
-        let short k = Map.tryFind k sf.Shorts |> Option.map (fun a -> a, "-" + k)
-        let literal k = Map.tryFind k sf.Literals |> Option.map (fun a -> a, k)
+        let long k =
+            Map.tryFind k sf.Longs |> Option.map (fun a -> a, "--" + k)
+
+        let short k =
+            Map.tryFind k sf.Shorts |> Option.map (fun a -> a, "-" + k)
+
+        let literal k =
+            Map.tryFind k sf.Literals |> Option.map (fun a -> a, k)
 
         match si.Convention with
         | "go" ->
@@ -8536,7 +9016,12 @@ module SigComplete =
             |> List.tryPick id
         | "find" ->
             literal name
-            |> Option.orElse (if name.StartsWith "--" then long (name.Substring 2) else None)
+            |> Option.orElse (
+                if name.StartsWith "--" then
+                    long (name.Substring 2)
+                else
+                    None
+            )
             |> Option.orElse (if name.Length = 2 then short (name.Substring 1) else None)
         | _ when name.StartsWith "--" ->
             let k = name.Substring 2
@@ -8592,6 +9077,7 @@ module SigComplete =
             // Go's flag package takes `-x` and `--x` alike; the single dash
             // is how Go tools document them
             let dash = if word.StartsWith "--" then "--" else "-"
+
             (longs |> List.map (fun l -> dash + l))
             @ shorts
             @ (literals |> List.map (fun l -> dash + l.TrimStart '-'))
@@ -8631,7 +9117,9 @@ module SigComplete =
             [ 1 .. segs.Length ]
             |> List.pick (fun n ->
                 let cand = String.concat "-" segs[.. n - 1]
-                let grouped = keys |> List.filter (fun o -> o.StartsWith(prefix + cand + "-")) |> List.length
+
+                let grouped =
+                    keys |> List.filter (fun o -> o.StartsWith(prefix + cand + "-")) |> List.length
 
                 if n = segs.Length || Map.containsKey (prefix + cand) si.Surfaces || grouped >= 2 then
                     Some cand
@@ -8686,7 +9174,10 @@ module SigComplete =
                 let group =
                     let k = String.concat "-" ((if key = "" then [] else [ key ]) @ run)
 
-                    if run.Length = ws.Length && si.Surfaces |> Map.exists (fun o _ -> o.StartsWith(k + "-")) then
+                    if
+                        run.Length = ws.Length
+                        && si.Surfaces |> Map.exists (fun o _ -> o.StartsWith(k + "-"))
+                    then
                         Some k
                     else
                         None
@@ -8751,7 +9242,8 @@ module SigComplete =
 
                 match
                     sigSurfaceAt si key
-                    |> Option.bind (fun sf -> flagArity si sf name |> Option.map (fun (a, k) -> a, Map.tryFind k sf.Values))
+                    |> Option.bind (fun sf ->
+                        flagArity si sf name |> Option.map (fun (a, k) -> a, Map.tryFind k sf.Values))
                 with
                 | Some(ANone, _)
                 | None -> SigNothing
@@ -8780,7 +9272,13 @@ module SigComplete =
     // such a spelling is never offered [D:sig-arg-complete]
     let private spellable (w: string) =
         w <> ""
-        && w |> Seq.forall (fun c -> not (Char.IsWhiteSpace c) && not (Char.IsControl c) && c <> '"' && c <> '\'' && c <> '`')
+        && w
+           |> Seq.forall (fun c ->
+               not (Char.IsWhiteSpace c)
+               && not (Char.IsControl c)
+               && c <> '"'
+               && c <> '\''
+               && c <> '`')
 
     let complete (si: SigInfo) (argText: string) (word: string) : SigCompletion =
         match completeRaw si argText word with
@@ -8842,11 +9340,13 @@ module SigLookup =
                 | true, (m, si) when m = mtime -> si
                 | _ ->
                     let si =
-                        loadSigs
-                            (path + ".from")
-                            [ { Tool = tool
+                        loadSigs (path + ".from") [
+                            {
+                                Tool = tool
                                 Override = Some path
-                                Line = 1 } ]
+                                Line = 1
+                            }
+                        ]
                         |> snd
                         |> List.tryHead
 
@@ -8860,11 +9360,11 @@ module SigLookup =
     let findIn (cwd: string) (user: string) (tool: string) : SigInfo option =
         let project =
             match
-                resolveSigFile
-                    cwd
-                    { Tool = tool
-                      Override = None
-                      Line = 1 }
+                resolveSigFile cwd {
+                    Tool = tool
+                    Override = None
+                    Line = 1
+                }
             with
             | Ok p when IO.File.Exists p -> load p tool
             | _ -> None
@@ -8934,8 +9434,7 @@ let private dynamicAnswer
     // a word weir would read as more than its text (a quote, a splice, a
     // subexpression) is not what the tool would see: no ask
     let plain (w: string) =
-        w
-        |> Seq.forall (fun c -> not (Char.IsControl c || "\"'`$()\\".IndexOf c >= 0))
+        w |> Seq.forall (fun c -> not (Char.IsControl c || "\"'`$()\\".IndexOf c >= 0))
 
     let offer (outcome: DynComplete.Outcome) (valuesOnly: bool) =
         match outcome with
@@ -8943,7 +9442,12 @@ let private dynamicAnswer
         | DynComplete.Fallback -> None
         | DynComplete.Answer(cands, noFiles) ->
             // cobra answers `--flag=` with the values alone
-            let lead = if valuesOnly then cur.Substring(0, cur.IndexOf '=' + 1) else ""
+            let lead =
+                if valuesOnly then
+                    cur.Substring(0, cur.IndexOf '=' + 1)
+                else
+                    ""
+
             let cut = cur.Length - word.Length
 
             let fits =
@@ -8958,7 +9462,11 @@ let private dynamicAnswer
             | [] -> None
             | fs -> Some fs
 
-    if slot = DynStatic || not (cur.EndsWith word) || not (List.forall plain (cur :: before)) then
+    if
+        slot = DynStatic
+        || not (cur.EndsWith word)
+        || not (List.forall plain (cur :: before))
+    then
         None
     else
         match dynamicFor userDir si with
@@ -8970,18 +9478,20 @@ let private dynamicAnswer
             match slot, DynComplete.gitWant before with
             | DynOperand, Some want ->
                 offer
-                    (hooks.Run
-                        { Mechanism = "git"
-                          Exe = "git"
-                          Args = DynComplete.gitArgs want })
+                    (hooks.Run {
+                        Mechanism = "git"
+                        Exe = "git"
+                        Args = DynComplete.gitArgs want
+                    })
                     false
             | _ -> None
         | DynCobra ->
             offer
-                (hooks.Run
-                    { Mechanism = "cobra"
-                      Exe = tool
-                      Args = before @ [ cur ] })
+                (hooks.Run {
+                    Mechanism = "cobra"
+                    Exe = tool
+                    Args = before @ [ cur ]
+                })
                 (cur.StartsWith "-" && cur.Contains '=')
 
 /// a command argv word the sig of its head completes: Some offers, Some
@@ -9002,7 +9512,9 @@ let sigArgvCompleteWith
     let word = text.Substring(min wordStart text.Length)
 
     let argvSlot =
-        (before = "" || Char.IsWhiteSpace before[before.Length - 1] || before[before.Length - 1] = '=')
+        (before = ""
+         || Char.IsWhiteSpace before[before.Length - 1]
+         || before[before.Length - 1] = '=')
         && not (Weir.Scan.endsInsideString before)
 
     // a `/` word is a path to layer 1; the tool may still know it
@@ -9021,7 +9533,11 @@ let sigArgvCompleteWith
             let tool, argText =
                 match Map.tryFind head aliases with
                 | Some(exe, prefix) when not (head.StartsWith "^") ->
-                    exe, (if prefix.IsEmpty then argText else " " + String.concat " " prefix + argText)
+                    exe,
+                    (if prefix.IsEmpty then
+                         argText
+                     else
+                         " " + String.concat " " prefix + argText)
                 | _ -> head.TrimStart '^', argText
 
             match SigLookup.findIn (Session.resolve ".") userDir tool with
@@ -9104,14 +9620,22 @@ module SigGen =
     // same helper and `-h` from two places, the refused-help harvest asks
     // `--help` again
     let private probed =
-        System.Collections.Concurrent.ConcurrentDictionary<string option * string * string list, Lazy<Contracts.ProbeOutput option>>()
+        System.Collections.Concurrent.ConcurrentDictionary<
+            string option * string * string list,
+            Lazy<Contracts.ProbeOutput option>
+         >()
 
     let private runIn (cwd: string option) (anyExit: bool) (tool: string) (args: string list) : string option =
         // the bounded probe [D:sig-probe-bounds]: empty stdin (a
         // stdin-reader must not hang generation), a fresh temp cwd, a
         // time and a byte bound, the probe's process group killed
         let run () =
-            match (try Contracts.runProbe (Proc.resolveProg tool) args cwd with _ -> None) with
+            match
+                (try
+                    Contracts.runProbe (Proc.resolveProg tool) args cwd
+                 with _ ->
+                     None)
+            with
             | Some r as res ->
                 if r.Cut then
                     cutProbes.Enqueue(String.concat " " args)
@@ -9139,23 +9663,25 @@ module SigGen =
 
     // one discovered flag: its spellings (a `--long`, one-letter shorts,
     // whole dash words), the value it takes when known, a doc
-    type private Flag =
-        { Long: string
-          Shorts: string list
-          Literals: string list
-          Arity: SigArity option
-          Doc: string option
-          // the value is a boolean (`--legend=BOOL`): `--no-x` is the
-          // tool's too [D:sig-help-shapes]
-          BoolValue: bool }
+    type private Flag = {
+        Long: string
+        Shorts: string list
+        Literals: string list
+        Arity: SigArity option
+        Doc: string option
+        // the value is a boolean (`--legend=BOOL`): `--no-x` is the
+        // tool's too [D:sig-help-shapes]
+        BoolValue: bool
+    }
 
-    let private noFlag =
-        { Long = ""
-          Shorts = []
-          Literals = []
-          Arity = None
-          Doc = None
-          BoolValue = false }
+    let private noFlag = {
+        Long = ""
+        Shorts = []
+        Literals = []
+        Arity = None
+        Doc = None
+        BoolValue = false
+    }
 
     let private legalLong (l: string) =
         l.Length > 0
@@ -9163,10 +9689,12 @@ module SigGen =
         && l |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '-' || c = '_')
 
     let private legalShort (s: string) =
-        s.Length = 1 && (System.Char.IsLetterOrDigit s[0] || s = "?" || s = "#" || s = "@")
+        s.Length = 1
+        && (System.Char.IsLetterOrDigit s[0] || s = "?" || s = "#" || s = "@")
 
     let private keyOf (f: Flag) =
-        if f.Long <> "" then "--" + f.Long
+        if f.Long <> "" then
+            "--" + f.Long
         else
             match f.Shorts, f.Literals with
             | s :: _, _ -> "-" + s
@@ -9195,13 +9723,16 @@ module SigGen =
             if k <> "" then
                 match byKey.TryGetValue k with
                 | true, g ->
-                    byKey[k] <-
-                        { g with
+                    byKey[k] <- {
+                        g with
                             Shorts = g.Shorts @ (f.Shorts |> List.filter (fun s -> not (List.contains s g.Shorts)))
-                            Literals = g.Literals @ (f.Literals |> List.filter (fun s -> not (List.contains s g.Literals)))
+                            Literals =
+                                g.Literals
+                                @ (f.Literals |> List.filter (fun s -> not (List.contains s g.Literals)))
                             Arity = g.Arity |> Option.orElse f.Arity
                             Doc = g.Doc |> Option.orElse f.Doc
-                            BoolValue = g.BoolValue || f.BoolValue }
+                            BoolValue = g.BoolValue || f.BoolValue
+                    }
                 | _ ->
                     byKey[k] <- f
                     order.Add k
@@ -9215,18 +9746,21 @@ module SigGen =
                     owner[l] <- k
 
         // a short-only entry recorded before its long arrived folds in
-        [ for k in order do
-              let f = byKey[k]
+        [
+            for k in order do
+                let f = byKey[k]
 
-              if f.Long <> "" || not (owner.ContainsKey k && owner[k] <> k) then
-                  yield f ]
+                if f.Long <> "" || not (owner.ContainsKey k && owner[k] <> k) then
+                    yield f
+        ]
 
     // ---- the parsers ----------------------------------------------------
 
     let private allCaps (t: string) =
         t.Length > 0
         && System.Char.IsUpper t[0]
-        && t |> Seq.forall (fun c -> System.Char.IsUpper c || System.Char.IsDigit c || "_-|.:[]".Contains c)
+        && t
+           |> Seq.forall (fun c -> System.Char.IsUpper c || System.Char.IsDigit c || "_-|.:[]".Contains c)
 
     // the head of a help row: its spellings and the value shape, then the
     // doc. `-o, --outfile <x>  doc`, `--file=ARCHIVE`, `-i[SUFFIX],
@@ -9266,9 +9800,20 @@ module SigGen =
                 elif at pos = '-' then
                     let dashes = if at (pos + 1) = '-' then 2 else 1
                     let st = pos + dashes
-                    let e = readWhile st (fun c -> System.Char.IsLetterOrDigit c || c = '-' || c = '_' || c = '?' || c = '#' || c = '@')
+
+                    let e =
+                        readWhile st (fun c ->
+                            System.Char.IsLetterOrDigit c
+                            || c = '-'
+                            || c = '_'
+                            || c = '?'
+                            || c = '#'
+                            || c = '@')
+
                     let name = s.Substring(st, e - st)
-                    let letters = System.Text.RegularExpressions.Regex.Match(s.Substring st, "^\\[([A-Za-z]{2,})\\]")
+
+                    let letters =
+                        System.Text.RegularExpressions.Regex.Match(s.Substring st, "^\\[([A-Za-z]{2,})\\]")
 
                     // the spelling's end, or -1 when this is no spelling
                     let spelled =
@@ -9284,16 +9829,21 @@ module SigGen =
                             st + letters.Length
                         elif name = "" || (name.Length > 1 && not (System.Char.IsLetterOrDigit name[0])) then
                             -1
-                        elif dashes = 1 && System.Text.RegularExpressions.Regex.IsMatch(name, "^[A-Z][a-z]{2,}$") then
+                        elif
+                            dashes = 1
+                            && System.Text.RegularExpressions.Regex.IsMatch(name, "^[A-Z][a-z]{2,}$")
+                        then
                             // perl's `-Idirectory`: the letter, its value glued
                             shorts <- shorts @ [ name.Substring(0, 1) ]
                             arity <- Some AOne
                             e
                         else
                             if dashes = 2 then
-                                if legalLong name then longs <- longs @ [ name ]
+                                if legalLong name then
+                                    longs <- longs @ [ name ]
                             elif name.Length = 1 then
-                                if legalShort name then shorts <- shorts @ [ name ]
+                                if legalShort name then
+                                    shorts <- shorts @ [ name ]
                             elif legalLong name then
                                 literals <- literals @ [ "-" + name ]
 
@@ -9307,7 +9857,13 @@ module SigGen =
                         // the value shape glued to the spelling
                         let glued = s.Substring(pos, readWhile pos (fun c -> c <> ' ' && c <> ',') - pos)
 
-                        if System.Text.RegularExpressions.Regex.IsMatch(glued, "^\\[?=(BOOL|BOOLEAN|<bool>|<boolean>)\\]?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase) then
+                        if
+                            System.Text.RegularExpressions.Regex.IsMatch(
+                                glued,
+                                "^\\[?=(BOOL|BOOLEAN|<bool>|<boolean>)\\]?$",
+                                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                            )
+                        then
                             boolValue <- true
 
                         if at pos = '[' then
@@ -9320,7 +9876,12 @@ module SigGen =
                             // perl's `-F/pattern/`: a value glued to the letter
                             arity <- Some AOne
                             pos <- readWhile pos (fun c -> c <> ' ' && c <> ',')
-                        elif at pos = ' ' && at (pos + 1) <> ' ' && at (pos + 1) <> '-' && at (pos + 1) <> '\000' then
+                        elif
+                            at pos = ' '
+                            && at (pos + 1) <> ' '
+                            && at (pos + 1) <> '-'
+                            && at (pos + 1) <> '\000'
+                        then
                             // ` <x>`, ` VALUE`, ` [X]`, ` cmd :`, cobra's
                             // ` string   doc` — one word, then a gap,
                             // a comma, a colon or the end of the line
@@ -9328,7 +9889,14 @@ module SigGen =
                             let te = readWhile ts (fun c -> c <> ' ' && c <> ',')
                             let tok = s.Substring(ts, te - ts)
                             let tail = s.Substring te
-                            let gapAfter = tail = "" || tail.StartsWith "  " || tail.StartsWith ", " || tail.StartsWith "," || tail.StartsWith " :" || tail.StartsWith ":"
+
+                            let gapAfter =
+                                tail = ""
+                                || tail.StartsWith "  "
+                                || tail.StartsWith ", "
+                                || tail.StartsWith ","
+                                || tail.StartsWith " :"
+                                || tail.StartsWith ":"
 
                             let placeholder =
                                 (tok.StartsWith "<" && tok.TrimEnd(':').EndsWith ">")
@@ -9338,7 +9906,8 @@ module SigGen =
                                 || (gapAfter
                                     && tok.Length > 0
                                     && System.Char.IsLower tok[0]
-                                    && tok.TrimEnd(':', ',') |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || "|-_.[]<>=".Contains c))
+                                    && tok.TrimEnd(':', ',')
+                                       |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || "|-_.[]<>=".Contains c))
 
                             // az's `[Required]` marks the flag, not a value
                             if tok = "[Required]" then
@@ -9368,7 +9937,12 @@ module SigGen =
                             // journalctl's `-h --help`, az's `--uri --url -u`
                             // (no comma)
                             pos <- pos + 1
-                        elif longs.IsEmpty && not shorts.IsEmpty && rest.StartsWith "  " && rest.TrimStart().StartsWith "--" then
+                        elif
+                            longs.IsEmpty
+                            && not shorts.IsEmpty
+                            && rest.StartsWith "  "
+                            && rest.TrimStart().StartsWith "--"
+                        then
                             // a box table's `-d    --dates` (the column gap)
                             pos <- pos + (rest.Length - rest.TrimStart().Length)
                         else
@@ -9384,15 +9958,19 @@ module SigGen =
                 // the tool's own options end at this one (python's `-c cmd`,
                 // `-m mod`) [D:sig-arity]
                 let arity =
-                    if doc.Contains "terminates option list" then Some ARest else arity
+                    if doc.Contains "terminates option list" then
+                        Some ARest
+                    else
+                        arity
 
-                Some
-                    { Long = List.tryHead longs |> Option.defaultValue ""
-                      Shorts = shorts
-                      Literals = literals
-                      Arity = arity
-                      Doc = (if doc = "" then None else Some doc)
-                      BoolValue = boolValue }
+                Some {
+                    Long = List.tryHead longs |> Option.defaultValue ""
+                    Shorts = shorts
+                    Literals = literals
+                    Arity = arity
+                    Doc = (if doc = "" then None else Some doc)
+                    BoolValue = boolValue
+                }
 
     // every long a row names beyond its first is an alias of it (`-n,
     // --quiet, --silent`; az's `--name --alias -n`): they become their own
@@ -9427,7 +10005,9 @@ module SigGen =
         // a two-column table (unzip's `-p  doc     -l  doc`): the right
         // column is a row of its own
         let columns (raw: string) =
-            match System.Text.RegularExpressions.Regex.Match(raw, "^(\\s*-.*?\\S)\\s{3,}(-[A-Za-z][A-Za-z]?\\s+\\S.*)$") with
+            match
+                System.Text.RegularExpressions.Regex.Match(raw, "^(\\s*-.*?\\S)\\s{3,}(-[A-Za-z][A-Za-z]?\\s+\\S.*)$")
+            with
             | m when m.Success && (parseRow m.Groups[1].Value).IsSome ->
                 let ind = raw.Length - raw.TrimStart().Length
                 [ m.Groups[1].Value; String.replicate ind " " + m.Groups[2].Value ]
@@ -9442,13 +10022,22 @@ module SigGen =
 
             match parseRow line with
             | None when docless >= 0 && line.Trim() <> "" && indent > rowIndent ->
-                flags[docless] <- { flags[docless] with Doc = Some(line.Trim()) }
+                flags[docless] <- {
+                    flags[docless] with
+                        Doc = Some(line.Trim())
+                }
+
                 docless <- -1
-            | None -> if line.Trim() <> "" then docless <- -1
+            | None ->
+                if line.Trim() <> "" then
+                    docless <- -1
             | Some f ->
                 docless <- (if f.Doc.IsNone then flags.Count else -1)
                 rowIndent <- indent
-                let aliases = rowAliases line |> List.map (fun a -> { a with Arity = f.Arity; Doc = f.Doc })
+
+                let aliases =
+                    rowAliases line |> List.map (fun a -> { a with Arity = f.Arity; Doc = f.Doc })
+
                 flags.Add f
                 flags.AddRange aliases
 
@@ -9459,9 +10048,17 @@ module SigGen =
                     for m in System.Text.RegularExpressions.Regex.Matches(d, "\\(also ([^)]*)\\)") do
                         for t in m.Groups[1].Value.Split([| ' '; ',' |], StringSplitOptions.RemoveEmptyEntries) do
                             if t.StartsWith "--" && legalLong (t.Substring 2) then
-                                flags.Add { noFlag with Long = t.Substring 2; Arity = f.Arity }
+                                flags.Add {
+                                    noFlag with
+                                        Long = t.Substring 2
+                                        Arity = f.Arity
+                                }
                             elif t.Length = 2 && t[0] = '-' && legalShort (t.Substring 1) then
-                                flags.Add { noFlag with Shorts = [ t.Substring 1 ]; Arity = f.Arity }
+                                flags.Add {
+                                    noFlag with
+                                        Shorts = [ t.Substring 1 ]
+                                        Arity = f.Arity
+                                }
                 | None -> ()
 
         mergeFlags [ List.ofSeq flags ]
@@ -9518,11 +10115,26 @@ module SigGen =
                 let rec walk (cmd: string option) (f: Flag) toks =
                     match toks with
                     | ("-c" | "--command") :: v :: rest -> walk (Some v) f rest
-                    | ("-l" | "--long-option") :: v :: rest -> walk cmd { f with Long = (if f.Long = "" then v else f.Long) } rest
+                    | ("-l" | "--long-option") :: v :: rest ->
+                        walk
+                            cmd
+                            {
+                                f with
+                                    Long = (if f.Long = "" then v else f.Long)
+                            }
+                            rest
                     | ("-s" | "--short-option") :: v :: rest -> walk cmd { f with Shorts = f.Shorts @ [ v ] } rest
-                    | ("-o" | "--old-option") :: v :: rest -> walk cmd { f with Literals = f.Literals @ [ "-" + v ] } rest
+                    | ("-o" | "--old-option") :: v :: rest ->
+                        walk
+                            cmd
+                            {
+                                f with
+                                    Literals = f.Literals @ [ "-" + v ]
+                            }
+                            rest
                     | ("-d" | "--description") :: v :: rest -> walk cmd { f with Doc = Some v } rest
-                    | ("-r" | "--require-parameter" | "-x" | "--exclusive") :: rest -> walk cmd { f with Arity = Some AOne } rest
+                    | ("-r" | "--require-parameter" | "-x" | "--exclusive") :: rest ->
+                        walk cmd { f with Arity = Some AOne } rest
                     | ("-n" | "--condition" | "-a" | "--arguments" | "-w" | "--wraps" | "-k" | "--keep-order") :: _ :: rest ->
                         walk cmd f rest
                     | _ :: rest -> walk cmd f rest
@@ -9530,12 +10142,17 @@ module SigGen =
 
                 match walk None noFlag tokens with
                 | Some c, f when c = tool ->
-                    let f =
-                        { f with
+                    let f = {
+                        f with
                             Shorts = f.Shorts |> List.filter legalShort
-                            Literals = f.Literals |> List.filter (fun l -> legalLong (l.Substring 1)) }
+                            Literals = f.Literals |> List.filter (fun l -> legalLong (l.Substring 1))
+                    }
 
-                    if (f.Long <> "" && legalLong f.Long) || not f.Shorts.IsEmpty || not f.Literals.IsEmpty then
+                    if
+                        (f.Long <> "" && legalLong f.Long)
+                        || not f.Shorts.IsEmpty
+                        || not f.Literals.IsEmpty
+                    then
                         flags.Add(if legalLong f.Long then f else { f with Long = "" })
                 | _ -> ()
 
@@ -9552,7 +10169,10 @@ module SigGen =
                     | -1 -> l.Trim(), ""
                     | i -> l.Substring(0, i).Trim(), l.Substring(i + 1).Trim()
 
-                if name.StartsWith "-" && not (name.StartsWith ":") then Some(name, doc) else None)
+                if name.StartsWith "-" && not (name.StartsWith ":") then
+                    Some(name, doc)
+                else
+                    None)
             |> List.ofArray
 
         let rec go (acc: Flag list) rows =
@@ -9563,14 +10183,40 @@ module SigGen =
 
                 match rest with
                 | (s: string, d2) :: rest' when s.Length = 2 && not (s.StartsWith "--") && d2 = d ->
-                    go ({ noFlag with Long = long; Shorts = [ s.Substring 1 ]; Doc = (if d = "" then None else Some d) } :: acc) rest'
-                | _ -> go ({ noFlag with Long = long; Doc = (if d = "" then None else Some d) } :: acc) rest
+                    go
+                        ({
+                            noFlag with
+                                Long = long
+                                Shorts = [ s.Substring 1 ]
+                                Doc = (if d = "" then None else Some d)
+                         }
+                         :: acc)
+                        rest'
+                | _ ->
+                    go
+                        ({
+                            noFlag with
+                                Long = long
+                                Doc = (if d = "" then None else Some d)
+                         }
+                         :: acc)
+                        rest
             | (s, d) :: rest when s.Length = 2 ->
-                go ({ noFlag with Shorts = [ s.Substring 1 ]; Doc = (if d = "" then None else Some d) } :: acc) rest
+                go
+                    ({
+                        noFlag with
+                            Shorts = [ s.Substring 1 ]
+                            Doc = (if d = "" then None else Some d)
+                     }
+                     :: acc)
+                    rest
             | _ :: rest -> go acc rest
 
         go [] rows
-        |> List.map (fun f -> { f with Shorts = f.Shorts |> List.filter legalShort })
+        |> List.map (fun f -> {
+            f with
+                Shorts = f.Shorts |> List.filter legalShort
+        })
         |> List.filter (fun f -> (f.Long = "" || legalLong f.Long) && (f.Long <> "" || not f.Shorts.IsEmpty))
         |> fun fs -> mergeFlags [ fs ]
 
@@ -9584,7 +10230,11 @@ module SigGen =
                 let name = t.Substring(2).TrimEnd '='
 
                 if legalLong name then
-                    Some { noFlag with Long = name; Arity = Some(if v then AOne else ANone) }
+                    Some {
+                        noFlag with
+                            Long = name
+                            Arity = Some(if v then AOne else ANone)
+                    }
                 else
                     None
             else
@@ -9596,22 +10246,26 @@ module SigGen =
     let private parseV8 (text: string) : Flag list =
         let lines = text.Split '\n'
 
-        [ for i in 0 .. lines.Length - 1 do
-              let m = System.Text.RegularExpressions.Regex.Match(lines[i], "^  --([a-z0-9][a-z0-9_-]*) \\((.*)\\)\\s*$")
+        [
+            for i in 0 .. lines.Length - 1 do
+                let m =
+                    System.Text.RegularExpressions.Regex.Match(lines[i], "^  --([a-z0-9][a-z0-9_-]*) \\((.*)\\)\\s*$")
 
-              if m.Success then
-                  let ty =
-                      if i + 1 < lines.Length then
-                          let t = System.Text.RegularExpressions.Regex.Match(lines[i + 1], "type: (\\S+)")
-                          if t.Success then t.Groups[1].Value else ""
-                      else
-                          ""
+                if m.Success then
+                    let ty =
+                        if i + 1 < lines.Length then
+                            let t = System.Text.RegularExpressions.Regex.Match(lines[i + 1], "type: (\\S+)")
+                            if t.Success then t.Groups[1].Value else ""
+                        else
+                            ""
 
-                  yield
-                      { noFlag with
-                          Long = m.Groups[1].Value.Replace('_', '-')
-                          Arity = Some(if ty = "bool" || ty = "maybe_bool" then ANone else AOne)
-                          Doc = Some m.Groups[2].Value } ]
+                    yield {
+                        noFlag with
+                            Long = m.Groups[1].Value.Replace('_', '-')
+                            Arity = Some(if ty = "bool" || ty = "maybe_bool" then ANone else AOne)
+                            Doc = Some m.Groups[2].Value
+                    }
+        ]
         |> fun fs -> mergeFlags [ fs ]
 
     // gpg's `--dump-options`: one `--name` per line
@@ -9630,21 +10284,39 @@ module SigGen =
     // find's predicates: single-dash words, several per line, a value
     // when an all-caps word or N follows (`-name PATTERN`, `-mtime N`)
     let private parsePredicates (text: string) : Flag list =
-        [ for line in text.Split '\n' do
-              let toks = line.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+        [
+            for line in text.Split '\n' do
+                let toks = line.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
 
-              for i in 0 .. toks.Length - 1 do
-                  let t = toks[i]
+                for i in 0 .. toks.Length - 1 do
+                    let t = toks[i]
 
-                  if t.Length > 2 && t[0] = '-' && t[1] <> '-' && legalLong (t.Substring 1) && System.Char.IsLower t[1] then
-                      let next = if i + 1 < toks.Length then toks[i + 1] else ""
+                    if
+                        t.Length > 2
+                        && t[0] = '-'
+                        && t[1] <> '-'
+                        && legalLong (t.Substring 1)
+                        && System.Char.IsLower t[1]
+                    then
+                        let next = if i + 1 < toks.Length then toks[i + 1] else ""
 
-                      let arity =
-                          if next = "COMMAND" then ARest
-                          elif next <> "" && (allCaps next || next.StartsWith "[" || next = "N" || next.StartsWith "N[") then AOne
-                          else ANone
+                        let arity =
+                            if next = "COMMAND" then
+                                ARest
+                            elif
+                                next <> ""
+                                && (allCaps next || next.StartsWith "[" || next = "N" || next.StartsWith "N[")
+                            then
+                                AOne
+                            else
+                                ANone
 
-                      yield { noFlag with Literals = [ t ]; Arity = Some arity } ]
+                        yield {
+                            noFlag with
+                                Literals = [ t ]
+                                Arity = Some arity
+                        }
+        ]
         |> fun fs -> mergeFlags [ fs ]
 
     // a heading names a command table: non-indented, mentions commands,
@@ -9673,7 +10345,8 @@ module SigGen =
         let word (t: string) =
             t.Length > 1
             && System.Char.IsLower t[0]
-            && t |> Seq.forall (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+            && t
+               |> Seq.forall (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
 
         for raw in helpText.Split '\n' do
             let line = raw.TrimEnd()
@@ -9692,7 +10365,10 @@ module SigGen =
                 if ind = indent then
                     let body = line.TrimStart()
 
-                    if body.Contains ", " && body.Split(',') |> Array.forall (fun p -> word (p.Trim()) || p.Trim() = "") then
+                    if
+                        body.Contains ", "
+                        && body.Split(',') |> Array.forall (fun p -> word (p.Trim()) || p.Trim() = "")
+                    then
                         for p in body.Split ',' do
                             let w = p.Trim()
 
@@ -9700,7 +10376,10 @@ module SigGen =
                                 subs.Add w
                     else
                         let m =
-                            System.Text.RegularExpressions.Regex.Match(body, "^([a-z][a-z0-9-]*)\\*?:?(?:$|  |: | \\[| <| \\{| [A-Z][A-Z0-9_.]*(?:\\.\\.\\.)?(?: |$))")
+                            System.Text.RegularExpressions.Regex.Match(
+                                body,
+                                "^([a-z][a-z0-9-]*)\\*?:?(?:$|  |: | \\[| <| \\{| [A-Z][A-Z0-9_.]*(?:\\.\\.\\.)?(?: |$))"
+                            )
 
                         if m.Success then
                             let w = m.Groups[1].Value
@@ -9731,7 +10410,9 @@ module SigGen =
 
         let usageAt (i: int) =
             let l = lines[i]
-            let after = l.Substring(l.ToLowerInvariant().IndexOf "usage" + 5).TrimStart(':', ' ', '\t')
+
+            let after =
+                l.Substring(l.ToLowerInvariant().IndexOf "usage" + 5).TrimStart(':', ' ', '\t')
 
             let more =
                 lines
@@ -9753,7 +10434,8 @@ module SigGen =
                 |> List.ofArray
             with
             | [] ->
-                let synopsis = "^" + System.Text.RegularExpressions.Regex.Escape toolName + " +(\\[|<|[A-Z])"
+                let synopsis =
+                    "^" + System.Text.RegularExpressions.Regex.Escape toolName + " +(\\[|<|[A-Z])"
 
                 lines
                 |> Array.filter (fun l -> System.Text.RegularExpressions.Regex.IsMatch(l.Trim(), synopsis))
@@ -9778,10 +10460,28 @@ module SigGen =
         let positives =
             fs
             |> List.choose (fun f ->
-                if f.Long.StartsWith "no-" && f.Long.Length > 3 && (f.Arity = None || f.Arity = Some ANone) && not (Set.contains (f.Long.Substring 3) have) then
-                    Some { noFlag with Long = f.Long.Substring 3; Arity = Some ANone }
-                elif f.BoolValue && f.Long <> "" && not (f.Long.StartsWith "no-") && not (Set.contains ("no-" + f.Long) have) then
-                    Some { noFlag with Long = "no-" + f.Long; Arity = Some ANone }
+                if
+                    f.Long.StartsWith "no-"
+                    && f.Long.Length > 3
+                    && (f.Arity = None || f.Arity = Some ANone)
+                    && not (Set.contains (f.Long.Substring 3) have)
+                then
+                    Some {
+                        noFlag with
+                            Long = f.Long.Substring 3
+                            Arity = Some ANone
+                    }
+                elif
+                    f.BoolValue
+                    && f.Long <> ""
+                    && not (f.Long.StartsWith "no-")
+                    && not (Set.contains ("no-" + f.Long) have)
+                then
+                    Some {
+                        noFlag with
+                            Long = "no-" + f.Long
+                            Arity = Some ANone
+                    }
                 else
                     None)
 
@@ -9791,19 +10491,23 @@ module SigGen =
 
     // one walked case: its path words, own flags, and whether its first
     // operand ends the tool's options
-    type private Node =
-        { Path: string list
-          Flags: Flag list
-          Stop: bool
-          // other spellings of the same command (cobra's Aliases:
-          // `eval-all, ea`; `docker container run, docker run`) — recorded
-          // as cases of the same record, never probed
-          Aliases: string list list }
+    type private Node = {
+        Path: string list
+        Flags: Flag list
+        Stop: bool
+        // other spellings of the same command (cobra's Aliases:
+        // `eval-all, ea`; `docker container run, docker run`) — recorded
+        // as cases of the same record, never probed
+        Aliases: string list list
+    }
 
     let private aliasesOf (toolName: string) (path: string list) (page: string) : string list list =
         let lines = page.Split '\n'
 
-        match lines |> Array.tryFindIndex (fun l -> let t = l.Trim() in t = "Aliases:" || t = "ALIASES") with
+        match
+            lines
+            |> Array.tryFindIndex (fun l -> let t = l.Trim() in t = "Aliases:" || t = "ALIASES")
+        with
         | None -> []
         | Some i ->
             lines
@@ -9816,7 +10520,9 @@ module SigGen =
                 | [ w ] -> Some((List.truncate (path.Length - 1) path) @ [ w ])
                 | t :: rest when t = toolName && not rest.IsEmpty -> Some rest
                 | _ -> None)
-            |> Array.filter (fun a -> a <> path && a |> List.forall (fun w -> w.Length > 0 && System.Char.IsLetter w[0]))
+            |> Array.filter (fun a ->
+                a <> path
+                && a |> List.forall (fun w -> w.Length > 0 && System.Char.IsLetter w[0]))
             |> Array.distinct
             |> List.ofArray
 
@@ -9847,13 +10553,16 @@ module SigGen =
 
                     match probeHelp path with
                     | Some page when page.Trim() <> parentPage.Trim() && page.Trim() <> topHelp.Trim() ->
-                        let kids = commandTokens page |> List.filter (fun k -> not (noise k) && not (List.contains k path))
+                        let kids =
+                            commandTokens page
+                            |> List.filter (fun k -> not (noise k) && not (List.contains k path))
 
-                        nodes.Add
-                            { Path = path
-                              Flags = flagsAt path page
-                              Stop = kids.IsEmpty && stopsAtOperand toolName page
-                              Aliases = aliasesOf toolName path page }
+                        nodes.Add {
+                            Path = path
+                            Flags = flagsAt path page
+                            Stop = kids.IsEmpty && stopsAtOperand toolName page
+                            Aliases = aliasesOf toolName path page
+                        }
 
                         for k in kids do
                             visit (path @ [ k ]) page
@@ -9865,7 +10574,12 @@ module SigGen =
         // the subtrees are independent: eight at a time (gh and docker
         // spend seconds per hundred probes), joined in the tables' order,
         // so the signature is the same however the probes interleave
-        let tops = commandTokens topHelp |> List.filter (noise >> not) |> List.truncate 100 |> Array.ofList
+        let tops =
+            commandTokens topHelp
+            |> List.filter (noise >> not)
+            |> List.truncate 100
+            |> Array.ofList
+
         let results = Array.create tops.Length ([], 0)
 
         System.Threading.Tasks.Parallel.For(
@@ -9919,10 +10633,15 @@ module SigGen =
             [ bin; real bin ]
             |> List.distinct
             |> List.collect (fun b ->
-                match IO.Path.GetDirectoryName b |> Option.ofObj |> Option.bind (IO.Path.GetDirectoryName >> Option.ofObj) with
-                | Some prefix ->
-                    [ IO.Path.Combine(prefix, "share", "fish", "vendor_completions.d", name + ".fish")
-                      IO.Path.Combine(prefix, "share", "fish", "completions", name + ".fish") ]
+                match
+                    IO.Path.GetDirectoryName b
+                    |> Option.ofObj
+                    |> Option.bind (IO.Path.GetDirectoryName >> Option.ofObj)
+                with
+                | Some prefix -> [
+                    IO.Path.Combine(prefix, "share", "fish", "vendor_completions.d", name + ".fish")
+                    IO.Path.Combine(prefix, "share", "fish", "completions", name + ".fish")
+                  ]
                 | None -> [])
             |> List.tryFind IO.File.Exists
 
@@ -10015,10 +10734,12 @@ module SigGen =
                 | None -> false
 
             let fullHelp =
-                [ "--help all", [ "--help"; "all" ], parseHelp
-                  "--help-all", [ "--help-all" ], parseHelp
-                  "--dump-options", [ "--dump-options" ], parseDump
-                  "--v8-options", [ "--v8-options" ], parseV8 ]
+                [
+                    "--help all", [ "--help"; "all" ], parseHelp
+                    "--help-all", [ "--help-all" ], parseHelp
+                    "--dump-options", [ "--dump-options" ], parseDump
+                    "--v8-options", [ "--v8-options" ], parseV8
+                ]
                 |> List.filter (fun (mention, _, _) -> help.Contains mention || (gnupg && mention = "--dump-options"))
                 |> List.choose (fun (mention, argv, parse) ->
                     runTool tool argv |> Option.map (fun t -> mention, parse t))
@@ -10038,7 +10759,8 @@ module SigGen =
                     && not (isGoRow l)
                     && (l.Split(' ', StringSplitOptions.RemoveEmptyEntries)
                         |> Array.filter (fun t -> t.Length > 2 && t[0] = '-' && System.Char.IsLower t[1])
-                        |> Array.length) >= 2)
+                        |> Array.length)
+                       >= 2)
                 |> Array.length
 
             let longRows = helpRows |> List.filter (fun f -> f.Long <> "") |> List.length
@@ -10054,13 +10776,24 @@ module SigGen =
             let goFlags (fs: Flag list) =
                 fs
                 |> List.map (fun f ->
-                    let words = (f.Literals |> List.map (fun l -> l.TrimStart '-')) @ f.Shorts @ (if f.Long <> "" then [ f.Long ] else [])
-                    { f with Long = ""; Shorts = []; Literals = words |> List.distinct |> List.map (fun w -> "-" + w) })
+                    let words =
+                        (f.Literals |> List.map (fun l -> l.TrimStart '-'))
+                        @ f.Shorts
+                        @ (if f.Long <> "" then [ f.Long ] else [])
+
+                    {
+                        f with
+                            Long = ""
+                            Shorts = []
+                            Literals = words |> List.distinct |> List.map (fun w -> "-" + w)
+                    })
 
             let gitCwd () =
                 // git's helper needs a repository: an empty one in a temp
                 // dir, discarded after the probes
-                let d = IO.Path.Combine(IO.Path.GetTempPath(), $"weir-siggit-{System.Guid.NewGuid():N}")
+                let d =
+                    IO.Path.Combine(IO.Path.GetTempPath(), $"weir-siggit-{System.Guid.NewGuid():N}")
+
                 Contracts.ProbeGuard.trackPath d
                 IO.Directory.CreateDirectory(IO.Path.Combine(d, ".git", "objects")) |> ignore
                 IO.Directory.CreateDirectory(IO.Path.Combine(d, ".git", "refs")) |> ignore
@@ -10082,9 +10815,17 @@ module SigGen =
 
                         let builtins =
                             run [ "--list-cmds=builtins" ]
-                            |> Option.map (fun t -> t.Split('\n', StringSplitOptions.RemoveEmptyEntries) |> Array.map (fun s -> s.Trim()) |> List.ofArray)
+                            |> Option.map (fun t ->
+                                t.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                                |> Array.map (fun s -> s.Trim())
+                                |> List.ofArray)
                             |> Option.defaultValue []
-                            |> List.filter (fun c -> c.Length > 1 && System.Char.IsLower c[0] && c |> Seq.forall (fun ch -> System.Char.IsLower ch || System.Char.IsDigit ch || ch = '-'))
+                            |> List.filter (fun c ->
+                                c.Length > 1
+                                && System.Char.IsLower c[0]
+                                && c
+                                   |> Seq.forall (fun ch ->
+                                       System.Char.IsLower ch || System.Char.IsDigit ch || ch = '-'))
                             |> List.truncate 200
 
                         let mutable opened = []
@@ -10096,7 +10837,13 @@ module SigGen =
                             match run (path @ [ "--weir-probe-unknown"; "--git-completion-helper-all" ]) with
                             | Some _ ->
                                 opened <- String.concat " " path :: opened
-                                Some { Path = path; Flags = []; Stop = false; Aliases = [] }
+
+                                Some {
+                                    Path = path
+                                    Flags = []
+                                    Stop = false
+                                    Aliases = []
+                                }
                             | None ->
                                 // `-all` lists the hidden options too (--allow-empty)
                                 // a sub whose helper is its parent's is the
@@ -10109,34 +10856,74 @@ module SigGen =
                                     // (`git stash show [<diff-options>]`): no
                                     // list holds them [D:sig-unwalked]
                                     let passesOn =
-                                        let at = path |> List.map System.Text.RegularExpressions.Regex.Escape |> String.concat "\\s+"
+                                        let at =
+                                            path
+                                            |> List.map System.Text.RegularExpressions.Regex.Escape
+                                            |> String.concat "\\s+"
 
                                         (dashText |> Option.defaultValue "").Split '\n'
                                         |> Array.exists (fun l ->
-                                            let m = System.Text.RegularExpressions.Regex.Match(l, "^\\s*(?:usage|or):\\s+git\\s+" + at + "(\\s.*)?$")
+                                            let m =
+                                                System.Text.RegularExpressions.Regex.Match(
+                                                    l,
+                                                    "^\\s*(?:usage|or):\\s+git\\s+" + at + "(\\s.*)?$"
+                                                )
 
                                             m.Success
-                                            && not (System.Text.RegularExpressions.Regex.IsMatch(m.Groups[1].Value, "^\\s+[a-z][a-z0-9-]*(\\s|$)"))
-                                            && System.Text.RegularExpressions.Regex.IsMatch(m.Groups[1].Value, "<[a-z-]*(diff|log)-options>"))
+                                            && not (
+                                                System.Text.RegularExpressions.Regex.IsMatch(
+                                                    m.Groups[1].Value,
+                                                    "^\\s+[a-z][a-z0-9-]*(\\s|$)"
+                                                )
+                                            )
+                                            && System.Text.RegularExpressions.Regex.IsMatch(
+                                                m.Groups[1].Value,
+                                                "<[a-z-]*(diff|log)-options>"
+                                            ))
 
                                     let dashH =
                                         dashText
                                         |> Option.map (fun t -> mergeFlags [ parseHelp t; parseUsage t ])
                                         |> Option.defaultValue []
-                                    let byLong = dashH |> List.filter (fun f -> f.Long <> "") |> List.map (fun f -> f.Long, f) |> Map.ofList
+
+                                    let byLong =
+                                        dashH
+                                        |> List.filter (fun f -> f.Long <> "")
+                                        |> List.map (fun f -> f.Long, f)
+                                        |> Map.ofList
 
                                     let helper =
                                         parseGitHelper h
                                         |> List.map (fun f ->
                                             match Map.tryFind f.Long byLong with
-                                            | Some r -> { f with Shorts = r.Shorts; Doc = r.Doc; Arity = (if f.Arity = Some AOne then Some AOne else r.Arity |> Option.orElse f.Arity) }
+                                            | Some r -> {
+                                                f with
+                                                    Shorts = r.Shorts
+                                                    Doc = r.Doc
+                                                    Arity =
+                                                        (if f.Arity = Some AOne then
+                                                             Some AOne
+                                                         else
+                                                             r.Arity |> Option.orElse f.Arity)
+                                              }
                                             | None -> f)
 
                                     if passesOn then
                                         opened <- String.concat " " path :: opened
-                                        Some { Path = path; Flags = []; Stop = false; Aliases = [] }
+
+                                        Some {
+                                            Path = path
+                                            Flags = []
+                                            Stop = false
+                                            Aliases = []
+                                        }
                                     else
-                                        Some { Path = path; Flags = mergeFlags [ helper; dashH ]; Stop = false; Aliases = [] }
+                                        Some {
+                                            Path = path
+                                            Flags = mergeFlags [ helper; dashH ]
+                                            Stop = false
+                                            Aliases = []
+                                        }
                                 | _ -> None
 
                         // a builtin's own subcommands (remote add, notes add,
@@ -10148,17 +10935,31 @@ module SigGen =
                             match runAny [ c; "-h" ] with
                             | None -> []
                             | Some t ->
-                                [ for l in t.Split '\n' do
-                                      let m = System.Text.RegularExpressions.Regex.Match(l, "^\\s*(?:usage|or):\\s+git " + System.Text.RegularExpressions.Regex.Escape c + "((?:\\s+\\[(?:[^\\[\\]]|\\[[^\\[\\]]*\\])*\\])*)\\s+([a-z][a-z0-9-]*)\\b(?![=>])")
+                                [
+                                    for l in t.Split '\n' do
+                                        let m =
+                                            System.Text.RegularExpressions.Regex.Match(
+                                                l,
+                                                "^\\s*(?:usage|or):\\s+git "
+                                                + System.Text.RegularExpressions.Regex.Escape c
+                                                + "((?:\\s+\\[(?:[^\\[\\]]|\\[[^\\[\\]]*\\])*\\])*)\\s+([a-z][a-z0-9-]*)\\b(?![=>])"
+                                            )
 
-                                      if m.Success then
-                                          yield m.Groups[2].Value
+                                        if m.Success then
+                                            yield m.Groups[2].Value
 
-                                      // an optional one: `git stash [push [-p] …`
-                                      let o = System.Text.RegularExpressions.Regex.Match(l, "^\\s*(?:usage|or):\\s+git " + System.Text.RegularExpressions.Regex.Escape c + "\\s+\\[([a-z][a-z0-9-]*)\\b(?![=>])")
+                                        // an optional one: `git stash [push [-p] …`
+                                        let o =
+                                            System.Text.RegularExpressions.Regex.Match(
+                                                l,
+                                                "^\\s*(?:usage|or):\\s+git "
+                                                + System.Text.RegularExpressions.Regex.Escape c
+                                                + "\\s+\\[([a-z][a-z0-9-]*)\\b(?![=>])"
+                                            )
 
-                                      if o.Success then
-                                          yield o.Groups[1].Value ]
+                                        if o.Success then
+                                            yield o.Groups[1].Value
+                                ]
                                 |> List.distinct
                                 |> List.truncate 30
 
@@ -10172,7 +10973,10 @@ module SigGen =
                                     | Some _ when List.contains c opened -> []
                                     | _ ->
                                         let parent = run [ c; "--git-completion-helper-all" ]
-                                        subsOf c |> List.choose (fun sub -> probeCmd (Some(parent |> Option.defaultValue "")) [ c; sub ])
+
+                                        subsOf c
+                                        |> List.choose (fun sub ->
+                                            probeCmd (Some(parent |> Option.defaultValue "")) [ c; sub ])
 
                                 // a builtin whose helper lists only its
                                 // subcommands (config, stash, worktree) still
@@ -10186,19 +10990,26 @@ module SigGen =
                                     | None ->
                                         let union = subs |> List.map (fun n -> n.Flags) |> mergeFlags
 
-                                        match union |> List.tryFind (fun f -> f.Long <> "" && (f.Arity = None || f.Arity = Some ANone)) with
+                                        match
+                                            union
+                                            |> List.tryFind (fun f ->
+                                                f.Long <> "" && (f.Arity = None || f.Arity = Some ANone))
+                                        with
                                         | None -> None
                                         | Some first ->
                                             let rows (t: string option) =
-                                                t |> Option.map (fun t -> mergeFlags [ parseHelp t; parseUsage t ]) |> Option.defaultValue []
+                                                t
+                                                |> Option.map (fun t -> mergeFlags [ parseHelp t; parseUsage t ])
+                                                |> Option.defaultValue []
 
                                             let older = rows (runAny [ c; "--" + first.Long; "-h" ])
 
-                                            Some
-                                                { Path = [ c ]
-                                                  Flags = mergeFlags [ union; older; rows (runAny [ c; "-h" ]) ]
-                                                  Stop = false
-                                                  Aliases = [] }
+                                            Some {
+                                                Path = [ c ]
+                                                Flags = mergeFlags [ union; older; rows (runAny [ c; "-h" ]) ]
+                                                Stop = false
+                                                Aliases = []
+                                            }
 
                                 Option.toList own @ Option.toList parent @ subs)
 
@@ -10215,7 +11026,10 @@ module SigGen =
                     // cobra [D:sig-sources]: per command, `__complete <path> -`
                     // lists its flags with shorts (plugins answer too), the
                     // help page its arities and its subcommands
-                    let complete path = runTool tool ("__complete" :: path @ [ "-" ]) |> Option.map parseCobraComplete |> Option.defaultValue []
+                    let complete path =
+                        runTool tool ("__complete" :: path @ [ "-" ])
+                        |> Option.map parseCobraComplete
+                        |> Option.defaultValue []
 
                     let arityFrom (rows: Flag list) (fs: Flag list) =
                         let byKey = rows |> List.map (fun f -> keyOf f, f) |> Map.ofList
@@ -10223,16 +11037,30 @@ module SigGen =
                         fs
                         |> List.map (fun f ->
                             match Map.tryFind (keyOf f) byKey with
-                            | Some r -> { f with Arity = f.Arity |> Option.orElse r.Arity; Doc = f.Doc |> Option.orElse r.Doc }
+                            | Some r -> {
+                                f with
+                                    Arity = f.Arity |> Option.orElse r.Arity
+                                    Doc = f.Doc |> Option.orElse r.Doc
+                              }
                             | None -> f)
 
                     let flagsAt path page =
                         let rows = parseHelp page
                         mergeFlags [ arityFrom rows (complete path); rows ]
 
-                    let nodes, probed = walkTree (IO.Path.GetFileName tool) help (fun p -> runTool tool (p @ [ "--help" ])) flagsAt
+                    let nodes, probed =
+                        walkTree (IO.Path.GetFileName tool) help (fun p -> runTool tool (p @ [ "--help" ])) flagsAt
+
                     let root = mergeFlags [ arityFrom helpRows (complete []); helpRows ]
-                    "cobra-complete", root, nodes, [], (if nodes.IsEmpty && probed > 0 then $" (walked {probed} subcommand help(s), none yielded a case)" else "")
+
+                    "cobra-complete",
+                    root,
+                    nodes,
+                    [],
+                    (if nodes.IsEmpty && probed > 0 then
+                         $" (walked {probed} subcommand help(s), none yielded a case)"
+                     else
+                         "")
                 else
                     let fish =
                         match fishText with
@@ -10285,9 +11113,14 @@ module SigGen =
                                 |> Array.collect (fun l ->
                                     let piped = (l.Substring prompt.Length).Split '|'
                                     piped[0].Split(' ', StringSplitOptions.RemoveEmptyEntries))
-                                |> Array.filter (fun w -> System.Text.RegularExpressions.Regex.IsMatch(w, "^-[A-Za-z][\\w-]*$"))
+                                |> Array.filter (fun w ->
+                                    System.Text.RegularExpressions.Regex.IsMatch(w, "^-[A-Za-z][\\w-]*$"))
                                 |> Array.distinct
-                                |> Array.map (fun w -> { noFlag with Literals = [ w ]; Arity = Some ANone })
+                                |> Array.map (fun w -> {
+                                    noFlag with
+                                        Literals = [ w ]
+                                        Arity = Some ANone
+                                })
                                 |> List.ofArray
 
                             goFlags (mergeFlags [ top; examples ])
@@ -10297,12 +11130,20 @@ module SigGen =
                             let usage =
                                 parseUsage help
                                 |> List.map (fun f ->
-                                    let glued, whole = f.Literals |> List.partition (fun l -> System.Text.RegularExpressions.Regex.IsMatch(l, "^-[A-Z][a-z]+$"))
+                                    let glued, whole =
+                                        f.Literals
+                                        |> List.partition (fun l ->
+                                            System.Text.RegularExpressions.Regex.IsMatch(l, "^-[A-Z][a-z]+$"))
 
-                                    { f with
-                                        Literals = whole @ (f.Shorts |> List.map (fun s -> "-" + s)) @ (glued |> List.map (fun l -> l.Substring(0, 2)))
-                                        Shorts = []
-                                        Arity = (if glued.IsEmpty then f.Arity else Some AOpt) })
+                                    {
+                                        f with
+                                            Literals =
+                                                whole
+                                                @ (f.Shorts |> List.map (fun s -> "-" + s))
+                                                @ (glued |> List.map (fun l -> l.Substring(0, 2)))
+                                            Shorts = []
+                                            Arity = (if glued.IsEmpty then f.Arity else Some AOpt)
+                                    })
 
                             mergeFlags [ parsePredicates help; usage; top ]
                         | _ -> withPositives top
@@ -10315,7 +11156,10 @@ module SigGen =
                     // config key is a flag (npm's `npm <command>
                     // --key=value`) — no list can be complete, so the tool
                     // is recorded unchecked and its commands are not walked
-                    | Some t when t.Contains "--key=value" || System.Text.RegularExpressions.Regex.IsMatch(t, "(?m)^\\s*npm [a-z]") ->
+                    | Some t when
+                        t.Contains "--key=value"
+                        || System.Text.RegularExpressions.Regex.IsMatch(t, "(?m)^\\s*npm [a-z]")
+                        ->
                         // npx's help is `npm exec …`: npm's config keys too
                         source, top, [], [ "" ], ""
                     | Some t when convention = "gnu" ->
@@ -10325,7 +11169,8 @@ module SigGen =
                             | [] -> parseUsage page
                             | fs -> withPositives (mergeFlags [ fs; parseUsage page ])
 
-                        let nodes, probed = walkTree (IO.Path.GetFileName tool) t (fun p -> runTool tool (p @ [ "--help" ])) flagsAt
+                        let nodes, probed =
+                            walkTree (IO.Path.GetFileName tool) t (fun p -> runTool tool (p @ [ "--help" ])) flagsAt
 
                         let note =
                             if nodes.IsEmpty && probed > 0 then
@@ -10350,7 +11195,11 @@ module SigGen =
                     | Some v ->
                         match runTool tool [ "--versio" ] with
                         | Some out ->
-                            let first = out.Split('\n') |> Array.tryFind (fun l -> l.Trim() <> "") |> Option.defaultValue ""
+                            let first =
+                                out.Split('\n')
+                                |> Array.tryFind (fun l -> l.Trim() <> "")
+                                |> Option.defaultValue ""
+
                             System.Text.RegularExpressions.Regex.Replace(first.Trim(), "\\s+", " ") = v
                         | None -> false
                     | None -> false)
@@ -10360,12 +11209,15 @@ module SigGen =
 
             // a row spelled `-<signal>` (kill): any dash word is a value
             let dashWords =
-                convention = "gnu" && System.Text.RegularExpressions.Regex.IsMatch(help, "(?m)^\\s*-<[A-Za-z][\\w-]*>")
+                convention = "gnu"
+                && System.Text.RegularExpressions.Regex.IsMatch(help, "(?m)^\\s*-<[A-Za-z][\\w-]*>")
 
             // a refused help still states its usage (bunx exits 1 on --help)
             let topStop =
                 advertised.IsEmpty
-                && stopsAtOperand (IO.Path.GetFileName tool) (topHelp |> Option.orElse harvestOnly |> Option.defaultValue "")
+                && stopsAtOperand
+                    (IO.Path.GetFileName tool)
+                    (topHelp |> Option.orElse harvestOnly |> Option.defaultValue "")
 
             match flags, nodes with
             | [], [] ->
@@ -10407,7 +11259,12 @@ module SigGen =
                     let taken = System.Collections.Generic.HashSet<string>()
 
                     let uniq (n: string) =
-                        let n = if Set.contains n Weir.Parser.keywords then n + "Flag" else n
+                        let n =
+                            if Set.contains n Weir.Parser.keywords then
+                                n + "Flag"
+                            else
+                                n
+
                         let mutable c = n
                         let mutable i = 2
 
@@ -10439,10 +11296,17 @@ module SigGen =
                         let bare = sp.TrimStart '-'
 
                         if bare.Length = 1 then
-                            if System.Char.IsLetterOrDigit bare[0] then "short" + bare else $"shortX{int bare[0]:X}"
+                            if System.Char.IsLetterOrDigit bare[0] then
+                                "short" + bare
+                            else
+                                $"shortX{int bare[0]:X}"
                         else
                             let camel = fieldName bare
-                            if camel <> "" && System.Char.IsLetter camel[0] then camel else "dashWord"
+
+                            if camel <> "" && System.Char.IsLetter camel[0] then
+                                camel
+                            else
+                                "dashWord"
 
                     // same-camel spellings share a field (claude's
                     // --allowedTools and --allowed-tools): the kebab one is
@@ -10465,18 +11329,20 @@ module SigGen =
                     let ordered =
                         flags
                         |> List.filter (fun f -> not (Set.contains f.Long twinned))
-                        |> List.sortBy (fun f -> (if f.Long <> "" then f.Long else keyOf f).TrimStart('-').ToLowerInvariant(), keyOf f)
+                        |> List.sortBy (fun f ->
+                            (if f.Long <> "" then f.Long else keyOf f).TrimStart('-').ToLowerInvariant(), keyOf f)
 
                     for f in ordered do
                         let twin = Map.tryFind f.Long twins
 
                         let f =
                             match twin with
-                            | Some t ->
-                                { f with
+                            | Some t -> {
+                                f with
                                     Shorts = f.Shorts @ t.Shorts
                                     Literals = f.Literals @ t.Literals
-                                    Doc = f.Doc |> Option.orElse t.Doc }
+                                    Doc = f.Doc |> Option.orElse t.Doc
+                              }
                             | None -> f
 
                         let shorts = f.Shorts |> List.filter (fun s -> taken.Add("-" + s))
@@ -10485,13 +11351,25 @@ module SigGen =
                         let extra =
                             if f.Long <> "" && taken.Add("--" + f.Long) then
                                 let camel = fieldName f.Long
-                                let fname = uniq (if camel <> "" && System.Char.IsLetter camel[0] then camel else "flag" + camel)
+
+                                let fname =
+                                    uniq (
+                                        if camel <> "" && System.Char.IsLetter camel[0] then
+                                            camel
+                                        else
+                                            "flag" + camel
+                                    )
+
                                 let covered = Weir.Argv.kebabFlag fname
 
                                 let attrs =
                                     match twin with
                                     | Some t when taken.Add("--" + t.Long) -> [ $"Wire \"{escape t.Long}\"" ]
-                                    | _ -> if covered <> f.Long then [ $"Wire \"{escape f.Long}\"" ] else []
+                                    | _ ->
+                                        if covered <> f.Long then
+                                            [ $"Wire \"{escape f.Long}\"" ]
+                                        else
+                                            []
 
                                 match shorts with
                                 | s :: rest when s <> "h" && s.Length = 1 && System.Char.IsLetterOrDigit s[0] ->
@@ -10520,7 +11398,11 @@ module SigGen =
                 let caseName (path: string) =
                     let camel = fieldName (path.Replace(" ", "-"))
                     let pascal = string (System.Char.ToUpper camel[0]) + camel.Substring 1
-                    if pascal = "Cmd" || pascal = "Globals" then pascal + "Cmd" else pascal
+
+                    if pascal = "Cmd" || pascal = "Globals" then
+                        pascal + "Cmd"
+                    else
+                        pascal
 
                 line $"module {moduleName}"
 
@@ -10613,14 +11495,16 @@ module SigGen =
                 let caseKey (path: string list) = String.concat " " path
 
                 let stops =
-                    [ if topStop && nodes.IsEmpty then
-                          yield ""
-                      for n in nodes do
-                          if n.Stop then
-                              yield caseKey n.Path
+                    [
+                        if topStop && nodes.IsEmpty then
+                            yield ""
+                        for n in nodes do
+                            if n.Stop then
+                                yield caseKey n.Path
 
-                              for a in n.Aliases do
-                                  yield caseKey a ]
+                                for a in n.Aliases do
+                                    yield caseKey a
+                    ]
                     // an alias can repeat a case or another alias
                     |> List.distinct
 
@@ -10637,7 +11521,10 @@ module SigGen =
                 elif not unchecked.IsEmpty then
                     line "/// these pass options the source cannot list (git's revision options):"
                     line "/// reaching one ends the check"
-                    let joined = unchecked |> List.map (fun s -> $"\"{escape s}\"") |> String.concat "; "
+
+                    let joined =
+                        unchecked |> List.map (fun s -> $"\"{escape s}\"") |> String.concat "; "
+
                     line $"let unchecked = [ {joined} ]"
 
                 if nodes.IsEmpty then
@@ -10661,10 +11548,12 @@ module SigGen =
                                 if cobra || isGit then
                                     []
                                 else
-                                    [ for k in n.Path.Length - 1 .. -1 .. 1 do
-                                          match Map.tryFind (List.truncate k n.Path) byPath with
-                                          | Some fs -> yield! fs
-                                          | None -> () ]
+                                    [
+                                        for k in n.Path.Length - 1 .. -1 .. 1 do
+                                            match Map.tryFind (List.truncate k n.Path) byPath with
+                                            | Some fs -> yield! fs
+                                            | None -> ()
+                                    ]
 
                             let own =
                                 mergeFlags [ n.Flags; ancestors ]
@@ -10682,10 +11571,12 @@ module SigGen =
                     line "type Cmd ="
 
                     let aliasCases =
-                        [ for n, cn, own in cases do
-                              for a in n.Aliases do
-                                  if not (Set.contains (caseKey a) walked) then
-                                      yield caseName (caseKey a), cn, own ]
+                        [
+                            for n, cn, own in cases do
+                                for a in n.Aliases do
+                                    if not (Set.contains (caseKey a) walked) then
+                                        yield caseName (caseKey a), cn, own
+                        ]
                         |> List.distinctBy (fun (an, _, _) -> an)
                         |> List.filter (fun (an, _, _) -> cases |> List.forall (fun (_, cn, _) -> cn <> an))
 
@@ -10720,11 +11611,13 @@ module SigGen =
                     let probe =
                         // a synthetic importer path — the sig file must
                         // not read as importing itself
-                        loadSigs
-                            (tmp + ".from")
-                            [ { Tool = tool
+                        loadSigs (tmp + ".from") [
+                            {
+                                Tool = tool
                                 Override = Some tmp
-                                Line = 1 } ]
+                                Line = 1
+                            }
+                        ]
 
                     match probe with
                     | d :: _, _ ->
@@ -10764,94 +11657,115 @@ module SigGen =
                             Contracts.AtomicFile.replaceFile dest (Text.UTF8Encoding(false).GetBytes text)
 
                             let cutTail =
-                                [ cutNote; slowNote ] |> List.filter ((<>) "") |> List.map (fun n -> "; " + n) |> String.concat ""
+                                [ cutNote; slowNote ]
+                                |> List.filter ((<>) "")
+                                |> List.map (fun n -> "; " + n)
+                                |> String.concat ""
 
                             Ok
                                 $"added sig {tool} to {dest} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — user-level: the REPL's Tab reads it in every directory; no lock entry"
                         | None ->
-                        let rel = "sigs/" + sigFileName tool
+                            let rel = "sigs/" + sigFileName tool
 
-                        Contracts.AtomicFile.withWeirDirLock weirDir (fun () ->
-                            match Contracts.readLock weirDir with
-                            | Error e -> Error e
-                            | Ok entries0 ->
-                            // a file another lock entry records under this name
-                            // (a legacy name: `a b` wrote sigs/a_b.weir) is that
-                            // tool's signature — never overwritten: it moves to
-                            // its owner's own name first, its lock entry with it
-                            // [D:sig-probe-bounds]
-                            let moved =
-                                match
-                                    entries0
-                                    |> List.tryFind (fun e -> e.Kind = "sig" && e.Name <> tool && e.Path.Replace('\\', '/') = rel)
-                                with
-                                | None -> Ok(entries0, "")
-                                | Some owner ->
-                                    let ownName = sigFileName owner.Name
-                                    let src = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
-                                    let dst = IO.Path.Combine(weirDir, "sigs", ownName)
-                                    let shown = Eval.sanitizeTtyEcho owner.Name
+                            Contracts.AtomicFile.withWeirDirLock weirDir (fun () ->
+                                match Contracts.readLock weirDir with
+                                | Error e -> Error e
+                                | Ok entries0 ->
+                                    // a file another lock entry records under this name
+                                    // (a legacy name: `a b` wrote sigs/a_b.weir) is that
+                                    // tool's signature — never overwritten: it moves to
+                                    // its owner's own name first, its lock entry with it
+                                    // [D:sig-probe-bounds]
+                                    let moved =
+                                        match
+                                            entries0
+                                            |> List.tryFind (fun e ->
+                                                e.Kind = "sig" && e.Name <> tool && e.Path.Replace('\\', '/') = rel)
+                                        with
+                                        | None -> Ok(entries0, "")
+                                        | Some owner ->
+                                            let ownName = sigFileName owner.Name
+                                            let src = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
+                                            let dst = IO.Path.Combine(weirDir, "sigs", ownName)
+                                            let shown = Eval.sanitizeTtyEcho owner.Name
 
-                                    if IO.File.Exists dst then
-                                        Error
-                                            $"{rel} is the signature of '{shown}' (the lock records it under the name it had before file names were injective), and sigs/{ownName} exists too — move or remove one by hand"
-                                    else
-                                        try
-                                            if IO.File.Exists src then
-                                                IO.File.Move(src, dst)
+                                            if IO.File.Exists dst then
+                                                Error
+                                                    $"{rel} is the signature of '{shown}' (the lock records it under the name it had before file names were injective), and sigs/{ownName} exists too — move or remove one by hand"
+                                            else
+                                                try
+                                                    if IO.File.Exists src then
+                                                        IO.File.Move(src, dst)
 
-                                            Ok(
-                                                entries0
-                                                |> List.map (fun e ->
-                                                    if e = owner then
-                                                        { e with Path = IO.Path.Combine("sigs", ownName) }
-                                                    else
-                                                        e),
-                                                $"; moved the signature of '{shown}' from {rel} to sigs/{ownName}"
+                                                    Ok(
+                                                        entries0
+                                                        |> List.map (fun e ->
+                                                            if e = owner then
+                                                                {
+                                                                    e with
+                                                                        Path = IO.Path.Combine("sigs", ownName)
+                                                                }
+                                                            else
+                                                                e),
+                                                        $"; moved the signature of '{shown}' from {rel} to sigs/{ownName}"
+                                                    )
+                                                with ex ->
+                                                    Error
+                                                        $"{rel} is the signature of '{shown}', and moving it to sigs/{ownName} failed: {ex.Message}"
+
+                                    match moved with
+                                    | Error e -> Error e
+                                    | Ok(entries, movedNote) ->
+                                        let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
+                                        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
+                                        Contracts.AtomicFile.replaceFile dest (Text.UTF8Encoding(false).GetBytes text)
+                                        let bytes = IO.File.ReadAllBytes dest
+
+                                        let entry: Contracts.LockEntry = {
+                                            Kind = "sig"
+                                            Name = tool
+                                            Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
+                                            Sha256 = Contracts.sha256Hex bytes
+                                            Path = IO.Path.Combine("sigs", sigFileName tool)
+                                            Version = version
+                                            Closure = None
+                                        }
+
+                                        let others =
+                                            entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
+
+                                        Contracts.writeLock weirDir (others @ [ entry ])
+
+                                        // this tool's file under the legacy name is
+                                        // superseded — unless another entry owns that
+                                        // name [D:sig-probe-bounds]
+                                        let legacy = "sigs/" + legacySigFileName tool
+
+                                        if
+                                            legacy <> "sigs/" + sigFileName tool
+                                            && entries
+                                               |> List.exists (fun e ->
+                                                   e.Kind = "sig"
+                                                   && e.Name = tool
+                                                   && e.Path.Replace('\\', '/') = legacy)
+                                            && not (
+                                                others |> List.exists (fun e -> e.Path.Replace('\\', '/') = legacy)
                                             )
-                                        with ex ->
-                                            Error $"{rel} is the signature of '{shown}', and moving it to sigs/{ownName} failed: {ex.Message}"
+                                        then
+                                            try
+                                                IO.File.Delete(IO.Path.Combine(weirDir, legacy))
+                                            with _ ->
+                                                ()
 
-                            match moved with
-                            | Error e -> Error e
-                            | Ok(entries, movedNote) ->
-                                let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
-                                IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
-                                Contracts.AtomicFile.replaceFile dest (Text.UTF8Encoding(false).GetBytes text)
-                                let bytes = IO.File.ReadAllBytes dest
+                                        let cutTail =
+                                            ([ cutNote; slowNote ]
+                                             |> List.filter ((<>) "")
+                                             |> List.map (fun n -> "; " + n)
+                                             |> String.concat "")
+                                            + movedNote
 
-                                let entry: Contracts.LockEntry =
-                                    { Kind = "sig"
-                                      Name = tool
-                                      Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
-                                      Sha256 = Contracts.sha256Hex bytes
-                                      Path = IO.Path.Combine("sigs", sigFileName tool)
-                                      Version = version
-                                      Closure = None }
-
-                                let others = entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
-
-                                Contracts.writeLock weirDir (others @ [ entry ])
-
-                                // this tool's file under the legacy name is
-                                // superseded — unless another entry owns that
-                                // name [D:sig-probe-bounds]
-                                let legacy = "sigs/" + legacySigFileName tool
-
-                                if legacy <> "sigs/" + sigFileName tool
-                                   && entries |> List.exists (fun e -> e.Kind = "sig" && e.Name = tool && e.Path.Replace('\\', '/') = legacy)
-                                   && not (others |> List.exists (fun e -> e.Path.Replace('\\', '/') = legacy)) then
-                                    try
-                                        IO.File.Delete(IO.Path.Combine(weirDir, legacy))
-                                    with _ ->
-                                        ()
-
-                                let cutTail =
-                                    ([ cutNote; slowNote ] |> List.filter ((<>) "") |> List.map (fun n -> "; " + n) |> String.concat "")
-                                    + movedNote
-
-                                Ok
-                                    $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — partial by default; verify and mark exhaustive by hand")
+                                        Ok
+                                            $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — partial by default; verify and mark exhaustive by hand")
                 finally
                     try
                         IO.File.Delete tmp
@@ -10903,7 +11817,8 @@ let parseAliasLine (body: string) : Result<string * CommandAlias, string> =
         // glyph there would reach the program as an argument, never chain
         // [D:alias-no-chain]
         let chainGlyph =
-            rhsWords |> List.tryFind (fun w -> List.contains w [ "|"; "|>"; "||"; "&&"; ";" ])
+            rhsWords
+            |> List.tryFind (fun w -> List.contains w [ "|"; "|>"; "||"; "&&"; ";" ])
 
         match rhsWords with
         | [] -> Error "#alias needs a target: '#alias name = command [args...]'"
@@ -10982,38 +11897,41 @@ let expectedFieldTypes (key: string) : Ty list =
 /// declarations [D:session-prompt]), the declarations with every directive
 /// line blanked (transparent, so positions stay real), the #alias bodies,
 /// and the lines the #session block spans
-type InitSplit =
-    { Fields: (int * string) list
-      PromptFields: (int * string) list
-      Decls: (int * string) list
-      Aliases: (int * string) list
-      BlockLines: Set<int> }
+type InitSplit = {
+    Fields: (int * string) list
+    PromptFields: (int * string) list
+    Decls: (int * string) list
+    Aliases: (int * string) list
+    BlockLines: Set<int>
+}
 
 /// the checked init: every static error (Diags — init rules and the
 /// #session values' own errors; DeclDiags — the declarations' own statement
 /// errors, kept apart because check already reports those from the full
 /// file), plus what the loader applies
-type InitCheck =
-    { Diags: Diagnostic list
-      DeclDiags: Diagnostic list
-      Split: InitSplit
-      Settings: (LogicalLine * string * Check.TypedExpr) list
-      Decls: (LogicalLine * CheckedStatement) list
-      DeclEnv: TypeEnv
-      Prompt: (LogicalLine * Check.TypedExpr) option
-      Aliases: (int * string * CommandAlias) list }
+type InitCheck = {
+    Diags: Diagnostic list
+    DeclDiags: Diagnostic list
+    Split: InitSplit
+    Settings: (LogicalLine * string * Check.TypedExpr) list
+    Decls: (LogicalLine * CheckedStatement) list
+    DeclEnv: TypeEnv
+    Prompt: (LogicalLine * Check.TypedExpr) option
+    Aliases: (int * string * CommandAlias) list
+}
 
-let private initError (file: string) (line: int) (col: int) (endCol: int option) (code: string) (msg: string) =
-    { File = file
-      Line = line
-      Col = col
-      EndLine = endCol |> Option.map (fun _ -> line)
-      EndCol = endCol
-      Severity = "error"
-      Code = code
-      Related = []
-      Fix = None
-      Message = msg }
+let private initError (file: string) (line: int) (col: int) (endCol: int option) (code: string) (msg: string) = {
+    File = file
+    Line = line
+    Col = col
+    EndLine = endCol |> Option.map (fun _ -> line)
+    EndCol = endCol
+    Severity = "error"
+    Code = code
+    Related = []
+    Fix = None
+    Message = msg
+}
 
 let splitInit (file: string) (lines: string list) : InitSplit * Diagnostic list =
     let mutable fields: (int * string) list = []
@@ -11118,11 +12036,13 @@ let splitInit (file: string) (lines: string list) : InitSplit * Diagnostic list 
             initError file (max 1 arr.Length) 1 None "session-shape" "unclosed #session block — a lone '}' line ends it"
         )
 
-    { Fields = List.rev fields
-      PromptFields = List.rev promptFields
-      Decls = List.rev rest
-      Aliases = List.rev aliases
-      BlockLines = blockLines },
+    {
+        Fields = List.rev fields
+        PromptFields = List.rev promptFields
+        Decls = List.rev rest
+        Aliases = List.rev aliases
+        BlockLines = blockLines
+    },
     List.ofSeq diags
 
 let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string list) : InitCheck =
@@ -11146,24 +12066,28 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
     let stmtDiag (d: StmtDiag) =
         let code = codeOf d.Parse d.Message
 
-        { File = d.File |> Option.defaultValue file
-          Line = d.PhysLine
-          Col = d.PhysCol
-          EndLine = d.PhysEnd |> Option.map fst
-          EndCol = d.PhysEnd |> Option.map snd
-          Severity = "error"
-          Related = d.Related |> List.map (fun (l, c, m) -> d.File |> Option.defaultValue file, l, c, m)
-          Code = code
-          Fix =
-            fixOf
-                (if d.File.IsSome then [||] else ownLines)
-                code
-                d.Message
-                d.PhysLine
-                d.PhysCol
-                (d.PhysEnd |> Option.map fst)
-                (d.PhysEnd |> Option.map snd)
-          Message = d.Message }
+        {
+            File = d.File |> Option.defaultValue file
+            Line = d.PhysLine
+            Col = d.PhysCol
+            EndLine = d.PhysEnd |> Option.map fst
+            EndCol = d.PhysEnd |> Option.map snd
+            Severity = "error"
+            Related =
+                d.Related
+                |> List.map (fun (l, c, m) -> d.File |> Option.defaultValue file, l, c, m)
+            Code = code
+            Fix =
+                fixOf
+                    (if d.File.IsSome then [||] else ownLines)
+                    code
+                    d.Message
+                    d.PhysLine
+                    d.PhysCol
+                    (d.PhysEnd |> Option.map fst)
+                    (d.PhysEnd |> Option.map snd)
+            Message = d.Message
+        }
 
     let assembleOrReport (numbered: (int * string) list) (into: ResizeArray<Diagnostic>) =
         match assemble numbered with
@@ -11245,7 +12169,8 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
             | None, KLet(name, _, _) -> cmdBindings <- Check.recordCommandBinding cmdBindings name te
             | None, _ -> ()
         | KCmd _
-        | KExpr _ -> refuse "the init file is declaration-only — 'type' and 'let'; it configures the prompt, it cannot run"
+        | KExpr _ ->
+            refuse "the init file is declaration-only — 'type' and 'let'; it configures the prompt, it cannot run"
         | KModule _ -> refuse "the init file is not a module — no 'module' marker; its names are the prompt's"
 
     let declNames =
@@ -11285,7 +12210,10 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
             let m =
                 System.Text.RegularExpressions.Regex.Match(rawArr[lineNo - 1], @"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*")
 
-            if m.Success then m.Length + 1 else keyCol lineNo + key.Length
+            if m.Success then
+                m.Length + 1
+            else
+                keyCol lineNo + key.Length
         else
             1
 
@@ -11315,14 +12243,15 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                     if unboundDecl.Success && Set.contains unboundDecl.Groups[1].Value declNames then
                         let n = unboundDecl.Groups[1].Value
 
-                        diags.Add
-                            { d' with
+                        diags.Add {
+                            d' with
                                 Code = "session-names-declaration"
                                 Related = []
                                 Fix = None
                                 EndLine = Some d'.Line
                                 EndCol = Some(d'.Col + n.Length)
-                                Message = sessionDeclRefMessage n }
+                                Message = sessionDeclRefMessage n
+                        }
                     else
                         diags.Add d'
                 | Ok chk ->
@@ -11379,7 +12308,8 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                 | "cwd", ty -> Some $"cwd expects a string, got {formatTy ty}"
                                 | "logLevel", ty -> Some $"logLevel expects a string, got {formatTy ty}"
                                 | "echoCap", ty -> Some $"echoCap expects an int, got {formatTy ty}"
-                                | _, ty -> Some $"env expects seq<string * string> — pairs, order kept; got {formatTy ty}"
+                                | _, ty ->
+                                    Some $"env expects seq<string * string> — pairs, order kept; got {formatTy ty}"
 
                             let valueMsg () =
                                 if sessionLiteral te then
@@ -11398,7 +12328,13 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                 | None -> acc.Add(ll, key, te)
                     | _ ->
                         diags.Add(
-                            initError file ll.Head 1 None "session-shape" "a #session block takes 'key = value' lines only"
+                            initError
+                                file
+                                ll.Head
+                                1
+                                None
+                                "session-shape"
+                                "a #session block takes 'key = value' lines only"
                         )
 
             List.ofSeq acc
@@ -11476,14 +12412,16 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
             let byLine = compare a.Line b.Line
             if byLine <> 0 then byLine else compare a.Col b.Col)
 
-    { Diags = byPosition diags
-      DeclDiags = byPosition declDiags
-      Split = split
-      Settings = settings
-      Decls = declsChecked
-      DeclEnv = declEnv
-      Prompt = prompt
-      Aliases = parsedAliases }
+    {
+        Diags = byPosition diags
+        DeclDiags = byPosition declDiags
+        Split = split
+        Settings = settings
+        Decls = declsChecked
+        DeclEnv = declEnv
+        Prompt = prompt
+        Aliases = parsedAliases
+    }
 
 /// the record types a file hands to `Args.load`/`Env.load` (type ->
 /// loader), read off its parsed statements — an unbound field name's
@@ -11492,10 +12430,10 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
 let loadTargetsOf (tenv: TypeEnv) (lines: LogicalLine list) : Map<string, string> =
     let rec walk (e: Expr) : (string * string) list =
         (match e.Kind with
-         | EApp({ Kind = EField({ Kind = EVar(("Args" | "Env") as m) }, "load", _) }, { Kind = EVar t }) when
-             t.Length > 0 && System.Char.IsUpper t[0]
-             ->
-             [ t, m + ".load" ]
+         | EApp({
+                    Kind = EField({ Kind = EVar(("Args" | "Env") as m) }, "load", _)
+                },
+                { Kind = EVar t }) when t.Length > 0 && System.Char.IsUpper t[0] -> [ t, m + ".load" ]
          | _ -> [])
         @ (exprChildren e |> List.collect walk)
 
@@ -11574,7 +12512,9 @@ let private firstRunEffect (isLetRhs: bool) (te: Check.TypedExpr) : (string * Sp
             let progArg =
                 if h.StartsWith "|chain" then
                     match argsOf e |> List.tryItem (if h = "|chainOrFailed" then 1 else 0) with
-                    | Some { Kind = Check.TEList({ Kind = Check.TETuple(p :: _) } :: _) } -> Some p
+                    | Some {
+                               Kind = Check.TEList({ Kind = Check.TETuple(p :: _) } :: _)
+                           } -> Some p
                     | _ -> None
                 else
                     let slot =
@@ -11676,27 +12616,25 @@ let effectBeforeArgs (path: string) (stmts: (LogicalLine * CheckedKind) list) : 
                 let l, c = translate ll span.Start.Col
                 let el, ec = translate ll span.End.Col
 
-                { File = path
-                  Line = l
-                  Col = c
-                  EndLine = Some el
-                  EndCol = Some(if el = l then max (c + 1) ec else ec)
-                  Severity = "warning"
-                  Code = "effect-before-args"
-                  Related = []
-                  Fix = None
-                  Message = $"{what} runs before '{loadName}' (line {loadLine}) — {consequence}" }))
+                {
+                    File = path
+                    Line = l
+                    Col = c
+                    EndLine = Some el
+                    EndCol = Some(if el = l then max (c + 1) ec else ec)
+                    Severity = "warning"
+                    Code = "effect-before-args"
+                    Related = []
+                    Fix = None
+                    Message = $"{what} runs before '{loadName}' (line {loadLine}) — {consequence}"
+                }))
 
 // the recovery pass [D:block-recovery], tooling-only: an errored
 // statement is re-checked once for its tree, so the editor keeps
 // answering inside it. The diagnostic stays the first pass's; the
 // binder schemes are the hole schemes the Error branch binds, so the
 // partial's kind and its env agree
-let private recoverStatement
-    (tenv: TypeEnv)
-    (holeScheme: Scheme)
-    (stmt: Stmt)
-    : CheckedKind option * bool =
+let private recoverStatement (tenv: TypeEnv) (holeScheme: Scheme) (stmt: Stmt) : CheckedKind option * bool =
     let recovered (e: Expr) (wrap: Check.TypedExpr -> CheckedKind) =
         match Check.typecheckRecovering tenv e with
         | Check.RecoveredExpr(te, _) -> Some(wrap te), false
@@ -11785,7 +12723,10 @@ let private analyzeLinesBare
             ds
 
     let rawLines =
-        if initMarked then stripInitDirectives rawLines else rawLines
+        if initMarked then
+            stripInitDirectives rawLines
+        else
+            rawLines
 
     let rawArr = List.toArray rawLines
     let body, bodyOffset, sigDecls = scriptBody rawLines
@@ -11793,13 +12734,15 @@ let private analyzeLinesBare
 
     let typeEnv0, _ = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
 
-    let typeEnv0 =
-        { typeEnv0 with
-            Modules = typeEnv0.Modules |> Map.add "Self" selfMembers }
+    let typeEnv0 = {
+        typeEnv0 with
+            Modules = typeEnv0.Modules |> Map.add "Self" selfMembers
+    }
 
     // imports resolve relative to the file being checked [D:modules-v1];
     // one cache per check dedups a diamond, one chain catches a cycle
-    let analyzeImport: ImportLoader = fileImportLoader assumeResolver (importAnchor path)
+    let analyzeImport: ImportLoader =
+        fileImportLoader assumeResolver (importAnchor path)
 
     Extern.refresh ()
 
@@ -11841,24 +12784,28 @@ let private analyzeLinesBare
                 |> Option.map (fun i -> i + 1)
                 |> Option.defaultValue 1
 
-            assemblyDiags.Add
-                { File = path
-                  Line = (if line > 0 then line else 1)
-                  Col = col
-                  EndLine = None
-                  EndCol = None
-                  Severity = "error"
-                  Code = "layout"
-                  Related = []
-                  Fix = None
-                  Message = message }
+            assemblyDiags.Add {
+                File = path
+                Line = (if line > 0 then line else 1)
+                Col = col
+                EndLine = None
+                EndCol = None
+                Severity = "error"
+                Code = "layout"
+                Related = []
+                Fix = None
+                Message = message
+            }
 
             match misaligned.Value with
             | Some(l, c) when l = line ->
                 // re-indent onto the siblings' column: the line's closers
                 // still close, so the statement checks on
                 let fix (n, raw: string) =
-                    if n = line then n, String(' ', c) + raw.TrimStart(' ') else n, raw
+                    if n = line then
+                        n, String(' ', c) + raw.TrimStart(' ')
+                    else
+                        n, raw
 
                 reindented.Value <- reindented.Value |> Map.add line physicalIndent[line]
 
@@ -11885,7 +12832,9 @@ let private analyzeLinesBare
         // loaded module is cached), so its error arrives once per site —
         // and under each spelling of its path (a symlink); identity is the
         // real path, the first spelling seen is the one printed
-        let seenModuleErrors = System.Collections.Generic.HashSet<string * int * int * string>()
+        let seenModuleErrors =
+            System.Collections.Generic.HashSet<string * int * int * string>()
+
         let stmts = ResizeArray<LogicalLine * CheckedStatement>()
         let partials = ResizeArray<LogicalLine * CheckedStatement>()
         // first declaration per type name: line * came-from-import
@@ -11893,21 +12842,23 @@ let private analyzeLinesBare
         let declaredTypes = System.Collections.Generic.Dictionary<string, int * bool>()
 
         let warn (wl, wc, wm) =
-            diags.Add
-                { File = path
-                  Line = wl
-                  Col = wc
-                  EndLine = None
-                  EndCol = None
-                  Severity = "warning"
-                  Code = "warning"
-                  Related = []
-                  Fix = None
-                  Message = wm }
+            diags.Add {
+                File = path
+                Line = wl
+                Col = wc
+                EndLine = None
+                EndCol = None
+                Severity = "warning"
+                Code = "warning"
+                Related = []
+                Fix = None
+                Message = wm
+            }
 
-        let mutable tenv =
-            { typeEnv0 with
-                LoadTargets = loadTargetsOf typeEnv0 logicalLines }
+        let mutable tenv = {
+            typeEnv0 with
+                LoadTargets = loadTargetsOf typeEnv0 logicalLines
+        }
 
         // a module file [D:modules-v1] is checkable in isolation: direct
         // `weir check` enforces the same decl-only + weak-purity rules an
@@ -11926,10 +12877,16 @@ let private analyzeLinesBare
              | Check.TECmd(Check.THeadDyn(d, _), _, _) when
                  d.StartsWith "~/"
                  && not (
-                     System.IO.File.Exists((try Builtins.homeDir () with _ -> "") + d.Substring 1)
+                     System.IO.File.Exists(
+                         (try
+                             Builtins.homeDir ()
+                          with _ ->
+                              "")
+                         + d.Substring 1
+                     )
                  )
-                 ->
-                 [ d, te.Span ]
+                   ->
+                   [ d, te.Span ]
              // a reified pipeline's stages [D:chain-reifiers]
              | Check.TEApp(f, { Kind = Check.TEList stages }) when
                  (let rec chainVar (g: Check.TypedExpr) =
@@ -12009,378 +12966,398 @@ let private analyzeLinesBare
         let mutable budgetStop = false
 
         for ll in logicalLines do
-          if not budgetStop then
-            // one spelling for the head warning, shared by the Ok walk
-            // (typed) and the Error walk (parse-level) below
-            let warnMissingHead (prog: string) (startCol: int) =
-                let wl, wc = translate ll startCol
+            if not budgetStop then
+                // one spelling for the head warning, shared by the Ok walk
+                // (typed) and the Error walk (parse-level) below
+                let warnMissingHead (prog: string) (startCol: int) =
+                    let wl, wc = translate ll startCol
 
-                // a near-miss binding bridges the check/run
-                // verdict split: the runner reads this head in
-                // expression mode and errors "unbound 'xx' —
-                // did you mean 'xr'?"; check's command reading
-                // must surface the same candidate
-                // a missing program suggests programs — externals and
-                // lowercase user bindings; a constructor (YMap) is never
-                // a plausible command (PLAN-dx-review D5)
-                let hint =
-                    didYouMean
-                        prog
-                        (Seq.append
-                            (Extern.names () :> seq<string>)
-                            (Map.keys tenv.Values
-                             |> Seq.filter Types.isUserName
-                             |> Seq.filter (fun n -> n.Length > 0 && System.Char.IsLower n[0])))
+                    // a near-miss binding bridges the check/run
+                    // verdict split: the runner reads this head in
+                    // expression mode and errors "unbound 'xx' —
+                    // did you mean 'xr'?"; check's command reading
+                    // must surface the same candidate
+                    // a missing program suggests programs — externals and
+                    // lowercase user bindings; a constructor (YMap) is never
+                    // a plausible command (PLAN-dx-review D5)
+                    let hint =
+                        didYouMean
+                            prog
+                            (Seq.append
+                                (Extern.names () :> seq<string>)
+                                (Map.keys tenv.Values
+                                 |> Seq.filter Types.isUserName
+                                 |> Seq.filter (fun n -> n.Length > 0 && System.Char.IsLower n[0])))
 
-                let msg =
-                    match Map.tryFind prog Builtins.bareAliasHomes with
-                    | Some home ->
-                        $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
-                    | None when prog.StartsWith "~/" || Extern.isPathy prog ->
-                        $"no executable at {prog} — weir resolves commands at check time; the script runs once it exists"
-                    | None ->
-                        $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed"
+                    let msg =
+                        match Map.tryFind prog Builtins.bareAliasHomes with
+                        | Some home ->
+                            $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
+                        | None when prog.StartsWith "~/" || Extern.isPathy prog ->
+                            $"no executable at {prog} — weir resolves commands at check time; the script runs once it exists"
+                        | None ->
+                            $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed"
 
-                diags.Add
-                    { File = path
-                      Line = wl
-                      Col = wc
-                      // the full head word squiggles, not one
-                      // char [PLAN-diagnostics-arc A4]
-                      EndLine = Some wl
-                      EndCol = Some(wc + prog.Length)
-                      Severity = "warning"
-                      Code = "cmd-not-found"
-                      Related = []
-                      Fix = fixOf rawArr "cmd-not-found" msg wl wc (Some wl) (Some(wc + prog.Length))
-                      Message = msg }
+                    diags.Add {
+                        File = path
+                        Line = wl
+                        Col = wc
+                        // the full head word squiggles, not one
+                        // char [PLAN-diagnostics-arc A4]
+                        EndLine = Some wl
+                        EndCol = Some(wc + prog.Length)
+                        Severity = "warning"
+                        Code = "cmd-not-found"
+                        Related = []
+                        Fix = fixOf rawArr "cmd-not-found" msg wl wc (Some wl) (Some(wc + prog.Length))
+                        Message = msg
+                    }
 
-            match checkStatement true sigState assumeResolver analyzeImport tenv ll with
-            | Ok chk ->
-                // the statement's own minted anonymous shapes join its env
-                // now, not at the next statement's drain [D:anon-literals]:
-                // the editor reads a statement's env (completion after the
-                // last good line), and the pending table is per-thread
-                // state that would otherwise leak into the next analysis
-                // [D:lsp-analysis-cache]
-                let chk = { chk with Env = Check.withPendingAnonDefs chk.Env }
-                chk.Warnings |> List.iter warn
+                match checkStatement true sigState assumeResolver analyzeImport tenv ll with
+                | Ok chk ->
+                    // the statement's own minted anonymous shapes join its env
+                    // now, not at the next statement's drain [D:anon-literals]:
+                    // the editor reads a statement's env (completion after the
+                    // last good line), and the pending table is per-thread
+                    // state that would otherwise leak into the next analysis
+                    // [D:lsp-analysis-cache]
+                    let chk = {
+                        chk with
+                            Env = Check.withPendingAnonDefs chk.Env
+                    }
 
-                // a duplicate type declaration is an error, not a silent
-                // replacement [D:dup-type-decl] — replacement would be
-                // retroactive (code above the redeclaration re-resolves
-                // against the winner). Scripts only; the REPL replaces
-                // by design.
-                (match chk.Kind with
-                 | KType(decl, _) ->
-                     match declaredTypes.TryGetValue decl.Name with
-                     | true, (firstLine, viaImport) ->
-                         diags.Add
-                             { File = path
-                               Line = ll.Head
-                               Col = 1
-                               EndLine = None
-                               EndCol = None
-                               Severity = "error"
-                               Code = "dup-type"
-                               Related = []
-                               Fix = None
-                               Message =
-                                 if viaImport then
-                                     $"type '{decl.Name}' is already provided by the import at line {firstLine}; rename one"
-                                 else
-                                     $"type '{decl.Name}' is already declared at line {firstLine}" }
-                     | _ -> declaredTypes[decl.Name] <- (ll.Head, false)
-                 | KImport lm ->
-                     for tn in lm.TypeNames do
-                         if not (declaredTypes.ContainsKey tn) then
-                             declaredTypes[tn] <- (ll.Head, true)
-                 | _ -> ())
+                    chk.Warnings |> List.iter warn
 
-                (match chk.Kind with
-                 | KType _
-                 | KSig _
-                 | KModule _
-                 | KImport _ -> ()
-                 | KLet(_, _, te)
-                 | KLetPat(_, _, te)
-                 | KCmd te
-                 | KExpr te ->
-                     for prog, span in cmdHeads te do
-                         warnMissingHead prog span.Start.Col)
+                    // a duplicate type declaration is an error, not a silent
+                    // replacement [D:dup-type-decl] — replacement would be
+                    // retroactive (code above the redeclaration re-resolves
+                    // against the winner). Scripts only; the REPL replaces
+                    // by design.
+                    (match chk.Kind with
+                     | KType(decl, _) ->
+                         match declaredTypes.TryGetValue decl.Name with
+                         | true, (firstLine, viaImport) ->
+                             diags.Add {
+                                 File = path
+                                 Line = ll.Head
+                                 Col = 1
+                                 EndLine = None
+                                 EndCol = None
+                                 Severity = "error"
+                                 Code = "dup-type"
+                                 Related = []
+                                 Fix = None
+                                 Message =
+                                     if viaImport then
+                                         $"type '{decl.Name}' is already provided by the import at line {firstLine}; rename one"
+                                     else
+                                         $"type '{decl.Name}' is already declared at line {firstLine}"
+                             }
+                         | _ -> declaredTypes[decl.Name] <- (ll.Head, false)
+                     | KImport lm ->
+                         for tn in lm.TypeNames do
+                             if not (declaredTypes.ContainsKey tn) then
+                                 declaredTypes[tn] <- (ll.Head, true)
+                     | _ -> ())
 
-                (if isModule then
-                     let violation =
-                         match chk.Kind with
-                         | KCmd _
-                         | KExpr _ -> Some "a module declares only — 'type' and 'let', no commands or bare expressions"
-                         | KLet(_, _, te)
-                         | KLetPat(_, _, te) when (Check.commandRunsNow moduleHelpers te).IsSome ->
-                             Some(commandAtImport (Check.commandRunsNow moduleHelpers te).Value)
-                         | KLet(name, _, te) -> Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport name)
-                         | KLetPat(_, _, te) -> Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport "f")
-                         | _ -> None
+                    (match chk.Kind with
+                     | KType _
+                     | KSig _
+                     | KModule _
+                     | KImport _ -> ()
+                     | KLet(_, _, te)
+                     | KLetPat(_, _, te)
+                     | KCmd te
+                     | KExpr te ->
+                         for prog, span in cmdHeads te do
+                             warnMissingHead prog span.Start.Col)
 
-                     (match chk.Kind with
-                      | KLet(name, _, te) ->
-                          moduleHelpers <- Check.recordCommandBinding moduleHelpers name te
-                      | _ -> ())
+                    (if isModule then
+                         let violation =
+                             match chk.Kind with
+                             | KCmd _
+                             | KExpr _ ->
+                                 Some "a module declares only — 'type' and 'let', no commands or bare expressions"
+                             | KLet(_, _, te)
+                             | KLetPat(_, _, te) when (Check.commandRunsNow moduleHelpers te).IsSome ->
+                                 Some(commandAtImport (Check.commandRunsNow moduleHelpers te).Value)
+                             | KLet(name, _, te) ->
+                                 Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport name)
+                             | KLetPat(_, _, te) ->
+                                 Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport "f")
+                             | _ -> None
 
-                     match violation with
-                     | Some msg ->
-                         let wl, wc = translate ll 1
+                         (match chk.Kind with
+                          | KLet(name, _, te) -> moduleHelpers <- Check.recordCommandBinding moduleHelpers name te
+                          | _ -> ())
 
-                         diags.Add
-                             { File = path
-                               Line = wl
-                               Col = wc
-                               EndLine = None
-                               EndCol = None
-                               Severity = "error"
-                               Code = "module-declares-only"
-                               Related = []
-                               Fix = None
-                               Message = msg }
-                     | None -> ())
+                         match violation with
+                         | Some msg ->
+                             let wl, wc = translate ll 1
 
-                (match sigState, chk.Kind with
-                 | Some sc, KSig(name, sd) ->
-                     sigState <-
-                         Some
-                             { sc with
-                                 Pending = Map.add name sd sc.Pending
-                                 Signed = Set.add name sc.Signed
-                                 SigLines = Map.add name sd.Line sc.SigLines }
-                 | Some sc, KLet(name, _, _) ->
-                     if Set.contains name sc.Signed then
-                         sigImplLines.Add(name, ll.Head)
+                             diags.Add {
+                                 File = path
+                                 Line = wl
+                                 Col = wc
+                                 EndLine = None
+                                 EndCol = None
+                                 Severity = "error"
+                                 Code = "module-declares-only"
+                                 Related = []
+                                 Fix = None
+                                 Message = msg
+                             }
+                         | None -> ())
 
-                     sigState <-
-                         Some
-                             { sc with
-                                 Pending = Map.remove name sc.Pending
-                                 Implemented = Set.add name sc.Implemented }
-                 | Some sc, KLetPat(_, schemes, _) ->
-                     sigState <-
-                         Some
-                             { sc with
-                                 Implemented = schemes |> List.fold (fun st (n, _) -> Set.add n st) sc.Implemented }
-                 | _ -> ())
+                    (match sigState, chk.Kind with
+                     | Some sc, KSig(name, sd) ->
+                         sigState <-
+                             Some {
+                                 sc with
+                                     Pending = Map.add name sd sc.Pending
+                                     Signed = Set.add name sc.Signed
+                                     SigLines = Map.add name sd.Line sc.SigLines
+                             }
+                     | Some sc, KLet(name, _, _) ->
+                         if Set.contains name sc.Signed then
+                             sigImplLines.Add(name, ll.Head)
 
-                unusedTracker.Feed ll chk
+                         sigState <-
+                             Some {
+                                 sc with
+                                     Pending = Map.remove name sc.Pending
+                                     Implemented = Set.add name sc.Implemented
+                             }
+                     | Some sc, KLetPat(_, schemes, _) ->
+                         sigState <-
+                             Some {
+                                 sc with
+                                     Implemented = schemes |> List.fold (fun st (n, _) -> Set.add n st) sc.Implemented
+                             }
+                     | _ -> ())
 
-                if not isModule then
-                    reenumTracker.Feed ll chk
-                    tempDirTracker.Feed ll chk
+                    unusedTracker.Feed ll chk
 
-                stmts.Add(ll, chk)
-                tenv <- chk.Env
-            | Error d ->
-                unusedTracker.Poison()
-                reenumTracker.Poison()
-                tempDirTracker.Poison()
-                d.Warnings |> List.iter warn
+                    if not isModule then
+                        reenumTracker.Feed ll chk
+                        tempDirTracker.Feed ll chk
 
-                // [PLAN-diagnostics-arc B5+B6]: an errored statement
-                // still (a) surfaces its command-head warnings — no
-                // typed tree exists, so the walk is parse-level — and
-                // (b) binds its let names to hole schemes so downstream
-                // uses don't cascade as "unbound". Suppression with
-                // deferral, deliberately: a hole unifies with anything,
-                // so a later genuine mismatch against the real type may
-                // surface only after this error is fixed — one real
-                // error beats N echoes. (The poison-type alternative —
-                // suppressing downstream errors that mention the name —
-                // needs a new type node through unify; declined as
-                // disproportionate.)
-                (match Parser.parseLine (assumeResolver tenv) ll.Text with
-                 | Ok stmt ->
-                     let rec eheads (e: Expr) =
-                         (match e.Kind with
-                          | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
-                          | _ -> [])
-                         @ (chainStageHeads e |> List.filter (fst >> Extern.exists >> not))
-                         @ (reifiedHead e |> Option.filter (fst >> Extern.exists >> not) |> Option.toList)
-                         @ (exprChildren e |> List.collect eheads)
+                    stmts.Add(ll, chk)
+                    tenv <- chk.Env
+                | Error d ->
+                    unusedTracker.Poison()
+                    reenumTracker.Poison()
+                    tempDirTracker.Poison()
+                    d.Warnings |> List.iter warn
 
-                     let exprs =
-                         match stmt with
-                         | SLet(_, v)
-                         | SLetPat(_, v)
-                         | SExpr v
-                         | SCmd v -> [ v ]
-                         | SType _
-                         | SSig _
-                         | SModule _
-                         | SImport _ -> []
+                    // [PLAN-diagnostics-arc B5+B6]: an errored statement
+                    // still (a) surfaces its command-head warnings — no
+                    // typed tree exists, so the walk is parse-level — and
+                    // (b) binds its let names to hole schemes so downstream
+                    // uses don't cascade as "unbound". Suppression with
+                    // deferral, deliberately: a hole unifies with anything,
+                    // so a later genuine mismatch against the real type may
+                    // surface only after this error is fixed — one real
+                    // error beats N echoes. (The poison-type alternative —
+                    // suppressing downstream errors that mention the name —
+                    // needs a new type node through unify; declined as
+                    // disproportionate.)
+                    (match Parser.parseLine (assumeResolver tenv) ll.Text with
+                     | Ok stmt ->
+                         let rec eheads (e: Expr) =
+                             (match e.Kind with
+                              | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
+                              | _ -> [])
+                             @ (chainStageHeads e |> List.filter (fst >> Extern.exists >> not))
+                             @ (reifiedHead e |> Option.filter (fst >> Extern.exists >> not) |> Option.toList)
+                             @ (exprChildren e |> List.collect eheads)
 
-                     for prog, span in exprs |> List.collect eheads do
-                         warnMissingHead prog span.Start.Col
+                         let exprs =
+                             match stmt with
+                             | SLet(_, v)
+                             | SLetPat(_, v)
+                             | SExpr v
+                             | SCmd v -> [ v ]
+                             | SType _
+                             | SSig _
+                             | SModule _
+                             | SImport _ -> []
 
-                     let rec patVars (p: Pattern) =
-                         match p.PKind with
-                         | PVar n -> [ n ]
-                         | PTuple ps -> ps |> List.collect patVars
-                         | PRecord fields -> fields |> List.map snd |> List.collect patVars
-                         | PCase(_, Some inner, _) -> patVars inner
-                         | _ -> []
+                         for prog, span in exprs |> List.collect eheads do
+                             warnMissingHead prog span.Start.Col
 
-                     let holeScheme =
-                         { Forall = Set.singleton "__hole"
-                           Cs = Map.empty
-                           Ty = TVar "__hole"
-                           RowOrigins = Map.empty
-                           HoleDefaults = [] }
+                         let rec patVars (p: Pattern) =
+                             match p.PKind with
+                             | PVar n -> [ n ]
+                             | PTuple ps -> ps |> List.collect patVars
+                             | PRecord fields -> fields |> List.map snd |> List.collect patVars
+                             | PCase(_, Some inner, _) -> patVars inner
+                             | _ -> []
 
-                     let bound =
-                         match stmt with
-                         | SLet(name, _) -> [ name ]
-                         | SLetPat(pat, _) -> patVars pat
-                         // a failed union still names its cases, as a
-                         // failed let names its binder [D:block-recovery]
-                         | SType { Body = DUnion cases } -> cases |> List.map (fun (c, _, _) -> c)
-                         | _ -> []
+                         let holeScheme = {
+                             Forall = Set.singleton "__hole"
+                             Cs = Map.empty
+                             Ty = TVar "__hole"
+                             RowOrigins = Map.empty
+                             HoleDefaults = []
+                         }
 
-                     (match stmt with
-                      | SType decl ->
-                          failedTypes <- Set.add decl.Name failedTypes
+                         let bound =
+                             match stmt with
+                             | SLet(name, _) -> [ name ]
+                             | SLetPat(pat, _) -> patVars pat
+                             // a failed union still names its cases, as a
+                             // failed let names its binder [D:block-recovery]
+                             | SType { Body = DUnion cases } -> cases |> List.map (fun (c, _, _) -> c)
+                             | _ -> []
 
-                          match decl.Body with
-                          | DRecord fields ->
-                              let names =
-                                  fields |> List.map (fun (n, _, _) -> n) |> Set.ofList |> String.concat ", "
+                         (match stmt with
+                          | SType decl ->
+                              failedTypes <- Set.add decl.Name failedTypes
 
-                              failedRecordLiterals <-
-                                  Set.add $"no declared record has exactly the fields: {names}" failedRecordLiterals
-                          | DUnion _ -> ()
-                      | _ -> ())
+                              match decl.Body with
+                              | DRecord fields ->
+                                  let names =
+                                      fields |> List.map (fun (n, _, _) -> n) |> Set.ofList |> String.concat ", "
 
-                     (match stmt with
-                      | SImport(_, _, Some(alias, _)) -> failedImports <- Set.add alias failedImports
-                      | SImport(ipath, _, None) ->
-                          deriveModuleName ipath
-                          |> Option.iter (fun alias -> failedImports <- Set.add alias failedImports)
-                      | _ -> ())
+                                  failedRecordLiterals <-
+                                      Set.add $"no declared record has exactly the fields: {names}" failedRecordLiterals
+                              | DUnion _ -> ()
+                          | _ -> ())
 
-                     // an errored implementation still discharges its
-                     // pending signature — one real error beats a trailing
-                     // orphan echo [D:module-signatures]
-                     (match sigState with
-                      | Some sc when bound |> List.exists (fun n -> Map.containsKey n sc.Pending) ->
-                          sigState <-
-                              Some
-                                  { sc with
-                                      Pending = bound |> List.fold (fun m n -> Map.remove n m) sc.Pending
-                                      Implemented = bound |> List.fold (fun st n -> Set.add n st) sc.Implemented }
-                      | _ -> ())
+                         (match stmt with
+                          | SImport(_, _, Some(alias, _)) -> failedImports <- Set.add alias failedImports
+                          | SImport(ipath, _, None) ->
+                              deriveModuleName ipath
+                              |> Option.iter (fun alias -> failedImports <- Set.add alias failedImports)
+                          | _ -> ())
 
-                     // the tree, against the env the statement checked in;
-                     // its env is the hole-bound one below. A budget failure
-                     // is not paid twice [D:budget-stop-first]
-                     let recovered, recoveryBudget =
-                         if Check.isBudgetMessage d.Message then
-                             None, false
-                         else
-                             recoverStatement tenv holeScheme stmt
+                         // an errored implementation still discharges its
+                         // pending signature — one real error beats a trailing
+                         // orphan echo [D:module-signatures]
+                         (match sigState with
+                          | Some sc when bound |> List.exists (fun n -> Map.containsKey n sc.Pending) ->
+                              sigState <-
+                                  Some {
+                                      sc with
+                                          Pending = bound |> List.fold (fun m n -> Map.remove n m) sc.Pending
+                                          Implemented = bound |> List.fold (fun st n -> Set.add n st) sc.Implemented
+                                  }
+                          | _ -> ())
 
-                     for n in bound do
-                         tenv <- bindValue n holeScheme tenv
+                         // the tree, against the env the statement checked in;
+                         // its env is the hole-bound one below. A budget failure
+                         // is not paid twice [D:budget-stop-first]
+                         let recovered, recoveryBudget =
+                             if Check.isBudgetMessage d.Message then
+                                 None, false
+                             else
+                                 recoverStatement tenv holeScheme stmt
 
-                     recovered
-                     |> Option.iter (fun kind ->
-                         partials.Add(
-                             ll,
-                             { Kind = kind
-                               Env = tenv
-                               Warnings = [] }
-                         ))
+                         for n in bound do
+                             tenv <- bindValue n holeScheme tenv
 
-                     // a spent recovery budget stops the fold exactly as a
-                     // published budget diagnostic does [D:budget-stop-first]:
-                     // one burn bounds the file, not one burn per statement
-                     if recoveryBudget then
-                         budgetStop <- true
-                 | Error _ ->
-                     // a statement that does not parse still names its
-                     // binder [D:parse-error-binds]: harvested lexically, a
-                     // `let NAME` at the statement's start only (never argv),
-                     // so its later uses don't echo as "unbound"
-                     let m =
-                         System.Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+([A-Za-z_][A-Za-z0-9_']*)")
+                         recovered
+                         |> Option.iter (fun kind ->
+                             partials.Add(
+                                 ll,
+                                 {
+                                     Kind = kind
+                                     Env = tenv
+                                     Warnings = []
+                                 }
+                             ))
 
-                     if m.Success && not (Parser.keywords.Contains m.Groups[1].Value) then
-                         tenv <-
-                             bindValue
-                                 m.Groups[1].Value
-                                 { Forall = Set.singleton "__hole"
-                                   Cs = Map.empty
-                                   Ty = TVar "__hole"
-                                   RowOrigins = Map.empty
-                                   HoleDefaults = [] }
-                                 tenv)
+                         // a spent recovery budget stops the fold exactly as a
+                         // published budget diagnostic does [D:budget-stop-first]:
+                         // one burn bounds the file, not one burn per statement
+                         if recoveryBudget then
+                             budgetStop <- true
+                     | Error _ ->
+                         // a statement that does not parse still names its
+                         // binder [D:parse-error-binds]: harvested lexically, a
+                         // `let NAME` at the statement's start only (never argv),
+                         // so its later uses don't echo as "unbound"
+                         let m =
+                             System.Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+([A-Za-z_][A-Za-z0-9_']*)")
 
-                let echoesFailedImport =
-                    failedImports
-                    |> Set.exists (fun a -> d.Message.StartsWith $"no module named '{a}'")
-                    || (match d.File with
-                        | Some mf -> not (seenModuleErrors.Add((realPath mf, d.PhysLine, d.PhysCol, d.Message)))
-                        | None -> false)
-                    || failedTypes
-                       |> Set.exists (fun t ->
-                           d.Message.StartsWith $"no module named '{t}'"
-                           || d.Message.StartsWith $"unknown type '{t}'")
-                    || failedRecordLiterals.Contains d.Message
+                         if m.Success && not (Parser.keywords.Contains m.Groups[1].Value) then
+                             tenv <-
+                                 bindValue
+                                     m.Groups[1].Value
+                                     {
+                                         Forall = Set.singleton "__hole"
+                                         Cs = Map.empty
+                                         Ty = TVar "__hole"
+                                         RowOrigins = Map.empty
+                                         HoleDefaults = []
+                                     }
+                                     tenv)
 
-                // multi-file [D:modules-v1]: a module error carries File +
-                // PhysLine/Col into that other file; its Note is the "imported
-                // here" pointer at the import line in this file
-                if not echoesFailedImport then
-                    let code = codeOf d.Parse d.Message
+                    let echoesFailedImport =
+                        failedImports
+                        |> Set.exists (fun a -> d.Message.StartsWith $"no module named '{a}'")
+                        || (match d.File with
+                            | Some mf -> not (seenModuleErrors.Add((realPath mf, d.PhysLine, d.PhysCol, d.Message)))
+                            | None -> false)
+                        || failedTypes
+                           |> Set.exists (fun t ->
+                               d.Message.StartsWith $"no module named '{t}'"
+                               || d.Message.StartsWith $"unknown type '{t}'")
+                        || failedRecordLiterals.Contains d.Message
 
-                    diags.Add
-                        { File = d.File |> Option.defaultValue path
-                          Line = d.PhysLine
-                          Col = d.PhysCol
-                          EndLine = d.PhysEnd |> Option.map fst
-                          EndCol = d.PhysEnd |> Option.map snd
-                          Severity = "error"
-                          // the note's site rides as related too [D:diagnostic-tags]
-                          Related =
-                            (d.Related
-                             |> List.map (fun (l, c, m) -> d.File |> Option.defaultValue path, l, c, m))
-                            @ (d.Note |> Option.map (fun (nl, nc, nmsg) -> path, nl, nc, nmsg) |> Option.toList)
-                          Code = code
-                          Fix =
-                            fixOf
-                                (if d.File.IsSome then [||] else rawArr)
-                                code
-                                d.Message
-                                d.PhysLine
-                                d.PhysCol
-                                (d.PhysEnd |> Option.map fst)
-                                (d.PhysEnd |> Option.map snd)
-                          Message = d.Message }
+                    // multi-file [D:modules-v1]: a module error carries File +
+                    // PhysLine/Col into that other file; its Note is the "imported
+                    // here" pointer at the import line in this file
+                    if not echoesFailedImport then
+                        let code = codeOf d.Parse d.Message
 
-                (match d.Note with
-                 | Some(nl, nc, nmsg) when not echoesFailedImport || d.File.IsNone ->
-                     diags.Add
-                         { File = path
-                           Line = nl
-                           Col = nc
-                           EndLine = None
-                           EndCol = None
-                           Severity = "note"
-                           Code = "imported-here"
-                           Related = [ d.File |> Option.defaultValue path, d.PhysLine, d.PhysCol, d.Message ]
-                           Fix = None
-                           Message = nmsg }
-                 | _ -> ())
+                        diags.Add {
+                            File = d.File |> Option.defaultValue path
+                            Line = d.PhysLine
+                            Col = d.PhysCol
+                            EndLine = d.PhysEnd |> Option.map fst
+                            EndCol = d.PhysEnd |> Option.map snd
+                            Severity = "error"
+                            // the note's site rides as related too [D:diagnostic-tags]
+                            Related =
+                                (d.Related
+                                 |> List.map (fun (l, c, m) -> d.File |> Option.defaultValue path, l, c, m))
+                                @ (d.Note |> Option.map (fun (nl, nc, nmsg) -> path, nl, nc, nmsg) |> Option.toList)
+                            Code = code
+                            Fix =
+                                fixOf
+                                    (if d.File.IsSome then [||] else rawArr)
+                                    code
+                                    d.Message
+                                    d.PhysLine
+                                    d.PhysCol
+                                    (d.PhysEnd |> Option.map fst)
+                                    (d.PhysEnd |> Option.map snd)
+                            Message = d.Message
+                        }
 
-                // budget stop-at-first [D:budget-stop-first]: a budget
-                // diagnostic ends the fold — no further statement is
-                // checked, so one exhaustion cannot multiply across the file
-                if Check.isBudgetMessage d.Message then
-                    budgetStop <- true
+                    (match d.Note with
+                     | Some(nl, nc, nmsg) when not echoesFailedImport || d.File.IsNone ->
+                         diags.Add {
+                             File = path
+                             Line = nl
+                             Col = nc
+                             EndLine = None
+                             EndCol = None
+                             Severity = "note"
+                             Code = "imported-here"
+                             Related = [ d.File |> Option.defaultValue path, d.PhysLine, d.PhysCol, d.Message ]
+                             Fix = None
+                             Message = nmsg
+                         }
+                     | _ -> ())
+
+                    // budget stop-at-first [D:budget-stop-first]: a budget
+                    // diagnostic ends the fold — no further statement is
+                    // checked, so one exhaustion cannot multiply across the file
+                    if Check.isBudgetMessage d.Message then
+                        budgetStop <- true
 
         // the whole-file signature rules [D:module-signatures]: every
         // remaining pending sig is an orphan; a /// doc on a signed
@@ -12388,16 +13365,16 @@ let private analyzeLinesBare
         (match sigState with
          | Some sc ->
              for name, sd in sc.Pending |> Map.toList |> List.sortBy (fun (_, sd) -> sd.Line) do
-                 diags.Add
-                     { File = path
-                       Line = sd.Line
-                       Col = sd.Col
-                       EndLine = None
-                       EndCol = None
-                       Severity = "error"
-                       Code = "missing-implementation"
-                       Related = []
-                       Fix =
+                 diags.Add {
+                     File = path
+                     Line = sd.Line
+                     Col = sd.Col
+                     EndLine = None
+                     EndCol = None
+                     Severity = "error"
+                     Code = "missing-implementation"
+                     Related = []
+                     Fix =
                          // under the signature's last physical line (an
                          // indented continuation belongs to it)
                          (let mutable last = sd.Line
@@ -12407,35 +13384,40 @@ let private analyzeLinesBare
                                 && Char.IsWhiteSpace(rawArr[last].[0]) do
                               last <- last + 1
 
-                          Some
-                              { Title = "Add a stub implementation"
-                                Edits =
-                                  [ { Line = last
+                          Some {
+                              Title = "Add a stub implementation"
+                              Edits = [
+                                  {
+                                      Line = last
                                       Col = (if last <= rawArr.Length then rawArr[last - 1].Length else 0) + 1
                                       EndLine = last
                                       EndCol = (if last <= rawArr.Length then rawArr[last - 1].Length else 0) + 1
-                                      NewText = $"\nlet {name} = fail \"todo\"" } ]
-                                Family = None })
-                       Message = $"signature without implementation — no 'let {name} … = …' follows in this module" }
+                                      NewText = $"\nlet {name} = fail \"todo\""
+                                  }
+                              ]
+                              Family = None
+                          })
+                     Message = $"signature without implementation — no 'let {name} … = …' follows in this module"
+                 }
 
              let attaches = docAttachments rawLines
 
              for name, implLine in sigImplLines do
                  match attaches |> List.tryFind (fun d -> d.Line = implLine) with
                  | Some d ->
-                     diags.Add
-                         { File = path
-                           Line = max 1 (d.Line - List.length d.Doc)
-                           Col = 1
-                           EndLine = None
-                           EndCol = None
-                           Severity = "error"
-                           Code = "doc-on-implementation"
-                           Related =
+                     diags.Add {
+                         File = path
+                         Line = max 1 (d.Line - List.length d.Doc)
+                         Col = 1
+                         EndLine = None
+                         EndCol = None
+                         Severity = "error"
+                         Code = "doc-on-implementation"
+                         Related =
                              (match Map.tryFind name sc.SigLines with
                               | Some sl -> [ path, sl, 1, "the doc's one home" ]
                               | None -> [])
-                           Fix =
+                         Fix =
                              // two edits against the unedited text: the doc run
                              // leaves the implementation, lands above the sig
                              (let first = max 1 (d.Line - List.length d.Doc)
@@ -12447,23 +13429,30 @@ let private analyzeLinesBare
                                   && run |> List.forall isDocLine
                                   && sigLine < first
                                   ->
-                                  Some
-                                      { Title = "Move doc to the signature"
-                                        Edits =
-                                          [ { Line = sigLine
+                                  Some {
+                                      Title = "Move doc to the signature"
+                                      Edits = [
+                                          {
+                                              Line = sigLine
                                               Col = 1
                                               EndLine = sigLine
                                               EndCol = 1
-                                              NewText = (run |> List.map (fun l -> l + "\n") |> String.concat "") }
-                                            { Line = first
+                                              NewText = (run |> List.map (fun l -> l + "\n") |> String.concat "")
+                                          }
+                                          {
+                                              Line = first
                                               Col = 1
                                               EndLine = d.Line
                                               EndCol = 1
-                                              NewText = "" } ]
-                                        Family = None }
+                                              NewText = ""
+                                          }
+                                      ]
+                                      Family = None
+                                  }
                               | _ -> None)
-                           Message =
-                             $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)" }
+                         Message =
+                             $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)"
+                     }
                  | None -> ()
          | None -> ())
 
@@ -12479,57 +13468,64 @@ let private analyzeLinesBare
          let signedNames =
              sigState |> Option.map (fun sc -> sc.Signed) |> Option.defaultValue Set.empty
 
-         for f in (if isSigContract then [] else unusedTracker.Flush signedNames isModule) do
-             diags.Add
-                 { File = path
-                   Line = f.ULine
-                   Col = f.UCol
-                   EndLine = Some f.ULine
-                   EndCol = Some f.UEndCol
-                   Severity = "error"
-                   Code = "unused-binding"
-                   Related = f.URelated |> List.map (fun (l, c, m) -> path, l, c, m)
-                   Fix = fixOf rawArr "unused-binding" f.UMessage f.ULine f.UCol (Some f.ULine) (Some f.UEndCol)
-                   Message = f.UMessage })
+         for f in
+             (if isSigContract then
+                  []
+              else
+                  unusedTracker.Flush signedNames isModule) do
+             diags.Add {
+                 File = path
+                 Line = f.ULine
+                 Col = f.UCol
+                 EndLine = Some f.ULine
+                 EndCol = Some f.UEndCol
+                 Severity = "error"
+                 Code = "unused-binding"
+                 Related = f.URelated |> List.map (fun (l, c, m) -> path, l, c, m)
+                 Fix = fixOf rawArr "unused-binding" f.UMessage f.ULine f.UCol (Some f.ULine) (Some f.UEndCol)
+                 Message = f.UMessage
+             })
 
         // the re-enumeration warning lands on the second and later
         // enumerating uses [D:reenum-warning] — warning severity, so
         // check still exits 0
         (for f in reenumTracker.Flush() do
-            diags.Add
-                { File = path
-                  Line = f.RLine
-                  Col = f.RCol
-                  EndLine = Some f.RLine
-                  EndCol = Some f.REndCol
-                  Severity = "warning"
-                  Code = "re-enumeration"
-                  Related = []
-                  Fix = None
-                  Message = f.RMessage })
+            diags.Add {
+                File = path
+                Line = f.RLine
+                Col = f.RCol
+                EndLine = Some f.RLine
+                EndCol = Some f.REndCol
+                Severity = "warning"
+                Code = "re-enumeration"
+                Related = []
+                Fix = None
+                Message = f.RMessage
+            })
 
         // the newTempDir footgun [D:newtempdir-lint] lands on the delete
         // site — warning severity, so check still exits 0
         (for f in tempDirTracker.Flush() do
-            diags.Add
-                { File = path
-                  Line = f.TLine
-                  Col = f.TCol
-                  EndLine = Some f.TLine
-                  EndCol = Some f.TEndCol
-                  Severity = "warning"
-                  Code = "temp-dir-cleanup"
-                  Related = []
-                  Fix = None
-                  Message = f.TMessage })
+            diags.Add {
+                File = path
+                Line = f.TLine
+                Col = f.TCol
+                EndLine = Some f.TLine
+                EndCol = Some f.TEndCol
+                Severity = "warning"
+                Code = "temp-dir-cleanup"
+                Related = []
+                Fix = None
+                Message = f.TMessage
+            })
 
         // effects before the CLI parse [D:effect-before-args]: the entry
         // script only (a module or init file has no Args.load), silent
         // when a statement errored — one real error beats advice
         (if
-            not isModule
-            && not initMarked
-            && not (diags |> Seq.exists (fun d -> d.Severity = "error"))
+             not isModule
+             && not initMarked
+             && not (diags |> Seq.exists (fun d -> d.Severity = "error"))
          then
              for d in effectBeforeArgs path (stmts |> Seq.map (fun (ll, chk) -> ll, chk.Kind) |> List.ofSeq) do
                  diags.Add d)
@@ -12581,17 +13577,18 @@ let analyzeLinesAs (asInit: bool) (path: string) (rawLines: string list) =
 
         let directiveDiags =
             misuses
-            |> List.map (fun (line, msg) ->
-                { File = path
-                  Line = line
-                  Col = 1
-                  EndLine = None
-                  EndCol = None
-                  Severity = "error"
-                  Code = "directive"
-                  Message = msg
-                  Related = []
-                  Fix = None })
+            |> List.map (fun (line, msg) -> {
+                File = path
+                Line = line
+                Col = 1
+                EndLine = None
+                EndCol = None
+                Severity = "error"
+                Code = "directive"
+                Message = msg
+                Related = []
+                Fix = None
+            })
 
         let checkedLines =
             rawLines |> List.mapi (fun i l -> if stray.Contains(i + 1) then "" else l)
@@ -12599,8 +13596,7 @@ let analyzeLinesAs (asInit: bool) (path: string) (rawLines: string list) =
         let diags, stmts, env, lls, partials = analyzeLinesBare asInit path checkedLines
         (directiveDiags @ diags |> List.sortBy (fun d -> d.Line)), stmts, env, lls, partials
 
-let analyzeLines (path: string) (rawLines: string list) =
-    analyzeLinesAs false path rawLines
+let analyzeLines (path: string) (rawLines: string list) = analyzeLinesAs false path rawLines
 
 /// diagnostic rendering shared by `check` and `check --can`
 /// [D:can-report] — one spelling for both consumers
@@ -12738,7 +13734,8 @@ let run (path: string) (scriptArgs: string list) : int =
 
                 // the entry's import loader, bound to its directory; one cache
                 // per run dedups a diamond, one chain catches a cycle
-                let entryImport: ImportLoader = fileImportLoader resolver (importAnchor absScriptPath)
+                let entryImport: ImportLoader =
+                    fileImportLoader resolver (importAnchor absScriptPath)
 
                 // signatures load once, before the check fold; a load
                 // failure (missing/malformed sig) is a check error —
@@ -12829,7 +13826,10 @@ let run (path: string) (scriptArgs: string list) : int =
                                             let note =
                                                 match d.Note with
                                                 | Some(nl, nc, nmsg) ->
-                                                    "\n" + Color.bold c $"{quoteData path}:{nl}:{nc}" + ": note: " + nmsg
+                                                    "\n"
+                                                    + Color.bold c $"{quoteData path}:{nl}:{nc}"
+                                                    + ": note: "
+                                                    + nmsg
                                                 | None -> ""
 
                                             Color.bold c $"{quoteData mf}:{d.PhysLine}:{d.PhysCol}"
@@ -12861,7 +13861,9 @@ let run (path: string) (scriptArgs: string list) : int =
                                         (sigDs |> List.filter (fun d -> d.Severity = "warning"))
                                         @ continuedCommandDiagnostics path runSigInfos [ (ll, chk) ] do
                                         Console.Error.WriteLine(
-                                            $"{quoteData path}:{d.Line}:{d.Col}: " + Color.yellow c "warning" + $": {d.Message}"
+                                            $"{quoteData path}:{d.Line}:{d.Col}: "
+                                            + Color.yellow c "warning"
+                                            + $": {d.Message}"
                                         )
 
                                     // schema contracts gate the run too — check
@@ -12952,14 +13954,17 @@ let run (path: string) (scriptArgs: string list) : int =
                                                     if Map.isEmpty docs then
                                                         chk.Env
                                                     else
-                                                        { chk.Env with
-                                                            Types =
-                                                                chk.Env.Types
-                                                                |> Map.change
-                                                                    decl.Name
-                                                                    (Option.map (function
-                                                                        | Record rd -> Record { rd with Docs = docs }
-                                                                        | Union ud -> Union { ud with Docs = docs })) }
+                                                        {
+                                                            chk.Env with
+                                                                Types =
+                                                                    chk.Env.Types
+                                                                    |> Map.change
+                                                                        decl.Name
+                                                                        (Option.map (function
+                                                                            | Record rd ->
+                                                                                Record { rd with Docs = docs }
+                                                                            | Union ud -> Union { ud with Docs = docs }))
+                                                        }
                                                 | _ -> chk.Env
 
                                             match stmt with
@@ -12972,8 +13977,10 @@ let run (path: string) (scriptArgs: string list) : int =
 
                                             Ok(env', (ll.Head, stmt) :: acc))
                         (Ok(
-                            { typeEnv0 with
-                                LoadTargets = loadTargetsOf typeEnv0 logicalLines },
+                            {
+                                typeEnv0 with
+                                    LoadTargets = loadTargetsOf typeEnv0 logicalLines
+                            },
                             []
                         ))
 
@@ -13040,7 +14047,9 @@ let run (path: string) (scriptArgs: string list) : int =
 
                      for d in effectBeforeArgs path (List.ofSeq runKinds) do
                          Console.Error.WriteLine(
-                             $"{quoteData path}:{d.Line}:{d.Col}: " + Color.yellow c "warning" + $": {d.Message}"
+                             $"{quoteData path}:{d.Line}:{d.Col}: "
+                             + Color.yellow c "warning"
+                             + $": {d.Message}"
                          ))
 
                     // a runtime error's position [D:runtime-position]: the
@@ -13060,11 +14069,18 @@ let run (path: string) (scriptArgs: string list) : int =
                                     match sourceLines.TryGetValue file with
                                     | true, ls -> ls
                                     | _ ->
-                                        let ls = (try IO.File.ReadAllLines file with _ -> [||])
+                                        let ls =
+                                            (try
+                                                IO.File.ReadAllLines file
+                                             with _ -> [||])
+
                                         sourceLines[file] <- ls
                                         ls
 
-                                if l >= 1 && l <= lines.Length then Some lines[l - 1] else None
+                                if l >= 1 && l <= lines.Length then
+                                    Some lines[l - 1]
+                                else
+                                    None
 
                         match text with
                         | Some t -> t.Length - t.TrimStart().Length + 1
@@ -13079,7 +14095,11 @@ let run (path: string) (scriptArgs: string list) : int =
                                 file
                             else
                                 let rel = IO.Path.GetRelativePath(Environment.CurrentDirectory, file)
-                                if rel.StartsWith ".." || IO.Path.IsPathRooted rel then file else rel
+
+                                if rel.StartsWith ".." || IO.Path.IsPathRooted rel then
+                                    file
+                                else
+                                    rel
                         )
 
                     let posOf (exact: bool) (n: obj) =
@@ -13106,7 +14126,10 @@ let run (path: string) (scriptArgs: string list) : int =
                         match origin with
                         | Some(file, l, c) ->
                             let safe = Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message
-                            let head = $"{file}:{l}:{c}: " + Color.red Color.onStderr.Value "error" + $": {safe}"
+
+                            let head =
+                                $"{file}:{l}:{c}: " + Color.red Color.onStderr.Value "error" + $": {safe}"
+
                             let shown = frames |> List.truncate 10
 
                             let more =
@@ -13115,8 +14138,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 else
                                     []
 
-                            head
-                            :: (shown |> List.map (fun (f, fl, fc) -> $"  called from {f}:{fl}:{fc}"))
+                            head :: (shown |> List.map (fun (f, fl, fc) -> $"  called from {f}:{fl}:{fc}"))
                             @ more
                             |> String.concat Environment.NewLine
                         | None -> runtimeErrorLine path lineNo ex.Message

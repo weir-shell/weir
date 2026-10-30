@@ -12,30 +12,32 @@ open System.Net.Http
 // resolved to plain header pairs by the caller (Builtins), so this
 // module never sees a Secret — the reveal happened at the boundary,
 // deliberately
-type Req =
-    { Method: string
-      Url: string
-      // header pairs, in order, auth included; duplicates preserved
-      Headers: (string * string) list
-      // the credential header names [D:secret-redirect]: auth's
-      // Authorization plus every secretHeaders name (case-insensitive).
-      // On a cross-origin redirect these are dropped, exactly as the BCL
-      // drops Authorization — so weir's two credential channels agree
-      // (the auth union rode .NET's rule for free; secretHeaders did not).
-      // Empty for a request with no credentials.
-      SensitiveHeaders: Set<string>
-      // (contentType, body) — the body is the exact bytes to send, no
-      // re-encoding, no newline stripping (the whole point over curl -d)
-      Body: (string * string) option
-      TimeoutMs: int64
-      // TLS verification off for this request [D:http-s2]: a loud
-      // per-request opt-out for self-signed clusters — never global
-      Insecure: bool }
+type Req = {
+    Method: string
+    Url: string
+    // header pairs, in order, auth included; duplicates preserved
+    Headers: (string * string) list
+    // the credential header names [D:secret-redirect]: auth's
+    // Authorization plus every secretHeaders name (case-insensitive).
+    // On a cross-origin redirect these are dropped, exactly as the BCL
+    // drops Authorization — so weir's two credential channels agree
+    // (the auth union rode .NET's rule for free; secretHeaders did not).
+    // Empty for a request with no credentials.
+    SensitiveHeaders: Set<string>
+    // (contentType, body) — the body is the exact bytes to send, no
+    // re-encoding, no newline stripping (the whole point over curl -d)
+    Body: (string * string) option
+    TimeoutMs: int64
+    // TLS verification off for this request [D:http-s2]: a loud
+    // per-request opt-out for self-signed clusters — never global
+    Insecure: bool
+}
 
-type Resp =
-    { Status: int
-      Headers: (string * string) list
-      Body: string }
+type Resp = {
+    Status: int
+    Headers: (string * string) list
+    Body: string
+}
 
 // a transport failure in its own words [D:transport-words]: the four
 // probed shapes each carry what the caller needs to word a repair;
@@ -142,7 +144,8 @@ let private userinfoSpan (url: string) : (int * int) option =
         | -1 -> if url.StartsWith "//" then 2 else 0
         | i -> i + 3
 
-    let isDelim c = c = '/' || c = '?' || c = '#' || c = '\\'
+    let isDelim c =
+        c = '/' || c = '?' || c = '#' || c = '\\'
 
     let delimFrom (i: int) =
         let mutable j = i
@@ -157,7 +160,9 @@ let private userinfoSpan (url: string) : (int * int) option =
     let hostish (h: string) =
         h.Length > 0
         && hostPortRx.IsMatch h
-        && (h.Contains '.' || h.Contains ':' || h.StartsWith "["
+        && (h.Contains '.'
+            || h.Contains ':'
+            || h.StartsWith "["
             || h.Equals("localhost", StringComparison.OrdinalIgnoreCase))
 
     let authority = hostPortRx.Match(url.Substring(authStart, authEnd - authStart))
@@ -174,14 +179,20 @@ let private userinfoSpan (url: string) : (int * int) option =
         | at ->
             let host = url.Substring(at + 1, delimFrom (at + 1) - at - 1)
 
-            if ((authorityCut || authorityPorted) && host.Length > 0 && not (host |> Seq.exists Char.IsWhiteSpace))
-               || hostish host then
+            if
+                ((authorityCut || authorityPorted)
+                 && host.Length > 0
+                 && not (host |> Seq.exists Char.IsWhiteSpace))
+                || hostish host
+            then
                 Some at
             else
                 pick (at - 1)
 
-    if url.Length = 0 then None
-    else pick (url.Length - 1) |> Option.map (fun at -> authStart, at)
+    if url.Length = 0 then
+        None
+    else
+        pick (url.Length - 1) |> Option.map (fun at -> authStart, at)
 
 let redactUrl (url: string) : string =
     match userinfoSpan url with
@@ -224,11 +235,7 @@ let redactProxyValue (value: string) : string =
 /// .NET message can quote a proxy URI whole, credentials included; a URL
 /// (`scheme://` or `//`) runs to the next blank
 let redactUrlsIn (text: string) : string =
-    Text.RegularExpressions.Regex.Replace(
-        text,
-        @"(?:[A-Za-z][A-Za-z0-9+.\-]*:)?//\S+",
-        fun m -> redactUrl m.Value
-    )
+    Text.RegularExpressions.Regex.Replace(text, @"(?:[A-Za-z][A-Za-z0-9+.\-]*:)?//\S+", fun m -> redactUrl m.Value)
 
 let transportMessage (host: string) (err: TransportError) : string =
     match err with
@@ -289,7 +296,9 @@ let cancelAfterSliced (sliceMs: int64) (cts: Threading.CancellationTokenSource) 
         else
             Threading.Tasks.Task
                 .Delay(TimeSpan.FromMilliseconds(float sliceMs), cts.Token)
-                .ContinueWith(fun (t: Threading.Tasks.Task) -> if not t.IsCanceled then arm (left - sliceMs))
+                .ContinueWith(fun (t: Threading.Tasks.Task) ->
+                    if not t.IsCanceled then
+                        arm (left - sliceMs))
             |> ignore
 
     arm ms
@@ -411,7 +420,12 @@ let noProxyMatch (noProxy: string) (host: string) : bool =
                 else
                     s
 
-            let name = if bare.EndsWith "." then bare.Substring(0, bare.Length - 1) else bare
+            let name =
+                if bare.EndsWith "." then
+                    bare.Substring(0, bare.Length - 1)
+                else
+                    bare
+
             let name = ascii name
 
             toks
@@ -476,9 +490,13 @@ type private EnvNoProxy(inner: Net.IWebProxy) =
 /// leading digits that must fit 0-65535 (trailing text ignored), then the
 /// host must make a Uri [D:proxy-env-malformed]
 let private envProxyUsable (value: string) : bool =
-    let schemes =
-        [ "http://", "http", 80; "https://", "https", 443; "socks4://", "socks4", 80
-          "socks5://", "socks5", 80; "socks4a://", "socks4a", 80 ]
+    let schemes = [
+        "http://", "http", 80
+        "https://", "https", 443
+        "socks4://", "socks4", 80
+        "socks5://", "socks5", 80
+        "socks4a://", "socks4a", 80
+    ]
 
     let picked =
         schemes
@@ -504,8 +522,7 @@ let private envProxyUsable (value: string) : bool =
             if colon = -1 || (v6End <> -1 && colon < v6End) then
                 Some(rest, defaultPort)
             else
-                let digits =
-                    rest.Substring(colon + 1) |> Seq.takeWhile Char.IsDigit |> Seq.length
+                let digits = rest.Substring(colon + 1) |> Seq.takeWhile Char.IsDigit |> Seq.length
 
                 match UInt16.TryParse(rest.AsSpan(colon + 1, digits)) with
                 | true, port -> Some(rest.Substring(0, colon), int port)
@@ -599,7 +616,8 @@ let urlUnsendable (url: string) : string option =
     // a bare path reads as an implicit file: URI on Unix; only a written
     // scheme is named as one
     | true, u when url.Contains "://" ->
-        Some $"'{shown}' uses the '{Weir.Types.quoteData u.Scheme}' scheme — Http sends to http:// and https:// URLs only"
+        Some
+            $"'{shown}' uses the '{Weir.Types.quoteData u.Scheme}' scheme — Http sends to http:// and https:// URLs only"
     | _ -> Some $"'{shown}' is not a URL weir can send to — an absolute http(s) URL is needed (https://host/path)"
 
 /// the environment's proxy for a client handler, NO_PROXY matched as above
@@ -625,13 +643,15 @@ let private viaProxyFailure (timeoutMs: int64) (url: string) (ex: exn) : string 
     match proxy with
     | None -> direct ()
     | Some p ->
-        let via = $"(the environment's proxy for {failingHost url}; NO_PROXY lists the hosts that bypass it)"
+        let via =
+            $"(the environment's proxy for {failingHost url}; NO_PROXY lists the hosts that bypass it)"
 
         // the proxy named by host:port only — a Uri's userinfo never prints
         let named = $"{p.Host}:{p.Port}"
 
         match classifyTransport timeoutMs p.Port ex with
-        | Refused port as err -> $"the proxy {p.Host}:{port} refused the connection — nothing is listening there {via}", err
+        | Refused port as err ->
+            $"the proxy {p.Host}:{port} refused the connection — nothing is listening there {via}", err
         | NoSuchHost as err -> $"cannot resolve the proxy {p.Host} — no such host {via}", err
         // a CONNECT refusal is the proxy's answer, never the target's
         // [D:proxy-refusal-words]
@@ -709,14 +729,24 @@ and private sendChecked (cancel: Threading.CancellationToken) (req: Req) : Resul
         // ceiling [D:long-waits]; cancelled when the send returns
         client.Timeout <- Threading.Timeout.InfiniteTimeSpan
         use deadline = new Threading.CancellationTokenSource()
-        use _stop = { new IDisposable with member _.Dispose() = deadline.Cancel() }
+
+        use _stop = {
+            new IDisposable with
+                member _.Dispose() = deadline.Cancel()
+        }
+
         cancelAfterSliced maxTimerMs deadline req.TimeoutMs
         use _cut = cancel.Register(fun () -> deadline.Cancel())
 
         // build one request message for a hop: `method`/`url`, the current
         // header set (already credential-filtered by the caller loop), the
         // body when the method still carries one, and the UA default.
-        let buildMessage (method: string) (url: string) (headers: (string * string) list) (body: (string * string) option) =
+        let buildMessage
+            (method: string)
+            (url: string)
+            (headers: (string * string) list)
+            (body: (string * string) option)
+            =
             let msg = new HttpRequestMessage(HttpMethod(method), url)
 
             let isContentType (k: string) =
@@ -735,7 +765,9 @@ and private sendChecked (cancel: Threading.CancellationToken) (req: Req) : Resul
                 let declared =
                     headers |> List.tryPick (fun (k, v) -> if isContentType k then Some v else None)
 
-                content.Headers.TryAddWithoutValidation("Content-Type", defaultArg declared ct) |> ignore
+                content.Headers.TryAddWithoutValidation("Content-Type", defaultArg declared ct)
+                |> ignore
+
                 msg.Content <- content
             | None -> ()
 
@@ -829,13 +861,16 @@ and private sendChecked (cancel: Threading.CancellationToken) (req: Req) : Resul
         // parsed view splits a value into tokens (a Server header's
         // product list) and the old "," join merged repeats into one
         let headers =
-            [ for h in resp.Headers.NonValidated do
-                  for v in h.Value -> h.Key, v ]
+            [
+                for h in resp.Headers.NonValidated do
+                    for v in h.Value -> h.Key, v
+            ]
             @ (match resp.Content with
                | null -> []
-               | c ->
-                   [ for h in c.Headers.NonValidated do
-                         for v in h.Value -> h.Key, v ])
+               | c -> [
+                   for h in c.Headers.NonValidated do
+                       for v in h.Value -> h.Key, v
+                 ])
 
         // an undecodable declared charset is its own error, never a
         // guessed decode — the same never-silent-U+FFFD law as
@@ -862,10 +897,11 @@ and private sendChecked (cancel: Threading.CancellationToken) (req: Req) : Resul
 
                 c.ReadAsStringAsync(deadline.Token).Result
 
-        Ok
-            { Status = int resp.StatusCode
-              Headers = headers
-              Body = body }
+        Ok {
+            Status = int resp.StatusCode
+            Headers = headers
+            Body = body
+        }
     with ex ->
         // a loop is the request's own failure (its last hop is in the
         // message); anything else names the hop that failed
@@ -881,7 +917,8 @@ and private sendChecked (cancel: Threading.CancellationToken) (req: Req) : Resul
             // with verification off, or before any certificate was
             // checked, nothing was distrusted: the handshake itself
             // failed [D:tls-handshake-vs-trust]
-            | _, TlsUntrusted when req.Insecure || not certChecked.Value -> transportMessage (failingHost curUrl) TlsHandshake, TlsHandshake
+            | _, TlsUntrusted when req.Insecure || not certChecked.Value ->
+                transportMessage (failingHost curUrl) TlsHandshake, TlsHandshake
             | failure -> failure
             |> Error
 
@@ -905,7 +942,12 @@ let private pctDecodeBytes (s: string) : byte[] =
     let mutable i = 0
 
     while i < s.Length do
-        if s[i] = '%' && i + 2 < s.Length && Uri.IsHexDigit s[i + 1] && Uri.IsHexDigit s[i + 2] then
+        if
+            s[i] = '%'
+            && i + 2 < s.Length
+            && Uri.IsHexDigit s[i + 1]
+            && Uri.IsHexDigit s[i + 2]
+        then
             flush ()
             out.Add(byte (Convert.ToInt32(s.Substring(i + 1, 2), 16)))
             i <- i + 3
@@ -1016,7 +1058,8 @@ let headerUnsendableWith (secret: bool) (name: string, value: string) : string o
     else
         match name |> Seq.tryFind (isTchar >> not) with
         | Some c ->
-            Some $"its name carries {describeChar c}, which a header name cannot (letters, digits and !#$%%&'*+-.^_`|~ only)"
+            Some
+                $"its name carries {describeChar c}, which a header name cannot (letters, digits and !#$%%&'*+-.^_`|~ only)"
         | None ->
             match value |> Seq.tryFindIndex (fun c -> (c < ' ' && c <> '\t') || c = '\127') with
             | Some i -> Some("its value carries " + which "control" i)

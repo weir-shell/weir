@@ -80,77 +80,98 @@ type WithinKindId =
 // list) filter it out [D:pure-stage1]. The editor grammars list the
 // same closed set by necessity (separate files); the inventory guard
 // pins them to this table.
-type WithinKind =
-    { Id: WithinKindId
-      Name: string
-      Binds: bool
-      Standalone: bool
-      Doc: string }
+type WithinKind = {
+    Id: WithinKindId
+    Name: string
+    Binds: bool
+    Standalone: bool
+    Doc: string
+}
 
-let withinKinds: WithinKind list =
-    [ { Id = WithinTmp
+let withinKinds: WithinKind list = [
+    {
+        Id = WithinTmp
         Name = "tmp"
         Binds = true
         Standalone = false
-        Doc = "a fresh directory, removed when the block exits" }
-      { Id = WithinCd
+        Doc = "a fresh directory, removed when the block exits"
+    }
+    {
+        Id = WithinCd
         Name = "cd"
         Binds = false
         Standalone = false
-        Doc = "the working directory for the block, restored after" }
-      { Id = WithinEnv
+        Doc = "the working directory for the block, restored after"
+    }
+    {
+        Id = WithinEnv
         Name = "env"
         Binds = false
         Standalone = false
-        Doc = "environment variables set for the commands the block runs" }
-      // the no-orphan law [D:scoped-procs]: the process lives exactly
-      // as long as the block
-      { Id = WithinProc
+        Doc = "environment variables set for the commands the block runs"
+    }
+    // the no-orphan law [D:scoped-procs]: the process lives exactly
+    // as long as the block
+    {
+        Id = WithinProc
         Name = "proc"
         Binds = true
         Standalone = false
-        Doc = "a background process, stopped together with anything it started when the block exits" }
-      // the scoped HTTP listener [D:http-serve]: the socket lives
-      // exactly as long as the block, freed on every exit path (the
-      // no-orphan law applied to ports). Binds a Server handle; takes
-      // a config atom + a handler atom.
-      { Id = WithinServe
+        Doc = "a background process, stopped together with anything it started when the block exits"
+    }
+    // the scoped HTTP listener [D:http-serve]: the socket lives
+    // exactly as long as the block, freed on every exit path (the
+    // no-orphan law applied to ports). Binds a Server handle; takes
+    // a config atom + a handler atom.
+    {
+        Id = WithinServe
         Name = "serve"
         Binds = true
         Standalone = false
-        Doc = "an HTTP server that runs until the block exits; its port is freed however the block ends" }
-      // advisory file lock [D:within-lock] — the one kind whose
-      // guarantee survives kill -9 (the kernel releases it)
-      { Id = WithinLock
+        Doc = "an HTTP server that runs until the block exits; its port is freed however the block ends"
+    }
+    // advisory file lock [D:within-lock] — the one kind whose
+    // guarantee survives kill -9 (the kernel releases it)
+    {
+        Id = WithinLock
         Name = "lock"
         Binds = false
         Standalone = false
-        Doc = "an advisory file lock, held for the block and released however it ends, even on kill -9" }
-      // [D:pure-stage1]: in the family (the union's exhaustiveness,
-      // the grammar inventory) but its own head — the one kind that
-      // scopes a law instead of a resource
-      { Id = WithinPure
+        Doc = "an advisory file lock, held for the block and released however it ends, even on kill -9"
+    }
+    // [D:pure-stage1]: in the family (the union's exhaustiveness,
+    // the grammar inventory) but its own head — the one kind that
+    // scopes a law instead of a resource
+    {
+        Id = WithinPure
         Name = "pure"
         Binds = false
         Standalone = true
-        Doc = "a block that must have no effects at all" }
-      // [D:pure-stage2]: one tier up from pure — the body must reach no
-      // external mutation; ambient reads (fs.read, env, clock, query-net)
-      // are allowed. Its own head, never `within readonly`.
-      { Id = WithinReadonly
+        Doc = "a block that must have no effects at all"
+    }
+    // [D:pure-stage2]: one tier up from pure — the body must reach no
+    // external mutation; ambient reads (fs.read, env, clock, query-net)
+    // are allowed. Its own head, never `within readonly`.
+    {
+        Id = WithinReadonly
         Name = "readonly"
         Binds = false
         Standalone = true
-        Doc = "a block that may read (files, the environment, the clock, HTTP GETs) but change nothing" }
-      // [D:plan-apply]: the third standalone head — like readonly it
-      // partitions ambient/mutation, but instead of refusing mutation it
-      // captures it as an Op; the region yields a Plan. Its own head,
-      // never `within plan`.
-      { Id = WithinPlan
+        Doc = "a block that may read (files, the environment, the clock, HTTP GETs) but change nothing"
+    }
+    // [D:plan-apply]: the third standalone head — like readonly it
+    // partitions ambient/mutation, but instead of refusing mutation it
+    // captures it as an Op; the region yields a Plan. Its own head,
+    // never `within plan`.
+    {
+        Id = WithinPlan
         Name = "plan"
         Binds = false
         Standalone = true
-        Doc = "a block whose file, directory and HTTP changes are recorded instead of made (reads still run); it returns a Plan you can inspect and apply" } ]
+        Doc =
+            "a block whose file, directory and HTTP changes are recorded instead of made (reads still run); it returns a Plan you can inspect and apply"
+    }
+]
 
 /// a kind's table row — total by construction: an Id only enters the
 /// tree through this table (the parser's name lookup), so the find
@@ -164,7 +185,11 @@ let withinKindName (id: WithinKindId) : string = (withinKind id).Name
 /// so a new kind cannot miss the message; standalone heads (pure) are
 /// not within kinds and stay out [D:pure-stage1]
 let withinKindList =
-    match withinKinds |> List.filter (fun k -> not k.Standalone) |> List.map (fun k -> k.Name) with
+    match
+        withinKinds
+        |> List.filter (fun k -> not k.Standalone)
+        |> List.map (fun k -> k.Name)
+    with
     | [] -> ""
     | [ one ] -> one
     | names ->
@@ -346,10 +371,11 @@ let headDisplay (h: CmdHead) : string =
     | HeadDyn(d, _) -> $"^{d}"
 
 // [<Name arg>] attachment [D:attributes] — check-time, fully erased
-type AttrSpec =
-    { AName: string
-      AArg: AttrArg option
-      ASpan: Span }
+type AttrSpec = {
+    AName: string
+    AArg: AttrArg option
+    ASpan: Span
+}
 
 type DeclBody =
     | DRecord of fields: (string * Ty * AttrSpec list) list
@@ -357,20 +383,22 @@ type DeclBody =
 
 // `validate <binder> = <expr>` under a single-case union
 // [D:validated-types]: the type's one gate — Span is the keyword's
-type Validator =
-    { Binder: Pattern
-      Body: Expr
-      Span: Span }
+type Validator = {
+    Binder: Pattern
+    Body: Expr
+    Span: Span
+}
 
-type Decl =
-    { Name: string
-      Params: string list
-      Body: DeclBody
-      // declaration-level attributes [D:attr-positions] — union decls
-      // host [<Tag>]; validated at checkDecl, bound at consumption
-      Attrs: AttrSpec list
-      Validate: Validator option
-      Span: Span }
+type Decl = {
+    Name: string
+    Params: string list
+    Body: DeclBody
+    // declaration-level attributes [D:attr-positions] — union decls
+    // host [<Tag>]; validated at checkDecl, bound at consumption
+    Attrs: AttrSpec list
+    Validate: Validator option
+    Span: Span
+}
 
 // every Expr embedded in a yaml template — splices, key splices, and
 // `for` sources; tooling walks reach inside districts through this
@@ -458,14 +486,15 @@ let exprPats (e: Expr) : Pattern list =
 /// the reifiers [D:reifier-term]: each surface word with the stem of its
 /// desugar variables (`|<stem>`, `|<stem>Env`, `|<stem>In`, and a chain's
 /// `|chain<Stem>`) — the one list every reifier-name check reads
-let reifiers =
-    [ "complete", "completed"
-      "succeeds", "succeeded"
-      "exitCode", "exitCoded"
-      "orFail", "orFailed"
-      "exec", "execed"
-      "line", "lined"
-      "text", "texted" ]
+let reifiers = [
+    "complete", "completed"
+    "succeeds", "succeeded"
+    "exitCode", "exitCoded"
+    "orFail", "orFailed"
+    "exec", "execed"
+    "line", "lined"
+    "text", "texted"
+]
 
 let reifierNames = reifiers |> List.map fst
 
@@ -477,8 +506,15 @@ let reifierStem (surface: string) =
 let private reifierVars =
     reifiers
     |> List.collect (fun (surface, stem) ->
-        let chain = "|chain" + string (System.Char.ToUpperInvariant stem[0]) + stem.Substring 1
-        [ "|" + stem, surface; $"|{stem}Env", surface; $"|{stem}In", surface; chain, surface ])
+        let chain =
+            "|chain" + string (System.Char.ToUpperInvariant stem[0]) + stem.Substring 1
+
+        [
+            "|" + stem, surface
+            $"|{stem}Env", surface
+            $"|{stem}In", surface
+            chain, surface
+        ])
     |> Map.ofList
 
 /// the surface reifier a desugar variable stands for, if any
@@ -494,7 +530,10 @@ let reifiedProgSlot (v: string) : (int * int) option =
     if v.StartsWith "|chain" || (reifierOfVar v).IsNone then
         None
     else
-        let idx = (if v.EndsWith "Env" then 1 else 0) + (if v.StartsWith "|orFailed" then 1 else 0)
+        let idx =
+            (if v.EndsWith "Env" then 1 else 0)
+            + (if v.StartsWith "|orFailed" then 1 else 0)
+
         Some(idx, idx + (if v.EndsWith "In" then 3 else 2))
 
 /// the literal program of a single reified command (`cmd | complete`),

@@ -30,15 +30,16 @@ open Microsoft.Extensions.Options
 // url (path + query instead), no auth/timeout/insecure (client
 // concerns) — the shared family is HttpMethod + header pairs + the
 // body union, never a second copy [D:http-serve]
-type SReq =
-    { Method: string
-      Path: string
-      // the raw query string without the leading '?' (empty when none);
-      // the handler splits it (weir's Str.splitOnce / Http.withQuery
-      // shape), so the server stays out of query-DSL business
-      Query: string
-      Headers: (string * string) list
-      Body: string }
+type SReq = {
+    Method: string
+    Path: string
+    // the raw query string without the leading '?' (empty when none);
+    // the handler splits it (weir's Str.splitOnce / Http.withQuery
+    // shape), so the server stays out of query-DSL business
+    Query: string
+    Headers: (string * string) list
+    Body: string
+}
 
 // the response body, the server side of the shared HttpBody union
 // [D:http-serve]: NoBody/Text/Json mirror the client cases; Stream is
@@ -57,10 +58,11 @@ type SBody =
     // event per element, one `data:` line per line of it.
     | RStream of seq<string>
 
-type SResp =
-    { Status: int
-      Headers: (string * string) list
-      Body: SBody }
+type SResp = {
+    Status: int
+    Headers: (string * string) list
+    Body: SBody
+}
 
 /// the request-body bounds, applied as the body is read
 /// [D:serve-body-timeout] [D:serve-max-body]
@@ -79,41 +81,42 @@ type private BodyRead =
 /// one parked request: Kestrel's context, the pre-read body, and the
 /// completion its request delegate awaits. Opaque outside this module.
 [<ReferenceEquality>]
-type SCtx =
-    private
-        { Http: HttpContext
-          Body: BodyRead
-          Done: TaskCompletionSource
-          // writes and detach serialize on it [D:serve-drain]: once
-          // detached (scope closed past the drain), a late handler's
-          // writes are dropped, never raced against Kestrel's own end
-          Gate: obj
-          mutable Detached: bool
-          // a refused body's connection close, applied with the head
-          mutable CloseAfter: bool }
+type SCtx = private {
+    Http: HttpContext
+    Body: BodyRead
+    Done: TaskCompletionSource
+    // writes and detach serialize on it [D:serve-drain]: once
+    // detached (scope closed past the drain), a late handler's
+    // writes are dropped, never raced against Kestrel's own end
+    Gate: obj
+    mutable Detached: bool
+    // a refused body's connection close, applied with the head
+    mutable CloseAfter: bool
+}
 
 // the listener handle: the socket lifetime lives here, closed by stop
 // on every scope exit path [D:http-serve]
-type Handle =
-    { Server: KestrelServer
-      // the port actually bound [D:serve-port-option] — read back from
-      // the listener after start, so an asked-for free port is reported
-      mutable Port: int
-      // the loopback addresses actually bound [D:serve-loopback-names]
-      Bound: string list
-      mutable Closed: bool
-      Queue: Channel<SCtx>
-      // every parked request whose delegate still awaits — what stop
-      // detaches when the drain runs out [D:serve-drain]
-      Live: Collections.Concurrent.ConcurrentDictionary<SCtx, unit>
-      LiveLock: obj
-      // the stream-producer failure channel [D:serve-stream]: a Stream
-      // body whose producer raises mid-flight records its message here
-      // (Server.streamError surfaces it, Proc.wait's shape); it is not a
-      // raise out of the handler. Guarded by its own lock — worker threads
-      // write it, the scope reads it.
-      StreamErrors: System.Collections.Generic.List<string>
-      StreamErrorLock: obj }
+type Handle = {
+    Server: KestrelServer
+    // the port actually bound [D:serve-port-option] — read back from
+    // the listener after start, so an asked-for free port is reported
+    mutable Port: int
+    // the loopback addresses actually bound [D:serve-loopback-names]
+    Bound: string list
+    mutable Closed: bool
+    Queue: Channel<SCtx>
+    // every parked request whose delegate still awaits — what stop
+    // detaches when the drain runs out [D:serve-drain]
+    Live: Collections.Concurrent.ConcurrentDictionary<SCtx, unit>
+    LiveLock: obj
+    // the stream-producer failure channel [D:serve-stream]: a Stream
+    // body whose producer raises mid-flight records its message here
+    // (Server.streamError surfaces it, Proc.wait's shape); it is not a
+    // raise out of the handler. Guarded by its own lock — worker threads
+    // write it, the scope reads it.
+    StreamErrors: System.Collections.Generic.List<string>
+    StreamErrorLock: obj
+}
 
 let private await (t: Task) = t.GetAwaiter().GetResult()
 
@@ -201,7 +204,12 @@ let private readBody (http: HttpContext) (lim: Limits) : Task<BodyRead> =
             match http.Features.Get<IHttpMaxRequestBodySizeFeature>() with
             | null -> ()
             | f when f.IsReadOnly -> ()
-            | f -> f.MaxRequestBodySize <- (if req.ContentLength.HasValue then Nullable lim.MaxBody else Nullable())
+            | f ->
+                f.MaxRequestBodySize <-
+                    (if req.ContentLength.HasValue then
+                         Nullable lim.MaxBody
+                     else
+                         Nullable())
 
             use cts = new CancellationTokenSource(lim.BodyTimeoutMs)
             use ms = new IO.MemoryStream()
@@ -226,7 +234,8 @@ let private readBody (http: HttpContext) (lim: Limits) : Task<BodyRead> =
                             result <- Some BodyOverMax
             with
             | :? OperationCanceledException when cts.IsCancellationRequested -> result <- Some BodyTimedOut
-            | :? Microsoft.AspNetCore.Http.BadHttpRequestException as b when b.StatusCode = 413 -> result <- Some BodyOverMax
+            | :? Microsoft.AspNetCore.Http.BadHttpRequestException as b when b.StatusCode = 413 ->
+                result <- Some BodyOverMax
 
             return result.Value
     }
@@ -255,19 +264,20 @@ let private onRequest (h: Handle) (lim: Limits) (features: IFeatureCollection) :
         else
             let! body = readBody http lim
 
-            let s =
-                { Http = http
-                  Body = body
-                  Done = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
-                  Gate = obj ()
-                  Detached = false
-                  // a refused body is left unread, so the connection
-                  // cannot stay in frame past the refusal
-                  CloseAfter =
+            let s = {
+                Http = http
+                Body = body
+                Done = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+                Gate = obj ()
+                Detached = false
+                // a refused body is left unread, so the connection
+                // cannot stay in frame past the refusal
+                CloseAfter =
                     (match body with
                      | BodyText _
                      | BodyCharset _ -> false
-                     | _ -> true) }
+                     | _ -> true)
+            }
 
             // add-then-check against stop's set-then-sweep, under one lock:
             // either stop sees this request in Live or it sees Closed
@@ -338,26 +348,28 @@ let start (port: int) (lim: Limits) : Handle =
 
         new KestrelServer(Options.Create opts, transport, NullLoggerFactory.Instance)
 
-    let h0 server bound =
-        { Server = server
-          Port = port
-          Bound = bound
-          Closed = false
-          Queue = Channel.CreateUnbounded<SCtx>(UnboundedChannelOptions(SingleReader = true))
-          Live = Collections.Concurrent.ConcurrentDictionary<SCtx, unit>(HashIdentity.Reference)
-          LiveLock = obj ()
-          StreamErrors = System.Collections.Generic.List<string>()
-          StreamErrorLock = obj () }
+    let h0 server bound = {
+        Server = server
+        Port = port
+        Bound = bound
+        Closed = false
+        Queue = Channel.CreateUnbounded<SCtx>(UnboundedChannelOptions(SingleReader = true))
+        Live = Collections.Concurrent.ConcurrentDictionary<SCtx, unit>(HashIdentity.Reference)
+        LiveLock = obj ()
+        StreamErrors = System.Collections.Generic.List<string>()
+        StreamErrorLock = obj ()
+    }
 
     let run (addrs: IPAddress list) =
         let server = build addrs
         let h = h0 server (addrs |> List.map string)
 
-        let app =
-            { new IHttpApplication<IFeatureCollection> with
+        let app = {
+            new IHttpApplication<IFeatureCollection> with
                 member _.CreateContext f = f
                 member _.ProcessRequestAsync f = onRequest h lim f
-                member _.DisposeContext(_, _) = () }
+                member _.DisposeContext(_, _) = ()
+        }
 
         try
             await (server.StartAsync(app, CancellationToken.None))
@@ -554,11 +566,12 @@ let readRequest (ctx: SCtx) : SReq =
 
     // one pair per value [D:serve-kestrel]: a repeated header (an
     // X-Forwarded-For chain) reaches the handler whole, never collapsed
-    let headers =
-        [ for kv in req.Headers do
-              for v in kv.Value do
-                  if not (isNull v) then
-                      kv.Key, v ]
+    let headers = [
+        for kv in req.Headers do
+            for v in kv.Value do
+                if not (isNull v) then
+                    kv.Key, v
+    ]
 
     let body =
         match ctx.Body with
@@ -572,26 +585,29 @@ let readRequest (ctx: SCtx) : SReq =
         | Some u -> u.AbsolutePath, (if isNull u.Query then "" else u.Query).TrimStart('?')
         | None -> req.Path.Value, req.QueryString.Value.TrimStart('?')
 
-    { Method = req.Method
-      Path = path
-      Query = query
-      Headers = headers
-      Body = body }
+    {
+        Method = req.Method
+        Path = path
+        Query = query
+        Headers = headers
+        Body = body
+    }
 
 /// the framing and hop-by-hop headers (RFC 9110 §7.6.1, RFC 9112 §6) —
 /// the server owns them: a handler's Transfer-Encoding beside the
 /// computed Content-Length (or a stale Content-Length) desynchronizes the
 /// client's framing, so they are dropped from a handler's response
 let framingHeaders: Set<string> =
-    Set.ofList
-        [ "transfer-encoding"
-          "content-length"
-          "connection"
-          "keep-alive"
-          "proxy-connection"
-          "te"
-          "trailer"
-          "upgrade" ]
+    Set.ofList [
+        "transfer-encoding"
+        "content-length"
+        "connection"
+        "keep-alive"
+        "proxy-connection"
+        "te"
+        "trailer"
+        "upgrade"
+    ]
 
 /// refuse the first response header the server cannot send
 /// [D:http-header-unsendable]: the shared predicate words the reason, so a
@@ -599,7 +615,9 @@ let framingHeaders: Set<string> =
 /// add raises the same refusal as a backstop). Framing headers are
 /// skipped — the server owns them (dropped by design)
 let refuseUnsendableResponseHeaders (headers: (string * string) list) : unit =
-    for (k, v) in headers |> List.filter (fun (k, _) -> not (framingHeaders.Contains(k.ToLowerInvariant()))) do
+    for (k, v) in
+        headers
+        |> List.filter (fun (k, _) -> not (framingHeaders.Contains(k.ToLowerInvariant()))) do
         match Http.headerUnsendable (k, v) with
         | Some reason -> raise (ResponseHeaderRefused(Http.headerUnsendableMessage "response header" k reason))
         | None -> ()
@@ -653,7 +671,9 @@ let writeResponse (ctx: SCtx) (resp: SResp) (onStreamFailure: string -> unit) : 
             if ctx.CloseAfter then
                 out.Headers.Connection <- "close"
 
-            for (k, v) in resp.Headers |> List.filter (fun (k, _) -> not (framingHeaders.Contains(k.ToLowerInvariant()))) do
+            for (k, v) in
+                resp.Headers
+                |> List.filter (fun (k, _) -> not (framingHeaders.Contains(k.ToLowerInvariant()))) do
                 try
                     out.Headers.Append(k, Microsoft.Extensions.Primitives.StringValues v)
                 with ex ->
@@ -695,7 +715,8 @@ let writeResponse (ctx: SCtx) (resp: SResp) (onStreamFailure: string -> unit) : 
                     match fixedBytes with
                     | Some b when isHead && resp.Status >= 200 && resp.Status <> 204 && resp.Status <> 304 ->
                         out.ContentLength <- Nullable(int64 b.Length)
-                    | _ when resp.Status >= 200 && resp.Status <> 204 && resp.Status <> 304 -> out.ContentLength <- Nullable 0L
+                    | _ when resp.Status >= 200 && resp.Status <> 204 && resp.Status <> 304 ->
+                        out.ContentLength <- Nullable 0L
                     | _ -> ()
 
                     await (out.CompleteAsync()))
@@ -760,10 +781,11 @@ let writeResponse (ctx: SCtx) (resp: SResp) (onStreamFailure: string -> unit) : 
 
                         let frame =
                             if framed then
-                                Array.concat
-                                    [ Encoding.ASCII.GetBytes $"{event.Length:x}\r\n"
-                                      event
-                                      Encoding.ASCII.GetBytes "\r\n" ]
+                                Array.concat [
+                                    Encoding.ASCII.GetBytes $"{event.Length:x}\r\n"
+                                    event
+                                    Encoding.ASCII.GetBytes "\r\n"
+                                ]
                             else
                                 event
 
@@ -786,7 +808,11 @@ let writeResponse (ctx: SCtx) (resp: SResp) (onStreamFailure: string -> unit) : 
                     // client's HTTP layer can tell the stream died
                     let closed =
                         framed
-                        && (match http.Features.Get<Microsoft.AspNetCore.Connections.Features.IConnectionLifetimeNotificationFeature>() with
+                        && (match
+                                http.Features.Get<
+                                    Microsoft.AspNetCore.Connections.Features.IConnectionLifetimeNotificationFeature
+                                 >()
+                            with
                             | null -> false
                             | f ->
                                 f.RequestClose()

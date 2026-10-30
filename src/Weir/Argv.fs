@@ -115,10 +115,11 @@ let shortTables (def: RecordDef) : Map<string, string> * Map<string, ShortOwner>
 
 // the outer record minus its subcommand slot: the shared-flags
 // record [D:shared-flags]
-let sharedOf (outer: RecordDef) (unionField: string) : RecordDef =
-    { outer with
+let sharedOf (outer: RecordDef) (unionField: string) : RecordDef = {
+    outer with
         Fields = outer.Fields |> List.filter (fun (f, _) -> f <> unionField)
-        Attrs = outer.Attrs |> Map.remove unionField }
+        Attrs = outer.Attrs |> Map.remove unionField
+}
 
 let explicitShorts (def: RecordDef) : (string * string) list =
     def.Fields
@@ -255,7 +256,8 @@ let private helpAtArgs (label: string) (def: RecordDef) : string option =
     def.Fields
     |> List.tryPick (fun (f, _) ->
         if kebabFlag f = "help" then
-            Some $"{label}'{f}' would derive '--help', which is reserved for the usage text — name the field something else"
+            Some
+                $"{label}'{f}' would derive '--help', which is reserved for the usage text — name the field something else"
         else
             None)
 
@@ -264,17 +266,17 @@ let fieldProblems (label: string) (def: RecordDef) : string option =
     | Some m -> Some m
     | None ->
 
-    match helpAtArgs label def with
-    | Some m -> Some m
-    | None ->
-
-    match wireAtArgs label def with
-    | Some m -> Some m
-    | None ->
-
-        match badArgsDefault label def with
+        match helpAtArgs label def with
         | Some m -> Some m
         | None ->
-            match badArgsShape label def with
+
+            match wireAtArgs label def with
             | Some m -> Some m
-            | None -> dupFlag label def
+            | None ->
+
+                match badArgsDefault label def with
+                | Some m -> Some m
+                | None ->
+                    match badArgsShape label def with
+                    | Some m -> Some m
+                    | None -> dupFlag label def
