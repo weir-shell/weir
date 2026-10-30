@@ -6000,6 +6000,13 @@ let private vendoredNameFault (path: string) : bool =
 // members (version, exhaustive, Cmd) are read by the sig loader, not by
 // the module's own text — the loader is the use, so the unused check
 // stays off for that one consumer
+// a check-only run keeps no module body [D:check-drops-bodies]: the
+// typed trees are read while the module loads and never again (no
+// replay, no capability walk, no editor), so holding them until exit
+// only makes every collection copy them; a #sig load keeps its body —
+// the sig loader reads it after the load
+let mutable dropModuleBodies = false
+
 let rec loadModuleCachedWith
     (sigContract: bool)
     (mkR: TypeEnv -> Parser.Resolver)
@@ -6417,7 +6424,11 @@ let rec loadModuleCachedWith
                                                    n,
                                                    Map.tryFind n finalTenv.TypeOrigins
                                                    |> Option.defaultValue (ownOrigin n)))
-                                        Body = moduleBody
+                                        Body =
+                                            (if dropModuleBodies && not sigContract then
+                                                 []
+                                             else
+                                                 moduleBody)
                                         MayRebind = false
                                     }
 
@@ -13684,6 +13695,8 @@ let directiveMisuse (rawLines: string list) : (int * string) option =
     directiveMisuses rawLines |> List.tryHead
 
 let checkOnly (json: bool) (path: string) : int =
+    dropModuleBodies <- true
+
     match readEntryScript path with
     | Error msg ->
         Console.Error.WriteLine $"weir: {msg}"
