@@ -196,7 +196,7 @@ print "done"
 // swallowed value
 let _probe = sh -c "exit 3" | complete
 let f x = 1
-print (show (f 2))
+print (f 2)
 ```
 
 ## Syntax that differs from your priors
@@ -472,9 +472,9 @@ echo --flag="quoted v" // the quoted part would be its own argument; quote the w
 
 ```weir
 // the ordering operators follow Seq.sort: strings (ordinal), bools, Options
-print (show ("a" < "b"))
-print (show (false < true))
-print (show (None < Some 1))
+print ("a" < "b")
+print (false < true)
+print (None < Some 1)
 ```
 - Literal patterns work (`| 0 ->`, `| "yes" ->`, `| () ->`, nested in
   constructors) but int/string literals NEVER complete a match alone —
@@ -564,8 +564,8 @@ print (Bytes.sha256 b)
 print (Bytes.toBase64 b)
 print $"{b}"
 let png = Bytes.fromBase64 "iVBORw0KGgo="
-print (show (Bytes.length png))
-print (show (Str.tryFromUtf8 png))
+print $"{Bytes.length png}"
+print $"{Str.tryFromUtf8 png}"
 print (Bytes.toHex (Bytes.sub 1 2 b))
 print (Bytes.toHex (Bytes.hmacSha256 (Bytes.fromHex "0b0b") b))
 ```
@@ -646,8 +646,8 @@ print $"{key} -> {value}"
 
 ```weir
 // take past the end truncates; skip past the end raises
-print (show ([1; 2] |> Seq.take 5 |> Seq.freeze))
-print (show ([1; 2] |> Seq.skip 5 |> Seq.freeze |> try result))
+print $"{[1; 2] |> Seq.take 5 |> Seq.freeze}"
+print $"{[1; 2] |> Seq.skip 5 |> Seq.freeze |> try result}"
 ```
 
 - Floats exist and are FINITE-only: `0.5`, `1e5`, `1.5e-3` (digits
@@ -1463,7 +1463,7 @@ Graph.reach (fun p -> p) neighbors "app" |> Seq.iter print
 ```weir
 // a parameter needs no Seq op before a seq pattern matches it
 let first xs = match xs with | [] -> 0 | x :: _ -> x
-print (show (first [7; 8]))
+print (first [7; 8])
 ```
 
 ```weir
@@ -1520,8 +1520,8 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
 ```weir
 // File.exists asks for a file; a directory answers to Dir.exists
 within tmp d
-    print (show (File.exists d))
-    print (show (Dir.exists d))
+    print (File.exists d)
+    print (Dir.exists d)
 ```
 - `Seq.freeze` materializes (consume to completion, eager in-memory;
   STRICT — not for infinite seqs). When to force, three customers:
@@ -1740,7 +1740,7 @@ print (if found then "?" else $"no match is false; code {detail.exitCode}")
 let r = sh -c "exit 3" | complete
 if r.ok then print "clean" else print $"failed with {r.exitCode}"
 let codeOf { exitCode = c } = c
-print (show (codeOf {| exitCode = 3 |}))
+print (codeOf {| exitCode = 3 |})
 ```
 
 ```weir-error
@@ -1925,7 +1925,7 @@ within tmp d
         let _linked = sh -c "ln -s plain.txt link 2>/dev/null" | complete
         ls |> Seq.where (fun f -> f.kind == Symlink) |> Seq.iter (fun f -> print $"{f.name} -> {f.target |> Option.defaultValue "?"}")
         let plain = ls |> Seq.find (fun f -> f.name == "plain.txt")
-        print (show plain.target)
+        print $"{plain.target}"
 ```
 
 ```weir
@@ -2137,7 +2137,7 @@ echo built | and echo linked
 
 ```weir
 let x = ["{\"a\": {\"b\": 1}}"] |> from json {| a: {| b: int |} |}
-print (show x.a.b)
+print x.a.b
 ```
 
 ```weir
@@ -2265,7 +2265,7 @@ type Bad = C of int
 type Level = Error | Warn | Info
 let hits = [Warn; Info; Warn; Error] |> Seq.countBy id |> Map.ofPairs
 hits |> Map.pairs |> Seq.iter (fun (l, n) -> print $"{l}={n}")
-print (show (Map.ofPairs [((2, "b"), 1); ((1, "z"), 2)] |> Map.keys))
+print $"{Map.ofPairs [((2, "b"), 1); ((1, "z"), 2)] |> Map.keys}"
 ```
 
 ```weir-error
@@ -2583,7 +2583,7 @@ let pods =
       "db-0    Pending   3          <none>" ]
     |> from table Pod
 pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print p.name)
-print (show (pods |> Seq.head |> _.node))
+print $"{pods |> Seq.head |> _.node}"
 ```
 - `<<<` / `$<<<` heredoc blocks [D:text-block]: line-end `<<<` opens
   the PLAIN multiline literal — every byte below the marker is
@@ -3352,7 +3352,7 @@ git status --porcelain |> Seq.choose (function | Regex @"^.. (.*)$" path -> Some
 
 ```weir
 let port = match Some 8080 with | Some p -> p | None -> fail "absent"
-print (show port)
+print port
 ```
 - `printerr` is `print` to stderr (same argument rule) — diagnostics
   there, data on stdout, so `weir script | next` stays clean. Like
