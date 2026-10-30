@@ -1,6 +1,8 @@
 # PLAN: the checker allocates less — the per-statement substitution, the post-check walks, the type finalizer, instantiation
 
-**Status: BLESSED** (2026-10-30, perf/checker-alloc). The round after
+**Status: BUILT** (2026-10-30, perf/checker-alloc) — cuts 1–4 landed
+plus the walks the profile surfaced on the way; cut 5 (merge) only
+its cheap part; see the session report at the end. The round after
 [PLAN-hand-parser.md](PLAN-hand-parser.md) P1: with the parser off
 the critical path, the import's time is the checker's allocation and
 the garbage collections it buys. Same discipline as every round since
@@ -96,3 +98,51 @@ pinned.
   changes for a few percent of compares; not worth it while
   allocation dominates.
 - P2 of the hand parser (command lines).
+
+## Session report — 2026-10-30, perf/checker-alloc
+
+- **Landed, in profile order.** `Ctx.Subst`/`Ctx.Rows` as
+  dictionaries. `tryPickChild`/`iterChildren`/`existsChild`/
+  `forallChild` and their `Expr` twins (`tryPickExprChild`,
+  `iterExprChildren`) replace `childExprs`/`exprChildren` lists in
+  every walk on the check path (Check's usage, re-enumeration,
+  command and exit-site walks; Purity's effect, mutation, plan and
+  exec walks; the parser's post-parse `pipeToCommand` and depth walks;
+  Script's statement walks and `loadTargetsOf`). `finalTy` as a
+  closure-free `finalGo`, `hasVars` without a set. `mapDrop`/`setDrop`
+  guard every scope removal (`Map.remove`/`Set.remove` rebuild the
+  search path even when the key is absent — `bindValue`'s open index,
+  Purity's scopes, the re-enumeration trackers, `reachesCommand`).
+  `bindingUsage` is one scoped pass with a frame per binder, no set
+  unions, returning a hash set. The application spine reads
+  `funParams` once and checks arguments in a loop instead of a fold of
+  closures; `funParams` accumulates instead of mapping options.
+  `instantiate` probes for row vars before building their set, lifts
+  its helpers to module functions and shares var-free subtrees.
+  `pureViolation` drops its per-node closures. `mergeModule` scans
+  module types without listing them; the reachable-types walk uses a
+  hash set. The fast parser caches its word lookahead per position.
+- **Numbers** (AOT, alternating A/B, medians of 31, base =
+  feat/hand-parser-p1 d91c633): starship import 126.4 → 105.5 ms
+  pinned to one core (−17%); unpinned 98 → 101, inside the run-to-run
+  spread of that measurement; `sys.weir` 54.8 → 56.5, same; bare
+  startup 9.65 → 9.09. Allocation 83.9 → 72.6 MB, collections 10 → 9
+  (7 gen0, 1 gen1, 1 gen2), pause 52 → 45 ms.
+- **Agreement.** Unit 2,813 (plain and `WEIR_PARSE_ORACLE=1`, with
+  the new child-walk pin and the existing corpus pin that holds
+  `bindingUsage`'s free set to the occurrence walk's), fuzz 56
+  (oracle), parity 0 differences on all 8,030 corpus files and `fmt
+  --check` on 1,080, the three LSP suites, the three e2e shards
+  (1,122 body cells), decision-keys and commit-area.
+- **Read.** The byte counts were right about where allocation was and
+  wrong about how much each site weighed once removed: the list-free
+  walks and the usage pass each moved 3–4 MB, the dictionaries less
+  than 1 MB, and the time came mostly from CPU (closures, string
+  compares, `Set.union`), not from the collections — the count only
+  fell by one. What remains is spread thin (`bindValue`'s env copies
+  2.7 MB, merge 7 MB, the parser's spans and words 14 MB, assembly 9
+  MB) and the pauses are what they are because ~1 MB survives each
+  gen0: every module's logical lines, AST and typed body stay alive to
+  the end for the post-check passes and the run-time replay. The next
+  round is the live set, not the allocation rate:
+  [PLAN-live-set.md](PLAN-live-set.md).

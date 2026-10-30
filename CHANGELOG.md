@@ -17,6 +17,17 @@
   import goes from 178 ms to 123 ms pinned to one core and from 131 ms
   to 102 ms on 15 (medians of 21), a direct check of its largest
   module from 76 ms to 65 ms.
+- **The checker allocates less.** Every walk over a statement's
+  tree built a list of each node's children before looking at them,
+  the type finalizer allocated a closure per node, the unused-binding
+  pass unioned a set of free names at every node, and every scope
+  exit rebuilt its map whether or not the name was in it. The walks
+  now visit children in place, the finalizer and the usage pass are
+  single passes with explicit state, removals of absent keys are
+  skipped, and the per-statement substitution is a dictionary. Same
+  diagnostics, same trees: the starship import goes from 126 ms to
+  105 ms pinned to one core (medians of 31), allocation from 84 MB to
+  73 MB.
 - **Line assembly allocates far less.** Before parsing, every physical
   line was trimmed, split into its comment and code and re-scanned by
   the district mask, the doc attachment and the binder-head checks,
