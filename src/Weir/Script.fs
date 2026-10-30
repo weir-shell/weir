@@ -3578,8 +3578,7 @@ let private recordPositions
                 with _ ->
                     ()
 
-            for c in Check.childExprs n do
-                stack.Push c
+            Check.iterChildren stack.Push n
 
 // Streaming output for command-mode statements — the single exempt form.
 // The seq case goes through Eval.writeLines, the same renderer print uses.
@@ -4121,11 +4120,17 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
     let keyOfOrigin (t: TypeEnv) (o: string) =
         t.TypeOrigins |> Map.tryPick (fun k held -> if held = o then Some k else None)
 
-    // the aliases already declaring a type named n
-    let ownersOf (t: TypeEnv) (n: string) =
+    // the alias holding a type named n under its plain key, if any
+    let plainHolder (t: TypeEnv) (n: string) =
         t.ModuleTypes
-        |> Map.toList
-        |> List.choose (fun (a, owned) -> Map.tryFind n owned |> Option.map (fun k -> a, k))
+        |> Map.tryPick (fun a owned ->
+            match Map.tryFind n owned with
+            | Some k when k = n -> Some a
+            | _ -> None)
+
+    // whether any alias declares a type named n
+    let anyOwner (t: TypeEnv) (n: string) =
+        t.ModuleTypes |> Map.exists (fun _ owned -> Map.containsKey n owned)
 
     // each own type claims its key, moving another import's holder of the
     // plain name to that holder's qualified key
@@ -4150,12 +4155,12 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
                     let t = yieldTransitive n t
 
                     if Map.containsKey n t.Types then
-                        match ownersOf t n |> List.tryFind (fun (_, k) -> k = n) with
-                        | Some(holder, _) ->
+                        match plainHolder t n with
+                        | Some holder ->
                             let t = renameEnvTypes (Map [ n, qualifiedKey t taken holder n ]) t
                             claim t (qualifiedKey t taken lm.Alias n)
                         | None -> claim t (qualifiedKey t taken lm.Alias n)
-                    elif not (List.isEmpty (ownersOf t n)) then
+                    elif anyOwner t n then
                         claim t (qualifiedKey t taken lm.Alias n)
                     else
                         claim t n)
@@ -5078,7 +5083,7 @@ type UnusedTracker() =
 
     member _.Poison() = poisoned <- true
 
-    member _.Uses(names: Set<string>) =
+    member _.Uses(names: seq<string>) =
         for n in names do
             match pending.TryGetValue n with
             | true, (l, c, e, false) -> pending[n] <- (l, c, e, true)
@@ -6338,37 +6343,44 @@ let rec loadModuleCachedWith
                                     // re-export under this alias) [D:transitive-types]
                                     let reachableDefs =
                                         let own = typeDefs |> List.map fst |> Set.ofList
+                                        let seen = System.Collections.Generic.HashSet<string>(own)
 
-                                        let rec walk (seen: Set<string>) (ty: Ty) =
+                                        let rec walk (ty: Ty) =
                                             match ty with
-                                            | TFun(a, b) -> walk (walk seen a) b
-                                            | TSeq t -> walk seen t
-                                            | TTuple ts -> ts |> List.fold walk seen
-                                            | TRowVar(_, fields) -> fields |> List.map snd |> List.fold walk seen
+                                            | TFun(a, b) ->
+                                                walk a
+                                                walk b
+                                            | TSeq t -> walk t
+                                            | TTuple ts -> List.iter walk ts
+                                            | TRowVar(_, fields) ->
+                                                for _, t in fields do
+                                                    walk t
                                             | TNamed(n, args) ->
-                                                let seen = args |> List.fold walk seen
+                                                List.iter walk args
 
-                                                if seen.Contains n || Map.containsKey n baseTenv.Types then
-                                                    seen
-                                                else
+                                                if not (seen.Contains n) && not (Map.containsKey n baseTenv.Types) then
                                                     match Map.tryFind n finalTenv.Types with
-                                                    | Some def -> defTys def |> List.fold walk (Set.add n seen)
-                                                    | None -> seen
-                                            | _ -> seen
+                                                    | Some def ->
+                                                        seen.Add n |> ignore
+                                                        defTys def |> List.iter walk
+                                                    | None -> ()
+                                            | _ -> ()
 
                                         and defTys (def: TypeDef) =
                                             match def with
                                             | Record rd -> rd.Fields |> List.map snd
                                             | Union u -> u.Cases |> List.choose snd
 
-                                        let roots =
-                                            (members |> List.map (fun (_, sch) -> sch.Ty))
-                                            @ (typeDefs |> List.collect (snd >> defTys))
+                                        for _, sch in members do
+                                            walk sch.Ty
 
-                                        roots
-                                        |> List.fold walk own
-                                        |> Set.filter (fun n -> not (own.Contains n))
-                                        |> Set.toList
+                                        for _, def in typeDefs do
+                                            defTys def |> List.iter walk
+
+                                        seen
+                                        |> Seq.filter (fun n -> not (own.Contains n))
+                                        |> Seq.sort
+                                        |> List.ofSeq
                                         |> List.choose (fun n ->
                                             Map.tryFind n finalTenv.Types |> Option.map (fun d -> n, d))
 
@@ -12428,14 +12440,21 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
 /// hint teaches loading the record first. A line that does not parse
 /// contributes nothing (its own error is reported where it is checked).
 let loadTargetsOf (tenv: TypeEnv) (lines: LogicalLine list) : Map<string, string> =
-    let rec walk (e: Expr) : (string * string) list =
-        (match e.Kind with
-         | EApp({
-                    Kind = EField({ Kind = EVar(("Args" | "Env") as m) }, "load", _)
-                },
-                { Kind = EVar t }) when t.Length > 0 && System.Char.IsUpper t[0] -> [ t, m + ".load" ]
-         | _ -> [])
-        @ (exprChildren e |> List.collect walk)
+    let walk (root: Expr) : (string * string) list =
+        let acc = ResizeArray()
+
+        let rec go (e: Expr) : unit option =
+            (match e.Kind with
+             | EApp({
+                        Kind = EField({ Kind = EVar(("Args" | "Env") as m) }, "load", _)
+                    },
+                    { Kind = EVar t }) when t.Length > 0 && System.Char.IsUpper t[0] -> acc.Add(t, m + ".load")
+             | _ -> ())
+
+            tryPickExprChild go e
+
+        go root |> ignore
+        List.ofSeq acc
 
     lines
     |> List.collect (fun ll ->
@@ -12550,7 +12569,7 @@ let private firstRunEffect (isLetRhs: bool) (te: Check.TypedExpr) : (string * Sp
             | WithinEnv
             | WithinPure
             | WithinReadonly -> go false body
-        | _ -> Check.childExprs e |> List.tryPick (go false)
+        | _ -> Check.tryPickChild (go false) e
 
     go true te
 
@@ -12575,7 +12594,7 @@ let private topLevelLoad (te: Check.TypedExpr) : (string * Span) option =
         | Check.TELambdaPat _ -> None
         | Check.TEIf(cond, _, _) -> go cond
         | Check.TEMatch(scrut, _) -> go scrut
-        | _ -> Check.childExprs e |> List.tryPick go
+        | _ -> Check.tryPickChild go e
 
     go te
 

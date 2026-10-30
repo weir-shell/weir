@@ -635,6 +635,261 @@ let exprChildren (e: Expr) : Expr list =
             | IStr _ -> None)
     | EYaml(tpl, _, _) -> yamlTplExprs tpl
 
+/// the first child `f` answers on, in exprChildren order, without
+/// building the list
+let tryPickExprChild (f: Expr -> 'a option) (e: Expr) : 'a option =
+    let rec ofList (xs: Expr list) =
+        match xs with
+        | [] -> None
+        | x :: rest ->
+            match f x with
+            | Some _ as r -> r
+            | None -> ofList rest
+
+    let ofOpt (o: Expr option) =
+        match o with
+        | Some e -> f e
+        | None -> None
+
+    let two (a: Expr) (b: Expr) =
+        match f a with
+        | Some _ as r -> r
+        | None -> f b
+
+    match e.Kind with
+    | EInt _
+    | EDur _
+    | EFloat _
+    | ESize _
+    | EStr _
+    | EBool _
+    | EUnit
+    | EVar _
+    | EFrom _
+    | ETo _
+    | ETryForm _
+    | EOpValue _ -> None
+    | ETry(b, _) -> f b
+    | EOrFail(b, m, _) ->
+        match f b with
+        | Some _ as r -> r
+        | None -> ofOpt m
+    | EOrFailForm m -> ofOpt m
+    | ELet(_, _, v, b) -> two v b
+    | ELetPat(_, v, b) -> two v b
+    | ELambda(_, _, b) -> f b
+    | ELambdaPat(_, b) -> f b
+    | EWithin(_, _, arg, opts, b) ->
+        match ofOpt arg with
+        | Some _ as r -> r
+        | None ->
+            match ofOpt opts with
+            | Some _ as r -> r
+            | None -> f b
+    | EAlways(b, c) -> two b c
+    | EHold b -> f b
+    | ECapture e -> f e
+    | EApp(fn, x) -> two fn x
+    | EPipe(x, fn) -> two x fn
+    | EField(t, _, _) -> f t
+    | ESlice(t, lo, hi, _, _) ->
+        match f t with
+        | Some _ as r -> r
+        | None ->
+            match ofOpt lo with
+            | Some _ as r -> r
+            | None -> ofOpt hi
+    | EBinOp(_, l, r) -> two l r
+    | ERecord fields
+    | EAnonRecord fields ->
+        let rec go (xs: (string * Span * Expr) list) =
+            match xs with
+            | [] -> None
+            | (_, _, v) :: rest ->
+                match f v with
+                | Some _ as r -> r
+                | None -> go rest
+
+        go fields
+    | EMatch(s, arms) ->
+        match f s with
+        | Some _ as r -> r
+        | None ->
+            let rec go (xs: (Pattern * Expr option * Expr) list) =
+                match xs with
+                | [] -> None
+                | (_, g, b) :: rest ->
+                    match ofOpt g with
+                    | Some _ as r -> r
+                    | None ->
+                        match f b with
+                        | Some _ as r -> r
+                        | None -> go rest
+
+            go arms
+    | EIf(c, t, e) ->
+        match two c t with
+        | Some _ as r -> r
+        | None -> ofOpt e
+    | ESeq(a, b) -> two a b
+    | EList items -> ofList items
+    | ETuple items -> ofList items
+    | ECmd(h, args, envO) ->
+        match
+            (match h with
+             | HeadDyn(_, e) -> f e
+             | HeadLit _ -> None)
+        with
+        | Some _ as r -> r
+        | None ->
+            match ofList args with
+            | Some _ as r -> r
+            | None -> ofOpt envO
+    | EDynProg(_, e) -> f e
+    | ESplat e -> f e
+    | EUpdate(src, ups) ->
+        match f src with
+        | Some _ as r -> r
+        | None ->
+            let rec go (xs: ((string * Span) list * Expr) list) =
+                match xs with
+                | [] -> None
+                | (_, v) :: rest ->
+                    match f v with
+                    | Some _ as r -> r
+                    | None -> go rest
+
+            go ups
+    | ERetry(_, opts, watch, body, until) ->
+        match f opts with
+        | Some _ as r -> r
+        | None ->
+            match ofOpt watch with
+            | Some _ as r -> r
+            | None ->
+                match f body with
+                | Some _ as r -> r
+                | None ->
+                    match until with
+                    | Some(_, pred) -> f pred
+                    | None -> None
+    | EInterp parts ->
+        let rec go (xs: InterpPart<Expr> list) =
+            match xs with
+            | [] -> None
+            | IExpr e :: rest ->
+                match f e with
+                | Some _ as r -> r
+                | None -> go rest
+            | IStr _ :: rest -> go rest
+
+        go parts
+    | EYaml(tpl, _, _) -> ofList (yamlTplExprs tpl)
+
+/// every child of a node, in exprChildren order, without the list
+let iterExprChildren (f: Expr -> unit) (e: Expr) : unit =
+    let ofOpt (o: Expr option) =
+        match o with
+        | Some e -> f e
+        | None -> ()
+
+    match e.Kind with
+    | EInt _
+    | EDur _
+    | EFloat _
+    | ESize _
+    | EStr _
+    | EBool _
+    | EUnit
+    | EVar _
+    | EFrom _
+    | ETo _
+    | ETryForm _
+    | EOpValue _ -> ()
+    | ETry(b, _) -> f b
+    | EOrFail(b, m, _) ->
+        f b
+        ofOpt m
+    | EOrFailForm m -> ofOpt m
+    | ELet(_, _, v, b) ->
+        f v
+        f b
+    | ELetPat(_, v, b) ->
+        f v
+        f b
+    | ELambda(_, _, b) -> f b
+    | ELambdaPat(_, b) -> f b
+    | EWithin(_, _, arg, opts, b) ->
+        ofOpt arg
+        ofOpt opts
+        f b
+    | EAlways(b, c) ->
+        f b
+        f c
+    | EHold b -> f b
+    | ECapture e -> f e
+    | EApp(fn, x) ->
+        f fn
+        f x
+    | EPipe(x, fn) ->
+        f x
+        f fn
+    | EField(t, _, _) -> f t
+    | ESlice(t, lo, hi, _, _) ->
+        f t
+        ofOpt lo
+        ofOpt hi
+    | EBinOp(_, l, r) ->
+        f l
+        f r
+    | ERecord fields
+    | EAnonRecord fields ->
+        for _, _, v in fields do
+            f v
+    | EMatch(s, arms) ->
+        f s
+
+        for _, g, b in arms do
+            ofOpt g
+            f b
+    | EIf(c, t, e) ->
+        f c
+        f t
+        ofOpt e
+    | ESeq(a, b) ->
+        f a
+        f b
+    | EList items -> List.iter f items
+    | ETuple items -> List.iter f items
+    | ECmd(h, args, envO) ->
+        (match h with
+         | HeadDyn(_, e) -> f e
+         | HeadLit _ -> ())
+
+        List.iter f args
+        ofOpt envO
+    | EDynProg(_, e) -> f e
+    | ESplat e -> f e
+    | EUpdate(src, ups) ->
+        f src
+
+        for _, v in ups do
+            f v
+    | ERetry(_, opts, watch, body, until) ->
+        f opts
+        ofOpt watch
+        f body
+
+        match until with
+        | Some(_, pred) -> f pred
+        | None -> ()
+    | EInterp parts ->
+        for part in parts do
+            match part with
+            | IExpr e -> f e
+            | IStr _ -> ()
+    | EYaml(tpl, _, _) -> List.iter f (yamlTplExprs tpl)
+
 type Stmt =
     | SLet of name: string * value: Expr
     | SLetPat of binder: Pattern * value: Expr

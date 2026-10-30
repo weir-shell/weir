@@ -6514,8 +6514,7 @@ let private nodeTooDeep (root: DeepNode) : Span option =
                 | EPipe _ -> stack.Push(struct (NExpr a, d + 1, spineOf e chain))
                 | _ -> stack.Push(struct (NExpr a, d + 1, None))
             | NExpr e ->
-                for c in exprChildren e do
-                    stack.Push(struct (NExpr c, d + 1, None))
+                iterExprChildren (fun c -> stack.Push(struct (NExpr c, d + 1, None))) e
 
                 for p in exprPats e do
                     stack.Push(struct (NPat p, d + 1, None))
@@ -6580,7 +6579,7 @@ let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) op
         if not (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) then
             raise (DepthExceeded e.Span.Start)
 
-        let kids b = exprChildren e |> List.tryPick (walk b)
+        let kids b = tryPickExprChild (walk b) e
 
         match e.Kind with
         | ELet(n, _, v, body) ->

@@ -15230,7 +15230,7 @@ let lspRenameTests =
                     | Weir.Script.KCmd te
                     | Weir.Script.KExpr te ->
                         statements <- statements + 1
-                        let free, _ = Weir.Check.bindingUsage te
+                        let free = Weir.Check.bindingUsage te |> fst |> Set.ofSeq
 
                         let top =
                             Weir.Check.occurrences te
@@ -45159,9 +45159,69 @@ let receiptTests =
         }
     ]
 
+// the list-free child walk agrees with childExprs — same children, same
+// order, same first hit — over trees covering the expression kinds
+let childWalkTests =
+    testList "typed-tree child walk" [
+        test "iterChildren visits childExprs' children in order; tryPickChild returns List.tryPick's hit" {
+            let snippets = [
+                "let f x = x + 1 in [ f 1; f 2 ] |> Seq.map (fun y -> y * 2) |> Seq.freeze"
+                "let r = P { X = 1; Y = 2 } in { r with X = 3 }.X + 1"
+                "match (if true then Running 1 else Stopped) with | Running n when n > 0 -> n | Running n -> n | Stopped -> 0"
+                "$\"a {1 + 2} b {show [1; 2]}\""
+                "let xs = [1; 2; 3] in xs[1..2], xs[^1], xs[1], Seq.length xs"
+                "git rev-parse HEAD | line"
+                "echo hi there | line"
+                "[1] |> Seq.tryHead |> orFail \"empty\""
+                "(print \"a\"; 2)"
+            ]
+
+            let mutable nodes = 0
+
+            let rec walk (te: Weir.Check.TypedExpr) =
+                nodes <- nodes + 1
+                let listed = Weir.Check.childExprs te
+                let visited = ResizeArray()
+                Weir.Check.iterChildren visited.Add te
+                Expect.sequenceEqual (List.ofSeq visited) listed "iterChildren = childExprs"
+
+                let isVar (c: Weir.Check.TypedExpr) =
+                    match c.Kind with
+                    | Weir.Check.TEVar v -> Some v
+                    | _ -> None
+
+                Expect.equal (Weir.Check.tryPickChild isVar te) (List.tryPick isVar listed) "first hit"
+
+                Expect.equal
+                    (Weir.Check.existsChild (isVar >> Option.isSome) te)
+                    (List.exists (isVar >> Option.isSome) listed)
+                    "exists"
+
+                listed |> List.iter walk
+
+            let failures =
+                snippets
+                |> List.choose (fun src ->
+                    match Weir.Parser.parseLine cmdResolver src with
+                    | Error msg -> Some $"{src}: parse: {msg}"
+                    | Ok(SExpr e)
+                    | Ok(SCmd e) ->
+                        match Weir.Check.typecheck (env |> declare "type P = { X: int; Y: int }") e with
+                        | Ok te ->
+                            walk te
+                            None
+                        | Error e -> Some $"{src}: {e.Message}"
+                    | Ok other -> Some $"{src}: not an expression line: {other}")
+
+            Expect.isEmpty failures (String.concat "\n" failures)
+            Expect.isGreaterThan nodes 80 "the samples cover enough of the tree"
+        }
+    ]
+
 [<Tests>]
 let allTests =
     testList "Weir" [
+        childWalkTests
         portFindingsTests
         replImportTests
         parallelImportTests

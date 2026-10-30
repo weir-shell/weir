@@ -62,7 +62,7 @@ let rec private patBound (p: Pattern) : string list =
     | _ -> patChildren p |> List.collect patBound
 
 let private dropPat (p: Pattern) (env: Map<string, bool>) =
-    patBound p |> List.fold (fun e n -> Map.remove n e) env
+    patBound p |> List.fold (fun e n -> mapDrop n e) env
 
 /// conservative purity of a typed expression; `env` carries the purity
 /// of known user bindings (earlier top-level lets, local lets)
@@ -121,7 +121,7 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
         let pv = isPureExpr env v
         pv && isPureExpr (Map.add n pv env) b
     | TELetPat(p, v, b) -> isPureExpr env v && isPureExpr (dropPat p env) b
-    | TELambda(p, _, b) -> isPureExpr (Map.remove p env) b
+    | TELambda(p, _, b) -> isPureExpr (mapDrop p env) b
     | TELambdaPat(p, b) -> isPureExpr (dropPat p env) b
     | TEApp(_, _) ->
         // applying a computed function (a field's value, a match
@@ -132,8 +132,8 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
          | TELambda _
          | TELambdaPat _ -> true
          | _ -> false)
-        && (Check.childExprs te |> List.forall (isPureExpr env))
-    | _ -> Check.childExprs te |> List.forall (isPureExpr env)
+        && (Check.forallChild (isPureExpr env) te)
+    | _ -> Check.forallChild (isPureExpr env) te
 
 // The teaching text: what a classified-effectful name does, in the
 // internal labels' vocabulary [D:pure-stage1] — one phrase per
@@ -241,19 +241,19 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
         firstEffect env v
         |> Option.orElseWith (fun () -> firstEffect (Map.add n true env) b)
     | TELetPat(p, v, b) -> firstEffect env v |> Option.orElseWith (fun () -> firstEffect (dropPat p env) b)
-    | TELambda(p, _, b) -> firstEffect (Map.remove p env) b
+    | TELambda(p, _, b) -> firstEffect (mapDrop p env) b
     | TELambdaPat(p, b) -> firstEffect (dropPat p env) b
     | TEApp(_, _) ->
         (match (headOf te).Kind with
          | TEVar _
          | TELambda _
-         | TELambdaPat _ -> Check.childExprs te |> List.tryPick (firstEffect env)
+         | TELambdaPat _ -> Check.tryPickChild (firstEffect env) te
          | _ ->
              Some(
                  (headOf te).Span,
                  "a computed function is an unknown callable, and an unknown callable forfeits purity"
              ))
-    | _ -> Check.childExprs te |> List.tryPick (firstEffect env)
+    | _ -> Check.tryPickChild (firstEffect env) te
 
 /// a validated type's `validate` must be pure [D:validated-types]: it
 /// runs unseen wherever a value of the type is built, every wire
@@ -390,9 +390,9 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
     // Env.load/Args.load read the environment/arguments — ambient
     // input, allowed; keep walking children (an argument could mutate)
     | TEEnvLoad _
-    | TEArgsLoad _ -> Check.childExprs te |> List.tryPick (firstMutation env)
+    | TEArgsLoad _ -> Check.tryPickChild (firstMutation env) te
     // retry/poll waits on the clock — ambient; walk the body for mutation
-    | TERetry _ -> Check.childExprs te |> List.tryPick (firstMutation env)
+    | TERetry _ -> Check.tryPickChild (firstMutation env) te
     | TEVar n ->
         if effectfulName n then
             match Weir.Effects.effectClass n with
@@ -431,7 +431,7 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
     | TELetPat(p, v, b) ->
         firstMutation env v
         |> Option.orElseWith (fun () -> firstMutation (dropPat p env) b)
-    | TELambda(p, _, b) -> firstMutation (Map.remove p env) b
+    | TELambda(p, _, b) -> firstMutation (mapDrop p env) b
     | TELambdaPat(p, b) -> firstMutation (dropPat p env) b
     // `req |> Http.send` — the piped send (and Http.expect, the same
     // per-method request record): the request is the pipe's argument
@@ -464,13 +464,13 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
                  reqArg |> Option.bind (firstMutation env)
          | TEVar _
          | TELambda _
-         | TELambdaPat _ -> Check.childExprs te |> List.tryPick (firstMutation env)
+         | TELambdaPat _ -> Check.tryPickChild (firstMutation env) te
          | _ ->
              Some(
                  (headOf te).Span,
                  "a computed function is an unknown callable, and an unknown callable forfeits read-only"
              ))
-    | _ -> Check.childExprs te |> List.tryPick (firstMutation env)
+    | _ -> Check.tryPickChild (firstMutation env) te
 
 /// the first plan-scope refusal under a `plan` region [D:plan-apply]:
 /// unlike readonly, fs/http mutations are fine (they are captured as
@@ -486,7 +486,7 @@ let rec private planRefusalRoot (refused: Map<string, string>) (te: TypedExpr) :
     let found (span: Span) (msg: string) = Some(span, msg, msg)
 
     let without names =
-        names |> List.fold (fun m n -> Map.remove n m) refused
+        names |> List.fold (fun m n -> mapDrop n m) refused
 
     match te.Kind with
     // a command is a proc spawn — uncapturable
@@ -566,7 +566,7 @@ let rec private planRefusalRoot (refused: Map<string, string>) (te: TypedExpr) :
         |> Option.orElseWith (fun () -> planRefusalRoot (without (patBound p)) b)
     | TELambda(p, _, b) -> planRefusalRoot (without [ p ]) b
     | TELambdaPat(p, b) -> planRefusalRoot (without (patBound p)) b
-    | _ -> Check.childExprs te |> List.tryPick (planRefusalRoot refused)
+    | _ -> Check.tryPickChild (planRefusalRoot refused) te
 
 let firstPlanRefusal (refused: Map<string, string>) (te: TypedExpr) : (Span * string) option =
     planRefusalRoot refused te |> Option.map (fun (span, msg, _) -> span, msg)
@@ -596,7 +596,7 @@ let private isExecVar (n: string) = n.StartsWith "|execed"
 // A local binder shadows a top-level helper.
 let rec private execReach (helpers: Set<string>) (te: TypedExpr) : (Span * string option) option =
     let without names =
-        names |> List.fold (fun h n -> Set.remove n h) helpers
+        names |> List.fold (fun h n -> setDrop n h) helpers
 
     match te.Kind with
     | TEVar n when isExecVar n -> Some(te.Span, None)
@@ -607,7 +607,7 @@ let rec private execReach (helpers: Set<string>) (te: TypedExpr) : (Span * strin
         |> Option.orElseWith (fun () -> execReach (without (patBound p)) b)
     | TELambda(p, _, b) -> execReach (without [ p ]) b
     | TELambdaPat(p, b) -> execReach (without (patBound p)) b
-    | _ -> Check.childExprs te |> List.tryPick (execReach helpers)
+    | _ -> Check.tryPickChild (execReach helpers) te
 
 /// a top-level binding is an exec helper when it is a function whose
 /// body reaches an exec, directly or through another helper
@@ -646,7 +646,7 @@ let rec execScopeViolation (helpers: Set<string>) (te: TypedExpr) : (Span * stri
     let recur = execScopeViolation helpers
 
     let without names =
-        names |> List.fold (fun h n -> Set.remove n h) helpers
+        names |> List.fold (fun h n -> setDrop n h) helpers
 
     let rec headOf (e: TypedExpr) =
         match e.Kind with
@@ -666,37 +666,34 @@ let rec execScopeViolation (helpers: Set<string>) (te: TypedExpr) : (Span * stri
         (live @ [ body ])
         |> List.tryPick (execReach helpers)
         |> Option.map (fun (span, h) -> span, Check.execInScopeMessage kind what h)
-        |> Option.orElseWith (fun () -> Check.childExprs te |> List.tryPick recur)
+        |> Option.orElseWith (fun () -> Check.tryPickChild recur te)
     | TEAlways(body, cleanup) ->
         execReach helpers body
         |> Option.map (fun (span, h) -> span, Check.execInAlwaysMessage false h)
         |> Option.orElseWith (fun () ->
             execReach helpers cleanup
             |> Option.map (fun (span, h) -> span, Check.execInAlwaysMessage true h))
-        |> Option.orElseWith (fun () -> Check.childExprs te |> List.tryPick recur)
+        |> Option.orElseWith (fun () -> Check.tryPickChild recur te)
     | TEApp _ ->
         match (headOf te).Kind with
         | TEVar n when (fanoutName n).IsSome ->
-            Check.childExprs te
-            |> List.tryPick (execReach helpers)
+            Check.tryPickChild (execReach helpers) te
             |> Option.map (fun (span, h) -> span, execInFanoutMessage (fanoutName n).Value h)
-            |> Option.orElseWith (fun () -> Check.childExprs te |> List.tryPick recur)
-        | _ -> Check.childExprs te |> List.tryPick recur
+            |> Option.orElseWith (fun () -> Check.tryPickChild recur te)
+        | _ -> Check.tryPickChild recur te
     | TELet(n, _, v, b) -> recur v |> Option.orElseWith (fun () -> execScopeViolation (without [ n ]) b)
     | TELetPat(p, v, b) ->
         recur v
         |> Option.orElseWith (fun () -> execScopeViolation (without (patBound p)) b)
     | TELambda(p, _, b) -> execScopeViolation (without [ p ]) b
     | TELambdaPat(p, b) -> execScopeViolation (without (patBound p)) b
-    | _ -> Check.childExprs te |> List.tryPick recur
+    | _ -> Check.tryPickChild recur te
 
 /// scan a checked statement's tree for `pure` regions and report the
 /// first violation [D:pure-stage1] — the env tracks bindings on the way
 /// down exactly as isPureExpr does, so a region deep in a statement
 /// still sees the statement's own earlier lets
 let rec pureViolation (refused: Map<string, string>) (env: Map<string, bool>) (te: TypedExpr) : (Span * string) option =
-    let pureViolation = pureViolation refused
-
     match te.Kind with
     | TEWithin(kind, _, arg, opts, body) ->
         (match kind with
@@ -717,24 +714,34 @@ let rec pureViolation (refused: Map<string, string>) (env: Map<string, bool>) (t
          // captured (fine), proc and nested apply refuse — then keep
          // walking the body for nested pure/readonly/plan regions
          | WithinPlan ->
-             firstPlanRefusal refused body
-             |> Option.orElseWith (fun () -> pureViolation env body)
+             match firstPlanRefusal refused body with
+             | Some _ as r -> r
+             | None -> pureViolation refused env body
          | WithinTmp
          | WithinCd
          | WithinEnv
          | WithinProc
          | WithinServe
          | WithinLock ->
-             [ arg; opts ]
-             |> List.choose id
-             |> List.tryPick (pureViolation env)
-             |> Option.orElseWith (fun () -> pureViolation env body))
+             let viaArg (o: TypedExpr option) =
+                 match o with
+                 | Some e -> pureViolation refused env e
+                 | None -> None
+
+             match viaArg arg with
+             | Some _ as r -> r
+             | None ->
+                 match viaArg opts with
+                 | Some _ as r -> r
+                 | None -> pureViolation refused env body)
     | TELet(n, _, v, b) ->
-        pureViolation env v
-        |> Option.orElseWith (fun () -> pureViolation (Map.add n (isPureExpr env v) env) b)
+        match pureViolation refused env v with
+        | Some _ as r -> r
+        | None -> pureViolation refused (Map.add n (isPureExpr env v) env) b
     | TELetPat(p, v, b) ->
-        pureViolation env v
-        |> Option.orElseWith (fun () -> pureViolation (dropPat p env) b)
-    | TELambda(p, _, b) -> pureViolation (Map.remove p env) b
-    | TELambdaPat(p, b) -> pureViolation (dropPat p env) b
-    | _ -> Check.childExprs te |> List.tryPick (pureViolation env)
+        match pureViolation refused env v with
+        | Some _ as r -> r
+        | None -> pureViolation refused (dropPat p env) b
+    | TELambda(p, _, b) -> pureViolation refused (mapDrop p env) b
+    | TELambdaPat(p, b) -> pureViolation refused (dropPat p env) b
+    | _ -> Check.tryPickChild (pureViolation refused env) te
