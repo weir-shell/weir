@@ -7,101 +7,23 @@ open Weir.Ast
 
 // public: the REPL colorizer reuses this set [D:repl-color] — one
 // keyword source, no drift
-let keywords =
-    Set
-        [ "within"
-          // the bare scope's teardown segment [D:within-always]
-          "always"
-          // the bounded-loop pair and their predicate segment [D:retry-poll]
-          "retry"
-          "poll"
-          // the loop a stop signal ends [D:repeat]
-          "repeat"
-          "until"
-          "let"
-          "in"
-          "fun"
-          "true"
-          "false"
-          "match"
-          "with"
-          "type"
-          "of"
-          "from"
-          "to"
-          "if"
-          "then"
-          "else"
-          "when"
-          "elif"
-          "rec"
-          "mutable"
-          // the purity assertion's two spellings [D:pure-stage1]: the
-          // `pure` block head and the `let pure` modifier
-          "pure"
-          // the read-only assertion [D:pure-stage2]: a `readonly`
-          // block head, one tier up from `pure`
-          "readonly"
-          // the plan/apply capture [D:plan-apply]: a `plan` block head —
-          // the third standalone withinKinds head. Reserved so a bare
-          // `plan` never resolves as an identifier or command head; with
-          // plan/apply in the language, `let plan = …` is a confusing
-          // shadow (the `let match =` class). apply/preview stay ordinary
-          // members, no reservation.
-          "plan"
-          // the module system's two words [D:modules-v1]: reserved so a
-          // bare `module`/`import` never resolves as an identifier or a
-          // command head (keyword-domination)
-          "module"
-          "import"
-          // the general effect loop [D:for-do]
-          "for"
-          "do"
-          // its parallel twin over Seq.piter [D:pfor]
-          "pfor"
-          // the implicit-match lambda [D:function-keyword]
-          "function"
-          // foreign control-flow words, reserved so they teach weir's
-          // spelling instead of resolving as PATH programs
-          // (PLAN-dx-review D4); `def` is an ordinary name whose
-          // teaching keys on the statement shape [D:def-shape]
-          "while"
-          "return"
-          "try"
-          // the inverse of try [D:orfail-form]: `e |> orFail` turns a
-          // failed Result/Option back into a raise; reserved like try
-          "orFail" ]
+let keywords = Desugar.keywords
 
-// the keyword set, exposed for tooling resolvers (weir check's
-// assume-command rule must never claim a keyword head)
-let isKeyword (w: string) = keywords.Contains w
+let isKeyword = Desugar.isKeyword
 
-type Resolver =
-    { IsKnown: string -> bool
-      IsCommandCallable: string -> bool
-      IsExternal: string -> bool
-      ExternalNames: unit -> seq<string>
-      // a bare module member's home (where -> Seq) [D:bare-partition]:
-      // the strict-context teaching names the qualified spelling
-      BareHome: string -> string option
-      // a command-head alias [D:command-head-alias], REPL-only: a short
-      // name -> (real exe, fixed prefix args). Consulted only in
-      // command-head position, before PATH; the `^` sigil skips it.
-      // Single-hop by construction (the table stores exes, never aliases).
-      // Scripts/-e supply the always-None resolver, so aliases never leak.
-      AliasHead: string -> (string * string list) option }
+type Resolver = Desugar.Resolver
 
 // Sigil interiors ($(...)) need the resolver inside the
 // expression grammar, which is otherwise resolver-free. parseLine sets
 // this per call; ThreadLocal keeps parallel test runs isolated.
 let private ambientResolver =
     new System.Threading.ThreadLocal<Resolver>(fun () ->
-        { IsKnown = (fun _ -> true)
-          IsCommandCallable = (fun _ -> false)
-          IsExternal = (fun _ -> false)
-          ExternalNames = (fun () -> Seq.empty)
-          BareHome = (fun _ -> None)
-          AliasHead = fun _ -> None })
+        { Desugar.IsKnown = (fun _ -> true)
+          Desugar.IsCommandCallable = (fun _ -> false)
+          Desugar.IsExternal = (fun _ -> false)
+          Desugar.ExternalNames = (fun () -> Seq.empty)
+          Desugar.BareHome = (fun _ -> None)
+          Desugar.AliasHead = fun _ -> None })
 
 let private ambientProxy: Resolver =
     { IsKnown = fun n -> ambientResolver.Value.IsKnown n
@@ -326,47 +248,26 @@ let private withAmbientName (name: string) (p: Parser<'a, unit>) : Parser<'a, un
             ambientResolver.Value <- saved
             aliasMasked.Value <- savedMask
 
-let private isIdentStart c = isLetter c || c = '_'
-let private isIdentCont c = isLetter c || isDigit c || c = '_'
+let private isIdentStart = Desugar.isIdentStart
+let private isIdentCont = Desugar.isIdentCont
 
 let private ws: Parser<unit, unit> = spaces
 let private str_ws s = pstring s >>. ws
 
-// The sibling sentinel [D:sibling-sentinel]: the assembler joins body
-// statement-siblings with this instead of ';' so command mode — which
-// swallows a user-typed ';' as a bareword arg (the prior-bleed
-// teaching, kept) — stops at the machine boundary. Same width as
-// " ; " (3 chars) so every span mapping through the segment table is
-// byte-identical. Unproduceable: assemble rejects any source line
-// carrying it, so it reaches the grammar only from the assembler (as
-// the '|' keys do — a token user text cannot form).
 [<Literal>]
-let sibSep = '\u001F'
+let sibSep = Desugar.sibSep
 
-let sibSepStr = System.String(sibSep, 1)
+let sibSepStr = Desugar.sibSepStr
 
-// the district content terminator [D:district-terminates]: a district
-// (`yaml`/`<<<`) that closes mid-statement — a following `|>`, `in`, or
-// sibling — has the assembler append this after its content, so
-// districtTail knows where content ends and the expression grammar
-// resumes (heredocDistrict is already an opp term, so the pipe composes
-// for free). Same unproduceability contract as sibSep: a source line
-// carrying it is rejected where text becomes logical lines.
 [<Literal>]
-let districtClose = '\u001E'
+let districtClose = Desugar.districtClose
 
-let districtCloseStr = System.String(districtClose, 1)
+let districtCloseStr = Desugar.districtCloseStr
 
-// the record/list field separator [D:field-sep-sentinel]: the assembler
-// joins newline-separated record fields and list elements with this, not
-// a bare `;`, so a field value's own `;`-sequencing (a lambda body, a
-// block) cannot swallow the separator and the next field. seqExpr does
-// not sequence on it (only `;` and sibSep) — it ends the field, and the
-// record/list sepBy splits on it. Same unproduceability contract as sibSep.
 [<Literal>]
-let fieldSep = '\u001D'
+let fieldSep = Desugar.fieldSep
 
-let fieldSepStr = System.String(fieldSep, 1)
+let fieldSepStr = Desugar.fieldSepStr
 
 /// a record/list/decl field separator: an explicit `;` or the assembler's
 /// field sentinel [D:field-sep-sentinel] — a field value's `;` cannot
@@ -636,7 +537,7 @@ let private ident = identSpanned |>> fst
 
 let private expr, private exprRef = createParserForwardedToRef<Expr, unit> ()
 
-let private mkExpr (kind, span) = { Kind = kind; Span = span }
+let private mkExpr = Desugar.mkExpr
 
 // e1 ; e2 — block sequencing. Deployed at body positions (then/else,
 // arm and lambda bodies, let-in bodies, parens, statements) and greedy
@@ -1255,8 +1156,69 @@ let private rangeTerm, private rangeTermRef =
 // a range endpoint is never `[`/`{`, so committing to the list path
 // here is safe — and it stops rangeTerm from descending into nested
 // brackets that the backtrack would then re-parse (O(2^n) on `[[[…]]]`).
+// the probe's other doubling faces [D:range-probe]: a paren group or an
+// interpolation at the element's head is parsed by the probe and again
+// by the element loop when no `..` follows — O(2^n) on `[([(…)])]`. A
+// quote-aware look past that first atom (its matching `)`, or the
+// string's close), its `.field` tail and the whitespace decides whether
+// a `..` is there at all; only then does the probe run. An extent the
+// look cannot settle (a `$(` sigil, an unbalanced group) runs the probe
+// as before. Consuming nothing and failing with no message, it merges
+// exactly as the opener guard does.
+let private rangeProbeAhead: Parser<unit, unit> =
+    fun stream ->
+        let c = stream.Peek()
+
+        if c <> '(' && c <> '$' then
+            Reply(())
+        else
+            let rest = stream.PeekString(int (stream.IndexOfLastCharPlus1 - stream.Index))
+
+            let atomEnd =
+                if c = '(' then
+                    let struct (_, e) =
+                        Scan.foldOutsideStrings
+                            (fun (struct (d, e)) i ch ->
+                                if e >= 0 then struct (d, e)
+                                elif ch = '(' then struct (d + 1, e)
+                                elif ch = ')' then (if d = 1 then struct (0, i + 1) else struct (d - 1, e))
+                                else struct (d, e))
+                            (struct (0, -1))
+                            rest
+
+                    e
+                elif rest.Length > 1 && rest[1] = '"' then
+                    // the first code character after the opener is past the string
+                    Scan.foldOutsideStrings (fun e i _ -> if e >= 0 then e elif i > 0 then i else e) -1 rest
+                else
+                    -1
+
+            if atomEnd < 0 then
+                Reply(())
+            else
+                let mutable j = atomEnd
+
+                let skipWs () =
+                    while j < rest.Length && (rest[j] = ' ' || rest[j] = '\t') do
+                        j <- j + 1
+
+                skipWs ()
+
+                while j + 1 < rest.Length && rest[j] = '.' && isIdentStart rest[j + 1] do
+                    j <- j + 1
+
+                    while j < rest.Length && isIdentCont rest[j] do
+                        j <- j + 1
+
+                    skipWs ()
+
+                if j + 1 < rest.Length && rest[j] = '.' && rest[j + 1] = '.' then
+                    Reply(())
+                else
+                    Reply(ReplyStatus.Error, NoErrorMessages)
+
 let private rangeBody =
-    notFollowedBy (anyOf "[{") >>. attempt (rangeTerm .>> dotdot)
+    notFollowedBy (anyOf "[{") >>. rangeProbeAhead >>. attempt (rangeTerm .>> dotdot)
     .>>. rangeTerm
     .>>. opt (dotdot >>. rangeTerm)
     >>= fun ((a, b), c) ->
@@ -1273,11 +1235,7 @@ let private rangeBody =
 // [a..s..b] is pure sugar for Seq.range a s b; [a; b; c] stays an eager list.
 let private buildBracket (content, span) : Expr =
     match content with
-    | Choice1Of2(start, step, stop) ->
-        let rangeFn = { Kind = EVar "|seqRange"; Span = span }
-
-        let app f a = { Kind = EApp(f, a); Span = span }
-        app (app (app rangeFn start) step) stop
+    | Choice1Of2(start, step, stop) -> Desugar.rangeExpr span start step stop
     | Choice2Of2 items -> { Kind = EList items; Span = span }
 
 let private listLit =
@@ -1764,37 +1722,8 @@ let private atom: Parser<Expr, unit> =
 
 let private fieldSuffix = pchar '.' >>. spanned rawWord .>> ws
 
-// xs[i] desugars to Seq.item i xs — F# 6 dotless-indexing whitespace
-// rule: no space = indexing; a space means application (f [1; 2] stays
-// an application of a list). Immediacy is checked against the target's
-// span end (spans record positions before trailing whitespace).
-let private indexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
-    let span =
-        { Start = target.Span.Start
-          End = endPos }
-
-    let seqItem = { Kind = EVar "|seqItem"; Span = span }
-
-    { Kind =
-        EApp(
-            { Kind = EApp(seqItem, idx)
-              Span = span },
-            target
-        )
-      Span = span }
-
-// xs[^n] — F#'s from-the-end single index [D:range-slicing]: the element
-// n from the end (`^1` is the last), `|seqItemFromEnd n xs` — its own
-// desugar, so an out-of-range raise names the `^n` and the length.
-let private fromEndIndexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
-    let span =
-        { Start = target.Span.Start
-          End = endPos }
-
-    let fromEnd = { Kind = EVar "|seqItemFromEnd"; Span = span }
-
-    { Kind = EApp({ Kind = EApp(fromEnd, idx); Span = span }, target)
-      Span = span }
+let private indexDesugar = Desugar.indexDesugar
+let private fromEndIndexDesugar = Desugar.fromEndIndexDesugar
 
 // the block forms sit among the opp's term alternatives, tried and
 // failed on every term of a flat spine — the guard engages only when
@@ -2071,21 +2000,7 @@ let private rejectDupParams (ps: Pattern list) =
     | Some(n, p2) -> failFatallyAtCol p2.PSpan.Start.Col $"duplicate parameter '{n}'"
     | None -> preturn ()
 
-let private curryParams (ps: Pattern list) (value: Expr) : Expr =
-    List.foldBack
-        (fun (p: Pattern) body ->
-            let kind =
-                match p.PKind with
-                | PVar n -> ELambda(n, p.PSpan, body)
-                | PUnit -> ELambda("()", p.PSpan, body)
-                | _ -> ELambdaPat(p, body)
-
-            // span covers the param — binder diagnostics point at
-            // it, not at the RHS
-            { Kind = kind
-              Span = Span.union p.PSpan value.Span })
-        ps
-        value
+let private curryParams = Desugar.curryParams
 
 let private lambdaBody =
     // fun a b -> e desugars to nested lambdas [D:fun-sugar] — the
@@ -2317,24 +2232,8 @@ let private letInBody =
 
 let private letIn = deepenAfter [ "let" ] letInBody // [D:depth-guard]
 
-let private binOp op l r =
-    { Kind = EBinOp(op, l, r)
-      Span = Span.union l.Span r.Span }
-
-// `x |> try` folds into one node [D:try-form]: the form captures its left
-// side, so it is not an application of the left's value
-let private pipeOp l r =
-    match r.Kind with
-    | ETryForm asResult ->
-        { Kind = ETry(l, asResult)
-          Span = Span.union l.Span r.Span }
-    // and its inverse [D:orfail-form]: the form's own span is the raise site
-    | EOrFailForm msg ->
-        { Kind = EOrFail(l, msg, r.Span)
-          Span = Span.union l.Span r.Span }
-    | _ ->
-        { Kind = EPipe(l, r)
-          Span = Span.union l.Span r.Span }
+let private binOp = Desugar.binOp
+let private pipeOp = Desugar.pipeOp
 
 let private mkOpp (withPipe: bool) =
     let opp = OperatorPrecedenceParser<Expr, unit, unit>()
@@ -4280,20 +4179,7 @@ commaExprRef.Value <-
             { Kind = ETuple all
               Span = Span.union first.Span (List.last all).Span }
 
-// right-nested ESeq over a non-empty element list — shared by seqExpr
-// and topLet's command-first RHS so both fold identically
-let private foldSeqExpr (all: Expr list) : Expr =
-    List.foldBack
-        (fun e acc ->
-            match acc with
-            | None -> Some e
-            | Some tail ->
-                Some
-                    { Kind = ESeq(e, tail)
-                      Span = Span.union e.Span tail.Span })
-        all
-        None
-    |> Option.defaultWith (fun () -> failwith "foldSeqExpr: empty")
+let private foldSeqExpr = Desugar.foldSeqExpr
 
 // the sequencing separator [D:seq-commit][D:sibling-sentinel]: a
 // user-typed ';' or the machine sibling sentinel. Both commit (no
@@ -4566,18 +4452,8 @@ let private spliceSplat: Parser<Expr, unit> =
         { Kind = ESplat inner; Span = span })
     .>> ws
 
-// a typed `~` is the home directory [D:tilde]: an unquoted word-leading
-// `~` or `~/…` in a command line desugars to the run-time home plus the
-// rest. Source syntax only — a quoted string, an interpolation or a
-// spliced value never reaches here, so data is never re-read as syntax;
-// `~user` stays literal
-let private isTildeWord (w: string) = w = "~" || w.StartsWith "~/"
-
-let private tildeExpr (w: string) (span: Span) : Expr =
-    let at k = { Kind = k; Span = span }
-    let home = at (EApp(at (EVar "|home"), at EUnit))
-
-    if w = "~" then home else at (EBinOp("+", home, at (EStr(w.Substring 1))))
+let private isTildeWord = Desugar.isTildeWord
+let private tildeExpr = Desugar.tildeExpr
 
 // `@"…"` is not an argv word [D:argv-at-raw]: `@` is argv text (curl's
 // `@file`), so `-d @"my file"` reading as a verbatim string would drop it
@@ -6268,12 +6144,12 @@ let private stmtWith (r: Resolver) =
               (seqExpr >>= pipeOrHint) .>> eof |>> SExpr ]
 
 let private noExternals =
-    { IsKnown = fun _ -> true
-      IsCommandCallable = fun _ -> false
-      IsExternal = fun _ -> false
-      ExternalNames = (fun () -> Seq.empty)
-      BareHome = (fun _ -> None)
-      AliasHead = fun _ -> None }
+    { Desugar.IsKnown = fun _ -> true
+      Desugar.IsCommandCallable = fun _ -> false
+      Desugar.IsExternal = fun _ -> false
+      Desugar.ExternalNames = (fun () -> Seq.empty)
+      Desugar.BareHome = (fun _ -> None)
+      Desugar.AliasHead = fun _ -> None }
 
 // Structured failure: the position travels as data
 // [D:structured-parse-failure]. Message text is unchanged; Col is
@@ -6553,6 +6429,110 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
     else
         None
 
+// the oracle mode [D:hand-parser]: both parsers on every statement,
+// any difference a failure — CI runs the whole battery this way
+let private oracleMode =
+    System.Environment.GetEnvironmentVariable "WEIR_PARSE_ORACLE" = "1"
+
+let private viaGrammar (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
+    match run stmtShared input with
+    | Success(s, _, _) -> Result.Ok s
+    | Failure(_, _, _) when chainTeach.Value.IsSome ->
+        let m, sp = chainTeach.Value.Value
+
+        Result.Error
+            { Message = m
+              Col = if sp.Start.Line = 1 then Some sp.Start.Col else None }
+    | Failure(msg, err, _) ->
+        let col =
+            if err.Position.Line = 1L then
+                Some(int err.Position.Column)
+            else
+                None
+
+        let msg =
+            match col with
+            | Some c ->
+                // keep FParsec's position + snippet + caret head, the
+                // shape every consumer strips, and swap the body
+                let ls = msg.Replace("\r\n", "\n").Split '\n'
+
+                let caret =
+                    ls |> Array.tryFindIndex (fun l -> l.Trim() <> "" && l.Trim() |> Seq.forall ((=) '^'))
+
+                match dumpTeach r input (c - 1) msg, caret with
+                | Some m, Some k -> String.concat "\n" (Array.append ls[..k] [| m |])
+                | _ -> msg
+            | None -> msg
+
+        Result.Error { Message = msg; Col = col }
+
+/// the fast parser against the grammar on one statement: None when they
+/// agree (tree, and the anonymous shapes each pushed), else the report
+let parseOracle (r: Resolver) (input: string) : string option =
+    ambientResolver.Value <- r
+    parseDepth.Value <- 0
+    grantedRhsRanges.Value.Clear()
+    chainTeach.Value <- None
+
+    try
+        let held = Types.drainAnonDefs ()
+        let fast = Fast.tryStmt r input
+        let fastPushes = Types.drainAnonDefs ()
+
+        let slow =
+            try
+                viaGrammar r input
+            with
+            | UnclosedString _ -> Result.Error { Message = "unclosed string"; Col = None }
+            | DepthExceeded _ -> Result.Error { Message = "depth"; Col = None }
+
+        let slowPushes = Types.drainAnonDefs ()
+
+        for name, fields in held @ slowPushes do
+            Types.pushAnonDef name fields
+
+        // structural equality recurses per node: a tree past the depth
+        // ceiling is refused by both paths' post-parse probe, so only the
+        // probe's verdict is compared there
+        let tooDeep (s: Stmt) = s |> stmtNodes |> List.exists (fun n -> (nodeTooDeep n).IsSome)
+
+        match fast, slow with
+        | None, _ -> None
+        | Some f, Result.Ok g when tooDeep f && tooDeep g -> None
+        | Some f, Result.Ok g when
+            (fastPushes = slowPushes
+             && (if input.Length < 2048 then
+                     f = g
+                 else
+                     // a long statement nests along a sequence spine (width
+                     // to the probe, depth to the comparison): compare on a
+                     // thread with room for it
+                     let mutable eq = false
+                     let t = System.Threading.Thread((fun () -> eq <- (f = g)), 256 * 1024 * 1024)
+                     t.Start()
+                     t.Join()
+                     eq))
+            ->
+            None
+        | Some f, Result.Ok g ->
+            let shapes =
+                if (stmtExprs f |> List.map Ast.sexpr) = (stmtExprs g |> List.map Ast.sexpr) then
+                    "agree"
+                else
+                    "differ"
+
+            Some(
+                $"the fast parser's tree differs from the grammar's (span-free shapes {shapes})\ninput: {input}\nfast:\n%A{f}\ngrammar:\n%A{g}"
+                + (if fastPushes <> slowPushes then
+                       $"\nfast pushes: %A{fastPushes}\ngrammar pushes: %A{slowPushes}"
+                   else
+                       "")
+            )
+        | Some f, Result.Error e -> Some $"the fast parser accepted what the grammar refuses\ninput: {input}\nfast:\n%A{f}\ngrammar: {e.Message}"
+    finally
+        ambientResolver.Value <- noExternals
+
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r
     aliasMasked.Value <- Set.empty
@@ -6563,8 +6543,20 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
 
     try
         try
-            match run stmtShared input with
-            | Success(s, _, _) ->
+            let parsed =
+                if oracleMode then
+                    match parseOracle r input with
+                    | Some report -> failwith $"parse oracle: {report}"
+                    | None ->
+                        ambientResolver.Value <- r
+                        viaGrammar r input
+                else
+                    match Fast.tryStmt r input with
+                    | Some s -> Result.Ok s
+                    | None -> viaGrammar r input
+
+            match parsed with
+            | Result.Ok s ->
                 match s |> stmtNodes |> List.tryPick nodeTooDeep with
                 | Some span ->
                     let col = if span.Start.Line = 1 then Some span.Start.Col else None
@@ -6584,35 +6576,7 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                             { Message = teach |> Option.defaultValue "'|>' applies functions; feed a program with '|'"
                               Col = col }
                     | None -> Result.Ok s
-            | Failure(_, _, _) when chainTeach.Value.IsSome ->
-                let m, sp = chainTeach.Value.Value
-
-                Result.Error
-                    { Message = m
-                      Col = if sp.Start.Line = 1 then Some sp.Start.Col else None }
-            | Failure(msg, err, _) ->
-                let col =
-                    if err.Position.Line = 1L then
-                        Some(int err.Position.Column)
-                    else
-                        None
-
-                let msg =
-                    match col with
-                    | Some c ->
-                        // keep FParsec's position + snippet + caret head, the
-                        // shape every consumer strips, and swap the body
-                        let ls = msg.Replace("\r\n", "\n").Split '\n'
-
-                        let caret =
-                            ls |> Array.tryFindIndex (fun l -> l.Trim() <> "" && l.Trim() |> Seq.forall ((=) '^'))
-
-                        match dumpTeach r input (c - 1) msg, caret with
-                        | Some m, Some k -> String.concat "\n" (Array.append ls[..k] [| m |])
-                        | _ -> msg
-                    | None -> msg
-
-                Result.Error { Message = msg; Col = col }
+            | Result.Error e -> Result.Error e
         with
         | UnclosedString(p, kind, closer) ->
             let col = if p.Line = 1 then Some p.Col else None

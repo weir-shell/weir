@@ -18382,6 +18382,63 @@ let depthGuardTests =
                   sw.Stop()
                   Expect.isNonEmpty diags $"{name}: the failing spine is diagnosed"
                   Expect.isLessThan sw.ElapsedMilliseconds 10000L $"{name}: depth {d} stays linear (2^{d} replays would not finish)"
+          }
+          test "the fast parser refuses past its nesting bound, parses index chains once, and leaves no pending shape behind [D:hand-parser]" {
+              let r: Weir.Parser.Resolver =
+                  { IsKnown = (fun _ -> true)
+                    IsCommandCallable = (fun _ -> false)
+                    IsExternal = (fun _ -> false)
+                    ExternalNames = (fun () -> Seq.empty)
+                    BareHome = (fun _ -> None)
+                    AliasHead = fun _ -> None }
+
+              let nested d = "let x = " + String.replicate d "(" + "1" + String.replicate d ")"
+              Expect.isSome (Weir.Fast.tryStmt r (nested 30)) "a 30-deep nest is the fast parser's"
+              Expect.isNone (Weir.Fast.tryStmt r (nested 200)) "a 200-deep nest is refused to the grammar's guard"
+
+              // a failing nested index chain: one parse per level, so the
+              // refusal is linear in the depth
+              let chain = "let x = " + String.replicate 2000 "a[" + "1 +" + String.replicate 2000 "]"
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              Expect.isNone (Weir.Fast.tryStmt r chain) "the deep chain is refused"
+              Expect.isLessThan sw.ElapsedMilliseconds 5000L "the refusal never doubles per level"
+
+              // nested list elements that can nest (a prefix minus, parens,
+              // an interpolation) are parsed once: the range probe runs on
+              // leaf first tokens only
+              for name, spine in
+                  [ "neg-list", String.replicate 30 "[-" + "1" + String.replicate 30 "]"
+                    "paren-list", String.replicate 24 "[(" + "1" + String.replicate 24 ")]"
+                    "interp-list", String.replicate 24 "[$\"{" + "1" + String.replicate 24 "}\"]" ] do
+                  let sw = System.Diagnostics.Stopwatch.StartNew()
+                  let parsed = Weir.Parser.parseLine r ("let x = " + spine)
+                  sw.Stop()
+                  Expect.isLessThan sw.ElapsedMilliseconds 5000L $"{name}: nesting is parsed once per level"
+                  Expect.isOk parsed $"{name}: the nested list parses"
+
+              // a refusal after an anonymous shape was read takes the shape back
+              Weir.Types.drainAnonDefs () |> ignore
+              Expect.isNone (Weir.Fast.tryStmt r "let f : {| a: int |} -> {| b: string |} ->") "the broken signature is refused"
+              Expect.isEmpty (Weir.Types.drainAnonDefs ()) "nothing stays pending from the refused parse"
+          }
+          test "the parse oracle agrees on the statement shapes the fast parser owns [D:hand-parser]" {
+              let r: Weir.Parser.Resolver =
+                  { IsKnown = (fun _ -> true)
+                    IsCommandCallable = (fun _ -> false)
+                    IsExternal = (fun _ -> false)
+                    ExternalNames = (fun () -> Seq.empty)
+                    BareHome = (fun _ -> None)
+                    AliasHead = fun _ -> None }
+
+              for stmt in
+                  [ "let f x y = x + y * 2"
+                    "let g = fun (a, b) -> match a with | Some v when v > 0 -> v | None | Some _ -> b"
+                    "type T = { [<Wire \"n\">] name: string; items: seq<int * string> }"
+                    "let r = { base with x.y = 1; z = [1..2..9] } |> f $\"{a}-{b}\" xs[^1] ys[1..]"
+                    "let s : {| a: int |} -> seq<string>"
+                    "if c then 1.5 elif d then -2 else (let q = 3 in q)" ] do
+                  Expect.isSome (Weir.Fast.tryStmt r stmt) $"the fast parser takes: {stmt}"
+                  Expect.isNone (Weir.Parser.parseOracle r stmt) $"the oracle agrees on: {stmt}"
           } ]
 
 let boolBranchTests =

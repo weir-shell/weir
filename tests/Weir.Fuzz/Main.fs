@@ -184,6 +184,21 @@ let private totality (lines: string list) =
     | Ok() -> ()
     | Error m -> failtestf "%s\non:\n%s" m (showProgram lines)
 
+// the two parsers on every statement the generator renders [D:hand-parser]:
+// the fast parser's tree is the grammar's, or it refused — the oracle says
+// which, and any other answer fails here with the statement
+let private oracleResolver =
+    Weir.Script.assumeResolver (fst (Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv))
+
+let private agreement (lines: string list) =
+    match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+    | Error _ -> ()
+    | Ok lls ->
+        for ll in lls do
+            match Weir.Parser.parseOracle oracleResolver ll.Text with
+            | None -> ()
+            | Some report -> failtestf "%s\non:\n%s" report (showProgram lines)
+
 // the depth guard's acceptance [D:depth-guard]: a pathological-depth
 // input must diagnose (an error, not silent acceptance) within the
 // hang bound and without crashing the process — a segfault here takes
@@ -446,6 +461,15 @@ let tests =
                       (showProgram splatted)
                       (r1.Rc, r1.Out)
                       (showProgram plain)
+
+          testPropertyWithConfig cfg "the fast parser agrees with the grammar on generated programs and mutated neighbors [D:hand-parser]"
+          <| fun (p: Program) (NonNegativeInt s) ->
+              let rnd = Random s
+              let lines = renderPlain p
+              agreement lines
+              agreement (Mutate.deleteLine rnd lines)
+              agreement (Mutate.perturbIndent rnd lines)
+              agreement (Mutate.swapLines rnd lines)
 
           testPropertyWithConfig cfg "assembly/check is total on generated programs and mutated neighbors"
           <| fun (p: Program) (NonNegativeInt s) ->
