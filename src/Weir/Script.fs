@@ -4120,11 +4120,17 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
     let keyOfOrigin (t: TypeEnv) (o: string) =
         t.TypeOrigins |> Map.tryPick (fun k held -> if held = o then Some k else None)
 
-    // the aliases already declaring a type named n
-    let ownersOf (t: TypeEnv) (n: string) =
+    // the alias holding a type named n under its plain key, if any
+    let plainHolder (t: TypeEnv) (n: string) =
         t.ModuleTypes
-        |> Map.toList
-        |> List.choose (fun (a, owned) -> Map.tryFind n owned |> Option.map (fun k -> a, k))
+        |> Map.tryPick (fun a owned ->
+            match Map.tryFind n owned with
+            | Some k when k = n -> Some a
+            | _ -> None)
+
+    // whether any alias declares a type named n
+    let anyOwner (t: TypeEnv) (n: string) =
+        t.ModuleTypes |> Map.exists (fun _ owned -> Map.containsKey n owned)
 
     // each own type claims its key, moving another import's holder of the
     // plain name to that holder's qualified key
@@ -4149,12 +4155,12 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
                     let t = yieldTransitive n t
 
                     if Map.containsKey n t.Types then
-                        match ownersOf t n |> List.tryFind (fun (_, k) -> k = n) with
-                        | Some(holder, _) ->
+                        match plainHolder t n with
+                        | Some holder ->
                             let t = renameEnvTypes (Map [ n, qualifiedKey t taken holder n ]) t
                             claim t (qualifiedKey t taken lm.Alias n)
                         | None -> claim t (qualifiedKey t taken lm.Alias n)
-                    elif not (List.isEmpty (ownersOf t n)) then
+                    elif anyOwner t n then
                         claim t (qualifiedKey t taken lm.Alias n)
                     else
                         claim t n)
@@ -5077,7 +5083,7 @@ type UnusedTracker() =
 
     member _.Poison() = poisoned <- true
 
-    member _.Uses(names: Set<string>) =
+    member _.Uses(names: seq<string>) =
         for n in names do
             match pending.TryGetValue n with
             | true, (l, c, e, false) -> pending[n] <- (l, c, e, true)
@@ -12434,14 +12440,21 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
 /// hint teaches loading the record first. A line that does not parse
 /// contributes nothing (its own error is reported where it is checked).
 let loadTargetsOf (tenv: TypeEnv) (lines: LogicalLine list) : Map<string, string> =
-    let rec walk (e: Expr) : (string * string) list =
-        (match e.Kind with
-         | EApp({
-                    Kind = EField({ Kind = EVar(("Args" | "Env") as m) }, "load", _)
-                },
-                { Kind = EVar t }) when t.Length > 0 && System.Char.IsUpper t[0] -> [ t, m + ".load" ]
-         | _ -> [])
-        @ (exprChildren e |> List.collect walk)
+    let walk (root: Expr) : (string * string) list =
+        let acc = ResizeArray()
+
+        let rec go (e: Expr) : unit option =
+            (match e.Kind with
+             | EApp({
+                        Kind = EField({ Kind = EVar(("Args" | "Env") as m) }, "load", _)
+                    },
+                    { Kind = EVar t }) when t.Length > 0 && System.Char.IsUpper t[0] -> acc.Add(t, m + ".load")
+             | _ -> ())
+
+            tryPickExprChild go e
+
+        go root |> ignore
+        List.ofSeq acc
 
     lines
     |> List.collect (fun ll ->

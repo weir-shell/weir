@@ -1062,10 +1062,20 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
 
                     TRowVar(r', fields')
                 | None -> TRowVar(r, fields')
-            | TFun(a, b) -> TFun(rename a, rename b)
-            | TSeq t -> TSeq(rename t)
-            | TTuple ts -> TTuple(ts |> List.map rename)
-            | TNamed(n, args) -> TNamed(n, args |> List.map rename)
+            // a subtree without a quantified var is shared, not copied
+            | TFun(a, b) ->
+                let a' = rename a
+                let b' = rename b
+                if same a' a && same b' b then ty else TFun(a', b')
+            | TSeq t ->
+                let t' = rename t
+                if same t' t then ty else TSeq t'
+            | TTuple ts ->
+                let ts' = mapShared rename ts
+                if same ts' ts then ty else TTuple ts'
+            | TNamed(n, args) ->
+                let args' = mapShared rename args
+                if same args' args then ty else TNamed(n, args')
             | t -> t
 
         // constraints freshen with the vars (deep-copy discipline): the
@@ -7153,8 +7163,10 @@ and private checkSpineOn
         // arrows run out at a type variable (`id f x`, `snd t 5`), apply
         // what the arrows take, then apply the rest to the result — the
         // result's variable unifies with a fresh arrow like any callee
+        let headParams = funParams ctx arity thead.Ty
+
         let split =
-            match funParams ctx arity thead.Ty with
+            match headParams with
             | Some _ -> None
             | None ->
                 match arrows 0 thead.Ty with
@@ -7189,7 +7201,7 @@ and private checkSpineOn
         | Some(partial, tpartial, rest) -> return! checkSpineOn ctx env partial tpartial rest piped
         | None ->
 
-            match funParams ctx arity thead.Ty with
+            match headParams with
             | None ->
                 match piped with
                 | Some _ ->
@@ -7305,16 +7317,15 @@ and private checkSpineOn
                     | None -> Ok()
 
                 let! typedArgs =
-                    List.zip args (List.truncate args.Length paramTys)
-                    |> List.fold
-                        (fun acc (arg, paramTy) ->
-                            acc
-                            |> Result.bind (fun ts ->
-                                check ctx env arg paramTy
-                                |> Result.mapError (nameHoleDefault paramTy)
-                                |> Result.map (fun t -> t :: ts)))
-                        (Ok [])
-                    |> Result.map List.rev
+                    let rec go (args: Expr list) (ps: Ty list) (acc: TypedExpr list) =
+                        match args, ps with
+                        | arg :: args, paramTy :: ps ->
+                            match check ctx env arg paramTy with
+                            | Ok t -> go args ps (t :: acc)
+                            | Error e -> Error(nameHoleDefault paramTy e)
+                        | _ -> Ok(List.rev acc)
+
+                    go args paramTys []
 
                 let fullTy =
                     List.foldBack (fun p acc -> TFun(finalTy ctx p, acc)) paramTys (finalTy ctx resultTy)
@@ -8801,123 +8812,148 @@ type UnusedLocal = {
 
 /// free names used in a typed statement tree, plus its unused
 /// block-local let binders (and bare-`_` block binders)
-let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
+// a binder in scope during the usage walk: read or not
+type private UsageFrame = { mutable Used: bool }
+
+/// free names used in a typed statement tree, plus its unused
+/// block-local let binders (and bare-`_` block binders) — one pass
+/// with a scope of frames: a read marks the innermost binder of its
+/// name, or is free; a binder left unread when its scope closes is a
+/// finding (params, arm patterns, retry `until`, `within` and yaml
+/// `for` binders shadow only). `let x = x + 1` reads the outer x: the
+/// RHS walks before the binder enters (no `let rec` exists)
+let bindingUsage (te: TypedExpr) : System.Collections.Generic.HashSet<string> * UnusedLocal list =
     let found = ResizeArray<UnusedLocal>()
+    let free = System.Collections.Generic.HashSet<string>()
 
-    let patNames p =
-        patNameSpans p |> List.map fst |> Set.ofList
+    let scope =
+        System.Collections.Generic.Dictionary<string, System.Collections.Generic.Stack<UsageFrame>>()
 
-    let unionAll (sets: Set<string> list) = sets |> List.fold Set.union Set.empty
+    let push (n: string) : UsageFrame =
+        let fr = { Used = false }
 
-    let rec walk (te: TypedExpr) : Set<string> =
+        match scope.TryGetValue n with
+        | true, st -> st.Push fr
+        | _ ->
+            let st = System.Collections.Generic.Stack<UsageFrame>()
+            st.Push fr
+            scope[n] <- st
+
+        fr
+
+    let pop (n: string) = scope[n].Pop() |> ignore
+
+    let shadowed (names: string list) (body: unit -> unit) =
+        for n in names do
+            push n |> ignore
+
+        body ()
+
+        for n in names do
+            pop n
+
+    let patNames (p: Pattern) = patNameSpans p |> List.map fst
+
+    let rec walk (te: TypedExpr) : unit =
         match te.Kind with
-        | TEVar n -> Set.singleton n
+        | TEVar n ->
+            match scope.TryGetValue n with
+            | true, st when st.Count > 0 -> st.Peek().Used <- true
+            | _ -> free.Add n |> ignore
         | TELet(n, ns, v, b) ->
-            let fv = walk v
-            let fb = walk b
+            walk v
+            let fr = push n
+            walk b
+            pop n
 
-            if not (Set.contains n fb) && not (unusedExempt n) then
+            if not fr.Used && not (unusedExempt n) then
                 found.Add {
                     UName = n
                     USpan = ns
                     UBareWildcard = false
                 }
-
-            Set.union fv (setDrop n fb)
         | TELetPat(pat, v, b) ->
-            let fv = walk v
-            let fb = walk b
+            walk v
 
-            (match pat.PKind with
-             | PWildcard ->
-                 found.Add {
-                     UName = "_"
-                     USpan = pat.PSpan
-                     UBareWildcard = true
-                 }
-             | _ ->
-                 for n, sp in patNameSpans pat do
-                     if not (Set.contains n fb) && not (unusedExempt n) then
-                         found.Add {
-                             UName = n
-                             USpan = sp
-                             UBareWildcard = false
-                         })
+            match pat.PKind with
+            | PWildcard ->
+                walk b
 
-            Set.union fv (Set.difference fb (patNames pat))
-        | TELambda(p, _, b) -> setDrop p (walk b)
-        | TELambdaPat(pat, b) -> Set.difference (walk b) (patNames pat)
+                found.Add {
+                    UName = "_"
+                    USpan = pat.PSpan
+                    UBareWildcard = true
+                }
+            | _ ->
+                let names = patNameSpans pat
+                let frames = names |> List.map (fun (n, _) -> push n)
+                walk b
+
+                for n, _ in names do
+                    pop n
+
+                for (n, sp), fr in List.zip names frames do
+                    if not fr.Used && not (unusedExempt n) then
+                        found.Add {
+                            UName = n
+                            USpan = sp
+                            UBareWildcard = false
+                        }
+        | TELambda(p, _, b) -> shadowed [ p ] (fun () -> walk b)
+        | TELambdaPat(pat, b) -> shadowed (patNames pat) (fun () -> walk b)
         | TEMatch(s, arms) ->
-            arms
-            |> List.fold
-                (fun acc (pat, g, b) ->
-                    let armFv =
-                        Set.union (g |> Option.map walk |> Option.defaultValue Set.empty) (walk b)
+            walk s
 
-                    Set.union acc (Set.difference armFv (patNames pat)))
-                (walk s)
+            for pat, g, b in arms do
+                shadowed (patNames pat) (fun () ->
+                    g |> Option.iter walk
+                    walk b)
         | TERetry(_, o, w, b, u) ->
-            let head =
-                unionAll [ walk o; (w |> Option.map walk |> Option.defaultValue Set.empty); walk b ]
+            walk o
+            w |> Option.iter walk
+            walk b
 
             match u with
-            | Some((n, _), pred) -> Set.union head (setDrop n (walk pred))
-            | None -> head
+            | Some((n, _), pred) -> shadowed [ n ] (fun () -> walk pred)
+            | None -> ()
         | TEWithin(_, binder, a, o, b) ->
-            let args =
-                unionAll [
-                    a |> Option.map walk |> Option.defaultValue Set.empty
-                    o |> Option.map walk |> Option.defaultValue Set.empty
-                ]
+            a |> Option.iter walk
+            o |> Option.iter walk
 
-            let fb =
-                match binder with
-                | Some(n, _) -> setDrop n (walk b)
-                | None -> walk b
-
-            Set.union args fb
+            match binder with
+            | Some(n, _) -> shadowed [ n ] (fun () -> walk b)
+            | None -> walk b
         | TEYaml(tpl, _, _) -> walkTpl tpl
-        | _ ->
-            let acc = ref Set.empty
-            iterChildren (fun c -> acc.Value <- Set.union acc.Value (walk c)) te
-            acc.Value
+        | _ -> iterChildren walk te
 
-    and walkTpl (tpl: TypedYamlTpl) : Set<string> =
+    and walkTpl (tpl: TypedYamlTpl) : unit =
         match tpl with
         | TYtScalar _
         | TYtBlock _
-        | TYtDrop _ -> Set.empty
+        | TYtDrop _ -> ()
         | TYtSplice e -> walk e
-        | TYtSeq(items, _) ->
-            items
-            |> List.map (function
-                | TYtItem t -> walkTpl t
-                | TYtDropItem(t, _) -> walkTpl t
-                | TYtForItems(binder, src, body) ->
-                    Set.union
-                        (walk src)
-                        (Set.difference
-                            (body
-                             |> List.map (fun i -> walkTpl (TYtSeq([ i ], Unchecked.defaultof<Ast.Span>)))
-                             |> unionAll)
-                            (patNames binder)))
-            |> unionAll
-        | TYtMap(entries, _) ->
-            entries
-            |> List.map (function
-                | TYtPair(TYtKeyLit _, v) -> walkTpl v
-                | TYtPair(TYtKeySplice k, v) -> Set.union (walk k) (walkTpl v)
-                | TYtForEntries(binder, src, body) ->
-                    Set.union
-                        (walk src)
-                        (Set.difference
-                            (body
-                             |> List.map (fun e -> walkTpl (TYtMap([ e ], Unchecked.defaultof<Ast.Span>)))
-                             |> unionAll)
-                            (patNames binder)))
-            |> unionAll
+        | TYtSeq(items, _) -> List.iter walkItem items
+        | TYtMap(entries, _) -> List.iter walkEntry entries
 
-    let free = walk te
+    and walkItem (item: TypedYamlTplItem) : unit =
+        match item with
+        | TYtItem t -> walkTpl t
+        | TYtDropItem(t, _) -> walkTpl t
+        | TYtForItems(binder, src, body) ->
+            walk src
+            shadowed (patNames binder) (fun () -> List.iter walkItem body)
+
+    and walkEntry (entry: TypedYamlTplEntry) : unit =
+        match entry with
+        | TYtPair(TYtKeyLit _, v) -> walkTpl v
+        | TYtPair(TYtKeySplice k, v) ->
+            walk k
+            walkTpl v
+        | TYtForEntries(binder, src, body) ->
+            walk src
+            shadowed (patNames binder) (fun () -> List.iter walkEntry body)
+
+    walk te
     free, List.ofSeq found
 
 // ---- occurrences [D:lsp-rename] -------------------------------------

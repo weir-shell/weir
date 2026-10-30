@@ -694,8 +694,6 @@ let rec execScopeViolation (helpers: Set<string>) (te: TypedExpr) : (Span * stri
 /// down exactly as isPureExpr does, so a region deep in a statement
 /// still sees the statement's own earlier lets
 let rec pureViolation (refused: Map<string, string>) (env: Map<string, bool>) (te: TypedExpr) : (Span * string) option =
-    let pureViolation = pureViolation refused
-
     match te.Kind with
     | TEWithin(kind, _, arg, opts, body) ->
         (match kind with
@@ -716,24 +714,34 @@ let rec pureViolation (refused: Map<string, string>) (env: Map<string, bool>) (t
          // captured (fine), proc and nested apply refuse — then keep
          // walking the body for nested pure/readonly/plan regions
          | WithinPlan ->
-             firstPlanRefusal refused body
-             |> Option.orElseWith (fun () -> pureViolation env body)
+             match firstPlanRefusal refused body with
+             | Some _ as r -> r
+             | None -> pureViolation refused env body
          | WithinTmp
          | WithinCd
          | WithinEnv
          | WithinProc
          | WithinServe
          | WithinLock ->
-             [ arg; opts ]
-             |> List.choose id
-             |> List.tryPick (pureViolation env)
-             |> Option.orElseWith (fun () -> pureViolation env body))
+             let viaArg (o: TypedExpr option) =
+                 match o with
+                 | Some e -> pureViolation refused env e
+                 | None -> None
+
+             match viaArg arg with
+             | Some _ as r -> r
+             | None ->
+                 match viaArg opts with
+                 | Some _ as r -> r
+                 | None -> pureViolation refused env body)
     | TELet(n, _, v, b) ->
-        pureViolation env v
-        |> Option.orElseWith (fun () -> pureViolation (Map.add n (isPureExpr env v) env) b)
+        match pureViolation refused env v with
+        | Some _ as r -> r
+        | None -> pureViolation refused (Map.add n (isPureExpr env v) env) b
     | TELetPat(p, v, b) ->
-        pureViolation env v
-        |> Option.orElseWith (fun () -> pureViolation (dropPat p env) b)
-    | TELambda(p, _, b) -> pureViolation (mapDrop p env) b
-    | TELambdaPat(p, b) -> pureViolation (dropPat p env) b
-    | _ -> Check.tryPickChild (pureViolation env) te
+        match pureViolation refused env v with
+        | Some _ as r -> r
+        | None -> pureViolation refused (dropPat p env) b
+    | TELambda(p, _, b) -> pureViolation refused (mapDrop p env) b
+    | TELambdaPat(p, b) -> pureViolation refused (dropPat p env) b
+    | _ -> Check.tryPickChild (pureViolation refused env) te

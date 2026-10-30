@@ -34,6 +34,9 @@ type private St = {
     // where the first refusal happened — the coverage work's one instrument
     mutable RefusedAt: int
     PendingAt: int
+    // the word at WordAt, so the lookaheads a position gets share one string
+    mutable WordAt: int
+    mutable Word: string
 }
 
 let private maxNesting = 64
@@ -103,13 +106,18 @@ let private matches (st: St) (s: string) =
 let private wordAhead (st: St) : string =
     let t = st.Text
 
-    if st.I < t.Length && isIdentStart t[st.I] then
+    if st.WordAt = st.I then
+        st.Word
+    elif st.I < t.Length && isIdentStart t[st.I] then
         let mutable j = st.I + 1
 
         while j < t.Length && isIdentCont t[j] do
             j <- j + 1
 
-        t.Substring(st.I, j - st.I)
+        let w = t.Substring(st.I, j - st.I)
+        st.WordAt <- st.I
+        st.Word <- w
+        w
     else
         Unchecked.defaultof<_>
 
@@ -3193,6 +3201,8 @@ let private parse (r: Resolver) (input: string) : Stmt * St =
             ExprParen = false
             RefusedAt = 0
             PendingAt = 0
+            WordAt = -1
+            Word = null
         }
     else
         let pending = pendingAnonDefs.Value
@@ -3210,6 +3220,8 @@ let private parse (r: Resolver) (input: string) : Stmt * St =
             ExprParen = false
             RefusedAt = -1
             PendingAt = pending.Count
+            WordAt = -1
+            Word = null
         }
 
         let s = statement st

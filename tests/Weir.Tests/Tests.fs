@@ -15230,7 +15230,7 @@ let lspRenameTests =
                     | Weir.Script.KCmd te
                     | Weir.Script.KExpr te ->
                         statements <- statements + 1
-                        let free, _ = Weir.Check.bindingUsage te
+                        let free = Weir.Check.bindingUsage te |> fst |> Set.ofSeq
 
                         let top =
                             Weir.Check.occurrences te
