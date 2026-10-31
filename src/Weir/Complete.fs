@@ -559,6 +559,17 @@ let headKeyOffers (env: TypeEnv) (before: string) : string list option =
     else
         None
 
+// a `within` head, bare or as a `let … = within` RHS — precompiled and
+// time-bounded: `\s+` and `.*` overlap, so a long space run after `let`
+// re-scans the line once per give-back (quadratic), and the line is the
+// document's, exactly as pipeSourceLead above
+let private untilWithinHead =
+    System.Text.RegularExpressions.Regex(
+        @"^(let\s+.*=\s*)?within\b",
+        System.Text.RegularExpressions.RegexOptions.None,
+        System.TimeSpan.FromMilliseconds 100.0
+    )
+
 // `until stopped` after a within's block [D:until-stopped-complete]
 let untilStoppedAt (above: string list) (before: string) : bool =
     let indent (s: string) = s.Length - s.TrimStart().Length
@@ -572,7 +583,10 @@ let untilStoppedAt (above: string list) (before: string) : bool =
         |> List.tryFind (fun l -> indent l <= col)
         |> Option.exists (fun l ->
             indent l = col
-            && System.Text.RegularExpressions.Regex.IsMatch(l.TrimStart(), @"^(let\s+.*=\s*)?within\b")))
+            && (try
+                    untilWithinHead.IsMatch(l.TrimStart())
+                with :? System.Text.RegularExpressions.RegexMatchTimeoutException ->
+                    false)))
 
 // the yaml marker's open modifiers, canonical order [D:head-key-complete]
 let private yamlModifierOffers (marker: string) : string list =

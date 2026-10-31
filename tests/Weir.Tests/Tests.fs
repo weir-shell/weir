@@ -13403,6 +13403,12 @@ let headSlotCompletionTests =
             Expect.isTrue
                 (Weir.Complete.untilStoppedAt [ "let x = within tmp d"; "    d" ] "until ")
                 "a let-bound within"
+
+            // a hostile line (`let` + a long space run) is bounded, never a hang
+            let sw = System.Diagnostics.Stopwatch.StartNew()
+            let hostile = "let" + String.replicate 64000 " "
+            Expect.isFalse (Weir.Complete.untilStoppedAt [ hostile ] "until ") "not a within head"
+            Expect.isLessThan sw.ElapsedMilliseconds 2000L "the match is time-bounded"
         }
         test "an import completes a quoted module path: directories and .weir files [D:import-path-complete]" {
             skipOnWindows ()
