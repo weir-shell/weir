@@ -98,14 +98,19 @@ what it expands to: with `#alias co = git checkout`, `co -<TAB>` offers
 checkout's flags. See
 [signatures drive Tab completion](tooling.md#signatures-drive-tab-completion).
 
-**`$` splices.** In a command argument, `$` completes session
-bindings: `az … --location $l<TAB>` offers every binding starting with
-`l`, such as `$location`. An argument without `$` completes paths
-only.
+**`$` splices.** In a command argument, `$` completes the bindings in
+scope: `az … --location $l<TAB>` offers every binding starting with
+`l`, such as `$location`, including a `for` variable, a function
+parameter or a `let` in the same block. An argument without `$`
+completes paths only.
+
+**Long lists.** When several candidates match, Tab lists them all in
+columns that fit the terminal; past 200 it counts the rest.
 
 **Paths.** In an expression a path completes quoted, because a bare
-path isn't a valid weir expression: `File.read ./x<TAB>` gives
-`File.read "./x"`.
+path isn't a valid weir expression: `File.read ./x<TAB>` and
+`File.read x<TAB>` give `File.read "./x"` and `File.read "x"`. Outside
+a path parameter or a command's arguments, file names aren't offered.
 
 As a command argument (`cat ./x`, `ls ./dir`) it stays unquoted,
 unless a character would split or end the word: `cat my<TAB>` gives
@@ -114,7 +119,12 @@ unless a character would split or end the word: `cat my<TAB>` gives
 If you already typed the opening quote (`File.read "./x<TAB>`), the
 completion goes inside it without a second quote, escaped for that
 kind of string: `\"` in `"…"`, `""` in `@"…"`, `{{` in `$"…"`. A
-directory keeps its trailing `/` inside the quotes.
+directory keeps its trailing `/` inside the quotes. Tab again continues
+the same path, spaces included: `cat "dir with space/<TAB>`.
+
+A path glued to a flag (`--file=my<TAB>`) offers only names that need
+no quotes: weir can't quote half a word, so type the quotes around the
+whole word yourself.
 
 A leading `~` completes to your home directory's literal path:
 `cat ~/.con<TAB>` becomes `cat /home/you/.config/`, and `cd ~<TAB>`

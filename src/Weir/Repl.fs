@@ -916,6 +916,29 @@ let private termWidth () =
     with _ ->
         None
 
+// the Tab listing's lines [D:tab-listing]
+let completionListing (width: int) (items: string list) : string list =
+    let cap = 200
+    let shown = items |> List.truncate cap
+    let colW = (shown |> List.map String.length |> List.fold max 0) + 2
+    let cols = max 1 ((width - 1) / colW)
+    let rows = (shown.Length + cols - 1) / cols
+    let arr = Array.ofList shown
+
+    let lines = [
+        for r in 0 .. rows - 1 do
+            [ for c in 0 .. cols - 1 -> c * rows + r ]
+            |> List.filter (fun i -> i < arr.Length)
+            |> List.map (fun i -> arr[i].PadRight colW)
+            |> String.concat ""
+            |> fun l -> l.TrimEnd()
+    ]
+
+    if items.Length > cap then
+        lines @ [ $"… and {items.Length - cap} more — type more to narrow" ]
+    else
+        lines
+
 // ---------------------------------------------------------------------------
 // The owned line editor [D:owned-line-editor]: bash key semantics —
 // Ctrl+C cancels the line, Ctrl+D on an empty line is EOF.
@@ -2161,7 +2184,10 @@ let private readLineTty () : string option =
                      let keepRow, keepCol = row, col
                      toEnd ()
                      Console.WriteLine()
-                     Console.WriteLine(String.concat "  " (many |> List.truncate 24))
+
+                     for l in completionListing (termWidth ()) many do
+                         Console.WriteLine l
+
                      row <- keepRow
                      col <- keepCol
                      lastCursorDisplay <- 0

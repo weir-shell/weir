@@ -6992,6 +6992,37 @@ let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list opt
                 |> List.sort
                 |> List.map (fun f -> head + "." + f))
 
+/// `env` plus the binders in scope at a `$` splice word ending `pre`
+/// [D:splice-locals]
+let withSpliceLocals (env: TypeEnv) (pre: string) (word: string) : TypeEnv =
+    let before = pre.Substring(0, pre.Length - word.Length)
+
+    if not (before.EndsWith "$" || before.EndsWith "$@") then
+        env
+    else
+        let probe = before + completeHole
+        let parse t = Parser.parseLine (assumeResolver env) t
+
+        match Complete.bindersAtRepaired parse env (probe + closers probe) completeHole with
+        | Some binds -> {
+            env with
+                // an unconstrained binder splices as a string
+                Values =
+                    binds
+                    |> List.fold
+                        (fun m (n, t) ->
+                            Map.add
+                                n
+                                (mono (
+                                    match t with
+                                    | TVar _ -> TStr
+                                    | t -> t
+                                ))
+                                m)
+                        env.Values
+          }
+        | None -> env
+
 /// a multi-line entry's context at the cursor: `lines` is the entry up
 /// to the cursor (its last line cut there). The statements before the
 /// cursor's extend `env` (checked, never run; one that fails to check is
@@ -9705,6 +9736,11 @@ let suggestEntryWith
     : string list =
     let ctxEnv, stmt = entryContext env entry
     let word = text.Substring(min wordStart text.Length)
+
+    let ctxEnv =
+        match stmt with
+        | Some s when s.EndsWith word -> withSpliceLocals ctxEnv s word
+        | _ -> ctxEnv
 
     let untilStopped =
         match List.rev entry with

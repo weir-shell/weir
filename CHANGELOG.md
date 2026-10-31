@@ -15,6 +15,21 @@
   line parses.
 - **`#find` finds types.** `HttpServerResponse`, `Completed` and every
   other type `#help` documents are now in its list.
+- **A file name never completes bare into an expression.**
+  `File.read pl<Tab>` gives `File.read "plain.txt"`, and `1 + pl<Tab>`
+  no longer offers files at all. Command arguments stay bare, including
+  inside `$(…)`.
+- **A quoted path with a space continues.** Tab again after
+  `cat "dir with space/` completes inside the directory.
+- **`$` splices offer local names.** A `for` variable, a function
+  parameter or a block `let` completes after `$`, not only session
+  bindings.
+- **The Tab listing shows everything.** Candidates are laid out in
+  columns to the terminal's width instead of being cut at 24 without a
+  word; past 200 the rest are counted.
+- **A path glued to a flag (`--file=my<Tab>`) offers only names that
+  need no quotes**, instead of inserting `--file="my file.txt"`, which
+  weir refuses.
 
 ## v0.0.82
 

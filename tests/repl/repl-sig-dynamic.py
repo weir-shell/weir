@@ -133,7 +133,7 @@ try:
     tab("co feature\t", r"co feature-zeta", "co <TAB> offers a branch")
     start = len(r.out)
     r.send("co \t")
-    if r.wait_for(r"feature-zeta.*fix-omega.*trunk", start, timeout=10) is None:
+    if r.wait_for(r"(?s)feature-zeta.*fix-omega.*trunk", start, timeout=10) is None:
         failures.append(f"co <TAB> lists the branches: {r.out[-300:]!r}")
     abandon()
 

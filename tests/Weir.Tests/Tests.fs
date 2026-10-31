@@ -13445,6 +13445,105 @@ let headSlotCompletionTests =
         }
     ]
 
+let completionHuntTests =
+    let env = Weir.Prelude.extendTypes Weir.Builtins.typeEnvStrict
+
+    let sug (line: string) =
+        Weir.Complete.suggest env line (Weir.Complete.wordStartAt line line.Length)
+
+    let entry (lines: string list) =
+        let cur = List.last lines
+        Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+
+    let withFiles (f: unit -> unit) =
+        let d = tempPath "weir-hunt"
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "dir with space"))
+        |> ignore
+
+        System.IO.File.WriteAllText(System.IO.Path.Combine(d, "dir with space", "inner.txt"), "x")
+
+        for n in [ "plain.txt"; "mlib.weir"; "my file.txt"; "mybare.txt" ] do
+            System.IO.File.WriteAllText(System.IO.Path.Combine(d, n), "x")
+
+        try
+            inCwd d f
+        finally
+            System.IO.Directory.Delete(d, true)
+
+    // sequenced: the fixture moves the ambient session cwd
+    testSequenced
+    <| testList "completion hunt fixes" [
+        test "a file name never completes bare into an expression [D:expr-paths-quoted]" {
+            skipOnWindows ()
+
+            withFiles (fun () ->
+                Expect.equal (sug "File.read pl") [ "\"plain.txt\"" ] "a path parameter quotes"
+                Expect.isFalse (sug "let x = 1 + pl" |> List.contains "plain.txt") "arithmetic offers no files"
+                Expect.isFalse (sug "print (Seq.length mli" |> List.contains "mlib.weir") "nor an argument"
+                Expect.isFalse (sug "ls dir" |> List.exists (fun c -> c.Contains "dir with")) "ls takes no argv"
+                Expect.equal (sug "cat pl") [ "plain.txt" ] "a command's argv stays bare"
+                Expect.equal (sug "cd pl") [ "plain.txt" ] "statement cd is argv"
+                Expect.equal (sug "let x = $(cat pl") [ "plain.txt" ] "inside an open $( the command's argv"
+                Expect.equal (sug "let x = $(cat dir") [ "\"dir with space/\"" ] "…quoted where a word can't hold it")
+        }
+        test "inside an open literal the word is its content: a spaced path continues [D:open-literal-word]" {
+            skipOnWindows ()
+            let line = "cat \"dir with space/"
+            Expect.equal (Weir.Complete.wordStartAt line line.Length) 5 "the word starts after the quote"
+
+            withFiles (fun () ->
+                Expect.equal (sug "cat \"dir with space/i") [ "dir with space/inner.txt" ] "the re-Tab nests"
+                Expect.equal (sug "File.read \"dir with space/i") [ "dir with space/inner.txt" ] "in an expression too"
+                Expect.equal (sug "cat \"my f") [ "my file.txt" ] "a hand-opened quote")
+
+            let hole = "print $\"a b {p.na"
+            Expect.equal (Weir.Complete.wordStartAt hole hole.Length) (hole.Length - 4) "a hole keeps its own word"
+
+            // one pass over the line: a long open literal is no slower than a short one
+            let long = "cat \"" + String.replicate 50000 "a b "
+            let sw = System.Diagnostics.Stopwatch.StartNew()
+            Expect.equal (Weir.Complete.wordStartAt long long.Length) 5 "the word starts after the quote"
+            Expect.isLessThan sw.ElapsedMilliseconds 1000L "linear in the line"
+
+            let raw = "let s = \"\"\"a \"q\" b"
+            Expect.equal (Weir.Complete.wordStartAt raw raw.Length) 11 "a triple-quoted literal's content"
+        }
+        test "a $ splice sees the statement's own binders in scope [D:splice-locals]" {
+            Expect.equal (entry [ "for fname in [\"a\"] do"; "    echo $fn" ]) [ "fname" ] "a for binder"
+            Expect.equal (entry [ "let greet fname = echo $fn" ]) [ "fname" ] "a function parameter"
+
+            Expect.contains (entry [ "if true then"; "    let tag = \"x\""; "    echo $ta" ]) "tag" "a block-local let"
+
+            Expect.isFalse
+                (entry [ "for xs in [[\"a\"]] do"; "    echo $x" ] |> List.contains "xs")
+                "a seq is not a $ splice"
+
+            Expect.contains (entry [ "for xs in [[\"a\"]] do"; "    echo $@x" ]) "xs" "…it is a $@ splice"
+            Expect.equal (entry [ "let f fname = 1"; "echo $fn" ]) [] "out of scope after its statement"
+        }
+        test "the Tab listing shows every candidate in columns, capped with a count [D:tab-listing]" {
+            let items = [ for i in 1..30 -> $"item{i}" ]
+            let lines = Weir.Repl.completionListing 40 items
+            Expect.isTrue (lines.Length > 1) "several rows"
+            Expect.isTrue (lines |> List.forall (fun l -> l.Length < 40)) "each fits the width"
+
+            for it in items do
+                Expect.isTrue (lines |> List.exists (fun l -> l.Split(' ') |> Array.contains it)) $"{it} shown"
+
+            let many = Weir.Repl.completionListing 80 [ for i in 1..250 -> $"x{i}" ]
+            Expect.stringContains (List.last many) "50 more" "past the cap, the rest is counted"
+        }
+        test "a word glued to a prefix offers only what needs no quotes [D:glued-argv-complete]" {
+            skipOnWindows ()
+
+            withFiles (fun () ->
+                Expect.equal (sug "cat --x=my") [ "mybare.txt" ] "the spaced name would need the whole word quoted"
+                Expect.equal (sug "dd if=pl") [ "plain.txt" ] "a bare-safe name completes"
+                Expect.equal (sug "cat my") [ "\"my file.txt\""; "mybare.txt" ] "an unglued word still quotes")
+        }
+    ]
+
 let withinKindsTests =
     // one table [D:within-kinds], three consumers: hover, completion,
     // and the grammar inventories (the last checked mechanically in
@@ -14121,10 +14220,11 @@ let pathParamCompletionTests =
                     for bad in [ "when"; "where"; "windowed"; "with"; "within" ] do
                         Expect.isFalse (List.contains bad withBinding) $"'{bad}' is not a path argument"
 
-                    // a second-argument position: File.copy's dst
+                    // a second-argument position: File.copy's dst — an
+                    // expression, so the path is a literal [D:expr-paths-quoted]
                     Expect.equal
                         (sug Weir.Builtins.typeEnvStrict "File.copy tool.txt w")
-                        [ "weir-sub/" ]
+                        [ "\"weir-sub/\"" ]
                         "dst is a path"
 
                     // the position is param-keyed, not member-keyed:
@@ -14138,7 +14238,7 @@ let pathParamCompletionTests =
                     // within cd — the one path-typed within kind
                     Expect.equal
                         (sug Weir.Builtins.typeEnvStrict "within cd w")
-                        [ "weir-sub/" ]
+                        [ "\"weir-sub/\"" ]
                         "within cd is a path position"
 
                     // keywords still complete where they should — the
@@ -45596,6 +45696,7 @@ let allTests =
         readonlyBlockTests
         planApplyTests
         headSlotCompletionTests
+        completionHuntTests
         withinKindsTests
         withinAlwaysLockTests
         withinAlwaysAnyTests

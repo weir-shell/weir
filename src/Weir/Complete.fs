@@ -366,6 +366,26 @@ let wordStartAt (text: string) (pos: int) : int =
     while i > 0 && isWordChar text[i - 1] do
         i <- i - 1
 
+    // inside an open string literal (not a hole) the word is the
+    // literal's content so far [D:open-literal-word]
+    let pre = text.Substring(0, min pos text.Length)
+
+    // one pass: the opener is the first quote after the last character
+    // outside any string
+    if i > 0 && Weir.Scan.endsInsideString pre && (interpHoleStart pre).IsNone then
+        let lastOut = Weir.Scan.foldOutsideStrings (fun _ j _ -> j) -1 pre
+        let q = pre.IndexOf('"', lastOut + 1)
+
+        if q >= 0 then
+            let content =
+                if System.String.CompareOrdinal(pre, q, "\"\"\"", 0, 3) = 0 then
+                    q + 3
+                else
+                    q + 1
+
+            if content < i then
+                i <- content
+
     // a Windows drive prefix belongs to the path it introduces: `:` is not a
     // word char (it separates a record field from its type, and a yaml key
     // from its value), so the scan stops after `C:` and leaves a driveless
@@ -621,6 +641,26 @@ let private yamlModifierOffers (marker: string) : string list =
 // forced external. `anyHead` drops the claimed-name test: a `$`
 // splice word is argv-like after any head [D:argv-splice-complete].
 let private commandArgvStmt (env: TypeEnv) (anyHead: bool) (before: string) : string option =
+    // inside an unclosed `$(`, the captured command [D:expr-paths-quoted]
+    let before =
+        let opens =
+            Weir.Scan.foldOutsideStrings
+                (fun (st: int list) i c ->
+                    if c = '(' then
+                        i :: st
+                    elif c = ')' then
+                        (match st with
+                         | _ :: rest -> rest
+                         | [] -> [])
+                    else
+                        st)
+                []
+                before
+
+        match opens with
+        | i :: _ when i > 0 && before[i - 1] = '$' -> before.Substring(i + 1)
+        | _ -> before
+
     let stmt =
         let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
         (if i >= 0 then before.Substring(i + 1) else before).TrimStart()
@@ -1243,21 +1283,35 @@ let rec suggestScopedWith
 
                 let opener = openerAt text wordStart
 
+                // a word glued to a prefix (`--file=`, `if=`) cannot be
+                // quoted alone [D:glued-argv-complete]
+                let glued =
+                    not insideOpenQuote
+                    && wordStart > 0
+                    && wordStart <= text.Length
+                    && not (System.Char.IsWhiteSpace text[wordStart - 1])
+
+                let argvWords (candidates: string list) : string list =
+                    if glued then
+                        candidates |> List.filter bareArgvSafe
+                    else
+                        candidates |> List.map argvWord
+
                 let quoteFor (before: string) (candidates: string list) : string list =
                     if insideOpenQuote then
                         candidates |> List.map (escapeFor opener)
                     elif cdCommandArg before then
-                        candidates |> List.map argvWord
+                        argvWords candidates
                     elif expressionSlot before then
                         candidates |> List.map stringLiteral
                     else
-                        candidates |> List.map argvWord
+                        argvWords candidates
 
                 let argvPaths (candidates: string list) : string list =
                     if insideOpenQuote then
                         candidates |> List.map (escapeFor opener)
                     else
-                        candidates |> List.map argvWord
+                        argvWords candidates
 
                 // a `$name` splice slot decides alone [D:argv-splice-complete]:
                 // inside a string the `$` is literal, glued to a word it is a
@@ -1361,7 +1415,7 @@ let rec suggestScopedWith
                     let paths =
                         filesystemComplete word
                         |> List.filter (fun c -> c.StartsWith word && c <> word)
-                        |> argvPaths
+                        |> quoteFor before
 
                     (paths
                      @ (stringBindings |> List.filter (fun c -> c.StartsWith word && c <> word)))
@@ -1552,18 +1606,9 @@ let rec suggestScopedWith
                 else
                     // command heads at a head slot (the statement head and the
                     // let-RHS, headSlotAt's verdict [D:let-rhs-head]): PATH
-                    // executables + command-callable builtins join the name pool;
-                    // in argv position cwd files join instead — the two
-                    // interactive contexts [D:repl-quality]
-                    let cwdEntries () =
-                        try
-                            System.IO.Directory.GetFileSystemEntries(Session.Cwd())
-                            |> Array.map (fun e ->
-                                let n = System.IO.Path.GetFileName e
-                                if System.IO.Directory.Exists e then n + "/" else n)
-                            |> Array.toList
-                        with _ -> []
-
+                    // executables + command-callable builtins join the name pool
+                    // [D:repl-quality]; a file name is never an expression
+                    // [D:expr-paths-quoted]
                     let extra =
                         match headSlotAt before with
                         | (HeadSlot.Stmt | HeadSlot.LetRhs) when word <> "" ->
@@ -1577,7 +1622,6 @@ let rec suggestScopedWith
                             (Extern.names () |> Set.toList)
                             @ (Builtins.commandCallable |> Set.toList)
                             @ (aliasHeads |> Set.toList)
-                        | _ when word <> "" -> cwdEntries ()
                         | _ -> []
 
                     // a union-case constructor never starts a statement
@@ -1822,6 +1866,63 @@ let tyAtRepaired
                 match find None te with
                 | Some t -> Some t
                 | None -> binderSiteTy envH head te)
+
+// the statement's own binders in scope at the hole [D:splice-locals]
+let bindersAtRepaired
+    (parse: string -> Result<Weir.Ast.Stmt, string>)
+    (env: TypeEnv)
+    (repaired: string)
+    (hole: string)
+    : (string * Ty) list option =
+    let rec patNames (p: Weir.Ast.Pattern) : string list =
+        match p.PKind with
+        | Weir.Ast.PVar n -> [ n ]
+        | Weir.Ast.PTuple ps -> ps |> List.collect patNames
+        | Weir.Ast.PRecord fs -> fs |> List.collect (snd >> patNames)
+        | _ -> []
+
+    let patBinds (pat: Weir.Ast.Pattern) (ty: Ty) =
+        patNames pat
+        |> List.choose (fun n -> patBinderTy env n pat ty |> Option.map (fun t -> n, t))
+
+    let domain (t: Ty) =
+        match t with
+        | TFun(d, _) -> Some d
+        | _ -> None
+
+    match parse repaired with
+    | Ok(Weir.Ast.SLet(_, e))
+    | Ok(Weir.Ast.SLetPat(_, e))
+    | Ok(Weir.Ast.SExpr e)
+    | Ok(Weir.Ast.SCmd e) ->
+        match Weir.Check.typecheck (withHoles env e) e with
+        | Error _ -> None
+        | Ok te ->
+            let rec walk (scope: (string * Ty) list) (node: Weir.Check.TypedExpr) =
+                let orElse (f: unit -> (string * Ty) list option) (r: (string * Ty) list option) =
+                    if r.IsSome then r else f ()
+
+                match node.Kind with
+                | Weir.Check.TEVar n when n = hole -> Some scope
+                | Weir.Check.TELambda(p, _, body) ->
+                    walk (scope @ (domain node.Ty |> Option.map (fun d -> p, d) |> Option.toList)) body
+                | Weir.Check.TELambdaPat(pat, body) ->
+                    walk (scope @ (domain node.Ty |> Option.map (patBinds pat) |> Option.defaultValue [])) body
+                | Weir.Check.TELet(n, _, value, body) ->
+                    walk scope value |> orElse (fun () -> walk (scope @ [ n, value.Ty ]) body)
+                | Weir.Check.TELetPat(pat, value, body) ->
+                    walk scope value |> orElse (fun () -> walk (scope @ patBinds pat value.Ty) body)
+                | Weir.Check.TEMatch(scrut, arms) ->
+                    walk scope scrut
+                    |> orElse (fun () ->
+                        arms
+                        |> List.tryPick (fun (pat, guard, body) ->
+                            let s = scope @ patBinds pat scrut.Ty
+                            guard |> Option.bind (walk s) |> orElse (fun () -> walk s body)))
+                | _ -> Weir.Check.childExprs node |> List.tryPick (walk scope)
+
+            walk [] te
+    | _ -> None
 
 /// a resolved type's completable field names: a record's fields, an
 /// open row's plus the declared records it fits [D:open-row-compat]
