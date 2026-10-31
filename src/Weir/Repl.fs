@@ -3291,13 +3291,18 @@ let private findCandidates (te: TypeEnv) : string list = [
         for mem in moduleMembersOf te m do
             let g = memberGlance $"{m}.{mem}"
             yield (if g = "" then $"{m}.{mem}" else $"{m}.{mem} — {g}")
+
+    // types too: #help documents them [D:find-types]
+    for t in te.Types |> Map.keys |> Seq.filter (fun t -> Char.IsUpper t[0]) |> Seq.sort do
+        let g = memberGlance t
+        yield (if g = "" then $"{t} — type" else $"{t} — {g}")
 ]
 
 /// the fallback (and the piped behavior): case-insensitive substring
 /// filter over the candidate lines — name and glance text both match
 let private findFallback (te: TypeEnv) (query: string) : string =
     if query = "" then
-        "#find <query> — fuzzy-search modules and members (interactive with fzf at a tty; a substring filter otherwise)"
+        "#find <query> — fuzzy-search modules, members and types (interactive with fzf at a tty; a substring filter otherwise)"
     else
         let w = glanceWidth ()
 

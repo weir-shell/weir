@@ -9704,14 +9704,25 @@ let suggestEntryWith
     (wordStart: int)
     : string list =
     let ctxEnv, stmt = entryContext env entry
+    let word = text.Substring(min wordStart text.Length)
 
-    match stmt |> Option.bind (fun s -> repairedFields ctxEnv s "") with
-    | Some(_ :: _ as fields) -> fields
-    | _ ->
-        // a command argv word under a sig'd head [D:sig-arg-complete]
-        match sigArgvCompleteWith hooks (SigLookup.userDir ()) aliases ctxEnv text wordStart with
-        | Some offers -> offers
-        | None -> Complete.suggestSession (aliases |> Map.keys |> Set.ofSeq) values ctxEnv text wordStart
+    let untilStopped =
+        match List.rev entry with
+        | last :: above when last.Length >= word.Length ->
+            Complete.untilStoppedAt (List.rev above) (last.Substring(0, last.Length - word.Length))
+        | _ -> false
+
+    if untilStopped then
+        [ "stopped" ] |> List.filter (fun w -> w.StartsWith word && w <> word)
+    else
+
+        match stmt |> Option.bind (fun s -> repairedFields ctxEnv s "") with
+        | Some(_ :: _ as fields) -> fields
+        | _ ->
+            // a command argv word under a sig'd head [D:sig-arg-complete]
+            match sigArgvCompleteWith hooks (SigLookup.userDir ()) aliases ctxEnv text wordStart with
+            | Some offers -> offers
+            | None -> Complete.suggestSession (aliases |> Map.keys |> Set.ofSeq) values ctxEnv text wordStart
 
 let suggestEntry aliases values env entry text wordStart =
     suggestEntryWith None aliases values env entry text wordStart

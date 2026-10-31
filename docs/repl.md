@@ -120,6 +120,15 @@ A leading `~` completes to your home directory's literal path:
 `cat ~/.con<TAB>` becomes `cat /home/you/.config/`, and `cd ~<TAB>`
 becomes `cd "/home/you/"`, so the line shows exactly what will run.
 
+After `import`, a path completes quoted and lists only directories and
+`.weir` files: `import li<TAB>` gives `import "lib/"`.
+
+**Options.** After `retry`, `poll`, `repeat` or `within lock "p"`, Tab
+offers the option keys you haven't given yet: `repeat int<TAB>` gives
+`repeat interval=`. A `yaml` marker offers `patch`, `by=` and
+`schema=`, in the order they're written. Below a `within` block,
+`until <TAB>` offers `stopped`.
+
 ## What the echo shows
 
 At a terminal, how a value is echoed depends on its type:
@@ -241,8 +250,9 @@ no coloring: the backticks stay, so you can still see where code
 starts and ends.
 
 `#find [query]` does a fuzzy search over all of it. With fzf
-installed, at a terminal, every module (`Seq — summary`) and member
-(`Seq.map — summary`) is listed in fzf with a **live preview** of the
+installed, at a terminal, every module (`Seq — summary`), member
+(`Seq.map — summary`) and type (`Completed — summary`) is listed in
+fzf with a **live preview** of the
 selected name's full doc. Enter prints the `#help` output for the
 selection; Esc returns to the prompt.
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.0.83
+
+### Fixed
+
+- **Tab offers a head's options.** `repeat int<Tab>` gives
+  `interval=`; `retry`, `poll` and `within lock "p"` offer their keys
+  the same way, minus the ones already given, and a `yaml` marker
+  offers `patch`, `by=` and `schema=` in the order they're written.
+- **`until sto<Tab>` completes to `stopped`** when the `until` ends a
+  `within` block, in the REPL and in editors.
+- **An `import` path completes quoted.** `import li<Tab>` offers
+  directories and `.weir` files as a string literal, so the completed
+  line parses.
+- **`#find` finds types.** `HttpServerResponse`, `Completed` and every
+  other type `#help` documents are now in its list.
+
 ## v0.0.82
 
 ### Fixed

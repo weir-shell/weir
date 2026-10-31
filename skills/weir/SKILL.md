@@ -2461,7 +2461,7 @@ m |> to json |> Seq.iter print // JSON object keys are strings — show the key 
   alias heads back to the real invocation so the saved file is
   alias-free. Aliases never reach scripts or `-e`. At the prompt,
   `#help <Module>` glances one member per line (name + its doc's
-  first line) and `#find [query]` fuzzy-searches modules and members
+  first line) and `#find [query]` fuzzy-searches modules, members and types
   [D:help-find] (fzf with a live doc preview at a tty; a substring
   fallback piped/without fzf). `#history [N]` shows history (bare =
   all, `N` = last N) with the file path in its header — the quick way
