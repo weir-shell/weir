@@ -31,7 +31,8 @@ try {
 }
 const count =
   (ref.modules ?? []).reduce((n, mod) => n + mod.members.length, 0) +
-  (ref.forms ?? []).length;
+  (ref.forms ?? []).length +
+  (ref.types ?? []).length;
 if (count === 0) fail(`member index dist${m[1]} parsed empty`);
 
 console.log(`search guard: pagefind bundle present, member index has ${count} entries`);

@@ -39093,6 +39093,7 @@ let helpUxTests =
                     "GET"
                     "QUERY"
                     "TCP"
+                    "TLS" // HttpRequest's insecure: skip TLS verification
                     "URL"
                     "EOF" // end of file
                     "BOM" // byte-order mark, the File.write preservation
@@ -39222,6 +39223,10 @@ let helpUxTests =
                 (Weir.Repl.findFallbackForTest "HttpServer")
                 "HttpServerResponse"
                 "the fallback finds it"
+
+            // every prelude type explains itself [D:prelude-type-docs]
+            let bare = cs |> List.filter (fun l -> l.EndsWith " — type")
+            Expect.isEmpty bare "a type without a description"
         }
         test "(g) #find Tab-completes: sessionDirectives carries it" {
             Expect.contains Weir.Complete.sessionDirectives "find" "find is a session directive"

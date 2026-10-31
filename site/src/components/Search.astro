@@ -82,10 +82,14 @@ import refUrl from "../data/reference.json?url";
         const ref = await (await fetch(modal.dataset.refUrl)).json();
         const anchor = (g, n) =>
           `${g.toLowerCase()}-${n.toLowerCase().replaceAll(" ", "-")}`;
-        members = [...ref.modules, { name: "Forms", members: ref.forms }].flatMap(
+        members = [
+          ...ref.modules,
+          { name: "Forms", members: ref.forms },
+          { name: "Types", members: ref.types },
+        ].flatMap(
           (g) =>
             g.members.map((m) => {
-              const label = g.name === "Forms" ? m.name : `${g.name}.${m.name}`;
+              const label = g.name === "Forms" || g.name === "Types" ? m.name : `${g.name}.${m.name}`;
               return {
                 label,
                 full: label.toLowerCase(),

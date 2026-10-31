@@ -8773,6 +8773,96 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 "What File.readFrom returns: lines, the complete lines read, and next, the byte offset just past the last one (the offset you started from when there were none). Pass next to the following File.readFrom."
                 None
                 None
+            "FileKind",
+            bd
+                "What a FileRow's kind says an entry is: Regular, Directory or Symlink. Compare with `f.kind == Directory`."
+                None
+                None
+            "Option",
+            bd
+                "A value that may be absent: Some value or None. `Option.defaultValue` unwraps with a fallback and `|> orFail` raises on None. json and yaml read a missing or null field as None, and `to json` omits it."
+                None
+                None
+            "Result",
+            bd
+                "Ok value or Error message, what `e |> try result` gives. `|> orFail` turns an Error back into a raise; `Result.defaultValue` unwraps with a fallback."
+                None
+                None
+            "Retry",
+            bd
+                "retry's options: attempts (default 5), delay between attempts (default 1s) and timeout, an optional ceiling on the whole retry (default None). `retry attempts=3 delay=10s` sets them; `Retry.defaults` is the record."
+                None
+                None
+            "Poll",
+            bd
+                "poll's options: timeout (default 1m) and interval between checks (default 1s). `poll timeout=5m interval=10s` sets them; `Poll.defaults` is the record."
+                None
+                None
+            "Repeat",
+            bd
+                "repeat's options: interval between runs (required) and timeout, an optional ceiling (default None). `repeat interval=1s` sets them."
+                None
+                None
+            "Yaml",
+            bd
+                "A YAML node of any shape: YStr, YInt, YFloat, YBool, YNull, YSeq or YMap (keys in document order). `Yaml.parse` reads one, a `Yaml` field holds a subtree whole, and `to yaml` writes it back."
+                None
+                None
+            "UuidNamespaces",
+            bd
+                "The standard namespaces for name-based ids: dns, url, oid and x500, as in `Uuid.v5 Uuid.ns.dns \"example.com\"`."
+                None
+                None
+            "PromptStatus",
+            bd
+                "What a REPL prompt function gets about the last entry: ok, exit (a failed command's exit code, None otherwise) and duration. Give `prompt` in init.weir as a `PromptStatus -> string` function."
+                None
+                None
+            "HttpMethod",
+            bd
+                "An HTTP verb: Get, Post, Put, Delete, Patch, Head, Options, Query, or Other of string for any other. A request's method; `within serve` hands a handler the verb it received, unknown ones as Other."
+                None
+                None
+            "Auth",
+            bd
+                "How a request sends credentials: NoAuth, Bearer of a Secret token, or Basic of a user name and a Secret password (Basic does the base64). Set it as a request's auth; `show` masks the secret."
+                None
+                None
+            "HttpBody",
+            bd
+                "A request or response body: NoBody, Json of any value `to json` takes (sent with application/json), Text of a string, Form of key/value pairs (percent-encoded), or, in a `within serve` response, Stream of a seq, sent as server-sent events while it is produced."
+                None
+                None
+            "HttpRequest",
+            bd
+                "What `Http.send` sends: method, url, auth, headers (pairs), secretHeaders (credential headers, masked in output), body, timeout (default 30s) and insecure (skip TLS verification for this request). Build one with `Http.get u`, `Http.post u` and friends, or `{ Http.defaults with … }`."
+                None
+                None
+            "HttpResponse",
+            bd
+                "What `Http.send` returns: status, headers (one pair per received header line) and body (lines). A non-2xx status is data, not an error; read a header with `Http.header`. Only `Http.send` makes one."
+                None
+                None
+            "HttpServerRequest",
+            bd
+                "What a `within serve` handler receives: method, path, query (the raw string without the leading ?), headers (pairs in arrival order; compare names case-insensitively) and body (the request text)."
+                None
+                None
+            "HttpServerResponse",
+            bd
+                "What a `within serve` handler returns: status, headers (pairs) and body, an HttpBody, Stream included. A Json body sets Content-Type itself."
+                None
+                None
+            "ServerConfig",
+            bd
+                "`within serve`'s settings: port (Some n for that port, None for a free one the kernel picks), maxConcurrent (handlers at once; the rest queue), and the optional bodyTimeout (default 30s) and maxBody (default 16 MiB)."
+                None
+                None
+            "Op",
+            bd
+                "One change a `plan` block captured instead of performing: WriteFile, WriteFileAtomic, DeleteFile, Copy, Move, CopyDir, MoveDir, MakeDir, DeleteDir, DeleteTree or HttpSend. `Plan.ops` lists them; `Plan.apply` performs them in order."
+                None
+                None
         ]
 
         /// the boundary adapters a direction supports, derived from the doc keys
