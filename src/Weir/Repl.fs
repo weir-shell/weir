@@ -562,8 +562,9 @@ let docsJson () : string =
     w.WriteEndArray()
     w.WriteStartArray "forms"
 
+    // a type's doc rides its types entry, never a form [D:prelude-type-docs]
     for KeyValue(k, d) in Builtins.builtinDocs.Value do
-        if not (k.Contains '.') then
+        if not (k.Contains '.') && not (Map.containsKey k te.Types) then
             w.WriteStartObject()
             w.WriteString("name", k)
 
@@ -599,6 +600,7 @@ let docsJson () : string =
     for KeyValue(n, def) in te.Types do
         w.WriteStartObject()
         w.WriteString("name", n)
+        writeDocFields (Map.tryFind n Builtins.builtinDocs.Value)
 
         match def with
         | Types.Record r ->

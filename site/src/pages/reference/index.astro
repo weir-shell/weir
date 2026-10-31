@@ -71,7 +71,7 @@ const typeDecl = (t) =>
 const groups = [
   ...ref.modules.map((m) => ({ name: m.name, members: m.members })),
   { name: "Forms", members: ref.forms },
-  { name: "Types", members: ref.types.map((t) => ({ name: t.name, signature: typeDecl(t) })) },
+  { name: "Types", members: ref.types.map((t) => ({ name: t.name, signature: typeDecl(t), summary: t.summary })) },
 ];
 
 const toc = [

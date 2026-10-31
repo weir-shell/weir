@@ -2294,34 +2294,6 @@
   ],
   "forms": [
     {
-      "name": "Completed",
-      "signature": null,
-      "summary": "A finished command: ok, exitCode, stdout, stderr. ok is exitCode == 0; a tool whose nonzero codes mean something (grep\u0027s 1) reads the code. You get one from \u0060| complete\u0060, and only from there: it is a receipt of a run, so a literal or \u0060{ r with \u2026 }\u0060 is refused.",
-      "example": null,
-      "pointer": null
-    },
-    {
-      "name": "EnvVar",
-      "signature": null,
-      "summary": "A name/value environment pair. From \u0060Env.vars\u0060 / \u0060pair\u0060 / \u0060ofPairs\u0060 / \u0060fromFile\u0060.",
-      "example": null,
-      "pointer": null
-    },
-    {
-      "name": "FileChunk",
-      "signature": null,
-      "summary": "What File.readFrom returns: lines, the complete lines read, and next, the byte offset just past the last one (the offset you started from when there were none). Pass next to the following File.readFrom.",
-      "example": null,
-      "pointer": null
-    },
-    {
-      "name": "FileRow",
-      "signature": null,
-      "summary": "A directory entry, as returned by \u0060ls\u0060. Fields: name; kind (Regular, Directory or Symlink); target (Some link target for a symlink, None otherwise; no File.* function gives you this); bytes (0 B for a directory); modified (the last-write time as an Instant, which does not change after you read it; tables show it as relative time, show prints ISO); hidden; and path. \u0060ls\u0060 lists files and subdirectories sorted by name, case-sensitively with uppercase first, regardless of locale. Use name for matching and display and path when calling File.* functions. Less common details are separate functions rather than fields, such as File.mode for permissions.",
-      "example": null,
-      "pointer": null
-    },
-    {
       "name": "cd",
       "signature": "cd (path: string) : string",
       "summary": "Change the session\u0027s directory and return the absolute directory it moved to (\u0060let here = cd \u0022/tmp\u0022\u0060). A bare name uses the value of that binding (\u0060cd target\u0060). \u0060cd\u0060 with no argument, or a typed \u0060cd ~\u0060, goes to the home directory; a string argument is used literally. To change directory for a block only, use \u0060within cd\u0060.",
@@ -2603,6 +2575,9 @@
   "types": [
     {
       "name": "Auth",
+      "summary": "How a request sends credentials: NoAuth, Bearer of a Secret token, or Basic of a user name and a Secret password (Basic does the base64). Set it as a request\u0027s auth; \u0060show\u0060 masks the secret.",
+      "example": null,
+      "pointer": null,
       "kind": "union",
       "cases": [
         {
@@ -2621,6 +2596,9 @@
     },
     {
       "name": "Completed",
+      "summary": "A finished command: ok, exitCode, stdout, stderr. ok is exitCode == 0; a tool whose nonzero codes mean something (grep\u0027s 1) reads the code. You get one from \u0060| complete\u0060, and only from there: it is a receipt of a run, so a literal or \u0060{ r with \u2026 }\u0060 is refused.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -2643,6 +2621,9 @@
     },
     {
       "name": "EnvVar",
+      "summary": "A name/value environment pair. From \u0060Env.vars\u0060 / \u0060pair\u0060 / \u0060ofPairs\u0060 / \u0060fromFile\u0060.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -2657,6 +2638,9 @@
     },
     {
       "name": "FileChunk",
+      "summary": "What File.readFrom returns: lines, the complete lines read, and next, the byte offset just past the last one (the offset you started from when there were none). Pass next to the following File.readFrom.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -2671,6 +2655,9 @@
     },
     {
       "name": "FileKind",
+      "summary": "What a FileRow\u0027s kind says an entry is: Regular, Directory or Symlink. Compare with \u0060f.kind == Directory\u0060.",
+      "example": null,
+      "pointer": null,
       "kind": "union",
       "cases": [
         {
@@ -2689,6 +2676,9 @@
     },
     {
       "name": "FileRow",
+      "summary": "A directory entry, as returned by \u0060ls\u0060. Fields: name; kind (Regular, Directory or Symlink); target (Some link target for a symlink, None otherwise; no File.* function gives you this); bytes (0 B for a directory); modified (the last-write time as an Instant, which does not change after you read it; tables show it as relative time, show prints ISO); hidden; and path. \u0060ls\u0060 lists files and subdirectories sorted by name, case-sensitively with uppercase first, regardless of locale. Use name for matching and display and path when calling File.* functions. Less common details are separate functions rather than fields, such as File.mode for permissions.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -2723,6 +2713,9 @@
     },
     {
       "name": "HttpBody",
+      "summary": "A request or response body: NoBody, Json of any value \u0060to json\u0060 takes (sent with application/json), Text of a string, Form of key/value pairs (percent-encoded), or, in a \u0060within serve\u0060 response, Stream of a seq, sent as server-sent events while it is produced.",
+      "example": null,
+      "pointer": null,
       "kind": "union",
       "cases": [
         {
@@ -2749,6 +2742,9 @@
     },
     {
       "name": "HttpMethod",
+      "summary": "An HTTP verb: Get, Post, Put, Delete, Patch, Head, Options, Query, or Other of string for any other. A request\u0027s method; \u0060within serve\u0060 hands a handler the verb it received, unknown ones as Other.",
+      "example": null,
+      "pointer": null,
       "kind": "union",
       "cases": [
         {
@@ -2791,6 +2787,9 @@
     },
     {
       "name": "HttpRequest",
+      "summary": "What \u0060Http.send\u0060 sends: method, url, auth, headers (pairs), secretHeaders (credential headers, masked in output), body, timeout (default 30s) and insecure (skip TLS verification for this request). Build one with \u0060Http.get u\u0060, \u0060Http.post u\u0060 and friends, or \u0060{ Http.defaults with \u2026 }\u0060.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -2829,6 +2828,9 @@
     },
     {
       "name": "HttpResponse",
+      "summary": "What \u0060Http.send\u0060 returns: status, headers (one pair per received header line) and body (lines). A non-2xx status is data, not an error; read a header with \u0060Http.header\u0060. Only \u0060Http.send\u0060 makes one.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -2847,6 +2849,9 @@
     },
     {
       "name": "HttpServerRequest",
+      "summary": "What a \u0060within serve\u0060 handler receives: method, path, query (the raw string without the leading ?), headers (pairs in arrival order; compare names case-insensitively) and body (the request text).",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -2873,6 +2878,9 @@
     },
     {
       "name": "HttpServerResponse",
+      "summary": "What a \u0060within serve\u0060 handler returns: status, headers (pairs) and body, an HttpBody, Stream included. A Json body sets Content-Type itself.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -2891,6 +2899,9 @@
     },
     {
       "name": "Op",
+      "summary": "One change a \u0060plan\u0060 block captured instead of performing: WriteFile, WriteFileAtomic, DeleteFile, Copy, Move, CopyDir, MoveDir, MakeDir, DeleteDir, DeleteTree or HttpSend. \u0060Plan.ops\u0060 lists them; \u0060Plan.apply\u0060 performs them in order.",
+      "example": null,
+      "pointer": null,
       "kind": "union",
       "cases": [
         {
@@ -2941,6 +2952,9 @@
     },
     {
       "name": "Option",
+      "summary": "A value that may be absent: Some value or None. \u0060Option.defaultValue\u0060 unwraps with a fallback and \u0060|\u003E orFail\u0060 raises on None. json and yaml read a missing or null field as None, and \u0060to json\u0060 omits it.",
+      "example": null,
+      "pointer": null,
       "kind": "union",
       "cases": [
         {
@@ -2955,6 +2969,9 @@
     },
     {
       "name": "Poll",
+      "summary": "poll\u0027s options: timeout (default 1m) and interval between checks (default 1s). \u0060poll timeout=5m interval=10s\u0060 sets them; \u0060Poll.defaults\u0060 is the record.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -2969,6 +2986,9 @@
     },
     {
       "name": "PromptStatus",
+      "summary": "What a REPL prompt function gets about the last entry: ok, exit (a failed command\u0027s exit code, None otherwise) and duration. Give \u0060prompt\u0060 in init.weir as a \u0060PromptStatus -\u003E string\u0060 function.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -2987,6 +3007,9 @@
     },
     {
       "name": "Repeat",
+      "summary": "repeat\u0027s options: interval between runs (required) and timeout, an optional ceiling (default None). \u0060repeat interval=1s\u0060 sets them.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -3001,6 +3024,9 @@
     },
     {
       "name": "Result",
+      "summary": "Ok value or Error message, what \u0060e |\u003E try result\u0060 gives. \u0060|\u003E orFail\u0060 turns an Error back into a raise; \u0060Result.defaultValue\u0060 unwraps with a fallback.",
+      "example": null,
+      "pointer": null,
       "kind": "union",
       "cases": [
         {
@@ -3015,6 +3041,9 @@
     },
     {
       "name": "Retry",
+      "summary": "retry\u0027s options: attempts (default 5), delay between attempts (default 1s) and timeout, an optional ceiling on the whole retry (default None). \u0060retry attempts=3 delay=10s\u0060 sets them; \u0060Retry.defaults\u0060 is the record.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -3033,6 +3062,9 @@
     },
     {
       "name": "ServerConfig",
+      "summary": "\u0060within serve\u0060\u0027s settings: port (Some n for that port, None for a free one the kernel picks), maxConcurrent (handlers at once; the rest queue), and the optional bodyTimeout (default 30s) and maxBody (default 16 MiB).",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -3055,6 +3087,9 @@
     },
     {
       "name": "UuidNamespaces",
+      "summary": "The standard namespaces for name-based ids: dns, url, oid and x500, as in \u0060Uuid.v5 Uuid.ns.dns \u0022example.com\u0022\u0060.",
+      "example": null,
+      "pointer": null,
       "kind": "record",
       "fields": [
         {
@@ -3077,6 +3112,9 @@
     },
     {
       "name": "Yaml",
+      "summary": "A YAML node of any shape: YStr, YInt, YFloat, YBool, YNull, YSeq or YMap (keys in document order). \u0060Yaml.parse\u0060 reads one, a \u0060Yaml\u0060 field holds a subtree whole, and \u0060to yaml\u0060 writes it back.",
+      "example": null,
+      "pointer": null,
       "kind": "union",
       "cases": [
         {
