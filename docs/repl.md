@@ -51,8 +51,9 @@ with `^` completes from PATH only, skipping bindings and aliases.
 Completion never runs anything. At most it reads a directory, a
 signature file, or a cached PATH entry.
 
-**At an empty prompt.** Tab lists the session directives (`#help`
-first), not everything; `#help` itself lists the modules and members.
+**At an empty prompt.** Tab offers the session directives, not
+everything: the first Tab types the `#` they share, a second lists
+them. `#help` itself lists the modules and members.
 Once you start typing you get the usual filtered list. Tab in an
 argument position still lists the directory.
 
@@ -134,7 +135,9 @@ whole word yourself.
 
 A leading `~` completes to your home directory's literal path:
 `cat ~/.con<TAB>` becomes `cat /home/you/.config/`, and `cd ~<TAB>`
-becomes `cd "/home/you/"`, so the line shows exactly what will run.
+becomes `cd /home/you/` (a statement `cd` takes its argument like a
+command), so the line shows exactly what will run. In an expression the
+path is quoted: `File.read ~/.b<TAB>` gives `File.read "/home/you/.bashrc"`.
 
 After `import`, a path completes quoted and lists only directories and
 `.weir` files: `import li<TAB>` gives `import "lib/"`.

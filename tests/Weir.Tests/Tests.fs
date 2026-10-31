@@ -4966,7 +4966,9 @@ let completionTests =
             let ask (text: string) =
                 Weir.Complete.suggest envT text (Weir.Complete.wordStartAt text text.Length)
 
-            let scalar = [ "tag"; "tcount"; "tflag"; "tid" ]
+            // a record offers its stem, never itself: it splices only
+            // through a field [D:splice-stems]
+            let scalar = [ "tag"; "tcount"; "tflag"; "tid"; "tpoint." ]
 
             for line in
                 [
@@ -4978,10 +4980,7 @@ let completionTests =
                     "let v = ^ls $t"
                     "git log | grep $t"
                 ] do
-                Expect.equal
-                    (ask line)
-                    scalar
-                    $"{line}: the $x-spliceable bindings exactly (a record only through a field)"
+                Expect.equal (ask line) scalar $"{line}: the $x-spliceable bindings exactly (a record as its stem)"
 
             for line in [ "git tag $@t"; "let v = ls -l $@t" ] do
                 Expect.equal (ask line) [ "tags" ] $"{line}: $@ offers seq<string> bindings"
@@ -13767,6 +13766,61 @@ let completionPipelineTests =
                 ))
                 [ "q.v" ]
                 "across lines, a predicate"
+        }
+    ]
+
+let completionBatch1Tests =
+    let env = Weir.Prelude.extendTypes Weir.Builtins.typeEnvStrict
+
+    let sugIn (env: TypeEnv) (line: string) =
+        Weir.Complete.suggest env line (Weir.Complete.wordStartAt line line.Length)
+
+    let sug = sugIn env
+
+    testList "completion: captures, #help forms, directive args, splice stems" [
+        test "a command head inside $( completes [D:capture-head-complete]" {
+            Expect.equal (Weir.Complete.headSlotAt "let x = $(") Weir.Complete.HeadSlot.Stmt "the capture's head"
+
+            Expect.equal
+                (Weir.Complete.headSlotAt "print (Seq.length $(")
+                Weir.Complete.HeadSlot.Stmt
+                "nested in an expression"
+
+            Expect.equal
+                (Weir.Complete.headSlotAt "let x = $(git branch) + ")
+                Weir.Complete.HeadSlot.No
+                "a closed capture is not"
+
+            Expect.contains (sug "let x = $(c") "cd" "the head pool"
+        }
+        test "#help completes the forms it documents [D:help-forms-complete]" {
+            Expect.contains (sug "#help rep") "repeat" "repeat"
+            Expect.contains (sug "#help wi") "within" "within"
+            Expect.contains (sug "#help ret") "retry" "retry"
+            Expect.contains (sug "#help po") "poll" "poll"
+        }
+        test "#types and #echo offer their arguments [D:directive-args-complete]" {
+            Expect.equal (sug "#types ") [ "off"; "on" ] "#types"
+            Expect.equal (sug "#types o") [ "off"; "on" ] "prefix-filtered, never keywords"
+            Expect.equal (sug "#echo ") [ "all" ] "#echo"
+        }
+        test
+            "a record splices through its stem; a dynamic head takes a string [D:splice-stems] [D:dynamic-head-complete]" {
+            let entry (cur: string) =
+                let lines = [
+                    "type Cli = { tag: string; n: int }"
+                    "let cli = { tag = \"a\"; n = 1 }"
+                    "let tool = \"git\""
+                    "let count = 1"
+                    cur
+                ]
+
+                Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+
+            Expect.contains (entry "echo $cl") "cli." "the record's stem"
+            Expect.equal (entry "^$to") [ "tool" ] "a string at a dynamic head"
+            Expect.isFalse (entry "^$co" |> List.contains "count") "an int is not a program"
+            Expect.equal (entry "echo x^$to") [] "glued mid-word stays refused"
         }
     ]
 
@@ -45926,6 +45980,7 @@ let allTests =
         completionHunt2Tests
         completionTypeNameTests
         completionPipelineTests
+        completionBatch1Tests
         withinKindsTests
         withinAlwaysLockTests
         withinAlwaysAnyTests
