@@ -529,16 +529,20 @@ let headSlotAt (before: string) : HeadSlot =
         else
             stmt, false
 
-    if core = "" || (stripEnvPrefixes core = "" && not (core.StartsWith " ")) then
+    // `before` arrives trimmed: the prefix's own blank is restored for
+    // the strip; a word glued to `=` is the value [D:env-prefix-head-complete]
+    let envOnly (s: string) =
+        not (s.TrimEnd().EndsWith "=") && (stripEnvPrefixes (s + " ")).Trim() = ""
+
+    if core = "" || (envOnly core && not (core.StartsWith " ")) then
         if forced then HeadSlot.Forced else HeadSlot.Stmt
     else
         match letRhsCut (core.TrimStart()) with
-        | Some rest when (stripEnvPrefixes (rest.TrimStart())).Trim() = "" ->
+        | Some rest when rest.Trim() = "" || envOnly (rest.TrimStart()) ->
             if forced then HeadSlot.Forced else HeadSlot.LetRhs
         | _ ->
             match lastStage core with
-            | Some(rest, _) when (stripEnvPrefixes rest).Trim() = "" ->
-                if forced then HeadSlot.Forced else HeadSlot.Stage
+            | Some(rest, _) when rest.Trim() = "" || envOnly rest -> if forced then HeadSlot.Forced else HeadSlot.Stage
             | _ -> HeadSlot.No
 
 // a keyed head's open option keys [D:head-key-complete]
@@ -711,7 +715,7 @@ let private commandArgvStmt (env: TypeEnv) (anyHead: bool) (before: string) : st
     else
         let argv =
             match
-                (stripEnvPrefixes stmt).Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
+                (stripEnvPrefixes (stmt + " ")).Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
                 |> Array.tryHead
             with
             | None -> false
@@ -1011,10 +1015,12 @@ let rec suggestScopedWith
         // and recurse (innermost hole, so this recurses at most once per hole).
         match interpHoleStart text with
         | Some off when wordStart >= off ->
-            let inner = text.Substring off
+            // a hole is an expression, never a statement head: the `(`
+            // closes the head slot and the directives [D:hole-is-expression]
+            let inner = "(" + text.Substring off
             // the outer text stays the binder scope: a hole's head is
             // bound outside it (`for p in … do print $"{p.`) [D:entry-complete]
-            suggestScopedWith aliasHeads env binderScope inner (wordStart - off)
+            suggestScopedWith aliasHeads env binderScope inner (wordStart - off + 1)
         | _ ->
 
             let word =
@@ -1798,6 +1804,40 @@ let rec private patBinderTy (env: TypeEnv) (head: string) (pat: Weir.Ast.Pattern
                 fields
                 |> List.tryFind (fst >> (=) f)
                 |> Option.bind (fun (_, ft) -> patBinderTy env head p ft)))
+    // a case's payload, under the union's type arguments [D:case-binder-complete]
+    | Weir.Ast.PCase(ctor, Some arg, _), TNamed(n, targs) ->
+        let subst (ps: string list) (t: Ty) =
+            if ps.Length <> targs.Length then
+                t
+            else
+                let m = List.zip ps targs |> Map.ofList
+
+                let rec go t =
+                    match t with
+                    | TVar v -> Map.tryFind v m |> Option.defaultValue t
+                    | TFun(a, b) -> TFun(go a, go b)
+                    | TSeq e -> TSeq(go e)
+                    | TTuple ts -> TTuple(ts |> List.map go)
+                    | TNamed(n, a) -> TNamed(n, a |> List.map go)
+                    | t -> t
+
+                go t
+
+        let payload =
+            match n, ctor, targs with
+            | "Option", "Some", [ t ] -> Some t
+            | "Result", "Ok", [ t; _ ] -> Some t
+            | "Result", "Error", [ _; e ] -> Some e
+            | _ ->
+                match Types.typeDefFor env n with
+                | Some(Union u) ->
+                    u.Cases
+                    |> List.tryFind (fst >> (=) ctor)
+                    |> Option.bind snd
+                    |> Option.map (subst u.Params)
+                | _ -> None
+
+        payload |> Option.bind (patBinderTy env head arg)
     | _ -> None
 
 let private binderSiteTy (env: TypeEnv) (head: string) (te: Weir.Check.TypedExpr) : Ty option =
@@ -1879,6 +1919,7 @@ let bindersAtRepaired
         | Weir.Ast.PVar n -> [ n ]
         | Weir.Ast.PTuple ps -> ps |> List.collect patNames
         | Weir.Ast.PRecord fs -> fs |> List.collect (snd >> patNames)
+        | Weir.Ast.PCase(_, Some arg, _) -> patNames arg
         | _ -> []
 
     let patBinds (pat: Weir.Ast.Pattern) (ty: Ty) =

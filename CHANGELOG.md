@@ -30,6 +30,12 @@
 - **A path glued to a flag (`--file=my<Tab>`) offers only names that
   need no quotes**, instead of inserting `--file="my file.txt"`, which
   weir refuses.
+- **Match-arm variables complete.** `| Some r -> r.<Tab>` offers the
+  record's fields, for `Option`, `Result` and your own unions.
+- **No commands inside `$"{…}"`.** A hole completes as an expression:
+  `$"{gre<Tab>` no longer offers `grep`, and an empty hole no longer
+  inserts `#`.
+- **`FOO=1 gi<Tab>` completes the command** after an env prefix.
 
 ## v0.0.82
 
