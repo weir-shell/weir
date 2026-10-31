@@ -545,26 +545,8 @@ let headSlotAt (before: string) : HeadSlot =
             | Some(rest, _) when rest.Trim() = "" || envOnly rest -> if forced then HeadSlot.Forced else HeadSlot.Stage
             | _ -> HeadSlot.No
 
-// every type name a program can spell [D:type-name-complete]: the
-// built-in names the type grammar reads, declared and imported types,
-// and each import's qualified `M.T`
-let private builtinTypeNames = [
-    "int"
-    "string"
-    "bool"
-    "unit"
-    "float"
-    "Duration"
-    "Instant"
-    "Uuid"
-    "Size"
-    "Bytes"
-    "Secret"
-    "seq"
-    "Option"
-    "Result"
-    "Map"
-]
+// declared and imported types, and each import's qualified `M.T`
+// [D:type-name-complete]; the built-in names are Types.builtinTypeNames
 
 let private declaredTypeNames (env: TypeEnv) : string list =
     let declared =
@@ -597,7 +579,7 @@ let typePositionAt (stmtBefore: string) : bool =
 
 /// type names for a type position, prefix-filtered
 let typeNameOffers (env: TypeEnv) (word: string) : string list =
-    builtinTypeNames @ declaredTypeNames env
+    Types.builtinTypeNames @ declaredTypeNames env
     |> List.filter (fun n -> n.StartsWith word && n <> word)
     |> List.distinct
     |> List.sort

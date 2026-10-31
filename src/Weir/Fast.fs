@@ -813,36 +813,9 @@ and private tyAtom (st: St) : Ty =
             else
                 ws st
                 TInt
-        | "string" ->
+        | w when scalarTypes.ContainsKey w ->
             ws st
-            TStr
-        | "bool" ->
-            ws st
-            TBool
-        | "unit" ->
-            ws st
-            TUnit
-        | "Duration" ->
-            ws st
-            TDur
-        | "Instant" ->
-            ws st
-            TInstant
-        | "Uuid" ->
-            ws st
-            TUuid
-        | "float" ->
-            ws st
-            TFloat
-        | "Size" ->
-            ws st
-            TSize
-        | "Bytes" ->
-            ws st
-            TBytes
-        | "Secret" ->
-            ws st
-            TSecret
+            scalarTypes[w]
         | "seq" ->
             ws st
 

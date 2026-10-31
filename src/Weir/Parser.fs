@@ -5430,16 +5430,7 @@ tySynRef.Value <-
                         match m with
                         | Some _ -> failFatallyAt at "units of measure are not supported; use bare int"
                         | None -> preturn TInt)
-                | "string" -> ws >>% TStr
-                | "bool" -> ws >>% TBool
-                | "unit" -> ws >>% TUnit
-                | "Duration" -> ws >>% TDur
-                | "Instant" -> ws >>% TInstant
-                | "Uuid" -> ws >>% TUuid
-                | "float" -> ws >>% TFloat
-                | "Size" -> ws >>% TSize
-                | "Bytes" -> ws >>% TBytes
-                | "Secret" -> ws >>% TSecret
+                | w when scalarTypes.ContainsKey w -> ws >>% scalarTypes[w]
                 | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
                 | w when keywords.Contains w -> fail $"'{w}' is a keyword"
                 | w ->
