@@ -13544,6 +13544,71 @@ let completionHuntTests =
         }
     ]
 
+let completionHunt2Tests =
+    let env = Weir.Prelude.extendTypes Weir.Builtins.typeEnvStrict
+
+    let sug (line: string) =
+        Weir.Complete.suggest env line (Weir.Complete.wordStartAt line line.Length)
+
+    let entry (lines: string list) =
+        let cur = List.last lines
+        Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+
+    testList "completion hunt fixes, second batch" [
+        test "a match arm's case binder types from the scrutinee [D:case-binder-complete]" {
+            let pt = "type Pt = { x: int; y: int }"
+
+            Expect.equal
+                (entry [ pt; "let o = Some { x = 1; y = 2 }"; "match o with | Some r -> print r." ])
+                [ "r.x"; "r.y" ]
+                "Option's Some"
+
+            Expect.equal
+                (entry [
+                    pt
+                    "type Sh = Circle of Pt | Dot"
+                    "match Circle { x = 1; y = 2 } with | Circle c -> print c."
+                ])
+                [ "c.x"; "c.y" ]
+                "a user union's case"
+
+            Expect.equal
+                (entry [
+                    pt
+                    "let o = Some { x = 1; y = 2 }"
+                    "match o with"
+                    "| None -> ()"
+                    "| Some r -> print r."
+                ])
+                [ "r.x"; "r.y" ]
+                "a multi-line match, the arm under edit last"
+        }
+        test "an interpolation hole is an expression, never a statement head [D:hole-is-expression]" {
+            let pathCmd =
+                Weir.Extern.names ()
+                |> Seq.tryFind (fun n -> n.Length > 3 && n |> Seq.forall System.Char.IsLetter)
+
+            for cmd in Option.toList pathCmd do
+                Expect.isFalse
+                    (sug ("print $\"{" + cmd.Substring(0, 3)) |> List.contains cmd)
+                    $"no command heads in a hole ({cmd})"
+
+            Expect.isFalse
+                (sug "let s = $\"{" |> List.exists (fun c -> c.StartsWith "#"))
+                "no directives in an empty hole"
+
+            Expect.contains (sug "print $\"{Path.c") "Path.combine" "members still complete"
+            Expect.contains (sug "let s = $\"{tr") "true" "keywords still complete"
+        }
+        test "an env prefix keeps the head slot [D:env-prefix-head-complete]" {
+            Expect.equal (Weir.Complete.headSlotAt "FOO=1") Weir.Complete.HeadSlot.Stmt "a statement head"
+            Expect.equal (Weir.Complete.headSlotAt "NAME='a b'") Weir.Complete.HeadSlot.Stmt "a quoted value"
+            Expect.equal (Weir.Complete.headSlotAt "let x = FOO=1") Weir.Complete.HeadSlot.LetRhs "a let-RHS head"
+            Expect.equal (Weir.Complete.headSlotAt "FOO=") Weir.Complete.HeadSlot.No "a word glued to = is the value"
+            Expect.contains (sug "FOO=1 c") "cd" "the head pool offers"
+        }
+    ]
+
 let withinKindsTests =
     // one table [D:within-kinds], three consumers: hover, completion,
     // and the grammar inventories (the last checked mechanically in
@@ -45697,6 +45762,7 @@ let allTests =
         planApplyTests
         headSlotCompletionTests
         completionHuntTests
+        completionHunt2Tests
         withinKindsTests
         withinAlwaysLockTests
         withinAlwaysAnyTests

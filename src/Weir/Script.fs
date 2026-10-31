@@ -6973,11 +6973,23 @@ let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list opt
             // two repair candidates per filler: close dangling delimiters
             // at the cursor (mid-statement edits — the suffix stays
             // outside the string), else at the end (last-line edits)
+            // an arm under edit leaves its match incomplete, which fails
+            // the check: a catch-all arm completes it [D:case-binder-complete]
+            let openMatch =
+                Text.RegularExpressions.Regex.IsMatch(before, @"\b(match|function)\b")
+
             fillers
             |> List.collect (fun filler ->
                 let prefixDone = before + filler
                 let blanked = before + filler + post
-                [ prefixDone + closers prefixDone + post; blanked + closers blanked ])
+
+                [
+                    prefixDone + closers prefixDone + post
+                    blanked + closers blanked
+                    if openMatch then
+                        let armed = prefixDone + " | _ -> " + completeHole
+                        armed + closers armed + post
+                ])
             |> List.tryPick (fun cand ->
                 Complete.tyAtRepaired parse env cand target
                 |> Option.map (fun ty ->
