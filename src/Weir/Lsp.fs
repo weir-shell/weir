@@ -5602,8 +5602,15 @@ let run (debug: bool) : int =
                                     else
                                         None
 
+                                let untilStopped =
+                                    Complete.untilStoppedAt
+                                        (lines[0 .. min (line - 2) (lines.Length - 1)] |> List.ofArray)
+                                        (upto.Substring(0, wordStart))
+
                                 let items =
                                     match repaired with
+                                    | _ when untilStopped ->
+                                        [ "stopped" ] |> List.filter (fun w -> w.StartsWith word && w <> word)
                                     | _ when yamlSplice.IsSome -> yamlSplice.Value
                                     | Some fields when not fields.IsEmpty -> fields
                                     | _ when not aliasCmd.IsEmpty -> aliasCmd

@@ -521,6 +521,83 @@ let headSlotAt (before: string) : HeadSlot =
                 if forced then HeadSlot.Forced else HeadSlot.Stage
             | _ -> HeadSlot.No
 
+// a keyed head's open option keys [D:head-key-complete]
+let private keyValueAtom = @"(?:""(?:[^""\\]|\\.)*""|\([^()]*\)|[^\s()""]+)"
+
+let private loopHeadKeys =
+    System.Text.RegularExpressions.Regex(@"^(retry|poll|repeat)((?:\s+[A-Za-z_]\w*=" + keyValueAtom + @")*)$")
+
+let private lockHeadKeys =
+    System.Text.RegularExpressions.Regex(@"^within\s+lock\s+" + keyValueAtom + @"$")
+
+let headKeyOffers (env: TypeEnv) (before: string) : string list option =
+    let stmt =
+        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
+        (if i >= 0 then before.Substring(i + 1) else before).Trim()
+
+    let stmt = letRhsCut stmt |> Option.map _.Trim() |> Option.defaultValue stmt
+    let m = loopHeadKeys.Match stmt
+
+    if m.Success then
+        let head = m.Groups[1].Value
+
+        let fields =
+            match Map.tryFind (string (System.Char.ToUpperInvariant head[0]) + head.Substring 1) env.Types with
+            | Some(Record d) -> d.Fields |> List.map fst
+            | _ -> []
+
+        let keys = if head = "poll" then fields @ [ "watch" ] else fields
+
+        let given =
+            System.Text.RegularExpressions.Regex.Matches(m.Groups[2].Value, @"\s([A-Za-z_]\w*)=")
+            |> Seq.map _.Groups[1].Value
+            |> Set.ofSeq
+
+        Some(keys |> List.filter (given.Contains >> not) |> List.map (fun k -> k + "="))
+    elif lockHeadKeys.IsMatch stmt then
+        Some [ "timeout=" ]
+    else
+        None
+
+// `until stopped` after a within's block [D:until-stopped-complete]
+let untilStoppedAt (above: string list) (before: string) : bool =
+    let indent (s: string) = s.Length - s.TrimStart().Length
+
+    before.Trim() = "until"
+    && (let col = indent before
+
+        above
+        |> List.rev
+        |> List.filter (fun l -> l.Trim() <> "" && not (l.TrimStart().StartsWith "//"))
+        |> List.tryFind (fun l -> indent l <= col)
+        |> Option.exists (fun l ->
+            indent l = col
+            && System.Text.RegularExpressions.Regex.IsMatch(l.TrimStart(), @"^(let\s+.*=\s*)?within\b")))
+
+// the yaml marker's open modifiers, canonical order [D:head-key-complete]
+let private yamlModifierOffers (marker: string) : string list =
+    let toks =
+        marker.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
+
+    let mods =
+        match Array.tryFindIndexBack ((=) "yaml") toks with
+        | Some i -> toks[i + 1 ..]
+        | None -> [||]
+
+    let has (p: string -> bool) = mods |> Array.exists p
+    let patch = has ((=) "patch")
+    let by = has (fun t -> t.StartsWith "by=")
+    let schema = has (fun t -> t.StartsWith "schema=")
+
+    [
+        if not patch && not by && not schema then
+            yield "patch"
+        if patch && not by && not schema then
+            yield "by="
+        if not schema then
+            yield "schema="
+    ]
+
 // a word in command argv completes as a path [D:complete-argv]: after
 // a literal command head everything is an argv word — fields, members,
 // and the keyword pool are expression furniture (`micro publish.`
@@ -1189,8 +1266,25 @@ let rec suggestScopedWith
                             None
                     | None -> None
 
+                // the import path slot [D:import-path-complete]: a string
+                // literal naming a module — directories and .weir files
+                let importArg =
+                    let stmt =
+                        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
+                        (if i >= 0 then before.Substring(i + 1) else before).Trim()
+
+                    System.Text.RegularExpressions.Regex.IsMatch(stmt, "^import\\s*\"?$")
+
+                let headKeys = headKeyOffers env before
+
                 if splice.IsSome then
                     splice.Value
+                elif importArg then
+                    filesystemComplete word
+                    |> List.filter (fun c -> c.EndsWith "/" || c.EndsWith ".weir")
+                    |> List.map (if insideOpenQuote then escapeFor opener else stringLiteral)
+                elif headKeys.IsSome then
+                    headKeys.Value |> List.filter (fun k -> k.StartsWith word && k <> word)
                 elif word.StartsWith "~" || word.Contains '/' then
                     // an explicit path word — filesystem entries [D:repl-quality],
                     // quoted where the slot is an expression [D:repl-path-quote]
@@ -1404,8 +1498,9 @@ let rec suggestScopedWith
                         else
                             []
                     | Error _ -> []
-                elif word = "" && Weir.Parser.isYamlMarkerPiece (before.TrimEnd()) then
-                    [ "schema=" ]
+                elif Weir.Parser.isYamlMarkerPiece (before.TrimEnd()) then
+                    yamlModifierOffers before
+                    |> List.filter (fun m -> m.StartsWith word && m <> word)
                 elif before.EndsWith "to yaml" && "stream".StartsWith word && word <> "stream" then
                     // the write-side stream word [D:yaml-seq-doc] — the one thing
                     // that follows a to-adapter

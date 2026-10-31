@@ -3835,7 +3835,7 @@ let boundaryTests =
 
             let env = Weir.Builtins.typeEnvStrict
             let line1 = "let d = yaml "
-            Expect.equal (Weir.Complete.suggest env line1 line1.Length) [ "schema=" ] "the marker line offers schema="
+            Expect.contains (Weir.Complete.suggest env line1 line1.Length) "schema=" "the marker line offers schema="
 
             let line3 = "x |> to yaml "
 
@@ -13339,6 +13339,103 @@ let planApplyTests =
                 Expect.equal (runFile prog) 0 "within 5x the plain path"
             finally
                 System.IO.Directory.Delete(root, true)
+        }
+    ]
+
+let headSlotCompletionTests =
+    // the prelude's types: the loop heads' options records live there
+    let env = Weir.Prelude.extendTypes Weir.Builtins.typeEnvStrict
+
+    let sug (line: string) =
+        Weir.Complete.suggest env line (Weir.Complete.wordStartAt line line.Length)
+
+    let entry (lines: string list) =
+        let cur = List.last lines
+        Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+
+    testList "head option and until-stopped completion" [
+        test "a loop head offers its option keys — its options record's fields [D:head-key-complete]" {
+            Expect.equal (sug "repeat int") [ "interval=" ] "the reported case"
+            Expect.equal (sug "repeat ") [ "interval="; "timeout=" ] "Repeat's fields"
+            Expect.equal (sug "retry ") [ "attempts="; "delay="; "timeout=" ] "Retry's fields"
+            Expect.equal (sug "poll ") [ "timeout="; "interval="; "watch=" ] "Poll's fields and the watch head key"
+            Expect.equal (sug "retry attempts=3 ") [ "delay="; "timeout=" ] "a given key is not offered again"
+            Expect.equal (sug "retry delay=(d * 2) t") [ "timeout=" ] "a parenthesized value counts as given"
+            Expect.equal (sug "let n = repeat interval=10ms ") [ "timeout=" ] "the let-RHS head"
+            Expect.equal (sug "    poll timeout=5m interval=1s watch=srv ") [] "all given: a closed, empty slot"
+            Expect.isFalse (sug "retrying " |> List.contains "attempts=") "a word boundary: not the head"
+            Expect.isFalse (sug "retry attempts=" |> List.contains "attempts=") "the value slot is not the key slot"
+        }
+        test "within lock offers timeout= after its path [D:head-key-complete]" {
+            Expect.equal (sug "within lock \"state.json\" ") [ "timeout=" ] "after the path"
+            Expect.equal (sug "within lock \"a b\" ti") [ "timeout=" ] "a spaced path, prefix-filtered"
+
+            Expect.isFalse
+                (sug "within lock \"p\" timeout=" |> List.contains "timeout=")
+                "the value slot is not the key slot"
+        }
+        test "a yaml marker offers its open modifiers in canonical order [D:head-key-complete]" {
+            Expect.equal (sug "let d = yaml ") [ "patch"; "schema=" ] "a fresh marker"
+            Expect.equal (sug "let d = yaml pa") [ "patch" ] "prefix-filtered"
+            Expect.equal (sug "let p = yaml patch ") [ "by="; "schema=" ] "after patch"
+            Expect.equal (sug "let p = yaml patch by=name ") [ "schema=" ] "after by="
+            Expect.equal (sug "let d = yaml schema=k8s ") [] "schema= closes the marker"
+            Expect.equal (sug "let patch = yaml ") [ "patch"; "schema=" ] "a binder named patch is not the modifier"
+        }
+        test "until after a within's block offers stopped; a loop's until does not [D:until-stopped-complete]" {
+            Expect.equal (entry [ "within"; "    print \"!\""; "until sto" ]) [ "stopped" ] "the reported case"
+            Expect.equal (entry [ "within tmp d"; "    print d"; "until " ]) [ "stopped" ] "an empty word"
+
+            Expect.equal
+                (entry [ "within tmp d"; "    within"; "        print d"; "    until s" ])
+                [ "stopped" ]
+                "a nested within, at its own column"
+
+            Expect.isFalse
+                (entry [ "repeat interval=1s"; "    true"; "until " ] |> List.contains "stopped")
+                "a repeat's until is not a hold"
+
+            Expect.isFalse
+                (entry [ "within"; "    print 1"; "always"; "    print 2"; "until " ]
+                 |> List.contains "stopped")
+                "after always is out of order"
+
+            Expect.isTrue
+                (Weir.Complete.untilStoppedAt [ "let x = within tmp d"; "    d" ] "until ")
+                "a let-bound within"
+        }
+        test "an import completes a quoted module path: directories and .weir files [D:import-path-complete]" {
+            skipOnWindows ()
+            let d = tempPath "weir-imp"
+            System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "lib")) |> ignore
+            System.IO.File.WriteAllText(System.IO.Path.Combine(d, "m.weir"), "module")
+            System.IO.File.WriteAllText(System.IO.Path.Combine(d, "notes.txt"), "x")
+            let dir = d.Replace("\\", "/")
+
+            try
+                Expect.equal
+                    (sug ("import " + dir + "/"))
+                    [ $"\"{dir}/lib/\""; $"\"{dir}/m.weir\"" ]
+                    "quoted; the .txt is not a module"
+
+                Expect.equal
+                    (sug ("import \"" + dir + "/m"))
+                    [ $"{dir}/m.weir" ]
+                    "inside an open quote: no second quote"
+
+                let line = "import " + dir + "/m"
+                let got = sug line
+
+                let produced =
+                    line.Substring(0, Weir.Complete.wordStartAt line line.Length)
+                    + got.Head
+                    + " as M"
+
+                match Weir.Parser.parseStmt produced with
+                | Ok _ -> ()
+                | Error e -> failtestf "the completed import must parse: %s -> %s" produced e
+            finally
+                System.IO.Directory.Delete(d, true)
         }
     ]
 
@@ -38718,6 +38815,28 @@ let helpUxTests =
             Expect.equal (Weir.Repl.replDocText "Option") (Weir.Repl.helpTextForTest "Option") "same bytes"
             Expect.equal (Weir.Repl.replDocText "Seq.collect") (Weir.Repl.helpTextForTest "Seq.collect") "member too"
         }
+        test "(e2) #find lists types too, the ones #help documents [D:find-types]" {
+            let cs = Weir.Repl.findCandidatesForTest ()
+
+            for t in
+                [
+                    "HttpServerResponse"
+                    "HttpServerRequest"
+                    "ServerConfig"
+                    "Completed"
+                    "FileRow"
+                ] do
+                Expect.isTrue (cs |> List.exists (fun l -> l.StartsWith(t + " — "))) $"{t} is a #find candidate"
+
+            Expect.isTrue
+                (cs |> List.exists (fun l -> l.StartsWith "Completed — A finished command"))
+                "a documented type carries its glance"
+
+            Expect.stringContains
+                (Weir.Repl.findFallbackForTest "HttpServer")
+                "HttpServerResponse"
+                "the fallback finds it"
+        }
         test "(g) #find Tab-completes: sessionDirectives carries it" {
             Expect.contains Weir.Complete.sessionDirectives "find" "find is a session directive"
         }
@@ -45470,6 +45589,7 @@ let allTests =
         effectPartitionTests
         readonlyBlockTests
         planApplyTests
+        headSlotCompletionTests
         withinKindsTests
         withinAlwaysLockTests
         withinAlwaysAnyTests

@@ -178,6 +178,7 @@ replPtyProbes() {
         replProbe repl-b repl-entry-complete.py "repl entry-context completion" "e2e ok: repl Tab completes a binder from an earlier line of the entry and the \`_.\` argument's element, nothing for a bare \`|> _.\` stage [D:entry-complete]"
         replProbe repl-b repl-sig-complete.py "repl sig argument completion" "e2e ok: repl Tab completes subcommands, flags and --flag= values from the project's and the user dir's sigs, through a session alias; a sig-less head keeps paths [D:sig-arg-complete]"
         replProbe repl-b repl-sig-dynamic.py "repl sig dynamic completion" "e2e ok: repl Tab asks a user-dir cobra tool and git through an alias; a project cobra sig never runs its tool; a hung or flooding tool is bounded and leaves no child [D:sig-dynamic-complete]"
+        replProbe repl-b repl-head-keys.py "repl head-key / until / import completion" "e2e ok: repl Tab offers a keyed head's open options, stopped under a within's block, a quoted module path after import [D:head-key-complete] [D:until-stopped-complete] [D:import-path-complete]"
         replProbe repl-b repl-splice-complete.py "repl \$ splice completion" "e2e ok: repl a \$ splice completes only the bindings the checker admits there, after an external or builtin head [D:argv-splice-complete]"
         replProbe repl-a repl-multiline.py "repl multiline editor" "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
     fi
