@@ -6928,6 +6928,10 @@ let scriptOnlyImport: ImportLoader =
 let private completeParam = "weirCompleteParam"
 let private completeHole = "weirCompleteHole"
 
+// the hole as an expression: bare, a lowercase word in a body reads as
+// a command head and types seq<string> [D:repair-hole-expr]
+let private holeExpr = "(" + completeHole + ")"
+
 /// `head.prefix` fields for the word ending `pre` (the statement text up
 /// to the cursor; `post` the rest of it, "" when cut at the cursor).
 /// A lowercase head the env does not bind repairs to a blank filler; the
@@ -6963,9 +6967,9 @@ let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list opt
             // cannot stand (a predicate's bool)
             let fillers =
                 if shorthand then
-                    [ $"(fun {completeParam} -> {completeHole})" ]
+                    [ $"(fun {completeParam} -> {holeExpr})" ]
                 else
-                    [ "\"\"" + String(' ', max 0 (word.Length - 2)); completeHole ]
+                    [ "\"\"" + String(' ', max 0 (word.Length - 2)); holeExpr ]
 
             let target = if shorthand then completeParam else head
             let unwrap = shorthand && not (Complete.bareStageBefore before)
@@ -6987,7 +6991,7 @@ let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list opt
                     prefixDone + closers prefixDone + post
                     blanked + closers blanked
                     if openMatch then
-                        let armed = prefixDone + " | _ -> " + completeHole
+                        let armed = prefixDone + " | _ -> " + holeExpr
                         armed + closers armed + post
                 ])
             |> List.tryPick (fun cand ->
@@ -6996,7 +7000,9 @@ let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list opt
                     match ty with
                     | TSeq elem when unwrap -> elem
                     | t -> t)
-                |> Option.bind (Complete.fieldsOfTy env))
+                // a record the repair minted mid-statement (`{| … |}` in an
+                // earlier stage) is pending, not yet in env [D:anon-literals]
+                |> Option.bind (Complete.fieldsOfTy (Check.withPendingAnonDefs env)))
             |> Option.map (fun fields ->
                 fields
                 |> List.filter (fun f -> f.StartsWith prefix)

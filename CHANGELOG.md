@@ -43,6 +43,12 @@
 - **`M.<Tab>` lists the module's types**, and a validated type offers
   `create` (`M.Mail.cr<Tab>`, `Addr.cr<Tab>`) instead of its refused
   constructor.
+- **Pipelines complete across lines.** A lambda's fields complete in a
+  `where` or any later stage when the pipeline continues on the next
+  line (`xs` / `    |> Seq.where (fun r -> r.<Tab>`), instead of
+  falling back to every field weir knows.
+- **An anonymous record built mid-pipeline completes downstream:**
+  `|> Seq.map (fun r -> {| v = r.n |}) |> Seq.map _.<Tab>` offers `_.v`.
 
 ## v0.0.82
 

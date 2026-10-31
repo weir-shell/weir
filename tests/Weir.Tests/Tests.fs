@@ -13691,6 +13691,85 @@ let completionTypeNameTests =
         }
     ]
 
+let completionPipelineTests =
+    let env = Weir.Prelude.extendTypes Weir.Builtins.typeEnvStrict
+
+    let entry (lines: string list) =
+        let cur = List.last lines
+        Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+
+    let pre = [ "type R = { n: int; tag: string }"; "let xs = [{ n = 1; tag = \"a\" }]" ]
+
+    testList "pipeline completion across lines [D:repair-hole-expr]" [
+        test "a predicate lambda's param types from the source, on its own line or not" {
+            Expect.equal (entry (pre @ [ "xs |> Seq.where (fun r -> r." ])) [ "r.n"; "r.tag" ] "one line"
+            Expect.equal (entry (pre @ [ "xs"; "    |> Seq.where (fun r -> r." ])) [ "r.n"; "r.tag" ] "a leading |>"
+            Expect.equal (entry (pre @ [ "xs |>"; "    Seq.where (fun r -> r." ])) [ "r.n"; "r.tag" ] "a trailing |>"
+            Expect.equal (entry (pre @ [ "xs"; "    |> Seq.where _." ])) [ "_.n"; "_.tag" ] "the shorthand"
+        }
+        test "later stages, a let-bound pipeline, a lambda body on its own line" {
+            Expect.equal
+                (entry (
+                    pre
+                    @ [ "xs"; "    |> Seq.where (fun r -> r.n > 0)"; "    |> Seq.map (fun q -> q." ]
+                ))
+                [ "q.n"; "q.tag" ]
+                "after a where"
+
+            Expect.equal
+                (entry (pre @ [ "let ys ="; "    xs"; "    |> Seq.sortBy (fun r -> r." ]))
+                [ "r.n"; "r.tag" ]
+                "a let's RHS"
+
+            Expect.equal
+                (entry (pre @ [ "xs"; "    |> Seq.iter (fun r ->"; "        print r." ]))
+                [ "r.n"; "r.tag" ]
+                "a body block"
+        }
+        test "in a live session: the REPL's own env, bindings from earlier entries" {
+            let run, envOf = Weir.Repl.sessionForTest ()
+            run "type R = { n: int; tag: string }" |> ignore
+            run "let xs = [{ n = 1; tag = \"a\" }]" |> ignore
+
+            let entryIn (lines: string list) =
+                let cur = List.last lines
+
+                Weir.Script.suggestEntry
+                    Map.empty
+                    Map.empty
+                    (envOf ())
+                    lines
+                    cur
+                    (Weir.Complete.wordStartAt cur cur.Length)
+
+            Expect.equal (entryIn [ "xs |>"; "    Seq.where (fun r -> r." ]) [ "r.n"; "r.tag" ] "a trailing |>"
+            Expect.equal (entryIn [ "xs |> Seq.where (fun r -> r." ]) [ "r.n"; "r.tag" ] "one line"
+
+            Expect.equal
+                (entryIn [ "xs |> Seq.map (fun r -> {| v = r.n |}) |>"; "    Seq.map _." ])
+                [ "_.v" ]
+                "an anonymous record upstream"
+        }
+        test "an anonymous record built mid-pipeline completes downstream [D:anon-literals]" {
+            Expect.equal
+                (entry (pre @ [ "xs |> Seq.map (fun r -> {| v = r.n; w = r.tag |}) |> Seq.map _." ]))
+                [ "_.v"; "_.w" ]
+                "one line, the shorthand"
+
+            Expect.equal
+                (entry (
+                    pre
+                    @ [
+                        "xs"
+                        "    |> Seq.map (fun r -> {| v = r.n |})"
+                        "    |> Seq.where (fun q -> q."
+                    ]
+                ))
+                [ "q.v" ]
+                "across lines, a predicate"
+        }
+    ]
+
 let withinKindsTests =
     // one table [D:within-kinds], three consumers: hover, completion,
     // and the grammar inventories (the last checked mechanically in
@@ -45846,6 +45925,7 @@ let allTests =
         completionHuntTests
         completionHunt2Tests
         completionTypeNameTests
+        completionPipelineTests
         withinKindsTests
         withinAlwaysLockTests
         withinAlwaysAnyTests
