@@ -36,6 +36,13 @@
   `$"{gre<Tab>` no longer offers `grep`, and an empty hole no longer
   inserts `#`.
 - **`FOO=1 gi<Tab>` completes the command** after an env prefix.
+- **Type names complete where a type goes.** `from json <Tab>` offers
+  only the types that can be read there, imported `M.T` included;
+  `type W = { pod: Po<Tab>` and `A of Po<Tab>` offer your types and the
+  built-in ones, also across a multi-line declaration.
+- **`M.<Tab>` lists the module's types**, and a validated type offers
+  `create` (`M.Mail.cr<Tab>`, `Addr.cr<Tab>`) instead of its refused
+  constructor.
 
 ## v0.0.82
 

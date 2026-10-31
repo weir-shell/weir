@@ -5870,10 +5870,10 @@ let completionTests =
             let text = "(Seq.initInfinite id) |> map (fun x -> x."
             Expect.equal (suggest text (text.Length - 2)) [] ""
         }
-        test "from json completes record names" {
+        test "from json completes the record names the slot admits [D:type-name-complete]" {
             let text = "[\"x\"] |> from json "
-            Expect.contains (suggest text text.Length) "FileRow" ""
-            Expect.contains (suggest text text.Length) "EnvVar" ""
+            Expect.contains (suggest text text.Length) "EnvVar" "two strings cross"
+            Expect.isFalse (suggest text text.Length |> List.contains "FileRow") "an untagged union field does not"
         }
         test "record fields complete through a pipe: scalar record, bound record, lambda param [D:hole-completion]" {
             // [D:repl-quality] pipelineElemTy: `from yaml T` yields a
@@ -13606,6 +13606,88 @@ let completionHunt2Tests =
             Expect.equal (Weir.Complete.headSlotAt "let x = FOO=1") Weir.Complete.HeadSlot.LetRhs "a let-RHS head"
             Expect.equal (Weir.Complete.headSlotAt "FOO=") Weir.Complete.HeadSlot.No "a word glued to = is the value"
             Expect.contains (sug "FOO=1 c") "cd" "the head pool offers"
+        }
+    ]
+
+let completionTypeNameTests =
+    let sugIn (env: TypeEnv) (line: string) =
+        Weir.Complete.suggest env line (Weir.Complete.wordStartAt line line.Length)
+
+    // sequenced: the fixture moves the ambient session cwd
+    testSequenced
+    <| testList "type-name completion [D:type-name-complete]" [
+        test "an adapter slot offers only the types that cross it" {
+            let run, env = Weir.Repl.sessionForTest ()
+            run "type Pod = { name: string; restarts: int }" |> ignore
+            run "type Job = { took: Duration }" |> ignore
+            let sug = sugIn (env ())
+
+            Expect.equal (sug "x |> from json Po") [ "Pod" ] "a readable record, never Poll"
+            Expect.isFalse (sug "x |> from json S" |> List.contains "ServerConfig") "a Duration field does not cross"
+            Expect.isFalse (sug "x |> from json J" |> List.contains "Job") "nor does the user's"
+            Expect.isFalse (sug "x |> from json Http" |> List.contains "HttpRequest") "an untagged union field does not"
+            Expect.equal (sug "x |> from json seq<Po") [ "Pod" ] "the seq wrap"
+            Expect.equal (sug "x |> from toml Po") [ "Pod" ] "toml"
+            Expect.equal (sug "x |> from table Po") [ "Pod" ] "table"
+            Expect.contains (sug "x |> from yaml ") "stream" "yaml keeps its stream word"
+        }
+        test "a type position in a declaration offers type names" {
+            let run, env = Weir.Repl.sessionForTest ()
+            run "type Pod = { name: string }" |> ignore
+            let sug = sugIn (env ())
+
+            Expect.contains (sug "type W = { pod: Po") "Pod" "a field's type"
+            Expect.contains (sug "type U = A of Po") "Pod" "a case payload"
+            Expect.contains (sug "type U = A of int * Po") "Pod" "a tuple payload"
+            Expect.contains (sug "type W = { xs: seq<Po") "Pod" "a generic argument"
+            Expect.contains (sug "type W = { n: in") "int" "built-in names"
+            Expect.isFalse (sug "type W = { [<Sh" |> List.contains "Pod") "an attribute is not a type position"
+
+            let lines = [ "type W = {"; "    pod: Po" ]
+            let cur = List.last lines
+
+            Expect.contains
+                (Weir.Script.suggestEntry
+                    Map.empty
+                    Map.empty
+                    (env ())
+                    lines
+                    cur
+                    (Weir.Complete.wordStartAt cur cur.Length))
+                "Pod"
+                "the multi-line field form"
+        }
+        test "an import's types complete; a validated type offers create, never its case" {
+            withTempDir "weir-tnc" (fun dir ->
+                inCwd dir (fun () ->
+                    File.WriteAllLines(
+                        Path.Combine(dir, "m.weir"),
+                        [
+                            "module M"
+                            "type Cfg = { a: int }"
+                            "type Mail = Email of string"
+                            "    validate s = if not (Str.contains \"@\" s) then fail \"no @\""
+                            "let mk : int -> Cfg"
+                            "let mk n = { a = n }"
+                        ]
+                    )
+
+                    let run, env = Weir.Repl.sessionForTest ()
+                    Expect.stringContains (run "import \"./m.weir\"") "module M imported" "imported"
+                    let sug = sugIn (env ())
+                    let members = sug "M."
+                    Expect.contains members "M.Cfg" "a record type"
+                    Expect.contains members "M.Mail" "the validated type"
+                    Expect.contains members "M.mk" "members stay"
+                    Expect.isFalse (List.contains "M.Email" members) "the refused case"
+                    Expect.equal (sug "M.Mail.cr") [ "M.Mail.create" ] "the qualified create"
+                    Expect.contains (sug "x |> from json M.") "M.Cfg" "a qualified type in an adapter slot"
+
+                    let out =
+                        run "type Addr = Addr of string\n    validate s = if s == \"\" then fail \"empty\""
+
+                    Expect.isFalse (out.Contains "error") $"the validated type declares: {out}"
+                    Expect.equal (sugIn (env ()) "Addr.cr") [ "Addr.create" ] "a local validated type's create"))
         }
     ]
 
@@ -26712,7 +26794,7 @@ let fromJsonSeqTests =
         }
         test "completion after `from json ` offers record names, not the seq form (decided: the hover teaches it)" {
             let text = "[\"x\"] |> from json "
-            Expect.contains (suggest text text.Length) "FileRow" ""
+            Expect.contains (suggest text text.Length) "EnvVar" ""
             Expect.isFalse (List.exists (fun (s: string) -> s.StartsWith "seq") (suggest text text.Length)) ""
         }
     ]
@@ -45763,6 +45845,7 @@ let allTests =
         headSlotCompletionTests
         completionHuntTests
         completionHunt2Tests
+        completionTypeNameTests
         withinKindsTests
         withinAlwaysLockTests
         withinAlwaysAnyTests

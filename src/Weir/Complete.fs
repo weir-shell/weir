@@ -545,6 +545,95 @@ let headSlotAt (before: string) : HeadSlot =
             | Some(rest, _) when rest.Trim() = "" || envOnly rest -> if forced then HeadSlot.Forced else HeadSlot.Stage
             | _ -> HeadSlot.No
 
+// every type name a program can spell [D:type-name-complete]: the
+// built-in names the type grammar reads, declared and imported types,
+// and each import's qualified `M.T`
+let private builtinTypeNames = [
+    "int"
+    "string"
+    "bool"
+    "unit"
+    "float"
+    "Duration"
+    "Instant"
+    "Uuid"
+    "Size"
+    "Bytes"
+    "Secret"
+    "seq"
+    "Option"
+    "Result"
+    "Map"
+]
+
+let private declaredTypeNames (env: TypeEnv) : string list =
+    let declared =
+        env.Types
+        |> Map.keys
+        |> Seq.filter (fun n -> n <> "" && System.Char.IsUpper n[0])
+
+    let qualified =
+        env.ModuleTypes
+        |> Map.toSeq
+        |> Seq.collect (fun (m, tys) -> tys |> Map.keys |> Seq.map (fun t -> m + "." + t))
+
+    Seq.append declared qualified |> Seq.distinct |> List.ofSeq
+
+/// a type position inside a `type` declaration: the statement so far
+/// opens with `type` and ends where a type is written
+let typePositionAt (stmtBefore: string) : bool =
+    let s = stmtBefore.TrimStart()
+    let t = s.TrimEnd()
+
+    s.StartsWith "type "
+    && not (t.EndsWith "[<")
+    && (t.EndsWith ":"
+        || t.EndsWith "*"
+        || t.EndsWith "<"
+        || t.EndsWith ","
+        || t.EndsWith "->"
+        || t.EndsWith "("
+        || System.Text.RegularExpressions.Regex.IsMatch(t, @"\sof$"))
+
+/// type names for a type position, prefix-filtered
+let typeNameOffers (env: TypeEnv) (word: string) : string list =
+    builtinTypeNames @ declaredTypeNames env
+    |> List.filter (fun n -> n.StartsWith word && n <> word)
+    |> List.distinct
+    |> List.sort
+
+// an adapter's type slot: `from <fmt> [stream] [seq<|Map<string, ]`
+let private adapterSlot =
+    System.Text.RegularExpressions.Regex(
+        @"\bfrom\s+(json|jsonl|yaml|toml|xml|table)(\s+stream)?(\s+(seq\s*<|Map\s*<\s*string\s*,))?\s*$",
+        System.Text.RegularExpressions.RegexOptions.None,
+        System.TimeSpan.FromMilliseconds 100.0
+    )
+
+/// the types a `from` slot admits — the checker decides, by checking
+/// the slot with each candidate [D:type-name-complete]
+let private adapterOffers (env: TypeEnv) (slot: string) (word: string) : string list =
+    let closer =
+        if slot.TrimEnd().EndsWith "<" || slot.TrimEnd().EndsWith "," then
+            ">"
+        else
+            ""
+
+    let admits (n: string) =
+        match Weir.Parser.parseExpr ("[\"\"] |> " + slot.Trim() + " " + n + closer) with
+        | Ok e -> (Weir.Check.typecheck env e) |> Result.isOk
+        | Error _ -> false
+
+    declaredTypeNames env
+    |> List.filter (fun n -> n.StartsWith word && n <> word && admits n)
+    |> List.sort
+
+// a validated type's derived `create` [D:validated-types]: the one way in
+let private isValidated (env: TypeEnv) (typeKey: string) : bool =
+    match Types.typeDefFor env typeKey with
+    | Some(Union u) -> u.Validated.IsSome
+    | _ -> false
+
 // a keyed head's open option keys [D:head-key-complete]
 let private keyValueAtom = @"(?:""(?:[^""\\]|\\.)*""|\([^()]*\)|[^\s()""]+)"
 
@@ -1351,6 +1440,17 @@ let rec suggestScopedWith
 
                 let headKeys = headKeyOffers env before
 
+                let adapter =
+                    try
+                        let m = adapterSlot.Match before
+                        if m.Success then Some m.Value else None
+                    with :? System.Text.RegularExpressions.RegexMatchTimeoutException ->
+                        None
+
+                let stmtBefore =
+                    let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
+                    if i >= 0 then before.Substring(i + 1) else before
+
                 if splice.IsSome then
                     splice.Value
                 elif importArg then
@@ -1359,6 +1459,22 @@ let rec suggestScopedWith
                     |> List.map (if insideOpenQuote then escapeFor opener else stringLiteral)
                 elif headKeys.IsSome then
                     headKeys.Value |> List.filter (fun k -> k.StartsWith word && k <> word)
+                elif adapter.IsSome then
+                    // yaml's slot also takes the stream cardinality word
+                    // [D:wire-unions]
+                    let stream =
+                        if
+                            System.Text.RegularExpressions.Regex.IsMatch(adapter.Value, @"^from\s+yaml\s*$")
+                            && "stream".StartsWith word
+                            && word <> "stream"
+                        then
+                            [ "stream" ]
+                        else
+                            []
+
+                    stream @ adapterOffers env adapter.Value word
+                elif typePositionAt stmtBefore then
+                    typeNameOffers env word
                 elif word.StartsWith "~" || word.Contains '/' then
                     // an explicit path word — filesystem entries [D:repl-quality],
                     // quoted where the slot is an expression [D:repl-path-quote]
@@ -1439,7 +1555,20 @@ let rec suggestScopedWith
                         else
                             None
 
+                    // an import's types beside its members, a validated
+                    // type's `create` in place of its refused case
+                    // [D:type-name-complete]
+                    let moduleTypes = Map.tryFind head env.ModuleTypes |> Option.defaultValue Map.empty
+
                     match moduleMembers with
+                    | Some _ when
+                        segments.Length = 3
+                        && (moduleTypes |> Map.tryFind segments[1] |> Option.exists (isValidated env))
+                        ->
+                        if "create".StartsWith prefix then
+                            [ $"{head}.{segments[1]}.create" ]
+                        else
+                            []
                     | Some members ->
                         let prefix = word.Substring(head.Length + 1)
 
@@ -1448,12 +1577,28 @@ let rec suggestScopedWith
                         let special =
                             Weir.Check.specialModuleMembers |> Map.tryFind head |> Option.defaultValue []
 
+                        let refusedCases =
+                            moduleTypes
+                            |> Map.toList
+                            |> List.collect (fun (_, key) ->
+                                match Types.typeDefFor env key with
+                                | Some(Union u) when u.Validated.IsSome -> u.Cases |> List.map fst
+                                | _ -> [])
+                            |> Set.ofList
+
                         Seq.append (Map.keys members) special
+                        |> Seq.filter (refusedCases.Contains >> not)
+                        |> Seq.append (Map.keys moduleTypes)
                         |> Seq.filter (fun m -> m.StartsWith prefix)
                         |> Seq.distinct
                         |> Seq.sort
                         |> Seq.map (fun m -> $"{head}.{m}")
                         |> List.ofSeq
+                    | None when segments.Length = 2 && isValidated env head ->
+                        if "create".StartsWith prefix then
+                            [ $"{head}.create" ]
+                        else
+                            []
                     | None ->
 
                         let headTy =
@@ -1579,27 +1724,6 @@ let rec suggestScopedWith
                     // the write-side stream word [D:yaml-seq-doc] — the one thing
                     // that follows a to-adapter
                     [ "stream" ]
-                elif
-                    before.EndsWith "from json"
-                    || before.EndsWith "from jsonl"
-                    || before.EndsWith "from yaml"
-                    || before.EndsWith "from yaml stream"
-                then
-                    // record names complete in the type slot; yaml's slot also
-                    // offers the stream cardinality word [D:wire-unions]
-                    let names =
-                        env.Types
-                        |> Map.toList
-                        |> List.choose (fun (n, def) ->
-                            match def with
-                            | Record _ when n.StartsWith word -> Some n
-                            | _ -> None)
-                        |> List.sort
-
-                    if before.EndsWith "from yaml" && "stream".StartsWith word && word <> "stream" then
-                        "stream" :: names
-                    else
-                        names
                 elif word = "" && before = "" then
                     // an empty prompt at a statement head [D:empty-prompt-directives]:
                     // matching the whole pool (hundreds of PATH execs plus the

@@ -107,6 +107,12 @@ completes paths only.
 **Long lists.** When several candidates match, Tab lists them all in
 columns that fit the terminal; past 200 it counts the rest.
 
+**Type names.** Where a type is written, Tab offers type names: after
+`from json`, `from toml` and the other adapters, only the types that
+can actually be read there; in a `type` declaration, the built-in names
+and your own. `M.<TAB>` lists an imported module's types with its
+members, and a validated type completes to `T.create`.
+
 **Paths.** In an expression a path completes quoted, because a bare
 path isn't a valid weir expression: `File.read ./x<TAB>` and
 `File.read x<TAB>` give `File.read "./x"` and `File.read "x"`. Outside
