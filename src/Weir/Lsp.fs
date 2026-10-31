@@ -5607,8 +5607,15 @@ let run (debug: bool) : int =
                                         (lines[0 .. min (line - 2) (lines.Length - 1)] |> List.ofArray)
                                         (upto.Substring(0, wordStart))
 
+                                let typePosition =
+                                    match statementUpTo env allLls lines line col with
+                                    | Some(_, pre, _) when pre.EndsWith word ->
+                                        Complete.typePositionAt (pre.Substring(0, pre.Length - word.Length))
+                                    | _ -> false
+
                                 let items =
                                     match repaired with
+                                    | _ when typePosition -> Complete.typeNameOffers env word
                                     | _ when untilStopped ->
                                         [ "stopped" ] |> List.filter (fun w -> w.StartsWith word && w <> word)
                                     | _ when yamlSplice.IsSome -> yamlSplice.Value

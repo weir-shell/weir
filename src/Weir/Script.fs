@@ -9760,8 +9760,17 @@ let suggestEntryWith
             Complete.untilStoppedAt (List.rev above) (last.Substring(0, last.Length - word.Length))
         | _ -> false
 
+    // a type position across the lines of a `type` declaration
+    // [D:type-name-complete]
+    let typePosition =
+        match stmt with
+        | Some s when s.EndsWith word -> Complete.typePositionAt (s.Substring(0, s.Length - word.Length))
+        | _ -> false
+
     if untilStopped then
         [ "stopped" ] |> List.filter (fun w -> w.StartsWith word && w <> word)
+    elif typePosition then
+        Complete.typeNameOffers ctxEnv word
     else
 
         match stmt |> Option.bind (fun s -> repairedFields ctxEnv s "") with
