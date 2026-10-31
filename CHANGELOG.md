@@ -55,6 +55,10 @@
 - **`#types <Tab>` offers `on`/`off`, `#echo <Tab>` offers `all`.**
 - **`echo $cl<Tab>` offers `cli.`** for a record binding, and
   `^$to<Tab>` offers string bindings for a dynamic head.
+- **Every built-in type has a description.** `#help HttpRequest`,
+  `#help ServerConfig`, `#find` and hover now explain `Option`,
+  `Result`, the HTTP and server types, `Retry`/`Poll`/`Repeat`, `Yaml`
+  and the rest instead of showing only a declaration.
 
 ## v0.0.82
 
