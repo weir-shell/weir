@@ -827,6 +827,27 @@ type Ty =
     | TVar of name: string
     | TRowVar of name: string * fields: (string * Ty) list
 
+/// the type grammar's scalar names [D:type-name-complete]: both parsers
+/// read this table, and completion offers its names
+let scalarTypes: Map<string, Ty> =
+    Map.ofList [
+        "string", TStr
+        "bool", TBool
+        "unit", TUnit
+        "float", TFloat
+        "Duration", TDur
+        "Instant", TInstant
+        "Uuid", TUuid
+        "Size", TSize
+        "Bytes", TBytes
+        "Secret", TSecret
+    ]
+
+/// every built-in name a type position takes: the scalars, `int` and
+/// `seq<…>` (their own grammar arms), and `Map<…>` (a named type)
+let builtinTypeNames: string list =
+    [ "int"; "seq"; "Map" ] @ (Map.keys scalarTypes |> List.ofSeq)
+
 let rec formatTy (ty: Ty) : string =
     match ty with
     | TDur -> "Duration"
