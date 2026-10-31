@@ -144,6 +144,11 @@ let helpNames (env: TypeEnv) : string list =
         Map.keys env.Modules |> List.ofSeq
         Map.keys env.Values |> Seq.filter Types.isUserName |> List.ofSeq
         Map.keys env.Types |> List.ofSeq
+        // the forms #help documents (`repeat`, `within`, `from json`)
+        // [D:help-forms-complete]
+        Map.keys Builtins.builtinDocs.Value
+        |> Seq.filter (fun k -> not (k.Contains '.'))
+        |> List.ofSeq
     ]
     |> List.distinct
 
@@ -513,12 +518,36 @@ let lastStage (stmt: string) : (string * bool) option =
         else
             Some(rest, true)
 
+/// the text inside an unclosed `$(` capture at the end of `before`, or
+/// None — the captured command is judged on its own [D:expr-paths-quoted]
+let openCaptureInner (before: string) : string option =
+    let opens =
+        Weir.Scan.foldOutsideStrings
+            (fun (st: int list) i c ->
+                if c = '(' then
+                    i :: st
+                elif c = ')' then
+                    (match st with
+                     | _ :: rest -> rest
+                     | [] -> [])
+                else
+                    st)
+            []
+            before
+
+    match opens with
+    | i :: _ when i > 0 && before[i - 1] = '$' -> Some(before.Substring(i + 1))
+    | _ -> None
+
 /// the slot verdict for the word starting right after `before`
 /// [D:let-rhs-head]. Statement head = an empty statement prefix,
 /// deliberately untrimmed: the colorizer's continuation lines (a yaml
 /// district body among them) must not read as heads, while the
 /// completer's own TrimEnd already collapses a whitespace prefix.
 let headSlotAt (before: string) : HeadSlot =
+    // inside `$(`, the captured command's head [D:capture-head-complete]
+    let before = openCaptureInner before |> Option.defaultValue before
+
     let stmt =
         let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
         if i >= 0 then before.Substring(i + 1) else before
@@ -717,24 +746,7 @@ let private yamlModifierOffers (marker: string) : string list =
 // splice word is argv-like after any head [D:argv-splice-complete].
 let private commandArgvStmt (env: TypeEnv) (anyHead: bool) (before: string) : string option =
     // inside an unclosed `$(`, the captured command [D:expr-paths-quoted]
-    let before =
-        let opens =
-            Weir.Scan.foldOutsideStrings
-                (fun (st: int list) i c ->
-                    if c = '(' then
-                        i :: st
-                    elif c = ')' then
-                        (match st with
-                         | _ :: rest -> rest
-                         | [] -> [])
-                    else
-                        st)
-                []
-                before
-
-        match opens with
-        | i :: _ when i > 0 && before[i - 1] = '$' -> before.Substring(i + 1)
-        | _ -> before
+    let before = openCaptureInner before |> Option.defaultValue before
 
     let stmt =
         let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
@@ -973,8 +985,17 @@ let private splicePool (env: TypeEnv) (sigil: string) (word: string) : string li
         env.Values
         |> Map.toList
         |> List.choose (fun (n, sch) ->
-            if Types.isUserName n && n.StartsWith word && n <> word && admits sch.Ty then
+            if not (Types.isUserName n && n.StartsWith word && n <> word) then
+                None
+            elif admits sch.Ty then
                 Some n
+            // a record splices through its fields: its stem, for the
+            // next Tab to list them [D:splice-stems]
+            elif
+                recordFields env sch.Ty
+                |> Option.exists (List.exists (fun (_, ft) -> admits ft))
+            then
+                Some(n + ".")
             else
                 None)
         |> List.sort
@@ -1138,8 +1159,17 @@ let rec suggestScopedWith
                 let before = text.Substring(0, min wordStart text.Length)
                 before.TrimStart() = "#help "
 
+            // a directive's own arguments [D:directive-args-complete]
+            let directiveArgs =
+                match text.Substring(0, min wordStart text.Length).TrimStart() with
+                | "#types " -> Some [ "off"; "on" ]
+                | "#echo " -> Some [ "all" ]
+                | _ -> None
+
             if directiveSlot then
                 sessionDirectives |> List.filter (fun d -> d.StartsWith word) |> List.sort
+            elif directiveArgs.IsSome then
+                directiveArgs.Value |> List.filter (fun a -> a.StartsWith word && a <> word)
             elif helpArgSlot then
                 // a `Module.` prefix completes that module's members — the same
                 // qualified names `#help Module.member` documents
@@ -1403,6 +1433,24 @@ let rec suggestScopedWith
 
                         if Weir.Scan.endsInsideString pre || Weir.Scan.commentAt pre >= 0 then
                             Some []
+                        elif
+                            sigil = "$"
+                            && at > 0
+                            && pre[at - 1] = '^'
+                            && headSlotAt (pre.Substring(0, at - 1).TrimEnd()) <> HeadSlot.No
+                        then
+                            // a dynamic head names one program: a string
+                            // [D:dynamic-head-complete]
+                            Some(
+                                env.Values
+                                |> Map.toList
+                                |> List.choose (fun (n, sch) ->
+                                    if Types.isUserName n && n.StartsWith word && n <> word && sch.Ty = TStr then
+                                        Some n
+                                    else
+                                        None)
+                                |> List.sort
+                            )
                         elif at > 0 && not (pre[at - 1] = ' ' || pre[at - 1] = '\t') then
                             Some []
                         elif commandArgvPosition env true (spliceSegment pre + sigil) then

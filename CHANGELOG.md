@@ -49,6 +49,12 @@
   falling back to every field weir knows.
 - **An anonymous record built mid-pipeline completes downstream:**
   `|> Seq.map (fun r -> {| v = r.n |}) |> Seq.map _.<Tab>` offers `_.v`.
+- **Commands complete inside `$(`:** `let x = $(gi<Tab>` offers `git`.
+- **`#help rep<Tab>` offers `repeat`**, and the other forms `#help`
+  documents (`within`, `retry`, `poll`, `from json`, …).
+- **`#types <Tab>` offers `on`/`off`, `#echo <Tab>` offers `all`.**
+- **`echo $cl<Tab>` offers `cli.`** for a record binding, and
+  `^$to<Tab>` offers string bindings for a dynamic head.
 
 ## v0.0.82
 
