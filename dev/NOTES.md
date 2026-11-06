@@ -1,5 +1,30 @@
 # Spike Notes
 
+## Lambda bodies in bracket entries (2026-11-06)
+
+A user's record literal carried two lambda fields; the one whose body
+grew a second statement stopped checking (a parse error at the
+record's `}`), and the single-statement twin kept working. Not a
+ruling: the assembler's bracket branch knew two joins — sibling at the
+entry column, space-continuation deeper — and returned before the
+lambda, dangle and block-let machinery ran, so `[D:multiline-lambda]`
+never reached a bracket interior and `[D:field-sep-sentinel]` had only
+fixed the single-expression field. `[D:lambda-lets]` had made a lambda
+body a statement body "wherever the lambda sits", which left this the
+one position the words covered and the code did not.
+
+The fix routes the body lines of a dangling-lambda entry through the
+statement path (a `Bodies` stack on the pending statement, keyed by
+bracket depth and entry column), and closes the body at the next entry,
+the closer, or an attached `}` — restoring the enclosing statement
+level so a sibling after the record still sequences. The arm-arrow
+case (`fun n -> match n with | 0 ->`) was kept on the continuation law
+on purpose: arms inside a bracket have never had alignment tracking.
+fmt needed `{|` recognised as a dangling opener and `|}` as a closer to
+keep the new shape stable in anonymous records — plain anonymous
+records had been "reformatted" to an alignment under the `|`.
+[D:bracket-lambda-body]
+
 ## 2026-10-27 bug hunt
 
 A fourth hunt over HEAD 1682a3e, eight domains (lexical, checker,

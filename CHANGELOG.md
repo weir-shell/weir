@@ -59,6 +59,18 @@
   `#help ServerConfig`, `#find` and hover now explain `Option`,
   `Result`, the HTTP and server types, `Retry`/`Poll`/`Repeat`, `Yaml`
   and the rest instead of showing only a declaration.
+- **A lambda stored in a record field or list element takes a
+  multi-line body.** `write = fun n ->` at the end of a field's line,
+  with the body indented below it, used to read the second body line
+  as more arguments of the first, or fail at the record's closer; a
+  `(fun n ->` field fared no better. Inside a record literal, a list
+  literal or an anonymous record the body now reads as any block does
+  — block lets, siblings, match arms, nested literals — and the next
+  field or the closer ends it. A body let with nothing after it, or a
+  `(fun` left open at the next field, is named.
+- **`weir fmt` lays out anonymous records like records.** `{|` at a
+  line's end now dangles like `{`: entries one level in, `|}` back at
+  the opener's indent. It used to align the entries under the `|`.
 
 ## v0.0.82
 

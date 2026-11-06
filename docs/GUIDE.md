@@ -422,7 +422,9 @@ a line with `(fun ... ->` and the indented lines below are its body.
 Any statements can go there, including nested `let`s and commands.
 The closing `)` can go at the end of the last body line or on its
 own line. You can also put everything on one line with `;` between
-the statements.
+the statements. A lambda stored in a record field or a list element
+works the same way without the parens: end the field's line with
+`fun ... ->` and indent the body below it; the next field ends it.
 
 ```weir
 let sizes =

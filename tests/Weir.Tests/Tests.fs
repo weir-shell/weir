@@ -18433,6 +18433,245 @@ let multilineLambdaTests =
         }
     ]
 
+let bracketLambdaBodyTests =
+    testList "Lambda bodies in bracket entries [D:bracket-lambda-body]" [
+        test "a block let in a record field's lambda body closes with `in`; the next field splits at the field sentinel" {
+            match
+                Weir.Script.assemble [
+                    1, "let c = {"
+                    2, "    write = fun n ->"
+                    3, "        let a = n + 1"
+                    4, "        print $\"{a}\""
+                    5, "    name = \"x\""
+                    6, "}"
+                ]
+            with
+            | Ok [ ll ] ->
+                Expect.equal
+                    ll.Text
+                    ("let c = { write = fun n -> let a = n + 1 in print $\"{a}\" "
+                     + Weir.Parser.fieldSepStr
+                     + " name = \"x\" }")
+                    ""
+            | other -> failtest $"unexpected: {other}"
+        }
+        test "body statements sequence at the statement sentinel, never as an application" {
+            match
+                Weir.Script.assemble [
+                    1, "let c = {"
+                    2, "    write = fun n ->"
+                    3, "        print \"x\""
+                    4, "        print $\"{n}\""
+                    5, "}"
+                ]
+            with
+            | Ok [ ll ] ->
+                Expect.equal
+                    ll.Text
+                    ("let c = { write = fun n -> print \"x\" "
+                     + Weir.Parser.sibSepStr
+                     + " print $\"{n}\" }")
+                    ""
+            | other -> failtest $"unexpected: {other}"
+        }
+        test "the receipt: a nested record with two lambda fields, one a block body" {
+            let diags =
+                diagsIn "sub.weir" [
+                    "type Cursor = { read: unit -> Size; write: Size -> unit }"
+                    "type Sub = { name: string; cursor: Cursor }"
+                    "let ensureSub dir name ="
+                    "    let path = Path.under dir $\"{name}.cursor\""
+                    "    let sub = {"
+                    "        name = path"
+                    "        cursor ="
+                    "        {"
+                    "            read = fun () -> File.read path |> Seq.exactlyOne |> Str.toInt |> Size.bytes"
+                    "            write = fun new ->"
+                    "                let _a = 10"
+                    "                [$\"{new |> Size.toBytes}\"] |> File.writeAtomic path"
+                    "        }"
+                    "    }"
+                    "    if not (File.exists sub.name) then"
+                    "        0B |> sub.cursor.write"
+                    "    sub"
+                    "print (ensureSub \"d\" \"a\").name"
+                ]
+
+            Expect.isEmpty diags $"the block-body field must check: {diags}"
+        }
+        test "match arms, an if/else block and a nested record all read as a body; the next field still splits" {
+            let diags =
+                diagsIn "body.weir" [
+                    "type R = { a: int; b: int }"
+                    "type C = { write: int -> unit; name: string }"
+                    "let c = {"
+                    "    write = fun n ->"
+                    "        let r = {"
+                    "            a = n"
+                    "            b = 2"
+                    "        }"
+                    "        match r.a with"
+                    "        | 0 -> print \"zero\""
+                    "        | _ -> print \"other\""
+                    "        if r.b > 0 then"
+                    "            print \"pos\""
+                    "        else"
+                    "            print \"nonpos\""
+                    "    name = \"x\""
+                    "}"
+                    "c.write 1"
+                    "print c.name"
+                ]
+
+            Expect.isEmpty diags $"compounds and arms inside the body must check: {diags}"
+        }
+        test "list elements and anonymous-record fields take bodies too" {
+            let listDiags =
+                diagsIn "l.weir" [
+                    "let fs = ["
+                    "    fun n ->"
+                    "        let a = n + 1"
+                    "        print $\"{a}\""
+                    "    fun n ->"
+                    "        print $\"{n}\""
+                    "]"
+                    "fs |> Seq.iter (fun f -> f 1)"
+                ]
+
+            Expect.isEmpty listDiags $"list element bodies must check: {listDiags}"
+
+            let anonDiags =
+                diagsIn "a.weir" [
+                    "let c = {|"
+                    "    write = fun n ->"
+                    "        let a = n + 1"
+                    "        print $\"{a}\""
+                    "|}"
+                    "c.write 1"
+                ]
+
+            Expect.isEmpty anonDiags $"anonymous-record field bodies must check: {anonDiags}"
+        }
+        test "a `(fun` entry arms its lambda: the `)` alone closes it, the next field follows" {
+            let diags =
+                diagsIn "p.weir" [
+                    "type C = { write: int -> unit; name: string }"
+                    "let c = {"
+                    "    write = (fun n ->"
+                    "        let _a = 10"
+                    "        print $\"{n}\""
+                    "    )"
+                    "    name = \"x\""
+                    "}"
+                    "c.write 1"
+                    "print c.name"
+                ]
+
+            Expect.isEmpty diags $"the paren form must check: {diags}"
+        }
+        test "a `}` attached to the last body line restores the statement level: the sibling after sequences" {
+            let diags =
+                diagsIn "w.weir" [
+                    "type C = { write: int -> unit }"
+                    "within tmp d"
+                    "    let c = {"
+                    "        write = fun n ->"
+                    "            let _a = 10"
+                    "            print $\"{n}\" }"
+                    "    c.write 1"
+                    "    print \"after\""
+                ]
+
+            Expect.isEmpty diags $"the attached closer must not glue the sibling: {diags}"
+        }
+        test "a body let with no body is the let's error, at the next entry and at the closer" {
+            let atCloser =
+                errorMsgsIn "e.weir" [
+                    "type C = { write: int -> unit }"
+                    "let c = {"
+                    "    write = fun n ->"
+                    "        let a = n"
+                    "}"
+                ]
+
+            Expect.exists atCloser (fun m -> m.Contains "this let needs a body") $"closer: {atCloser}"
+
+            let atField =
+                errorMsgsIn "f.weir" [
+                    "type C = { write: int -> unit; name: string }"
+                    "let c = {"
+                    "    write = fun n ->"
+                    "        let a = n"
+                    "    name = \"x\""
+                    "}"
+                ]
+
+            Expect.exists atField (fun m -> m.Contains "this let needs a body") $"field: {atField}"
+        }
+        test "an unclosed `(fun` names its paren when the field ends" {
+            let msgs =
+                errorMsgsIn "u.weir" [
+                    "type C = { write: int -> unit; name: string }"
+                    "let c = {"
+                    "    write = (fun n ->"
+                    "        print $\"{n}\""
+                    "    name = \"x\""
+                    "}"
+                ]
+
+            Expect.exists msgs (fun m -> m.Contains "still open when its field/element ends") $"{msgs}"
+        }
+        test "an arm's arrow after the fun keeps the continuation law: the arm body sits below, arms follow" {
+            let diags =
+                diagsIn "arm.weir" [
+                    "type C = { f: int -> string; name: string }"
+                    "let c = {"
+                    "    f = fun n -> match n with | 0 ->"
+                    "                                \"zero\""
+                    "                              | _ -> \"other\""
+                    "    name = \"x\""
+                    "}"
+                    "print (c.f 0)"
+                    "print c.name"
+                ]
+
+            Expect.isEmpty diags $"the arm-arrow continuation must still check: {diags}"
+        }
+        test "a single-expression continuation body stays what it was" {
+            match
+                Weir.Script.assemble [
+                    1, "let c = {"
+                    2, "    act = (fun () ->"
+                    3, "        1)"
+                    4, "    name = \"x\""
+                    5, "}"
+                ]
+            with
+            | Ok [ ll ] ->
+                Expect.equal ll.Text ("let c = { act = (fun () -> 1) " + Weir.Parser.fieldSepStr + " name = \"x\" }") ""
+            | other -> failtest $"unexpected: {other}"
+        }
+        test "fmt: `{|` dangles like `{` — entries at +4, `|}` at the opener's indent; a body inside is fmt-stable" {
+            match Weir.Fmt.formatLines [ "let c = {|"; "         a = 1"; "         |}" ] with
+            | Ok lines ->
+                Expect.equal lines[1] "    a = 1" "anonymous entries sit one level in"
+                Expect.equal lines[2] "|}" "the anonymous closer returns to the opener line"
+            | Error e -> failtest e
+
+            let body = [
+                "let c = {|"
+                "    write = fun n ->"
+                "        let a = n + 1"
+                "        print $\"{a}\""
+                "|}"
+            ]
+
+            match Weir.Fmt.formatLines body with
+            | Ok lines -> Expect.equal lines body "a canonical body inside an anonymous record is stable"
+            | Error e -> failtest e
+        }
+    ]
+
 let pipeAlignTests =
     testList "Pipe alignment" [
         test "off-by-one siblings error naming the column [D:pipe-alignment]" {
@@ -45965,6 +46204,7 @@ let allTests =
         blockLetCmdTests
         statementLetTests
         multilineLambdaTests
+        bracketLambdaBodyTests
         moduleErrorOnceTests
         semanticTokenTests
         blockRecoveryTests
