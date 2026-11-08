@@ -643,6 +643,44 @@ let lambdaOpens (piece: string) : bool =
         | top :: _ -> trimmed.Substring(top + 1).TrimStart().StartsWith "fun "
         | [] -> false
 
+/// A bracket entry whose value dangles a lambda arrow at EOL opens a
+/// statement body below it [D:bracket-lambda-body]: the trailing `->`
+/// is the last `fun`'s own — an arm's `->` after that `fun` keeps the
+/// line a plain continuation, its arms below it.
+let lambdaDangles (piece: string) : bool =
+    let t = piece.TrimEnd()
+
+    if not (t.EndsWith "->") then
+        false
+    else
+        let body = t.Substring(0, t.Length - 2)
+
+        let isIdent (c: char) =
+            System.Char.IsLetterOrDigit c || c = '_'
+
+        // the last marker before the trailing arrow: a `fun` word (1) or
+        // an earlier arrow (2)
+        let last =
+            foldOutsideStrings
+                (fun (st: int) i c ->
+                    if c = '-' && i + 1 < body.Length && body[i + 1] = '>' then
+                        2
+                    elif
+                        c = 'f'
+                        && i + 2 < body.Length
+                        && body[i + 1] = 'u'
+                        && body[i + 2] = 'n'
+                        && (i = 0 || not (isIdent body[i - 1]))
+                        && (i + 3 = body.Length || body[i + 3] = ' ' || body[i + 3] = '(')
+                    then
+                        1
+                    else
+                        st)
+                0
+                body
+
+        last = 1
+
 /// A piece that dangles a block open at EOL: the next deeper line
 /// starts a statement of that block (the lambda restore level rides
 /// this) [D:multiline-lambda].
@@ -1413,6 +1451,11 @@ type private Pend = {
     // still-open brackets (kind, opening line, sibling-entry column)
     // [D:multiline-brackets] [D:field-alignment]
     Brackets: (char * int * int option) list
+    // open lambda bodies of bracket entries (bracket depth, entry column,
+    // statement level to restore when the entry ends), innermost first
+    // [D:bracket-lambda-body] — the body's lines read as statements; the
+    // next entry, the closer, or a `}` attached to the body closes it
+    Bodies: (int * int * int) list
 }
 
 // The join algebra: every way a continuation line attaches to the
@@ -2062,7 +2105,54 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
 
                                     let cls = classifyPiece piece
 
+                                    // close the lambda bodies of bracket entries that have
+                                    // ended [D:bracket-lambda-body]: every body opened at a
+                                    // bracket depth above `depth`. A block let still open
+                                    // inside one has no body; an unclosed `(fun` inside one
+                                    // names its paren; the body's compounds and arm groups
+                                    // are gone; the statement level the outermost body saved
+                                    // comes back
+                                    let closeBodiesAbove (depth: int) (p: Pend) : Result<Pend, string> =
+                                        let gone, kept = p.Bodies |> List.partition (fun (d, _, _) -> d > depth)
+
+                                        match List.tryLast gone with
+                                        | None -> Ok p
+                                        | Some(_, entryCol, saved) ->
+                                            match p.Lets |> List.tryFind (fun (k, _) -> k > entryCol) with
+                                            | Some(_, letLine) -> noBody letLine
+                                            | None ->
+                                                match
+                                                    p.Lambdas |> List.tryFind (fun (_, oi, _, _) -> oi >= entryCol)
+                                                with
+                                                | Some(oline, _, _, _) ->
+                                                    Error
+                                                        $"line {oline}: this lambda's '(' is still open when its field/element ends — close the paren"
+                                                | None ->
+                                                    Ok {
+                                                        p with
+                                                            Bodies = kept
+                                                            StmtLevel = saved
+                                                            Compounds =
+                                                                p.Compounds
+                                                                |> List.filter (fun (h, _, _) -> h <= entryCol)
+                                                            PipeGroups =
+                                                                p.PipeGroups
+                                                                |> List.filter (fun (g, _, _, _) -> g <= entryCol)
+                                                            LastWasPipe = false
+                                                    }
+
                                     let rec go (p: Pend) =
+                                        // a body is open for the innermost bracket when its
+                                        // depth matches [D:bracket-lambda-body]
+                                        let bodyOpen =
+                                            match p.Bodies with
+                                            | (d, _, _) :: _ -> d = p.Brackets.Length
+                                            | [] -> false
+
+                                        // a closer line ends its bracket whatever its indent
+                                        let closesBracket =
+                                            piece.StartsWith "]" || piece.StartsWith "}" || piece.StartsWith "|}"
+
                                         match p.Brackets with
                                         // the statement-head guard [D:blank-in-brackets]:
                                         // keywords cannot be entries, so a col-0
@@ -2072,6 +2162,19 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                             ->
                                             Error
                                                 $"line {lineNo}: statement at column 0 while the '{kind}' opened at line {bline} is still open — close the bracket"
+                                        // a line of an entry's lambda body is a statement line
+                                        // [D:bracket-lambda-body]: block lets, siblings,
+                                        // compounds, arms and nested lambdas read as they do
+                                        // in any block; the entry column is the bracket's own
+                                        | (_, _, Some entryCol) :: _ when
+                                            bodyOpen
+                                            && not closesBracket
+                                            && (indent > entryCol || (cls.ClosesParen && not p.Lambdas.IsEmpty))
+                                            ->
+                                            stmt p
+                                        | (_, _, _) :: _ when bodyOpen ->
+                                            // the next entry or the closer ends the body
+                                            closeBodiesAbove (p.Brackets.Length - 1) p |> Result.bind go
                                         | (kind, _, entryCol) :: _ ->
                                             // bracket continuation: a line break after a
                                             // field/element is a separator. The predicates
@@ -2156,15 +2259,37 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                             | Ok anchored ->
                                                 bracketFold lineNo indent anchored piece
                                                 |> Result.bind (fun brackets ->
+                                                    let depth = p.ParenDepth + parenDelta piece
+
+                                                    // a `(fun x ->` entry arms its lambda like any
+                                                    // statement line, and a dangling lambda arrow
+                                                    // opens the entry's body [D:bracket-lambda-body]
+                                                    let lambdas =
+                                                        if lambdaOpens piece then
+                                                            (lineNo, indent, depth - 1, p.StmtLevel) :: p.Lambdas
+                                                        else
+                                                            p.Lambdas
+
+                                                    let bodies =
+                                                        match brackets with
+                                                        | (_, _, Some c) :: _ when lambdaDangles piece ->
+                                                            (brackets.Length, c, p.StmtLevel) :: p.Bodies
+                                                        | _ -> p.Bodies
+
                                                     let joinedP = {
                                                         p with
                                                             Buf = applyJoin join p.Buf piece lineNo indent
                                                             LastIndent = indent
                                                             Brackets = brackets
+                                                            ParenDepth = depth
+                                                            PrevDangles = dangleOpensBlock piece
+                                                            Lambdas = lambdas
+                                                            Bodies = bodies
                                                     }
 
                                                     if not brackets.IsEmpty then
-                                                        Ok(Some joinedP, acc, blankSinceHead)
+                                                        closeBodiesAbove brackets.Length joinedP
+                                                        |> Result.map (fun q -> Some q, acc, blankSinceHead)
                                                     else
                                                         // the line closing the last bracket rejoins paren
                                                         // tracking: its parens move the depth, so `])` /
@@ -2231,624 +2356,615 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                                                 acc,
                                                                 blankSinceHead
                                                             ))
-                                        | [] ->
-                                            match p.District with
-                                            | Some({ Active = None; Yaml = true } as dst) when
-                                                indent > dst.MarkerIndent
-                                                ->
-                                                // the first yaml line fixes the block base; it rides
-                                                // at relative indent 0 [D:yaml-district]
+                                        | [] -> stmt p
+
+                                    and stmt (p: Pend) =
+                                        match p.District with
+                                        | Some({ Active = None; Yaml = true } as dst) when indent > dst.MarkerIndent ->
+                                            // the first yaml line fixes the block base; it rides
+                                            // at relative indent 0 [D:yaml-district]
+                                            Ok(
+                                                Some {
+                                                    p with
+                                                        Buf = applyJoin (JYamlLine 0) p.Buf rawPiece lineNo indent
+                                                        LastIndent = indent
+                                                        District = Some { dst with Active = Some indent }
+                                                },
+                                                acc,
+                                                blankSinceHead
+                                            )
+                                        | Some({ Active = Some bse; Yaml = true } as dst) when
+                                            indent > dst.MarkerIndent
+                                            ->
+                                            if (heredocCommentGap dst).IsSome then
+                                                Error (heredocCommentGap dst).Value
+                                            elif indent < bse then
+                                                let noun =
+                                                    match dst.Marker with
+                                                    | MarkerKind.Heredoc -> "heredoc"
+                                                    | _ -> "yaml"
+
+                                                Error
+                                                    $"line {lineNo}: this {noun} line outdents below the block's first line"
+                                            else
                                                 Ok(
                                                     Some {
                                                         p with
-                                                            Buf = applyJoin (JYamlLine 0) p.Buf rawPiece lineNo indent
+                                                            Buf =
+                                                                applyJoin
+                                                                    (JYamlLine(indent - bse))
+                                                                    p.Buf
+                                                                    rawPiece
+                                                                    lineNo
+                                                                    indent
                                                             LastIndent = indent
-                                                            District = Some { dst with Active = Some indent }
                                                     },
                                                     acc,
                                                     blankSinceHead
                                                 )
-                                            | Some({ Active = Some bse; Yaml = true } as dst) when
-                                                indent > dst.MarkerIndent
-                                                ->
-                                                if (heredocCommentGap dst).IsSome then
-                                                    Error (heredocCommentGap dst).Value
-                                                elif indent < bse then
-                                                    let noun =
-                                                        match dst.Marker with
-                                                        | MarkerKind.Heredoc -> "heredoc"
-                                                        | _ -> "yaml"
+                                        | Some({ Active = None } as dst) when indent > dst.MarkerIndent ->
+                                            districtLineCheck lineNo cls
+                                            |> Result.map (fun () ->
+                                                Some {
+                                                    p with
+                                                        Buf =
+                                                            applyJoin
+                                                                (JDistrictOpen(dst.Strip, dst.Opener))
+                                                                p.Buf
+                                                                piece
+                                                                lineNo
+                                                                indent
+                                                        LastIndent = indent
+                                                        District = Some { dst with Active = Some indent }
+                                                },
+                                                acc,
+                                                blankSinceHead)
+                                        | Some {
+                                                   Active = None
+                                                   MarkerLine = mLine
+                                                   Marker = m
+                                               } ->
+                                            let what =
+                                                match m with
+                                                | MarkerKind.Heredoc -> "'<<<'"
+                                                | _ -> "'yaml'"
 
-                                                    Error
-                                                        $"line {lineNo}: this {noun} line outdents below the block's first line"
-                                                else
-                                                    Ok(
-                                                        Some {
-                                                            p with
-                                                                Buf =
-                                                                    applyJoin
-                                                                        (JYamlLine(indent - bse))
-                                                                        p.Buf
-                                                                        rawPiece
-                                                                        lineNo
-                                                                        indent
-                                                                LastIndent = indent
-                                                        },
-                                                        acc,
-                                                        blankSinceHead
-                                                    )
-                                            | Some({ Active = None } as dst) when indent > dst.MarkerIndent ->
+                                            Error $"line {mLine}: line-end {what} needs an indented block below it"
+                                        | Some({ Active = Some d } as dst) when indent > dst.MarkerIndent ->
+                                            if cls.Kind = PieceKind.PipeHead then
+                                                Ok(
+                                                    Some {
+                                                        p with
+                                                            Buf = applyJoin JDistrictPipe p.Buf piece lineNo indent
+                                                            LastIndent = indent
+                                                    },
+                                                    acc,
+                                                    blankSinceHead
+                                                )
+                                            elif indent = d then
                                                 districtLineCheck lineNo cls
                                                 |> Result.map (fun () ->
                                                     Some {
                                                         p with
                                                             Buf =
                                                                 applyJoin
-                                                                    (JDistrictOpen(dst.Strip, dst.Opener))
+                                                                    (JDistrictSibling dst.Opener)
                                                                     p.Buf
                                                                     piece
                                                                     lineNo
                                                                     indent
                                                             LastIndent = indent
-                                                            District = Some { dst with Active = Some indent }
                                                     },
                                                     acc,
                                                     blankSinceHead)
-                                            | Some {
-                                                       Active = None
-                                                       MarkerLine = mLine
-                                                       Marker = m
-                                                   } ->
-                                                let what =
-                                                    match m with
-                                                    | MarkerKind.Heredoc -> "'<<<'"
-                                                    | _ -> "'yaml'"
+                                            else
+                                                Error
+                                                    $"line {lineNo}: district lines are commands, one per line (use a leading | to continue a pipeline)"
+                                        | Some dst ->
+                                            // at or left of the marker while the statement still
+                                            // pends [D:district-terminates]: the district closes and
+                                            // the line reprocesses under the normal rules — a
+                                            // following `|>`, `in`, or sibling composes with the
+                                            // block's value. The flattened logical line carries no
+                                            // content terminator, so without a marker the
+                                            // continuation would glue into the last content line
+                                            // (silent corruption); appending districtClose marks
+                                            // the extent, and districtTail stops there so the
+                                            // expression grammar resumes on the reprocessed line.
+                                            go {
+                                                p with
+                                                    District = None
+                                                    Buf = bufAppend p.Buf Parser.districtCloseStr
+                                                    LastIndent = dst.MarkerIndent
+                                            }
+                                        // the multiline lambda's closer and leak guard
+                                        // [D:multiline-lambda]: a `)`-headed line continues
+                                        // the statement at any indent; any other line at or
+                                        // left of the opener is a leak (the error names the
+                                        // opener)
+                                        | None when
+                                            (match p.Lambdas with
+                                             | (_, oindent, _, _) :: _ -> cls.ClosesParen || indent < oindent
+                                             | [] -> false)
+                                            ->
+                                            let (oline, oindent, _, _) = List.head p.Lambdas
 
-                                                Error $"line {mLine}: line-end {what} needs an indented block below it"
-                                            | Some({ Active = Some d } as dst) when indent > dst.MarkerIndent ->
-                                                if cls.Kind = PieceKind.PipeHead then
-                                                    Ok(
-                                                        Some {
-                                                            p with
-                                                                Buf = applyJoin JDistrictPipe p.Buf piece lineNo indent
-                                                                LastIndent = indent
-                                                        },
-                                                        acc,
-                                                        blankSinceHead
-                                                    )
-                                                elif indent = d then
-                                                    districtLineCheck lineNo cls
-                                                    |> Result.map (fun () ->
-                                                        Some {
+                                            if not cls.ClosesParen then
+                                                // F#-parity: FS0058 is an error left of the
+                                                // opener; at the opener's indent the line is a
+                                                // body continuation (handled below)
+                                                Error
+                                                    $"line {lineNo}: this line sits left of the lambda '(' opened at line {oline} — close the paren first"
+                                            else
+                                                // a body let still needs its body before the paren
+                                                match p.Lets |> List.tryFind (fun (k, _) -> k > oindent) with
+                                                | Some(_, letLine) -> noBody letLine
+                                                | None ->
+                                                    let depth = p.ParenDepth + parenDelta piece
+
+                                                    let popped, kept =
+                                                        p.Lambdas |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
+
+                                                    let kept =
+                                                        if lambdaOpens piece then
+                                                            (lineNo, indent, depth - 1, p.StmtLevel) :: kept
+                                                        else
+                                                            kept
+
+                                                    // restore the level the popped lambda's own
+                                                    // statement started at
+                                                    let backTo =
+                                                        match popped with
+                                                        | [] -> indent
+                                                        | ps ->
+                                                            let (_, _, _, restore) = List.last ps
+                                                            restore
+
+                                                    bracketFold lineNo indent p.Brackets piece
+                                                    |> Result.bind (fun brackets ->
+                                                        closeBodiesAbove brackets.Length {
                                                             p with
                                                                 Buf =
                                                                     applyJoin
-                                                                        (JDistrictSibling dst.Opener)
+                                                                        (if
+                                                                             bufEndsInProcHead p.Buf
+                                                                             || bufEndsInServeHead p.Buf
+                                                                             || bufEndsInEnvHead p.Buf
+                                                                         then
+                                                                             JStmtSibling
+                                                                         else
+                                                                             JSpace)
                                                                         p.Buf
                                                                         piece
                                                                         lineNo
                                                                         indent
-                                                                LastIndent = indent
-                                                        },
-                                                        acc,
-                                                        blankSinceHead)
-                                                else
-                                                    Error
-                                                        $"line {lineNo}: district lines are commands, one per line (use a leading | to continue a pipeline)"
-                                            | Some dst ->
-                                                // at or left of the marker while the statement still
-                                                // pends [D:district-terminates]: the district closes and
-                                                // the line reprocesses under the normal rules — a
-                                                // following `|>`, `in`, or sibling composes with the
-                                                // block's value. The flattened logical line carries no
-                                                // content terminator, so without a marker the
-                                                // continuation would glue into the last content line
-                                                // (silent corruption); appending districtClose marks
-                                                // the extent, and districtTail stops there so the
-                                                // expression grammar resumes on the reprocessed line.
-                                                go {
-                                                    p with
-                                                        District = None
-                                                        Buf = bufAppend p.Buf Parser.districtCloseStr
-                                                        LastIndent = dst.MarkerIndent
-                                                }
-                                            // the multiline lambda's closer and leak guard
-                                            // [D:multiline-lambda]: a `)`-headed line continues
-                                            // the statement at any indent; any other line at or
-                                            // left of the opener is a leak (the error names the
-                                            // opener)
-                                            | None when
-                                                (match p.Lambdas with
-                                                 | (_, oindent, _, _) :: _ -> cls.ClosesParen || indent < oindent
-                                                 | [] -> false)
-                                                ->
-                                                let (oline, oindent, _, _) = List.head p.Lambdas
+                                                                LastIndent = backTo
+                                                                StmtLevel = backTo
+                                                                PrevDangles = dangleOpensBlock piece
+                                                                ParenDepth = depth
+                                                                Lambdas = kept
+                                                                Compounds =
+                                                                    p.Compounds
+                                                                    |> List.filter (fun (_, _, d) -> d <= depth)
+                                                                PipeGroups =
+                                                                    p.PipeGroups
+                                                                    |> List.skipWhile (fun (g, _, _, _) -> g > backTo)
+                                                                    |> List.filter (fun (_, _, _, d) -> d <= depth)
+                                                                LastWasPipe = false
+                                                                Brackets = brackets
+                                                        }
+                                                        |> Result.map (fun q -> Some q, acc, blankSinceHead))
+                                        | None ->
+                                            if cls.Kind = PieceKind.PipeHead || cls.Kind = PieceKind.ElseHead then
+                                                // arms, pipeline stages, and else extend the
+                                                // current piece: no sibling `;` — but siblings
+                                                // must align, and a shallower arm offside-closes
+                                                // deeper compounds [D:pipe-alignment]
+                                                let isUntil = piece = "until" || piece.StartsWith "until "
+                                                let isAlways = piece = "always"
+                                                let isFwd = piece.StartsWith "|>"
 
-                                                if not cls.ClosesParen then
-                                                    // F#-parity: FS0058 is an error left of the
-                                                    // opener; at the opener's indent the line is a
-                                                    // body continuation (handled below)
-                                                    Error
-                                                        $"line {lineNo}: this line sits left of the lambda '(' opened at line {oline} — close the paren first"
-                                                else
-                                                    // a body let still needs its body before the paren
-                                                    match p.Lets |> List.tryFind (fun (k, _) -> k > oindent) with
-                                                    | Some(_, letLine) -> noBody letLine
-                                                    | None ->
-                                                        let depth = p.ParenDepth + parenDelta piece
+                                                match p.Lets with
+                                                | (k, letLine) :: _ when indent <= k && not isUntil -> noBody letLine
+                                                | _ ->
+                                                    // deeper groups close at this line's column
+                                                    let groups =
+                                                        p.PipeGroups |> List.skipWhile (fun (g, _, _, _) -> g > indent)
 
-                                                        let popped, kept =
-                                                            p.Lambdas
-                                                            |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
+                                                    // the arm body's column [D:match-pipe-offside]: the
+                                                    // token after the arm `->` for an inline body;
+                                                    // MaxValue for a dangling arm (resolved to the body
+                                                    // line's indent when it arrives) or a `|`-decl with
+                                                    // no arrow
+                                                    let bodyCol =
+                                                        match armArrowIndex piece with
+                                                        | Some i ->
+                                                            let after = piece.Substring(i + 2)
+                                                            let t = after.TrimStart()
 
-                                                        let kept =
-                                                            if lambdaOpens piece then
-                                                                (lineNo, indent, depth - 1, p.StmtLevel) :: kept
+                                                            if t = "" then
+                                                                System.Int32.MaxValue
                                                             else
-                                                                kept
+                                                                indent + (i + 2) + (after.Length - t.Length)
+                                                        | None -> System.Int32.MaxValue
 
-                                                        // restore the level the popped lambda's own
-                                                        // statement started at
-                                                        let backTo =
-                                                            match popped with
-                                                            | [] -> indent
-                                                            | ps ->
-                                                                let (_, _, _, restore) = List.last ps
-                                                                restore
+                                                    // `closes` rides through to the wrap; `extends`
+                                                    // joins the arm body and opens a forward group
+                                                    let aligned =
+                                                        if cls.Kind = PieceKind.ElseHead then
+                                                            // else/elif keep their standing rules
+                                                            Ok(false, groups)
+                                                        elif
+                                                            // a forward `|>` landing on a bare `|`
+                                                            // (arm/union) group follows F#'s offside
+                                                            // [D:match-pipe-offside], regardless of
+                                                            // whether the arm body was inline or dangled
+                                                            isFwd
+                                                            && (match groups with
+                                                                | (_, _, false, _) :: _ -> true
+                                                                | _ -> false)
+                                                        then
+                                                            match groups with
+                                                            | (g, _, _, _) :: _ when indent = g ->
+                                                                // at the `|` column: close the match,
+                                                                // pipe the whole
+                                                                Ok(true, groups)
+                                                            | (g, bc, _, _) :: _ when indent < bc ->
+                                                                // left of the arm body: neither closes
+                                                                // nor continues
+                                                                let bodyDesc =
+                                                                    if bc = System.Int32.MaxValue then
+                                                                        "the arm body"
+                                                                    else
+                                                                        $"the arm body (column {bc})"
 
-                                                        bracketFold lineNo indent [] piece
-                                                        |> Result.map (fun brackets ->
-                                                            Some {
-                                                                p with
-                                                                    Buf =
-                                                                        applyJoin
-                                                                            (if
-                                                                                 bufEndsInProcHead p.Buf
-                                                                                 || bufEndsInServeHead p.Buf
-                                                                                 || bufEndsInEnvHead p.Buf
-                                                                             then
-                                                                                 JStmtSibling
-                                                                             else
-                                                                                 JSpace)
-                                                                            p.Buf
-                                                                            piece
-                                                                            lineNo
-                                                                            indent
-                                                                    LastIndent = backTo
-                                                                    StmtLevel = backTo
-                                                                    PrevDangles = dangleOpensBlock piece
-                                                                    ParenDepth = depth
-                                                                    Lambdas = kept
-                                                                    Compounds =
-                                                                        p.Compounds
-                                                                        |> List.filter (fun (_, _, d) -> d <= depth)
-                                                                    PipeGroups =
-                                                                        p.PipeGroups
-                                                                        |> List.skipWhile (fun (g, _, _, _) ->
-                                                                            g > backTo)
-                                                                        |> List.filter (fun (_, _, _, d) ->
-                                                                            d <= depth)
-                                                                    LastWasPipe = false
-                                                                    Brackets = brackets
-                                                            },
-                                                            acc,
-                                                            blankSinceHead)
-                                            | None ->
-                                                if cls.Kind = PieceKind.PipeHead || cls.Kind = PieceKind.ElseHead then
-                                                    // arms, pipeline stages, and else extend the
-                                                    // current piece: no sibling `;` — but siblings
-                                                    // must align, and a shallower arm offside-closes
-                                                    // deeper compounds [D:pipe-alignment]
-                                                    let isUntil = piece = "until" || piece.StartsWith "until "
-                                                    let isAlways = piece = "always"
-                                                    let isFwd = piece.StartsWith "|>"
-
-                                                    match p.Lets with
-                                                    | (k, letLine) :: _ when indent <= k && not isUntil ->
-                                                        noBody letLine
-                                                    | _ ->
-                                                        // deeper groups close at this line's column
-                                                        let groups =
-                                                            p.PipeGroups
-                                                            |> List.skipWhile (fun (g, _, _, _) -> g > indent)
-
-                                                        // the arm body's column [D:match-pipe-offside]: the
-                                                        // token after the arm `->` for an inline body;
-                                                        // MaxValue for a dangling arm (resolved to the body
-                                                        // line's indent when it arrives) or a `|`-decl with
-                                                        // no arrow
-                                                        let bodyCol =
-                                                            match armArrowIndex piece with
-                                                            | Some i ->
-                                                                let after = piece.Substring(i + 2)
-                                                                let t = after.TrimStart()
-
-                                                                if t = "" then
-                                                                    System.Int32.MaxValue
-                                                                else
-                                                                    indent + (i + 2) + (after.Length - t.Length)
-                                                            | None -> System.Int32.MaxValue
-
-                                                        // `closes` rides through to the wrap; `extends`
-                                                        // joins the arm body and opens a forward group
-                                                        let aligned =
-                                                            if cls.Kind = PieceKind.ElseHead then
-                                                                // else/elif keep their standing rules
-                                                                Ok(false, groups)
-                                                            elif
-                                                                // a forward `|>` landing on a bare `|`
-                                                                // (arm/union) group follows F#'s offside
-                                                                // [D:match-pipe-offside], regardless of
-                                                                // whether the arm body was inline or dangled
-                                                                isFwd
-                                                                && (match groups with
-                                                                    | (_, _, false, _) :: _ -> true
-                                                                    | _ -> false)
-                                                            then
-                                                                match groups with
-                                                                | (g, _, _, _) :: _ when indent = g ->
-                                                                    // at the `|` column: close the match,
-                                                                    // pipe the whole
-                                                                    Ok(true, groups)
-                                                                | (g, bc, _, _) :: _ when indent < bc ->
-                                                                    // left of the arm body: neither closes
-                                                                    // nor continues
-                                                                    let bodyDesc =
-                                                                        if bc = System.Int32.MaxValue then
-                                                                            "the arm body"
-                                                                        else
-                                                                            $"the arm body (column {bc})"
-
+                                                                Error
+                                                                    $"line {lineNo}: this pipe sits left of {bodyDesc} — put it at the '|' (column {g}) to pipe the whole match, or under the body to continue the arm"
+                                                            | _ ->
+                                                                // at or under the body: extend the arm
+                                                                // body, opening a forward group
+                                                                Ok(
+                                                                    false,
+                                                                    (indent, indent, true, p.ParenDepth) :: groups
+                                                                )
+                                                        elif not p.LastWasPipe || p.PrevDangles then
+                                                            // first pipe after a non-pipe line
+                                                            // opens a group — anchored at or
+                                                            // right of the innermost open
+                                                            // compound head (F#'s offside).
+                                                            // A dangling pipe line (ending
+                                                            // with/->/function) opens one too:
+                                                            // its arms sit deeper by design
+                                                            // [D:function-keyword]
+                                                            match groups with
+                                                            | (g, _, false, d) :: rest when g = indent && not isFwd ->
+                                                                // a returning arm after a non-pipe
+                                                                // body [D:match-pipe-offside]: the
+                                                                // group at this exact column is the
+                                                                // arm's own match — a deeper open
+                                                                // compound (the previous arm's
+                                                                // if/let tail) offside-closes below,
+                                                                // it is not "its match"
+                                                                Ok(false, (g, bodyCol, false, d) :: rest)
+                                                            | _ ->
+                                                                match p.Compounds with
+                                                                | (h, _, _) :: _ when indent < h ->
                                                                     Error
-                                                                        $"line {lineNo}: this pipe sits left of {bodyDesc} — put it at the '|' (column {g}) to pipe the whole match, or under the body to continue the arm"
+                                                                        $"line {lineNo}: this arm sits left of its match (head at column {h}) — align arms at or right of it"
                                                                 | _ ->
-                                                                    // at or under the body: extend the arm
-                                                                    // body, opening a forward group
                                                                     Ok(
                                                                         false,
-                                                                        (indent, indent, true, p.ParenDepth) :: groups
+                                                                        (indent,
+                                                                         (if isFwd then indent else bodyCol),
+                                                                         isFwd,
+                                                                         p.ParenDepth)
+                                                                        :: groups
                                                                     )
-                                                            elif not p.LastWasPipe || p.PrevDangles then
-                                                                // first pipe after a non-pipe line
-                                                                // opens a group — anchored at or
-                                                                // right of the innermost open
-                                                                // compound head (F#'s offside).
-                                                                // A dangling pipe line (ending
-                                                                // with/->/function) opens one too:
-                                                                // its arms sit deeper by design
-                                                                // [D:function-keyword]
-                                                                match groups with
-                                                                | (g, _, false, d) :: rest when g = indent && not isFwd ->
-                                                                    // a returning arm after a non-pipe
-                                                                    // body [D:match-pipe-offside]: the
-                                                                    // group at this exact column is the
-                                                                    // arm's own match — a deeper open
-                                                                    // compound (the previous arm's
-                                                                    // if/let tail) offside-closes below,
-                                                                    // it is not "its match"
-                                                                    Ok(false, (g, bodyCol, false, d) :: rest)
-                                                                | _ ->
-                                                                    match p.Compounds with
-                                                                    | (h, _, _) :: _ when indent < h ->
-                                                                        Error
-                                                                            $"line {lineNo}: this arm sits left of its match (head at column {h}) — align arms at or right of it"
-                                                                    | _ ->
-                                                                        Ok(
-                                                                            false,
-                                                                            (indent,
-                                                                             (if isFwd then indent else bodyCol),
-                                                                             isFwd,
-                                                                             p.ParenDepth)
-                                                                            :: groups
-                                                                        )
-                                                            else
-                                                                match groups with
-                                                                | (g, _, false, d) :: rest when g = indent && not isFwd ->
-                                                                    // a new arm aligns with its siblings:
-                                                                    // reset the group's body column to this
-                                                                    // arm's — each arm has its own body
-                                                                    // offside [D:match-pipe-offside]
-                                                                    Ok(false, (g, bodyCol, false, d) :: rest)
-                                                                | (g, _, _, _) :: _ when g = indent ->
-                                                                    // aligned sibling (pipeline stage)
-                                                                    Ok(false, groups)
-                                                                | (g, _, _, _) :: _ ->
-                                                                    onMisaligned lineNo g
+                                                        else
+                                                            match groups with
+                                                            | (g, _, false, d) :: rest when g = indent && not isFwd ->
+                                                                // a new arm aligns with its siblings:
+                                                                // reset the group's body column to this
+                                                                // arm's — each arm has its own body
+                                                                // offside [D:match-pipe-offside]
+                                                                Ok(false, (g, bodyCol, false, d) :: rest)
+                                                            | (g, _, _, _) :: _ when g = indent ->
+                                                                // aligned sibling (pipeline stage)
+                                                                Ok(false, groups)
+                                                            | (g, _, _, _) :: _ ->
+                                                                onMisaligned lineNo g
 
-                                                                    Error
-                                                                        $"line {lineNo}: this line is indented off its siblings (they sit at column {g}) — align the group exactly"
-                                                                | [] ->
-                                                                    Error
-                                                                        $"line {lineNo}: this line (column {indent}) is indented off its siblings — align the group exactly"
+                                                                Error
+                                                                    $"line {lineNo}: this line is indented off its siblings (they sit at column {g}) — align the group exactly"
+                                                            | [] ->
+                                                                Error
+                                                                    $"line {lineNo}: this line (column {indent}) is indented off its siblings — align the group exactly"
 
-                                                        match aligned with
-                                                        | Error e -> Error e
-                                                        | Ok(closes, groups) ->
-                                                            // a shallower arm closes compounds whose
-                                                            // heads sit deeper (the nested-match
-                                                            // return F# reads from the columns); a
-                                                            // closing `|>` also wraps the head it sits
-                                                            // on — `(match …) |> f` [D:match-pipe-offside]
-                                                            let closeAt = if closes then indent - 1 else indent
+                                                    match aligned with
+                                                    | Error e -> Error e
+                                                    | Ok(closes, groups) ->
+                                                        // a shallower arm closes compounds whose
+                                                        // heads sit deeper (the nested-match
+                                                        // return F# reads from the columns); a
+                                                        // closing `|>` also wraps the head it sits
+                                                        // on — `(match …) |> f` [D:match-pipe-offside]
+                                                        let closeAt = if closes then indent - 1 else indent
 
-                                                            let rec closeDeeper (b: PendBuf) compounds =
-                                                                match compounds with
-                                                                | (h, ts, _) :: rest when
-                                                                    h > closeAt
-                                                                    // a within head has no arm at its
-                                                                    // column [D:within-tail-pipe]: a pipe
-                                                                    // at the head closes the scope and
-                                                                    // pipes the whole — `(within …) |> f`,
-                                                                    // the match-close wrap one keyword over
-                                                                    || (h = indent
-                                                                        && cls.Kind = PieceKind.PipeHead
-                                                                        && bufStartsWithAt b ts "within ")
-                                                                    ->
-                                                                    closeDeeper (wrapFrom b ts) rest
-                                                                | _ -> b, compounds
-
-                                                            let buf, compounds = closeDeeper p.Buf p.Compounds
-                                                            let depth = p.ParenDepth + parenDelta piece
-
-                                                            let poppedL, keptL =
-                                                                p.Lambdas
-                                                                |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
-
-                                                            let lambdas =
-                                                                if lambdaOpens piece then
-                                                                    (lineNo, indent, depth - 1, p.StmtLevel) :: keptL
-                                                                else
-                                                                    keptL
-
-                                                            let unpruned =
-                                                                if closes then
-                                                                    (indent, indent, true, p.ParenDepth)
-                                                                    :: (groups
-                                                                        |> List.filter (fun (g, _, _, _) -> g < indent))
-                                                                else
-                                                                    groups
-
-                                                            let pipeGroups =
-                                                                unpruned
-                                                                |> List.filter (fun (_, _, _, d) -> d <= depth)
-
-                                                            let lastIndent, stmtLevel =
-                                                                match poppedL with
-                                                                | [] -> indent, p.StmtLevel
-                                                                | ps ->
-                                                                    let (_, _, _, restore) = List.last ps
-                                                                    restore, restore
-
-                                                            Ok(
-                                                                Some {
-                                                                    p with
-                                                                        Buf =
-                                                                            applyJoin
-                                                                                // until/always join at the sentinel:
-                                                                                // a space would feed the keyword to a
-                                                                                // command body's argv (cmdWord stops
-                                                                                // at the sentinel) [D:until-argv-join]
-                                                                                (if
-                                                                                     bufEndsInProcHead buf
-                                                                                     || bufEndsInServeHead buf
-                                                                                     || bufEndsInEnvHead buf
-                                                                                     || isUntil
-                                                                                     || isAlways
-                                                                                 then
-                                                                                     JStmtSibling
-                                                                                 else
-                                                                                     JSpace)
-                                                                                buf
-                                                                                piece
-                                                                                lineNo
-                                                                                indent
-                                                                        LastIndent = lastIndent
-                                                                        StmtLevel = stmtLevel
-                                                                        PrevDangles = dangleOpensBlock piece
-                                                                        ParenDepth = depth
-                                                                        Lambdas = lambdas
-                                                                        District = armDistrict cls.Marker indent lineNo
-                                                                        // a closing `|>` pops the arm
-                                                                        // group and opens a fresh forward
-                                                                        // group so a following `|>` aligns
-                                                                        // as a pipeline [D:match-pipe-offside]
-                                                                        PipeGroups = pipeGroups
-                                                                        // a group this line's `)` closed ends the
-                                                                        // pipe run: the next pipe opens afresh
-                                                                        LastWasPipe =
-                                                                            not (isUntil || isAlways)
-                                                                            && pipeGroups.Length = unpruned.Length
-                                                                        Compounds =
-                                                                            compounds
-                                                                            |> List.filter (fun (_, _, d) ->
-                                                                                d <= depth)
-                                                                },
-                                                                acc,
-                                                                blankSinceHead
-                                                            )
-                                                else
-                                                    match p.Lets with
-                                                    | (k, letLine) :: _ when indent < k -> noBody letLine
-                                                    | _ ->
-                                                        // the offside close: siblings at or left of an
-                                                        // open if/match head wrap it shut
-                                                        let rec closeCompounds b compounds closedHead =
+                                                        let rec closeDeeper (b: PendBuf) compounds =
                                                             match compounds with
-                                                            | (h, ts, _) :: rest when indent <= h ->
-                                                                closeCompounds (wrapFrom b ts) rest (Some h)
-                                                            | _ -> b, compounds, closedHead
-
-                                                        let buf, compounds, closedHead =
-                                                            closeCompounds p.Buf p.Compounds None
-
-                                                        // the sibling floor is the statement's start column,
-                                                        // not the last line's [D:continuation-siblings]: a
-                                                        // deeper continuation line must not hoist the floor,
-                                                        // or the second argument line of a multi-line
-                                                        // application sequences as a statement
-                                                        let siblingLevel =
-                                                            match closedHead with
-                                                            | Some h -> h
-                                                            | None -> p.StmtLevel
-
-                                                        // while a lambda's paren is open, lines at (or
-                                                        // right of) its opener that would close a let or
-                                                        // sequence a sibling outside it are body
-                                                        // continuations instead — the `in`/`;` joins wait
-                                                        // for the `)` [D:multiline-lambda]
-                                                        let lambdaFloor =
-                                                            match p.Lambdas with
-                                                            | (_, oi, _, _) :: _ -> oi
-                                                            | [] -> -1
-
-                                                        let lets, join =
-                                                            match p.Lets with
-                                                            // a `)`-headed line while a plain paren is
-                                                            // open closes a multi-line application — a
-                                                            // continuation at any body indent, never a
-                                                            // sibling; the `in`/`;` joins wait for the
-                                                            // `)` exactly as the lambda floor rules
-                                                            // [D:paren-close-continuation]
-                                                            | _ when cls.ClosesParen && p.ParenDepth > 0 ->
-                                                                p.Lets, JSpace
-                                                            | (k, _) :: rest when indent = k && k > lambdaFloor ->
-                                                                rest, JIn
-                                                            // a proc head's block joins sentineled even in
-                                                            // the dangle position [D:scoped-procs]
-                                                            | _ when
-                                                                bufEndsInProcHead buf
-                                                                || bufEndsInServeHead buf
-                                                                || bufEndsInEnvHead buf
+                                                            | (h, ts, _) :: rest when
+                                                                h > closeAt
+                                                                // a within head has no arm at its
+                                                                // column [D:within-tail-pipe]: a pipe
+                                                                // at the head closes the scope and
+                                                                // pipes the whole — `(within …) |> f`,
+                                                                // the match-close wrap one keyword over
+                                                                || (h = indent
+                                                                    && cls.Kind = PieceKind.PipeHead
+                                                                    && bufStartsWithAt b ts "within ")
                                                                 ->
-                                                                p.Lets, JStmtSibling
-                                                            | _ when
-                                                                p.PrevDangles
-                                                                && indent > p.LastIndent
-                                                                && bufEndsInBareRepeat buf
-                                                                ->
-                                                                p.Lets, JStmtSibling
-                                                            // the first line after a dangling head opens its
-                                                            // body — a stale statement level from an earlier
-                                                            // block must not sibling-capture it
-                                                            // [D:continuation-siblings]
-                                                            | _ when p.PrevDangles && indent > p.LastIndent ->
-                                                                p.Lets, JSpace
-                                                            // same-indent sibling = block sequencing
-                                                            // [D:sibling-sentinel]: the machine boundary,
-                                                            // not a user ';' — command mode stops here
-                                                            | _ when indent = siblingLevel && indent > lambdaFloor ->
-                                                                p.Lets, JStmtSibling
-                                                            | _ -> p.Lets, JSpace
+                                                                closeDeeper (wrapFrom b ts) rest
+                                                            | _ -> b, compounds
 
-                                                        let lets =
-                                                            if cls.Kind = PieceKind.LetHead then
-                                                                (indent, lineNo) :: lets
-                                                            else
-                                                                lets
-
-                                                        let district = armDistrict cls.Marker indent lineNo
-
-                                                        let joined = applyJoin join buf piece lineNo indent
-
+                                                        let buf, compounds = closeDeeper p.Buf p.Compounds
                                                         let depth = p.ParenDepth + parenDelta piece
 
-                                                        // a net-negative piece closed parens the
-                                                        // compounds were opened inside: those are
-                                                        // balanced units already — prune, never wrap
-                                                        // [D:compound-paren-prune]
-                                                        let compounds =
-                                                            compounds |> List.filter (fun (_, _, d) -> d <= depth)
-
-                                                        let compounds =
-                                                            if cls.OpensCompound then
-                                                                // the piece starts where the join put it:
-                                                                // its segment is the newest entry
-                                                                let (js, _, _) = List.head joined.Segments
-                                                                (indent, js, p.ParenDepth) :: compounds
-                                                            else
-                                                                compounds
-
-                                                        // a statement starts at a sibling/`in` join or on
-                                                        // the first line after a dangling head; the level
-                                                        // rides into the lambda entry as its pop restore
-                                                        let stmtLevel =
-                                                            if join = JStmtSibling || join = JIn || p.PrevDangles then
-                                                                indent
-                                                            else
-                                                                p.StmtLevel
-
-                                                        // an attached closer pops its lambda and restores
-                                                        // the statement level — the next sibling must
-                                                        // join with `;`, never as an application
                                                         let poppedL, keptL =
                                                             p.Lambdas
                                                             |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
 
                                                         let lambdas =
                                                             if lambdaOpens piece then
-                                                                (lineNo, indent, depth - 1, stmtLevel) :: keptL
+                                                                (lineNo, indent, depth - 1, p.StmtLevel) :: keptL
                                                             else
                                                                 keptL
 
+                                                        let unpruned =
+                                                            if closes then
+                                                                (indent, indent, true, p.ParenDepth)
+                                                                :: (groups
+                                                                    |> List.filter (fun (g, _, _, _) -> g < indent))
+                                                            else
+                                                                groups
+
+                                                        let pipeGroups =
+                                                            unpruned |> List.filter (fun (_, _, _, d) -> d <= depth)
+
                                                         let lastIndent, stmtLevel =
                                                             match poppedL with
-                                                            | [] -> indent, stmtLevel
+                                                            | [] -> indent, p.StmtLevel
                                                             | ps ->
                                                                 let (_, _, _, restore) = List.last ps
                                                                 restore, restore
 
-                                                        // the dedent floor [D:district-retirement]: a line
-                                                        // that dedents below the open block but aligns with
-                                                        // no enclosing level would space-join — silently
-                                                        // absorbed as argv when the previous line is a
-                                                        // command (a legal parse, wrong meaning). Error instead.
-                                                        if
-                                                            join = JSpace
-                                                            && indent < p.LastIndent
-                                                            // open lambdas/brackets/parens legitimately take
-                                                            // dedented body/element continuations
-                                                            && List.isEmpty p.Lambdas
-                                                            && List.isEmpty p.Brackets
-                                                            && p.ParenDepth = 0
-                                                        then
-                                                            Error
-                                                                $"line {lineNo}: this line dedents below the open block but aligns with no enclosing statement — align it with the statement it continues, or with the block level it should follow"
-                                                        else
+                                                        Ok(
+                                                            Some {
+                                                                p with
+                                                                    Buf =
+                                                                        applyJoin
+                                                                            // until/always join at the sentinel:
+                                                                            // a space would feed the keyword to a
+                                                                            // command body's argv (cmdWord stops
+                                                                            // at the sentinel) [D:until-argv-join]
+                                                                            (if
+                                                                                 bufEndsInProcHead buf
+                                                                                 || bufEndsInServeHead buf
+                                                                                 || bufEndsInEnvHead buf
+                                                                                 || isUntil
+                                                                                 || isAlways
+                                                                             then
+                                                                                 JStmtSibling
+                                                                             else
+                                                                                 JSpace)
+                                                                            buf
+                                                                            piece
+                                                                            lineNo
+                                                                            indent
+                                                                    LastIndent = lastIndent
+                                                                    StmtLevel = stmtLevel
+                                                                    PrevDangles = dangleOpensBlock piece
+                                                                    ParenDepth = depth
+                                                                    Lambdas = lambdas
+                                                                    District = armDistrict cls.Marker indent lineNo
+                                                                    // a closing `|>` pops the arm
+                                                                    // group and opens a fresh forward
+                                                                    // group so a following `|>` aligns
+                                                                    // as a pipeline [D:match-pipe-offside]
+                                                                    PipeGroups = pipeGroups
+                                                                    // a group this line's `)` closed ends the
+                                                                    // pipe run: the next pipe opens afresh
+                                                                    LastWasPipe =
+                                                                        not (isUntil || isAlways)
+                                                                        && pipeGroups.Length = unpruned.Length
+                                                                    Compounds =
+                                                                        compounds
+                                                                        |> List.filter (fun (_, _, d) -> d <= depth)
+                                                            },
+                                                            acc,
+                                                            blankSinceHead
+                                                        )
+                                            else
+                                                match p.Lets with
+                                                | (k, letLine) :: _ when indent < k -> noBody letLine
+                                                | _ ->
+                                                    // the offside close: siblings at or left of an
+                                                    // open if/match head wrap it shut
+                                                    let rec closeCompounds b compounds closedHead =
+                                                        match compounds with
+                                                        | (h, ts, _) :: rest when indent <= h ->
+                                                            closeCompounds (wrapFrom b ts) rest (Some h)
+                                                        | _ -> b, compounds, closedHead
 
-                                                            bracketFold lineNo indent [] piece
-                                                            |> Result.map (fun brackets ->
-                                                                Some {
-                                                                    p with
-                                                                        Buf = joined
-                                                                        Lets = lets
-                                                                        LastIndent = lastIndent
-                                                                        StmtLevel = stmtLevel
-                                                                        PrevDangles = dangleOpensBlock piece
-                                                                        District = district
-                                                                        Compounds = compounds
-                                                                        Lambdas = lambdas
-                                                                        Brackets = brackets
-                                                                        ParenDepth = depth
-                                                                        PipeGroups =
-                                                                            // the first body line of a
-                                                                            // dangling arm resolves its body
-                                                                            // column [D:match-pipe-offside]
-                                                                            (match p.PipeGroups with
-                                                                             | (g, bc, false, d) :: rest when
-                                                                                 bc = System.Int32.MaxValue
-                                                                                 && p.PrevDangles
-                                                                                 && indent > g
-                                                                                 ->
-                                                                                 (g, indent, false, d) :: rest
-                                                                             | pg -> pg)
-                                                                            |> List.skipWhile (fun (g, _, _, _) ->
-                                                                                g > lastIndent)
-                                                                            |> List.filter (fun (_, _, _, d) ->
-                                                                                d <= depth)
-                                                                        LastWasPipe = false
-                                                                },
-                                                                acc,
-                                                                blankSinceHead)
+                                                    let buf, compounds, closedHead =
+                                                        closeCompounds p.Buf p.Compounds None
+
+                                                    // the sibling floor is the statement's start column,
+                                                    // not the last line's [D:continuation-siblings]: a
+                                                    // deeper continuation line must not hoist the floor,
+                                                    // or the second argument line of a multi-line
+                                                    // application sequences as a statement
+                                                    let siblingLevel =
+                                                        match closedHead with
+                                                        | Some h -> h
+                                                        | None -> p.StmtLevel
+
+                                                    // while a lambda's paren is open, lines at (or
+                                                    // right of) its opener that would close a let or
+                                                    // sequence a sibling outside it are body
+                                                    // continuations instead — the `in`/`;` joins wait
+                                                    // for the `)` [D:multiline-lambda]
+                                                    let lambdaFloor =
+                                                        match p.Lambdas with
+                                                        | (_, oi, _, _) :: _ -> oi
+                                                        | [] -> -1
+
+                                                    let lets, join =
+                                                        match p.Lets with
+                                                        // a `)`-headed line while a plain paren is
+                                                        // open closes a multi-line application — a
+                                                        // continuation at any body indent, never a
+                                                        // sibling; the `in`/`;` joins wait for the
+                                                        // `)` exactly as the lambda floor rules
+                                                        // [D:paren-close-continuation]
+                                                        | _ when cls.ClosesParen && p.ParenDepth > 0 -> p.Lets, JSpace
+                                                        | (k, _) :: rest when indent = k && k > lambdaFloor ->
+                                                            rest, JIn
+                                                        // a proc head's block joins sentineled even in
+                                                        // the dangle position [D:scoped-procs]
+                                                        | _ when
+                                                            bufEndsInProcHead buf
+                                                            || bufEndsInServeHead buf
+                                                            || bufEndsInEnvHead buf
+                                                            ->
+                                                            p.Lets, JStmtSibling
+                                                        | _ when
+                                                            p.PrevDangles
+                                                            && indent > p.LastIndent
+                                                            && bufEndsInBareRepeat buf
+                                                            ->
+                                                            p.Lets, JStmtSibling
+                                                        // the first line after a dangling head opens its
+                                                        // body — a stale statement level from an earlier
+                                                        // block must not sibling-capture it
+                                                        // [D:continuation-siblings]
+                                                        | _ when p.PrevDangles && indent > p.LastIndent ->
+                                                            p.Lets, JSpace
+                                                        // same-indent sibling = block sequencing
+                                                        // [D:sibling-sentinel]: the machine boundary,
+                                                        // not a user ';' — command mode stops here
+                                                        | _ when indent = siblingLevel && indent > lambdaFloor ->
+                                                            p.Lets, JStmtSibling
+                                                        | _ -> p.Lets, JSpace
+
+                                                    let lets =
+                                                        if cls.Kind = PieceKind.LetHead then
+                                                            (indent, lineNo) :: lets
+                                                        else
+                                                            lets
+
+                                                    let district = armDistrict cls.Marker indent lineNo
+
+                                                    let joined = applyJoin join buf piece lineNo indent
+
+                                                    let depth = p.ParenDepth + parenDelta piece
+
+                                                    // a net-negative piece closed parens the
+                                                    // compounds were opened inside: those are
+                                                    // balanced units already — prune, never wrap
+                                                    // [D:compound-paren-prune]
+                                                    let compounds =
+                                                        compounds |> List.filter (fun (_, _, d) -> d <= depth)
+
+                                                    let compounds =
+                                                        if cls.OpensCompound then
+                                                            // the piece starts where the join put it:
+                                                            // its segment is the newest entry
+                                                            let (js, _, _) = List.head joined.Segments
+                                                            (indent, js, p.ParenDepth) :: compounds
+                                                        else
+                                                            compounds
+
+                                                    // a statement starts at a sibling/`in` join or on
+                                                    // the first line after a dangling head; the level
+                                                    // rides into the lambda entry as its pop restore
+                                                    let stmtLevel =
+                                                        if join = JStmtSibling || join = JIn || p.PrevDangles then
+                                                            indent
+                                                        else
+                                                            p.StmtLevel
+
+                                                    // an attached closer pops its lambda and restores
+                                                    // the statement level — the next sibling must
+                                                    // join with `;`, never as an application
+                                                    let poppedL, keptL =
+                                                        p.Lambdas |> List.partition (fun (_, _, d0, _) -> d0 >= depth)
+
+                                                    let lambdas =
+                                                        if lambdaOpens piece then
+                                                            (lineNo, indent, depth - 1, stmtLevel) :: keptL
+                                                        else
+                                                            keptL
+
+                                                    let lastIndent, stmtLevel =
+                                                        match poppedL with
+                                                        | [] -> indent, stmtLevel
+                                                        | ps ->
+                                                            let (_, _, _, restore) = List.last ps
+                                                            restore, restore
+
+                                                    // the dedent floor [D:district-retirement]: a line
+                                                    // that dedents below the open block but aligns with
+                                                    // no enclosing level would space-join — silently
+                                                    // absorbed as argv when the previous line is a
+                                                    // command (a legal parse, wrong meaning). Error instead.
+                                                    if
+                                                        join = JSpace
+                                                        && indent < p.LastIndent
+                                                        // open lambdas/parens legitimately take
+                                                        // dedented body continuations (an open
+                                                        // bracket reaches here only through an
+                                                        // entry's lambda body, where the floor holds
+                                                        // [D:bracket-lambda-body])
+                                                        && List.isEmpty p.Lambdas
+                                                        && p.ParenDepth = 0
+                                                    then
+                                                        Error
+                                                            $"line {lineNo}: this line dedents below the open block but aligns with no enclosing statement — align it with the statement it continues, or with the block level it should follow"
+                                                    else
+
+                                                        bracketFold lineNo indent p.Brackets piece
+                                                        |> Result.bind (fun brackets ->
+                                                            closeBodiesAbove brackets.Length {
+                                                                p with
+                                                                    Buf = joined
+                                                                    Lets = lets
+                                                                    LastIndent = lastIndent
+                                                                    StmtLevel = stmtLevel
+                                                                    PrevDangles = dangleOpensBlock piece
+                                                                    District = district
+                                                                    Compounds = compounds
+                                                                    Lambdas = lambdas
+                                                                    Brackets = brackets
+                                                                    ParenDepth = depth
+                                                                    PipeGroups =
+                                                                        // the first body line of a
+                                                                        // dangling arm resolves its body
+                                                                        // column [D:match-pipe-offside]
+                                                                        (match p.PipeGroups with
+                                                                         | (g, bc, false, d) :: rest when
+                                                                             bc = System.Int32.MaxValue
+                                                                             && p.PrevDangles
+                                                                             && indent > g
+                                                                             ->
+                                                                             (g, indent, false, d) :: rest
+                                                                         | pg -> pg)
+                                                                        |> List.skipWhile (fun (g, _, _, _) ->
+                                                                            g > lastIndent)
+                                                                        |> List.filter (fun (_, _, _, d) ->
+                                                                            d <= depth)
+                                                                    LastWasPipe = false
+                                                            }
+                                                            |> Result.map (fun q -> Some q, acc, blankSinceHead))
 
                                     go p
                         else
@@ -2911,6 +3027,14 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                         PipeGroups = []
                                         LastWasPipe = false
                                         Brackets = brackets
+                                        // a head line's dangling lambda arrow inside its
+                                        // bracket opens that entry's body [D:bracket-lambda-body]
+                                        Bodies =
+                                            (match brackets with
+                                             | (_, _, Some c) :: _ when lambdaDangles rawT -> [
+                                                 (brackets.Length, c, 0)
+                                               ]
+                                             | _ -> [])
                                     },
                                     acc,
                                     false)))

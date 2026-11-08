@@ -1598,6 +1598,12 @@ refs
   compounds, blocks, blanks), body lines at or right of the
   opener's indent, the `)` attached to the last body line or alone on
   its own line. The single-line `;`-joined spelling stays legal.
+  Inside a record literal, list literal or anonymous record the same
+  holds for a BARE lambda [D:bracket-lambda-body]: a field or element
+  whose `fun … ->` dangles at line end takes a statement body on the
+  deeper lines below (block lets, siblings, match arms, nested
+  literals), and the next entry at the entry column, or the closer,
+  ends it. A `(fun … ->` entry wants its `)` before the next entry.
 
 ```weir
 ["r1"; "r2"]
@@ -1605,6 +1611,17 @@ refs
         let tag = $"repo-{r}"
         echo fetching $tag
         print $"done {r}")
+```
+
+```weir
+type Cursor = { read: unit -> int; write: int -> unit }
+let cursor = {
+    read = fun () -> 1
+    write = fun n ->
+        let doubled = n * 2
+        print $"wrote {doubled}"
+}
+cursor.write (cursor.read ())
 ```
 - `if c then a else b` is an expression; `else` is mandatory unless the
   then-branch is unit (`if ok then print "yes"` is a valid statement).

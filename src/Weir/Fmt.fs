@@ -430,6 +430,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                                 piece.StartsWith "|"
                                 && not (piece.StartsWith "|>")
                                 && not (piece.StartsWith "||")
+                                && not (piece.StartsWith "|}")
 
                             // a match closes at the offside boundary:
                             // strictly-shallower lines pop for arms too;
@@ -476,7 +477,13 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                                     None
                                 | _ -> None
 
-                        let isCloser = piece.StartsWith "]" || piece.StartsWith "}" || piece.StartsWith ")"
+                        // `|}` closes an anonymous record — the one closer
+                        // that starts with a pipe [D:anon-literals]
+                        let isCloser =
+                            piece.StartsWith "]"
+                            || piece.StartsWith "}"
+                            || piece.StartsWith ")"
+                            || piece.StartsWith "|}"
 
                         // a continuation keeps its offset: it moves by the
                         // delta of the line it continues [D:fmt-bracket-shift]
@@ -619,14 +626,21 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                             newRaw
                             |> List.take (List.length newRaw - survived)
                             |> List.map (fun (k, c) ->
-                                let stroustrup = c = trimmed.Length - 1 || (k = '{' && trimmed.EndsWith " with")
+                                // `{|` is one opener token [D:anon-literals]: a
+                                // line ending in it dangles like one ending in `{`
+                                let anonOpener = k = '{' && c + 1 < trimmed.Length && trimmed[c + 1] = '|'
+
+                                let stroustrup =
+                                    c = trimmed.Length - 1
+                                    || (anonOpener && c = trimmed.Length - 2)
+                                    || (k = '{' && trimmed.EndsWith " with")
 
                                 // the sibling anchor is the first entry's
                                 // measured column [D:field-alignment], not
                                 // offset arithmetic (a `[ x` list anchors
                                 // at +2 like a brace)
                                 let anchor =
-                                    let mutable j = c + 1
+                                    let mutable j = if anonOpener then c + 2 else c + 1
 
                                     while j < trimmed.Length && trimmed[j] = ' ' do
                                         j <- j + 1

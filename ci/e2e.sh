@@ -8175,6 +8175,49 @@ print (show (Seq.length xs))' 2>&1) || fail "a bare lambda list element must not
 echo "$fs" | grep -qxF "2" || fail "field-sep list drifted: $fs"
 echo "e2e ok: field-sep sentinel — a bare lambda field/element does not swallow the next"
 
+# bracket lambda bodies [D:bracket-lambda-body]: a record field, list element
+# or anonymous-record field whose lambda arrow dangles takes a statement body
+# below it — block lets, siblings, arms — and the next entry still splits
+blb=$($BIN -e 'type C = { write: int -> unit; name: string }
+let c = {
+    write = fun n ->
+        let a = n + 1
+        match a with
+        | 2 -> print "two"
+        | _ -> print "other"
+    name = "x"
+}
+c.write 1
+print c.name' 2>&1) || fail "a record field lambda must take a block body: $blb"
+[ "$blb" = "two
+x" ] || fail "record field body drifted: $blb"
+blb=$($BIN -e 'let fs = [
+    fun n ->
+        let a = n + 1
+        print $"{a}"
+    fun n ->
+        print $"{n}"
+]
+fs |> Seq.iter (fun f -> f 1)' 2>&1) || fail "a list element lambda must take a block body: $blb"
+[ "$blb" = "2
+1" ] || fail "list element body drifted: $blb"
+blb=$($BIN -e 'let c = {|
+    write = (fun n ->
+        let a = n + 1
+        print $"{a}"
+    )
+|}
+c.write 1' 2>&1) || fail "an anonymous-record field lambda must take a block body: $blb"
+[ "$blb" = "2" ] || fail "anonymous field body drifted: $blb"
+blb=$($BIN -e 'type C = { write: int -> unit }
+let c = {
+    write = fun n ->
+        let a = n
+}
+c.write 1' 2>&1) && fail "a body let with no body must be refused: $blb"
+echo "$blb" | grep -qF "this let needs a body" || fail "the let-needs-a-body teaching drifted: $blb"
+echo "e2e ok: bracket lambda bodies — record fields, list elements and anonymous fields take statement bodies; a bodiless let is refused"
+
 $BIN fmt --check "$adir/attrs.weir" >/dev/null 2>&1 || fail "fmt must accept attributed record decls"
 echo "e2e ok: fmt roundtrips attribute lists"
 

@@ -19,8 +19,9 @@ Expression positions:
 - match scrutinee / match arms / `when` guards
 - lambda body (single-line AND the multiline block form
   [D:multiline-lambda] — the dangling `(fun ->` opener arms in
-  statement heads, pipeline stages, and let-RHS continuations;
-  bracket-continuation and district interiors do NOT arm it)
+  statement heads, pipeline stages, and let-RHS continuations; inside
+  a bracket a dangling `fun ->` or `(fun ->` entry opens the entry's
+  body [D:bracket-lambda-body]; district interiors do NOT arm it)
 - paren interior
 - list-literal elements
 - record-literal field values
