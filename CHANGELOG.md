@@ -1,6 +1,21 @@
 # Changelog
 
-## v0.0.85
+## v0.0.86
+
+<!-- v0.0.85 was tagged but never published (the osx-x64 build job died
+     in Apple's linker on a misaligned pointer inside the .NET 11.0.0
+     NativeAOT runtime pack, dotnet/runtime#136007); its changes ship
+     here under v0.0.86. Tags stay immutable — the v0.0.85 tag is
+     burned, not re-pointed. -->
+
+### Removed
+
+- **No Intel macOS binary.** `weir-<tag>-osx-x64` is no longer built;
+  the release carries Linux x64/arm64, macOS Apple silicon and Windows
+  x64/arm64. Apple's last Intel macOS is 26 and the .NET 11 toolchain
+  no longer links cleanly for it, so the platform leaves the matrix now
+  rather than at GitHub's runner sunset. `install.sh` on an Intel Mac
+  stops with the no-checksum line instead of installing.
 
 ### Chores
 

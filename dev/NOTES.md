@@ -1,5 +1,20 @@
 # Spike Notes
 
+## Intel macOS dropped at the first .NET 11 release (2026-11-10)
+
+v0.0.85's build job died in Apple's linker: the .NET 11.0.0 osx-x64
+NativeAOT runtime pack carries a misaligned pointer in
+libSystem.Net.Security.Native.a (pal_gssapi.c's
+gss_krb5_nt_principal_name_desc), and ld with chained fixups makes that
+fatal on x86_64 (dotnet/runtime#136007). Nothing in weir reaches it —
+the GSS object rides along with every HttpClient/Kestrel build. The
+choice was a custom linker flag against an upstream bug, or the drop
+[D:releases] had already dated to the runner's Fall 2027 sunset. Ruled
+[D:drop-osx-x64]: the date moved up — Apple stopped selling Intel Macs
+in 2023 and macOS 26 is their last — so the matrix is five binaries and
+ci/release-assets.weir expects nine assets. Same recovery as v0.0.1 and
+v0.0.50/60: the tag is burned, the changes ship as v0.0.86.
+
 ## Lambda bodies in bracket entries (2026-11-06)
 
 A user's record literal carried two lambda fields; the one whose body

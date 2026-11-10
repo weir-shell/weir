@@ -24,13 +24,12 @@ let cli = Args.load Cli
 
 let repo = "weir-shell/weir"
 
-// the canonical expected-asset set: 6 platform binaries + checksums +
-// the two pinned installers + the grammar manifest — 10 assets
+// the canonical expected-asset set: 5 platform binaries + checksums +
+// the two pinned installers + the grammar manifest — 9 assets
 let expected =
     [ $"weir-{cli.tag}-linux-x64"
       $"weir-{cli.tag}-linux-arm64"
       $"weir-{cli.tag}-osx-arm64"
-      $"weir-{cli.tag}-osx-x64"
       $"weir-{cli.tag}-win-x64.exe"
       $"weir-{cli.tag}-win-arm64.exe"
       "SHA256SUMS"

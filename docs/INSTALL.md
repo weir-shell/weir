@@ -68,7 +68,6 @@ Download the binary for your platform, and that release's
 | Linux x64 | `weir-<tag>-linux-x64` |
 | Linux arm64 | `weir-<tag>-linux-arm64` |
 | macOS (Apple silicon) | `weir-<tag>-osx-arm64` |
-| macOS (Intel) | `weir-<tag>-osx-x64` |
 | Windows x64 | `weir-<tag>-win-x64.exe` |
 | Windows arm64 | `weir-<tag>-win-arm64.exe` |
 
