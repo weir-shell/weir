@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.0.85
+
+### Chores
+
+- **weir is built on .NET 11.** The released binaries are native AOT
+  as before and need no runtime; nothing in the language changes.
+  Building from source now takes the .NET 11 SDK (`./publish.sh`,
+  `./publish.ps1`), and CI, the release job and the dev image pin
+  the 11.0.x SDK.
+
 ## v0.0.84
 
 ### Fixed
