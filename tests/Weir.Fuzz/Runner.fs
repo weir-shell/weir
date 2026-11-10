@@ -57,7 +57,7 @@ let private git (args: string list) =
     with _ ->
         None
 
-// walk up from the test binary to the repo root (bin/Debug/net10.0 -> project -> tests -> root)
+// walk up from the test binary to the repo root (bin/Debug/net11.0 -> project -> tests -> root)
 let repoRoot =
     let rec up (d: DirectoryInfo) =
         if isNull d then

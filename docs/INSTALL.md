@@ -161,5 +161,5 @@ set date.
 ## Building from source
 
 See the Developing section of the README. In short: run
-`./publish.sh` with the .NET 10 SDK and clang installed
+`./publish.sh` with the .NET 11 SDK and clang installed
 (`./publish.ps1` with the VS Build Tools on Windows).
