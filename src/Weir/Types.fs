@@ -1884,7 +1884,7 @@ let formatDuration (totalMs: int64) : string =
             elif frac = 0UL then
                 $"{s}s"
             else
-                let f = $"%03d{frac}".TrimEnd '0'
+                let f = frac.ToString("000").TrimEnd '0'
                 $"{s}.{f}s"
 
         if h = 0UL && m = 0UL && s = 0UL then
