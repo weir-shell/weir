@@ -26,7 +26,7 @@ if (Test-Path $exe) {
     }
     Move-Item $exe $old -Force
 }
-Copy-Item "src\Weir\bin\Release\net10.0\$Rid\publish\Weir.exe" $exe -Force
+Copy-Item "src\Weir\bin\Release\net11.0\$Rid\publish\Weir.exe" $exe -Force
 
 # sweep leftovers best-effort — one may still be a live process's
 # image until its editor reloads; it goes on the next run
