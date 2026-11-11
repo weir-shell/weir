@@ -21,9 +21,9 @@ surface=$(mktemp)
 trap 'rm -f "$surface"' EXIT
 
 # the glance rendering [D:help-glance] is one name per line, name first —
-# $1 is the module (bare #help) or the member (#help Module); the blurb
+# $1 is the module (#help modules) or the member (#help Module); the blurb
 # and glance text after it never enter the surface
-mods=$(printf '#help\n#quit\n' | "$BIN" 2>/dev/null | sed 's/^weir> //' \
+mods=$(printf '#help modules\n#quit\n' | "$BIN" 2>/dev/null | sed 's/^weir> //' \
     | awk '/^Modules:$/{f=1; next} f && /^  [A-Za-z]/{print $1} f && !/^  /{exit}')
 
 for m in $mods; do

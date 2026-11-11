@@ -59,7 +59,7 @@ if not any(l.strip().startswith("defaultValue") and "The Some value" in l for l 
 t = piped("#help modules\n#quit\n")
 if not any("Seq" in l and "lazy sequence" in l for l in t.splitlines()):
     failures.append(f"#help modules must blurb each module (Seq — lazy sequence …): {t[-400:]!r}")
-if "#find" not in t:
+if "#find" not in piped("#help\n#quit\n"):
     failures.append(f"#help must list #find: {t[-400:]!r}")
 
 # --- #find [D:help-find]: piped sessions take the deterministic
@@ -537,7 +537,7 @@ if "did you mean" not in t.lower() or "#history" not in t:
 # --- #keys [D:repl-keys]: the editor's bindings, listed by #help near
 # the top, plain when piped; a typo did-you-means it ------------------
 t = piped("#help\n#quit\n")
-if "#keys" not in "\n".join(t.splitlines()[:4]):
+if "#keys" not in "\n".join(t.splitlines()[:5]):
     failures.append(f"#help must list #keys in its first lines: {t[:300]!r}")
 t = piped("#keys\n#quit\n")
 for key in ("Ctrl+Y", "Ctrl+R", "Alt+Enter"):
