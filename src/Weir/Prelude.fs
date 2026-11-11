@@ -75,7 +75,9 @@ let source = [
     // the handler is a field [D:serve-defaults]: one record carries the
     // whole server, so `{ Server.defaults with … }` and the key=value
     // head name it like any other option
-    "type ServerConfig = { port: Option<int>; maxConcurrent: int; bodyTimeout: Duration; maxBody: Size; handler: HttpServerRequest -> HttpServerResponse }"
+    // maxQueued bounds the requests waiting for a handler slot
+    // [D:serve-queue]: past it the server answers 503
+    "type ServerConfig = { port: Option<int>; maxConcurrent: int; maxQueued: int; bodyTimeout: Duration; maxBody: Size; handler: HttpServerRequest -> HttpServerResponse }"
     // the plan/apply Op union [D:plan-apply] — the user-visible,
     // equatable+showable reification of an external mutation captured
     // inside a `plan` block. Each arm mirrors a mutation builtin's

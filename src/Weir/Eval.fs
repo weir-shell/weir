@@ -6994,6 +6994,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if maxConcurrent < 1 then
                 failwith $"serve: maxConcurrent is at least 1, got {maxConcurrent}"
 
+            // the waiting line's bound [D:serve-queue]: past it, 503
+            let maxQueued =
+                match recGet "maxQueued" cfg with
+                | VInt n -> toIntArg "serve maxQueued" Amount n
+                | v -> unreachable $"serve maxQueued {formatValue v}"
+
+            if maxQueued < 1 then
+                failwith $"serve: maxQueued is at least 1, got {maxQueued}"
+
             // the request-body read timeout [D:serve-body-timeout]: a
             // slow client dribbling the body cannot park a handler
             // slot forever
@@ -7128,6 +7137,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 Serve.start (defaultArg port 0) {
                     BodyTimeoutMs = bodyTimeoutMs
                     MaxBody = maxBody
+                    MaxQueued = maxQueued
                 }
 
             // the scope-close drain [D:serve-drain]: in-flight handlers get

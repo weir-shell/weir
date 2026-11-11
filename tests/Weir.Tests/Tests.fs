@@ -13496,14 +13496,21 @@ let headSlotCompletionTests =
         test "within serve offers its option keys after the server's name [D:serve-defaults]" {
             Expect.equal
                 (sug "within serve s ")
-                [ "port="; "maxConcurrent="; "bodyTimeout="; "maxBody="; "handler=" ]
+                [
+                    "port="
+                    "maxConcurrent="
+                    "maxQueued="
+                    "bodyTimeout="
+                    "maxBody="
+                    "handler="
+                ]
                 "ServerConfig's fields"
 
             Expect.equal (sug "within serve s port=8080 h") [ "handler=" ] "prefix-filtered"
 
             Expect.equal
                 (sug "within serve s port=(Some 8080) handler=route ")
-                [ "maxConcurrent="; "bodyTimeout="; "maxBody=" ]
+                [ "maxConcurrent="; "maxQueued="; "bodyTimeout="; "maxBody=" ]
                 "a given key is not offered again"
 
             Expect.isFalse (sug "within serve " |> List.contains "port=") "the name slot is not the key slot"
@@ -34555,6 +34562,7 @@ let serveTests =
     let limits (maxBody: int64) : Weir.Serve.Limits = {
         BodyTimeoutMs = 5000
         MaxBody = maxBody
+        MaxQueued = 1024
     }
 
     // serve `answer` on a fresh port for the duration of `f port`
@@ -34782,6 +34790,11 @@ let serveTests =
                     (VInt(int64 (max 8 System.Environment.ProcessorCount)))
                     "the processor count, floored at 8"
 
+                Expect.equal
+                    (get "maxQueued")
+                    (VInt(int64 (16 * max 8 System.Environment.ProcessorCount)))
+                    "sixteen waiting per default slot [D:serve-queue]"
+
                 Expect.equal (get "bodyTimeout") (VDur 30000L) "30s"
                 Expect.equal (get "maxBody") (VSize(16L * 1024L * 1024L)) "16MiB"
             | other -> failtest $"not a ServerConfig: {other}"
@@ -34863,7 +34876,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "let cfg = { port = None; maxConcurrent = 1; bodyTimeout = 1s; maxBody = 1MiB; handler = h }"
+                    "let cfg = { port = None; maxConcurrent = 1; maxQueued = 8; bodyTimeout = 1s; maxBody = 1MiB; handler = h }"
                     "within serve srv = cfg h"
                     "    print \"ok\""
                 ]
@@ -34994,12 +35007,12 @@ let serveTests =
 
                 Expect.stringContains
                     hv
-                    "keys: port: Option<int>, maxConcurrent: int, bodyTimeout: Duration, maxBody: Size, handler: HttpServerRequest -> HttpServerResponse"
+                    "keys: port: Option<int>, maxConcurrent: int, maxQueued: int, bodyTimeout: Duration, maxBody: Size, handler: HttpServerRequest -> HttpServerResponse"
                     $"the keys, off ServerConfig: {lines}"
 
                 Expect.stringContains
                     hv
-                    $"defaults: port = None, maxConcurrent = {n}, bodyTimeout = 30s, maxBody = 16 MiB, handler = <landing page>"
+                    $"defaults: port = None, maxConcurrent = {n}, maxQueued = {16 * n}, bodyTimeout = 30s, maxBody = 16 MiB, handler = <landing page>"
                     $"the defaults, off Server.defaults: {lines}"
 
             Expect.stringContains (hover [ "within" ] 1 3) "within <kind> — a scoped block" "the keyword alone"

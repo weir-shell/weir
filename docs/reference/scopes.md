@@ -267,6 +267,7 @@ Each pair replaces one field of `Server.defaults`:
 |---|---|---|
 | `port` | `Option<int>` | `None`: a free port, reported by `Server.port` |
 | `maxConcurrent` | `int` | the number of processors, at least 8 |
+| `maxQueued` | `int` | 16 times the default `maxConcurrent` |
 | `bodyTimeout` | `Duration` | `30s` |
 | `maxBody` | `Size` | `16MiB` |
 | `handler` | `HttpServerRequest -> HttpServerResponse` | answers `GET /` with a page saying no handler is set, anything else with 404 |
@@ -327,6 +328,7 @@ and `Server.streamErrors`.
 |---|---|---|---|
 | `port` | `Option<int>` | required | `None` picks a free port |
 | `maxConcurrent` | `int` | required | handlers at once; the rest queue |
+| `maxQueued` | `int` | 16 × the default `maxConcurrent` | requests waiting for a handler; past it, 503 with `Retry-After: 1` |
 | `bodyTimeout` | `Duration` | 30s | slower uploads get 408 |
 | `maxBody` | `Size` | 16MiB | larger bodies get 413, unbuffered |
 

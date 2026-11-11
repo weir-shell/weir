@@ -6193,6 +6193,9 @@ let private serverDefaults: Value =
         [
             "port", VUnion("None", None)
             "maxConcurrent", VInt(int64 (max 8 System.Environment.ProcessorCount))
+            // sixteen waiting per default slot [D:serve-queue]: room for a
+            // burst, a bound on what a stalled server holds
+            "maxQueued", VInt(int64 (16 * max 8 System.Environment.ProcessorCount))
             "bodyTimeout", VDur 30_000L
             "maxBody", VSize(16L * 1024L * 1024L)
             "handler", serveLandingHandler
@@ -7266,7 +7269,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
             // ---- Server: the scoped-listener handle [D:http-serve] ----
             "Server.defaults",
             bd
-                "The default server settings: port = None (a free port), maxConcurrent = the number of processors, at least 8, bodyTimeout = 30s, maxBody = 16MiB, and a handler that answers `GET /` with a page saying no handler is set. `within serve srv port=8080 handler=route` is short for `within serve srv = { Server.defaults with port = Some 8080; handler = route }`."
+                "The default server settings: port = None (a free port), maxConcurrent = the number of processors, at least 8, maxQueued = 16 times that, bodyTimeout = 30s, maxBody = 16MiB, and a handler that answers `GET /` with a page saying no handler is set. `within serve srv port=8080 handler=route` is short for `within serve srv = { Server.defaults with port = Some 8080; handler = route }`."
                 (Some "Server.defaults.maxConcurrent >= 8")
                 (Some "The listener accepts connections from this machine only (loopback).")
             "Server.port",
@@ -8943,7 +8946,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 None
             "ServerConfig",
             bd
-                "`within serve`'s settings: port (Some n for that port, None for a free one the kernel picks), maxConcurrent (handlers at once; the rest queue), bodyTimeout (how long a request body may take to arrive), maxBody (the largest request body accepted) and handler (the function from a request to its response). `Server.defaults` holds the default for each."
+                "`within serve`'s settings: port (Some n for that port, None for a free one the kernel picks), maxConcurrent (handlers at once; the rest queue), maxQueued (how many may queue; past it the answer is 503), bodyTimeout (how long a request body may take to arrive), maxBody (the largest request body accepted) and handler (the function from a request to its response). `Server.defaults` holds the default for each."
                 None
                 None
             "Op",

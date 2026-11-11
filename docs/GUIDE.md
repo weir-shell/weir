@@ -2086,6 +2086,7 @@ The options, and what each one is when you leave it out:
 |---|---|---|
 | `port` | `None` | the port to listen on; `None` takes a free one, which `Server.port` reports |
 | `maxConcurrent` | the number of processors, at least 8 | how many requests are handled at once; the rest queue, the same way `Seq.pmapWith` limits parallel work |
+| `maxQueued` | 16 times the default `maxConcurrent` | how many requests may wait for a free handler; past that the server answers 503 with `Retry-After: 1` instead of queueing without limit |
 | `bodyTimeout` | `30s` | how long a request body may take to arrive (408 after that) |
 | `maxBody` | `16MiB` | the largest request body accepted (413 past it) |
 | `handler` | a page saying no handler is set | the function from a request to its response |

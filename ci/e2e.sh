@@ -16248,6 +16248,27 @@ echo "$out" | grep -qF "status=HTTP/1.1 200 OK body=len=16" || fail "H20: a body
 echo "$out" | grep -qF "status=HTTP/1.1 413" || fail "H20: a body past maxBody must be 413: $out"
 echo "e2e ok: within serve — H20 maxBody answers 413 past the bound"
 
+# (H21) the waiting line is bounded [D:serve-queue]: one handler slot,
+# one waiting place — the first request runs, the second waits, and the
+# ones after are answered 503 with Retry-After at once, never queued.
+svport8=8478
+cat > "$svdir/busy.weir" <<WEOF
+let slow = fun req ->
+    Duration.sleep 1500ms
+    Reply.text 200 "done"
+
+within serve srv port=$svport8 maxConcurrent=1 maxQueued=1 handler=slow
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport8
+    let r = sh -c "for i in 1 2 3 4; do (curl -s -o /dev/null -D - -w 'code=%{http_code}\\n' --max-time 10 http://127.0.0.1:$svport8/ | grep -i -E 'code=|retry-after' &) ; sleep 0.3; done; sleep 4" | complete
+    r.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/busy.weir" 2>&1) || fail "serve maxQueued run failed: $out"
+[ "$(echo "$out" | grep -c 'code=200')" = 2 ] || fail "H21: the running request and the one waiting must both be served: $out"
+[ "$(echo "$out" | grep -c 'code=503')" = 2 ] || fail "H21: requests past maxQueued must be 503: $out"
+echo "$out" | grep -qi "retry-after: 1" || fail "H21: the 503 must say when to come back: $out"
+echo "e2e ok: within serve — H21 a full waiting line answers 503 with Retry-After"
+
 # a request body in a charset weir cannot decode is answered 415 before
 # the handler [D:serve-charset], never decoded as UTF-8 with U+FFFD; a
 # known charset still decodes per its declaration

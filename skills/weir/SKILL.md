@@ -962,7 +962,9 @@ within tmp d
   `Server.defaults` [D:serve-defaults]: `port` (an `Option<int>`,
   default `None` = an ephemeral port the kernel picks
   [D:serve-port-option]), `maxConcurrent` (default: the processor
-  count, at least 8), `bodyTimeout` (30s), `maxBody` (16MiB), `handler`
+  count, at least 8), `maxQueued` (16 per default slot; past it the
+  server answers 503 with `Retry-After` [D:serve-queue]), `bodyTimeout`
+  (30s), `maxBody` (16MiB), `handler`
   (default: a landing page — `GET /` 200 saying no handler is set,
   anything else 404). IN `key=value` OPTIONS A PLAIN VALUE FOR AN
   `Option` KEY MEANS `Some`: `port=8080` is `port=(Some 8080)`
@@ -3525,6 +3527,6 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `PromptStatus`: { `ok` `exit` `duration` }
 - type `Result`: `Ok` `Error`
 - type `Retry`: { `attempts` `delay` `timeout` }
-- type `ServerConfig`: { `port` `maxConcurrent` `bodyTimeout` `maxBody` `handler` }
+- type `ServerConfig`: { `port` `maxConcurrent` `maxQueued` `bodyTimeout` `maxBody` `handler` }
 - type `UuidNamespaces`: { `dns` `url` `oid` `x500` }
 - type `Yaml`: `YStr` `YInt` `YFloat` `YBool` `YNull` `YSeq` `YMap`
