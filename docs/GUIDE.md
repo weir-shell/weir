@@ -2056,11 +2056,11 @@ that answers requests:
 ```weir-demo
 let handler = fun rq ->
     match rq.method, rq.path with
-    | Get, "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+    | Get, "/health" -> Reply.text 200 "ok"
     | Post, Regex @"^/topic/([^/]+)$" topic ->
-        HttpServerResponse { status = 202; headers = []; body = Text $"queued on {topic}" }
+        Reply.text 202 $"queued on {topic}"
     | Get, "/events" -> HttpServerResponse { status = 200; headers = []; body = Stream (Seq.initInfinite show) }
-    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
+    | _ -> Reply.text 404 "not found"
 
 within serve srv port=8080 handler=handler
     print $"serving on {Server.port srv}"
@@ -2072,9 +2072,13 @@ matching on the method and the path together. A string arm matches
 one path; the `Regex` arm captures a path segment into `topic`. The
 `^` and `$` anchors make the regex match the whole path: the `Regex`
 pattern is a search, so without them `/x/topic/a/b` would match too.
-The response `body` uses the same `HttpBody` union as the client,
-plus `Stream of seq<string>` for a lazy body that's sent in chunks as
-it's produced.
+`Reply.text 200 "ok"`, `Reply.empty 404` and `Reply.json 200 lines`
+build the common responses. Each is an ordinary `HttpServerResponse`
+record, so headers are a record update
+(`{ Reply.text 200 "ok" with headers = [("cache-control", "no-store")] }`),
+and anything else is the record written out. Its `body` uses the same
+`HttpBody` union as the client, plus `Stream of seq<string>` for a
+lazy body that's sent in chunks as it's produced.
 
 The options, and what each one is when you leave it out:
 

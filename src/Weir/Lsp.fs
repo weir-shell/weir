@@ -978,6 +978,37 @@ let private onSilentToken (text: string) (jcol: int) : bool =
         else
             true // operator / punctuation / whitespace
 
+/// an import alias — on its import line, or qualifying a member —
+/// hovers the module and its own doc [D:module-doc]
+let private moduleAliasHover
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (text: string)
+    (jcol: int)
+    : string option =
+    wordAt text jcol
+    |> Option.bind (fun w ->
+        let mutable s = jcol - 1
+
+        while s > 0 && isWord text[s - 1] do
+            s <- s - 1
+
+        let e = s + w.Length
+        let member_ = s > 0 && text[s - 1] = '.'
+        let qualifier = e < text.Length && text[e] = '.'
+
+        if member_ || not (qualifier || text.TrimStart().StartsWith "import ") then
+            None
+        else
+            stmts
+            |> List.tryPick (fun (_, c) ->
+                match c.Kind with
+                | Script.KImport lm when lm.Alias = w -> Some lm
+                | _ -> None)
+            |> Option.map (fun lm ->
+                match lm.ModuleDoc with
+                | [] -> $"module {w}"
+                | doc -> $"module {w}\n\n" + String.concat "\n" doc))
+
 // hoverType is defined after definitionFor — it composes with it for the
 // Group 1a lookup (a usage / field / case reference resolves to its
 // declaration site, and the `///` doc is read there) [D:hover-completeness].
@@ -3196,6 +3227,11 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         // [D:schema-hover] — never the district's own type (an
         // enclosing-node leak otherwise)
         schemaTokenAt chk ll.Text jcol |> Option.bind (schemaHover path)
+    | Some(ll, _, jcol) when
+        not (inStringOrComment lines line col)
+        && (moduleAliasHover stmts ll.Text jcol).IsSome
+        ->
+        moduleAliasHover stmts ll.Text jcol
     | Some(ll, chk, jcol) when not (onSilentToken ll.Text jcol) ->
         // an inner-let binder hovers as its annotated signature (names +
         // types), degrading to the arrow when it has no named params

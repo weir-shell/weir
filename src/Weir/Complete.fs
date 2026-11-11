@@ -90,6 +90,7 @@ let sessionDirectiveHelp: (string * string list) list = [
     "help",
     [
         "#help                 // this list"
+        "#help modules         // the modules: built in, then imported"
         "#help <name>          // documentation for a module or member"
     ]
     "keys", [ "#keys                 // the editor's key bindings" ]
@@ -1203,7 +1204,7 @@ let rec suggestScopedWith
                     |> Seq.sort
                     |> List.ofSeq
                 | _ ->
-                    helpNames env
+                    "modules" :: helpNames env
                     |> List.filter (fun n -> n.StartsWith word && n <> word)
                     |> List.distinct
                     |> List.sort
@@ -1778,7 +1779,7 @@ let rec suggestScopedWith
                     // directives, `#help` first (which itself lists the modules and
                     // members). The argv-position empty Tab is unaffected — its cwd
                     // listing is useful, and it keys on `before` being non-empty below.
-                    sessionDirectives |> List.map (fun d -> "#" + d)
+                    [ "#help" ]
                 else
                     // command heads at a head slot (the statement head and the
                     // let-RHS, headSlotAt's verdict [D:let-rhs-head]): PATH

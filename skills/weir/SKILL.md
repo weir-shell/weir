@@ -1055,11 +1055,11 @@ within tmp d
 // the handle, asks itself two routes, and exits (no outside client)
 let route = fun rq ->
     match rq.method, rq.path with
-    | Get, "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+    | Get, "/health" -> Reply.text 200 "ok"
     | Post, Regex @"^/topic/([^/]+)$" topic ->
-        HttpServerResponse { status = 202; headers = []; body = Text $"queued on {topic}" }
+        Reply.text 202 $"queued on {topic}"
     | Get, "/stream" -> HttpServerResponse { status = 200; headers = []; body = Stream ["a"; "b"; "c"] }
-    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
+    | _ -> Reply.text 404 "not found"
 
 within serve srv port=8410 handler=route
     print $"listening on {Server.port srv}, open={Server.running srv}"
@@ -3483,6 +3483,7 @@ not the teaching.
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
+- `Reply`: `empty` `json` `text` — a handler's responses: `Reply.text 200 "ok"`, an ordinary `HttpServerResponse`
 - `Result`: `defaultValue` `isOk` `map` `toOption` — what `e |> try result` gives (`Ok v` / `Error msg`)
 - `Option`: `bind` `defaultValue` `defaultWith` `flatten` `iter` `map` `orElse` `orElseWith` — `bind` chains lookups that may each fail (`f` returns an Option; no nesting); `flatten` collapses `Option<Option<T>>`
 - `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `isName` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `toName` `under` `which` — `isName` is true for one file name valid on Linux, macOS and Windows; `toName` turns any text into one; `which name : Option<string>` is the full path of the program a command head would run, found as the spawn finds it: on the PATH the command runs with (a `within env` overlay's included [D:overlay-path]) and PATHEXT on Windows; a name with a `/` answers itself when the file exists; an ambient read (readonly admits it, pure refuses) [D:path-which]; `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`) — home is `$HOME` verbatim when set, the OS lookup when unset, and an empty HOME raises [D:home-verbatim]; HOME and `XDG_*` are read through a `within env` overlay [D:home-overlay]; in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to

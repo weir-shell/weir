@@ -29,8 +29,19 @@ def piped(text):
 t = piped("#help\n#quit\n")
 if "Directives:" not in t or "#quit" not in t:
     failures.append(f"#help must list the directives: {t[-200:]!r}")
+if "Modules:" in t:
+    failures.append(f"bare #help is the directives alone [D:help-modules]: {t[-200:]!r}")
+if "#help modules" not in t:
+    failures.append(f"bare #help must point at #help modules: {t[-200:]!r}")
+
+t = piped("#help modules\n#quit\n")
 if "Modules:" not in t or "Seq" not in t or "Http" not in t:
-    failures.append(f"#help must list the modules (derived): {t[-200:]!r}")
+    failures.append(f"#help modules must list the modules (derived): {t[-200:]!r}")
+
+# a bare module name is its help, not a type error [D:module-echo]
+t = piped("Bytes\n#quit\n")
+if "Bytes (" not in t or "hmacSha256" not in t or "is a module" in t:
+    failures.append(f"a bare module name must echo its help: {t[-300:]!r}")
 
 t = piped("#help Seq\n#quit\n")
 if "collect" not in t or "members" not in t:
@@ -45,9 +56,9 @@ if not any(l.strip().startswith("bind") and "Apply a function" in l for l in lin
 if not any(l.strip().startswith("defaultValue") and "The Some value" in l for l in lines):
     failures.append(f"#help Option must glance defaultValue's doc: {t[-400:]!r}")
 
-t = piped("#help\n#quit\n")
+t = piped("#help modules\n#quit\n")
 if not any("Seq" in l and "lazy sequence" in l for l in t.splitlines()):
-    failures.append(f"bare #help must blurb each module (Seq — lazy sequence …): {t[-400:]!r}")
+    failures.append(f"#help modules must blurb each module (Seq — lazy sequence …): {t[-400:]!r}")
 if "#find" not in t:
     failures.append(f"#help must list #find: {t[-400:]!r}")
 
@@ -417,16 +428,15 @@ def pty_tab(prefix, taps=1, settle=0.6):
     os.waitpid(pid, 0)
     return re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\x1b=|\x1b\][^\x07]*\x07", "", out.decode(errors="replace"))
 
-# an empty prompt: the 5 directives share the '#' prefix, so the first
-# Tab extends the line to '#' and the second lists the directive names
-# (the '#'-slot takes over once '#' is present) — never the 954-PATH
-# flood. Both halves prove the fix: the line becomes '#', and the menu
-# is the closed directive set.
-t = pty_tab("", taps=2)
-if "weir> #" not in t:
-    failures.append(f"an empty-prompt Tab must extend to '#' (the directives' shared prefix): {t[-400:]!r}")
+# an empty prompt: one Tab completes `#help` — never the 954-PATH flood
+t = pty_tab("", taps=1)
+if "weir> #help" not in t:
+    failures.append(f"an empty-prompt Tab must complete to '#help' [D:help-modules]: {t[-400:]!r}")
+
+# '#' then Tab still lists the directive names
+t = pty_tab("#", taps=2)
 if "help" not in t or "infer" not in t or "save" not in t:
-    failures.append(f"an empty-prompt Tab must offer the session directives: {t[-400:]!r}")
+    failures.append(f"'#' + Tab must offer the session directives: {t[-400:]!r}")
 
 # a continuation line is not an entry's first line: Tab there offers no
 # directive, and a typed '#' there completes none [D:repl-directives]
@@ -569,4 +579,4 @@ if failures:
         print("repl-directives FAIL:", f)
     sys.exit(1)
 
-print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #types (default off, on restores, report, teach, config seed + override, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig redirect, #schema unknown), #alias recognized (list/add/single-hop/help), #keys (help-listed, Ctrl+Y/Ctrl+R/Alt+Enter, piped plain, typo did-you-mean), empty-prompt Tab offers directives (continuation lines none), constructor not a head")
+print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #types (default off, on restores, report, teach, config seed + override, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig redirect, #schema unknown), #alias recognized (list/add/single-hop/help), #keys (help-listed, Ctrl+Y/Ctrl+R/Alt+Enter, piped plain, typo did-you-mean), empty-prompt Tab completes #help, '#'+Tab lists directives (continuation lines none), #help modules, bare module echo, constructor not a head")

@@ -994,6 +994,21 @@ let docAttachments (lines: string list) : DocAttach list =
 
     List.ofSeq acc
 
+/// the module's own doc [D:module-doc]: the `///` run directly above
+/// the `module` line, by the contiguity rule every doc follows
+let moduleDocOf (lines: string list) : string list =
+    let raws = List.toArray lines
+
+    docAttachments lines
+    |> List.tryPick (fun d ->
+        let code = (stripComment raws[d.Line - 1]).Trim()
+
+        if code = "module" || code.StartsWith "module " then
+            Some d.Doc
+        else
+            None)
+    |> Option.defaultValue []
+
 /// The marker's district wrap: opener text and how many trailing
 /// characters of the armed line the first district line strips.
 /// the retired district spellings [D:district-retirement] — detected
@@ -3373,6 +3388,21 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
         while i < line.Length do
             if not (free i) then
                 i <- i + 1
+            elif cmdMode && not holes[i] && line[i] <> '$' && Parser.cmdWordChar line[i] then
+                // an argv word is one inert token, as the parser reads
+                // it: `v0.123.0` and `--some-flag` hold no numbers and
+                // no operators [D:repl-color-words]
+                let start = i
+
+                while i < line.Length
+                      && free i
+                      && not holes[i]
+                      && line[i] <> '$'
+                      && Parser.cmdWordChar line[i] do
+                    i <- i + 1
+
+                for j in start .. i - 1 do
+                    codes[j] <- Some "2"
             elif isIdentStart line[i] then
                 let start = i
 
@@ -3644,6 +3674,8 @@ and LoadedModule = {
     Body: (LogicalLine * CheckedStmt) list
     // each signed member's /// doc, read from its signature [D:module-signatures]
     MemberDocs: Map<string, string list>
+    // the /// run above the `module` line [D:module-doc]
+    ModuleDoc: string list
     // a prompt import may take an alias an earlier import holds — the
     // session's reload [D:repl-import]; scripts and -e never set it
     MayRebind: bool
@@ -6767,6 +6799,7 @@ let rec loadModuleCachedWith
                                             |> List.choose (fun (n, l) ->
                                                 Map.tryFind l byLine |> Option.map (fun d -> n, d))
                                             |> Map.ofList
+                                        ModuleDoc = moduleDocOf rawLines
                                         TypeNames = typeDefs |> List.map fst
                                         TypeOrigins =
                                             let ownOrigin n =

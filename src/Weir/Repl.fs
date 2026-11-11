@@ -321,6 +321,18 @@ let private recordKind (chk: Script.CheckedStatement) : TranscriptKind option =
 // prompt import adds its members' docs [D:repl-import]
 let mutable private initDocs: Map<string, string list> = Map.empty
 
+// each imported module's file, by alias — #help modules names it for a
+// module with no doc [D:module-doc]
+let mutable private importPaths: Map<string, string> = Map.empty
+
+// a module's own doc rides initDocs under its alias [D:module-doc]
+let private withModuleDoc (lm: Script.LoadedModule) (docs: Map<string, string list>) =
+    importPaths <- Map.add lm.Alias lm.AbsPath importPaths
+
+    match lm.ModuleDoc with
+    | [] -> Map.remove lm.Alias docs
+    | d -> Map.add lm.Alias d docs
+
 // the prompt's import loader [D:repl-import]: the session cwd anchors the
 // path, and an alias an earlier import holds may be rebound (a reload)
 let private sessionImport: Script.ImportLoader =
@@ -919,7 +931,9 @@ let private termWidth () =
         None
 
 // the Tab listing's lines [D:tab-listing]
-let completionListing (width: int) (items: string list) : string list =
+/// `paint` tints a candidate; the columns are laid out on the plain
+/// text, so a tint never moves them [D:repl-color-words]
+let completionListingWith (paint: string -> string) (width: int) (items: string list) : string list =
     let cap = 200
     let shown = items |> List.truncate cap
     let colW = (shown |> List.map String.length |> List.fold max 0) + 2
@@ -931,7 +945,7 @@ let completionListing (width: int) (items: string list) : string list =
         for r in 0 .. rows - 1 do
             [ for c in 0 .. cols - 1 -> c * rows + r ]
             |> List.filter (fun i -> i < arr.Length)
-            |> List.map (fun i -> arr[i].PadRight colW)
+            |> List.map (fun i -> paint arr[i] + String(' ', colW - arr[i].Length))
             |> String.concat ""
             |> fun l -> l.TrimEnd()
     ]
@@ -940,6 +954,8 @@ let completionListing (width: int) (items: string list) : string list =
         lines @ [ $"… and {items.Length - cap} more — type more to narrow" ]
     else
         lines
+
+let completionListing (width: int) (items: string list) : string list = completionListingWith id width items
 
 // ---------------------------------------------------------------------------
 // The owned line editor [D:owned-line-editor]: bash key semantics —
@@ -2187,7 +2203,20 @@ let private readLineTty () : string option =
                      toEnd ()
                      Console.WriteLine()
 
-                     for l in completionListing (termWidth ()) many do
+                     // head candidates take the tint they would have
+                     // typed — the input colorizer's own verdict
+                     // [D:repl-color-words]
+                     let paint =
+                         if
+                             Types.Color.onStdout.Value
+                             && sigil = 0
+                             && Complete.headSlotAt (text.Substring(0, ws)) <> Complete.HeadSlot.No
+                         then
+                             Script.colorizeRepl (knownIn currentEnv.Value)
+                         else
+                             id
+
+                     for l in completionListingWith paint (termWidth ()) many do
                          Console.WriteLine l
 
                      row <- keepRow
@@ -2465,7 +2494,11 @@ let private clipTo (width: int) (s: string) : string =
 let private memberGlance (qualified: string) : string =
     match Map.tryFind qualified Builtins.builtinDocs.Value with
     | Some d -> (d.Summary.Split '\n')[0]
-    | None -> ""
+    | None ->
+        // an imported member glances its own /// doc [D:module-doc]
+        match Map.tryFind qualified initDocs with
+        | Some(first :: _) -> first
+        | _ -> ""
 
 // ---- the tty help render [D:help-tint] -------------------------------
 // A doc's `code` spans tint cyan at a colored tty, the backticks
@@ -2989,6 +3022,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 |> Map.fold
                     (fun acc n d -> Map.add $"{prefix}{n}" d acc)
                     (initDocs |> Map.filter (fun k _ -> not (k.StartsWith prefix)))
+                |> withModuleDoc lm
 
             let count = List.length lm.Members
             let verb = if reload then "reloaded" else "imported"
@@ -3210,25 +3244,44 @@ let private bareAliasHome (te: TypeEnv) (name: string) : string option =
 let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
     match arg.Trim() with
     | "" ->
-        // modules one per line with their one-source blurb [D:help-glance];
-        // a module missing from moduleBlurbs renders bare (the completeness
-        // unit pin fails loud, the render never does)
-        let mods =
-            te.Modules
-            |> Map.keys
-            |> Seq.sort
-            |> Seq.map (fun m -> m, (Builtins.moduleBlurbs |> Map.tryFind m |> Option.defaultValue ""))
-            |> List.ofSeq
-
+        // the directives alone, so the list stays on one screen; the
+        // modules are #help modules [D:help-modules]
         "Directives:\n"
         // derived [D:repl-directives]: the dispatch's own table
         + (Complete.sessionDirectiveHelp
            |> List.collect snd
-           |> List.map (fun l -> "  " + l + "\n")
-           |> String.concat "")
-        + "\n"
-        + "Modules:\n"
-        + glanceTable (glanceWidth ()) mods
+           |> List.map (fun l -> "  " + l)
+           |> String.concat "\n")
+    | "modules" ->
+        // modules one per line with their one-source blurb [D:help-glance];
+        // a module missing from moduleBlurbs renders bare (the completeness
+        // unit pin fails loud, the render never does). Imported modules
+        // list apart, under their own doc's first line or their file
+        // [D:help-modules]
+        let builtin, imported =
+            te.Modules
+            |> Map.keys
+            |> Seq.sort
+            |> List.ofSeq
+            |> List.partition (fun m -> Map.containsKey m Builtins.typeEnv.Modules)
+
+        let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile
+
+        let importedRow (m: string) =
+            match Map.tryFind m initDocs, Map.tryFind m importPaths with
+            | Some(first :: _), _ -> m, first
+            | _, Some path when home <> "" && path.StartsWith(home + "/") -> m, "~" + path.Substring home.Length
+            | _, Some path -> m, path
+            | _ -> m, ""
+
+        "Modules:\n"
+        + glanceTable
+            (glanceWidth ())
+            (builtin
+             |> List.map (fun m -> m, (Builtins.moduleBlurbs |> Map.tryFind m |> Option.defaultValue "")))
+        + (match imported with
+           | [] -> ""
+           | ms -> "\n\nImported:\n" + glanceTable (glanceWidth ()) (ms |> List.map importedRow))
     | name when Map.containsKey name te.Modules ->
         // members from completion's source — the module map plus the
         // bespoke checker arms — never a copy; each with its doc's first
@@ -3237,7 +3290,18 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
 
         let rows = members |> List.map (fun m -> m, memberGlance $"{name}.{m}")
 
-        $"{name} ({List.length members} members):\n"
+        // an imported module leads with its own doc and its file
+        // [D:module-doc]
+        let lead =
+            (match Map.tryFind name initDocs with
+             | Some doc -> (doc |> String.concat "\n") + "\n"
+             | None -> "")
+            + (match Map.tryFind name importPaths with
+               | Some path when not (Map.containsKey name Builtins.typeEnv.Modules) -> $"imported from {path}\n\n"
+               | _ -> "")
+
+        lead
+        + $"{name} ({List.length members} members):\n"
         + glanceTable (glanceWidth ()) rows
         + $"\n\n#help {name}.<member> shows one member's doc"
     | name when (Check.ctorOwners te name |> List.length) > 1 ->
@@ -3316,6 +3380,37 @@ let private renderHelp (s: string) : string =
 /// example) and the prose span pass share a single colour gate
 let private renderHelpDirective (te: TypeEnv) (arg: string) : string =
     renderHelp (helpDirective Types.Color.onStdout.Value te arg)
+
+/// a bare module name at the prompt [D:module-echo]: its #help text
+/// when that fits the screen, else the member names in a grid and where
+/// the descriptions are. `height` None (no terminal) takes the full text.
+let moduleEchoText (full: string) (height: int option) (width: int) (name: string) (members: string list) : string =
+    let fits =
+        match height with
+        | Some h -> full.Split('\n').Length <= h - 2
+        | None -> true
+
+    if fits then
+        full
+    else
+        let grid =
+            completionListing (width - 2) members
+            |> List.map (fun l -> "  " + l)
+            |> String.concat "\n"
+
+        $"{name} ({List.length members} members):\n{grid}\n\n#help {name} for descriptions, #help {name}.<member> for one"
+
+let private moduleEcho (te: TypeEnv) (name: string) : string =
+    let height =
+        if Console.IsOutputRedirected then
+            None
+        else
+            try
+                Some Console.WindowHeight
+            with _ ->
+                None
+
+    moduleEchoText (renderHelpDirective te name) height (glanceWidth ()) name (moduleMembersOf te name)
 
 // ---- #find [D:help-find]: fuzzy help search over one candidate set —
 // every module (`Seq — blurb`) and every member (`Seq.map — glance`),
@@ -4478,6 +4573,17 @@ let rec private loop (state: State) =
         // [D:repl-directives]: nothing follows for a comment to be
         // transparent to — no message is the right answer
         loop state
+    | line when
+        (let t = line.Trim()
+
+         Map.containsKey t state.TypeEnv.Modules
+         && not (Map.containsKey t state.TypeEnv.Values))
+        ->
+        // a module name alone asks what the module holds [D:module-echo]
+        lastErrored <- false
+        lastExit <- None
+        Console.WriteLine(moduleEcho state.TypeEnv (line.Trim()))
+        loop state
     | line when line.TrimStart().StartsWith "#" ->
         let t = line.Trim()
 
@@ -5099,7 +5205,9 @@ let private loadInit (baseState: State) : State =
                                             venv
 
                                     docs <-
-                                        lm.MemberDocs |> Map.fold (fun acc n d -> Map.add $"{lm.Alias}.{n}" d acc) docs
+                                        lm.MemberDocs
+                                        |> Map.fold (fun acc n d -> Map.add $"{lm.Alias}.{n}" d acc) docs
+                                        |> withModuleDoc lm
 
                                     names <- names + List.length lm.Members
                                 | _ -> ()

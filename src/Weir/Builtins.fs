@@ -6161,7 +6161,7 @@ let private asServer (who: string) (v: Value) : Serve.Handle =
 let private serveLandingHint =
     "weir is serving, but no handler is set.\n\n"
     + "Set one with handler=, a function from the request to a response:\n\n"
-    + "    let route = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"hello\" }\n"
+    + "    let route = fun req -> Reply.text 200 \"hello\"\n"
     + "    within serve s handler=route\n"
     + "    until stopped\n"
 
@@ -6212,6 +6212,24 @@ let private serverMembers: (string * Ty * Value) list = [
     "streamErrors",
     TFun(serverTy, TSeq TStr),
     VBuiltin(fun v -> VSeq(Serve.streamErrors (asServer "Server.streamErrors" v) |> List.map VStr))
+]
+
+// Reply [D:reply]: the three responses a handler writes most, as the
+// plain HttpServerResponse record — headers and stream bodies stay an
+// ordinary record update
+let private replyTy = TNamed("HttpServerResponse", [])
+
+let private replyOf (status: Value) (body: Value) : Value =
+    VRecord("HttpServerResponse", [ "status", status; "headers", VSeq []; "body", body ])
+
+let private replyMembers: (string * Ty * Value) list = [
+    "empty", TFun(TInt, replyTy), VBuiltin(fun status -> replyOf status (VUnion("NoBody", None)))
+    "text",
+    TFun(TInt, TFun(TStr, replyTy)),
+    VBuiltin(fun status -> VBuiltin(fun s -> replyOf status (VUnion("Text", Some s))))
+    "json",
+    TFun(TInt, TFun(TSeq TStr, replyTy)),
+    VBuiltin(fun status -> VBuiltin(fun lines -> replyOf status (VUnion("Json", Some lines))))
 ]
 
 // Net [D:scoped-procs]: one readiness probe — poll's body. Remote
@@ -6934,6 +6952,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list = [
     "Uuid", uuidMembers
     "Proc", procMembers
     "Server", serverMembers
+    "Reply", replyMembers
     "Net", netMembers
     "Path", pathMembers
     "Option", optionMembers
@@ -7265,6 +7284,25 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 None
                 (Some "When a Stream body raises, the client's response is cut off and the error is recorded here.")
             |> named [ "srv" ]
+            // ---- Reply: a handler's responses [D:reply] ----
+            "Reply.empty",
+            bd
+                "A response with this status and no body. The result is an ordinary HttpServerResponse record, so headers are a record update."
+                (Some "(Reply.empty 404).status")
+                None
+            |> named [ "status" ]
+            "Reply.text",
+            bd
+                "A response with this status and a text body."
+                (Some "{ Reply.text 200 \"ok\" with headers = [(\"cache-control\", \"no-store\")] }")
+                None
+            |> named [ "status"; "body" ]
+            "Reply.json",
+            bd
+                "A response with this status and a JSON body: the lines `to json` produces."
+                (Some "Reply.json 200 ([1; 2] |> to json)")
+                None
+            |> named [ "status"; "lines" ]
             // ---- Net: readiness probes [D:scoped-procs] ----
             "Net.portOpen",
             bd
@@ -9008,6 +9046,7 @@ let moduleBlurbs: Map<string, string> =
         "Log", "levelled diagnostics to stderr (WEIR_LOG selects)"
         "Map", "immutable maps keyed by any equatable type: get, add, pairs"
         "Net", "network probes: portOpen"
+        "Reply", "a handler's responses: empty, text, json"
         "Option", "presence and absence: map, bind, defaults"
         "Result", "the value or the error message `|> try result` gives: map, defaults, toOption"
         "Path", "path text and discovery: join, confine, glob, temp dirs"

@@ -246,8 +246,8 @@ An HTTP server that lives as long as the block:
 ```
 let route = fun rq ->
     match rq.method, rq.path with
-    | Get, "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
-    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
+    | Get, "/health" -> Reply.text 200 "ok"
+    | _ -> Reply.text 404 "not found"
 
 within serve srv port=8080 handler=route
     print $"listening on {Server.port srv}"
@@ -277,7 +277,7 @@ holds in `key=value` options only (`retry timeout=2m` too); a record
 you write takes the `Some`.
 
 ```weir
-let route = fun rq -> HttpServerResponse { status = 200; headers = []; body = Text $"you asked for {rq.path}" }
+let route = fun rq -> Reply.text 200 $"you asked for {rq.path}"
 
 within serve srv handler=route
     let reply = Http.get $"http://127.0.0.1:{Server.port srv}/hello" |> Http.expect |> Seq.head

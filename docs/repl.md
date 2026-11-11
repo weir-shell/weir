@@ -51,9 +51,8 @@ with `^` completes from PATH only, skipping bindings and aliases.
 Completion never runs anything. At most it reads a directory, a
 signature file, or a cached PATH entry.
 
-**At an empty prompt.** Tab offers the session directives, not
-everything: the first Tab types the `#` they share, a second lists
-them. `#help` itself lists the modules and members.
+**At an empty prompt.** Tab types `#help`, not a list of everything;
+Enter then shows the directives. `#` and Tab lists the directives.
 Once you start typing you get the usual filtered list. Tab in an
 argument position still lists the directory.
 
@@ -106,7 +105,9 @@ parameter or a `let` in the same block. An argument without `$`
 completes paths only.
 
 **Long lists.** When several candidates match, Tab lists them all in
-columns that fit the terminal; past 200 it counts the rest.
+columns that fit the terminal; past 200 it counts the rest. At the
+start of a command the candidates are colored as they would be once
+typed: programs on PATH bold blue, weir names and modules bold.
 
 **Type names.** Where a type is written, Tab offers type names: after
 `from json`, `from toml` and the other adapters, only the types that
@@ -179,6 +180,12 @@ echoes nothing after its output.
 Type variables in the type line are renamed to `'a`, `'b`, …; error
 messages use the checker's internal names instead. `NO_COLOR` turns
 off the styling.
+
+### Modules
+
+A module's name alone (`Bytes`) shows what `#help Bytes` shows. If
+that is taller than the terminal you get the member names in columns
+and a line pointing at `#help Bytes` for the descriptions.
 
 ### Functions and `let`s
 
@@ -260,8 +267,10 @@ only applies to lazy ones. It applies to a piped session too.
 
 ## Help
 
-`#help` lists the directives and the modules, one module per line
-with a short description. `#keys` lists the editor's
+`#help` lists the directives. `#help modules` lists the modules, one
+per line with a short description: the built-in ones first, then the
+modules you imported, each with the first line of its doc (or its file
+when it has none). `#keys` lists the editor's
 [key bindings](#multi-line-editing).
 
 - `#help Seq` lists one module's members, one per line, each with the

@@ -5924,25 +5924,11 @@ let completionTests =
             // control: a non-record element still offers nothing
             Expect.equal (sgs "src |> Seq.map (fun e -> e.") [] "a string element offers no fields"
         }
-        test "the empty prompt offers the session directives, not the flood [D:empty-prompt-directives]" {
+        test "the empty prompt completes to #help, not the flood [D:empty-prompt-directives]" {
             // guards `suggest "" 0` against the `StartsWith ""` flood
             // (1130 items: 954 PATH execs + the universe). A fresh Tab
-            // teaches the REPL's affordances, `#help` first.
-            Expect.equal
-                (suggest "" 0)
-                [
-                    "#help"
-                    "#keys"
-                    "#find"
-                    "#echo"
-                    "#types"
-                    "#infer"
-                    "#save"
-                    "#history"
-                    "#alias"
-                    "#quit"
-                ]
-                "the curated directive set"
+            // fills in `#help`, the list of everything else [D:help-modules]
+            Expect.equal (suggest "" 0) [ "#help" ] "one candidate, so one Tab completes it"
 
             // filtered completion is unaffected (a real prefix at a head).
             // Assert only environment-stable facts: the `File` module is
@@ -10372,6 +10358,28 @@ let replColorTests =
             Expect.equal (strip (colorize "zzz-nope list")) "zzz-nope list" "transparent"
             // a known head keeps its own extent: `ls-1` is not one word
             Expect.stringContains (colorize "ls -la") "\x1b[1mls\x1b[0m" "a known head is unchanged"
+        }
+        test "an argv word is one dim token: versions and flags hold no numbers or operators [D:repl-color-words]" {
+            let known n = n = "print"
+
+            let c =
+                Weir.Script.colorizeRepl known "sh tag v0.123.0 --some-flag -la $x | Seq.head"
+
+            Expect.stringContains c "\x1b[2mv0.123.0\x1b[0m" "a version is one word"
+            Expect.stringContains c "\x1b[2m--some-flag\x1b[0m" "a long flag is one word"
+            Expect.stringContains c "\x1b[2m-la\x1b[0m" "a short flag is one word"
+            Expect.stringContains c "\x1b[36m$x\x1b[0m" "a splice keeps its tint"
+            Expect.isFalse (c.Contains "\x1b[2mhead") "after | the stage is expression land"
+        }
+        test "the Tab listing paints a candidate without moving the columns [D:repl-color-words]" {
+            let items = [ "alpha"; "be"; "gamma"; "d" ]
+            let plain = Weir.Repl.completionListing 20 items
+
+            let painted =
+                Weir.Repl.completionListingWith (fun s -> "\x1b[1m" + s + "\x1b[0m") 20 items
+
+            Expect.equal (painted |> List.map strip) plain "strip after paint is the plain listing"
+            Expect.isTrue (painted |> List.forall (fun l -> l.Contains "\x1b[1m")) "every line is painted"
         }
         test "a module qualifier paints the same at the head and after a pipe [D:repl-color-words]" {
             let c =
@@ -39935,14 +39943,67 @@ let helpUxTests =
             let memberRows = lines |> Array.filter (fun l -> l.StartsWith "  ") |> Array.length
             Expect.equal memberRows 8 "one row per member, exactly"
         }
-        test "(c) bare #help: modules one per line with blurbs; #find is listed" {
+        test "(c) bare #help is the directives alone; #help modules lists the modules with blurbs [D:help-modules]" {
             let t = Weir.Repl.helpTextForTest ""
             Expect.stringContains t "#find" "#find is in the directive list"
+            Expect.stringContains t "#help modules" "the directive list points at the modules"
+            Expect.isFalse (t.Contains "Modules:") "no module list under the directives"
+
+            let m = Weir.Repl.helpTextForTest "modules"
 
             Expect.isTrue
-                (t.Split '\n'
+                (m.Split '\n'
                  |> Array.exists (fun l -> l.TrimStart().StartsWith "Seq " && l.Contains "lazy sequence"))
-                $"the Seq line carries its blurb: {t}"
+                $"the Seq line carries its blurb: {m}"
+
+            Expect.isFalse (m.Contains "Imported:") "no imports, no Imported section"
+        }
+        test "a bare module name echoes its help when it fits, else the member grid [D:module-echo]" {
+            let full =
+                "Bytes (2 members):\n  a  doc\n  b  doc\n\n#help Bytes.<member> shows one member's doc"
+
+            Expect.equal (Weir.Repl.moduleEchoText full (Some 24) 80 "Bytes" [ "a"; "b" ]) full "fits: the #help text"
+            Expect.equal (Weir.Repl.moduleEchoText full None 80 "Bytes" [ "a"; "b" ]) full "no terminal: the #help text"
+
+            Expect.equal
+                (Weir.Repl.moduleEchoText full (Some 5) 80 "Bytes" [ "a"; "b" ])
+                "Bytes (2 members):\n  a  b\n\n#help Bytes for descriptions, #help Bytes.<member> for one"
+                "too tall: names only, and where the descriptions are"
+        }
+        test "Reply builds the ordinary response record [D:reply]" {
+            let body src =
+                run
+                    $"match ({src}).body with | Text t -> t | NoBody -> \"<none>\" | Json ls -> Str.join \"\" ls | _ -> \"?\""
+
+            Expect.equal (run "(Reply.text 201 \"made\").status") (VInt 201L) "text status"
+            Expect.equal (body "Reply.text 201 \"made\"") (VStr "made") "text body"
+            Expect.equal (body "Reply.empty 404") (VStr "<none>") "empty"
+            Expect.equal (body "Reply.json 200 ([1; 2] |> to json)") (VStr "[1,2]") "json"
+            Expect.equal (run "(Reply.empty 404).headers |> Seq.length") (VInt 0L) "no headers"
+
+            Expect.equal
+                (run "({ Reply.text 200 \"ok\" with headers = [(\"a\", \"b\")] }).headers |> Seq.length")
+                (VInt 1L)
+                "headers are a record update"
+        }
+        test "the /// run above the module line is the module's doc [D:module-doc]" {
+            Expect.equal
+                (Weir.Script.moduleDocOf [
+                    "/// Topic pub/sub."
+                    "/// Call init first."
+                    "module Flume"
+                    ""
+                    "let x = 1"
+                ])
+                [ "Topic pub/sub."; "Call init first." ]
+                "the contiguous run"
+
+            Expect.equal (Weir.Script.moduleDocOf [ "/// stray"; ""; "module Flume" ]) [] "a blank line breaks the run"
+
+            Expect.equal
+                (Weir.Script.moduleDocOf [ "module Flume"; "/// doubles"; "let twice : int -> int" ])
+                []
+                "a member's doc is not the module's"
         }
         test "(d) #find fallback: case-insensitive substring, deterministic (the piped path)" {
             let t = Weir.Repl.findFallbackForTest "SHA256"
