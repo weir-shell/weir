@@ -37,6 +37,10 @@
   name.** With `let myFunc () =` whose body binds `let myFunc = 10`,
   hovering the outer `myFunc` showed `int`. It shows the function's own
   signature again.
+- **Hover on a field name in a record pattern shows the field's
+  type.** In `| { method = Get; path = "/health" } -> …`, hovering
+  `method` or `path` showed the type of the whole `match`. It shows
+  `HttpMethod` and `string`.
 
 ### Removed
 

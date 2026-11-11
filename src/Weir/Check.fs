@@ -501,7 +501,7 @@ let private loadShapeDup (env: TypeEnv) (tyName: string) : string option =
 let private bindParams (env: TypeEnv) (bindings: (string * Ty) list) : TypeEnv =
     bindings |> List.fold (fun e (n, t) -> bindValue n (mono t) e) env
 
-let private substParams (ps: string list) (args: Ty list) (ty: Ty) : Ty =
+let substParams (ps: string list) (args: Ty list) (ty: Ty) : Ty =
     let m = List.zip ps args |> Map.ofList
 
     let rec go ty =

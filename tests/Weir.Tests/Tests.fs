@@ -7901,6 +7901,21 @@ let derivedOrdTests =
             Expect.equal (Weir.Lsp.hoverType lines 2 9) (Some "myFunc : int") "the inner binder keeps its own"
             Expect.equal (Weir.Lsp.hoverType lines 3 14) (Some "int") "a use resolves to the inner one"
         }
+        test "a field name in a record pattern hovers the field's type, not the match's" {
+            let lines = [
+                "let repro () ="
+                "    let handler rq ="
+                "      match rq with"
+                "      | { method = Get; path = \"/health\" } -> { status = 200; body = Text \"ok\"; headers = [] }"
+                "      | _ -> { status = 404; body = Text \"no\"; headers = [] }"
+                "    handler"
+            ]
+
+            let at (word: string) = lines[3].IndexOf word + 2
+            Expect.equal (Weir.Lsp.hoverType lines 4 (at "method")) (Some "HttpMethod") "method"
+            Expect.equal (Weir.Lsp.hoverType lines 4 (at "path")) (Some "string") "path"
+            Expect.equal (Weir.Lsp.hoverType lines 4 (at "status")) (Some "int") "a literal's field is unchanged"
+        }
         test "the attribute's doc hovers; a type's hover shows its key in order, a member's its position" {
             Expect.stringStarts
                 (Map.find "Ord" Weir.Builtins.attrDocs)

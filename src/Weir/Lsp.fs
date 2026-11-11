@@ -1011,6 +1011,83 @@ let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : s
             Some(sigOrFlat n (Check.lambdaParamNames tvalue) tvalue.Ty)
         | _ -> None
 
+/// the type of the record-pattern field whose name sits at the column —
+/// a pattern is no expression node, so without this the enclosing
+/// match answers with its own type. `ty` is the type the pattern
+/// matches, threaded down from the scrutinee where it is known.
+let rec private patFieldTypeAt (env: TypeEnv) (jcol: int) (ty: Ty option) (p: Ast.Pattern) : Ty option =
+    match p.PKind with
+    | Ast.PRecord fields ->
+        let named = fields |> List.map (fst >> fst)
+
+        let fieldTys: (string * Ty) list =
+            match ty with
+            | Some(TNamed(k, args)) ->
+                match Map.tryFind k env.Types with
+                | Some(Record d) when d.Params.Length = args.Length ->
+                    d.Fields |> List.map (fun (f, t) -> f, Check.substParams d.Params args t)
+                | Some(Record d) -> d.Fields
+                | _ -> []
+            | Some(TRowVar(_, fs)) -> fs
+            | _ ->
+                // no scrutinee type: the one record declaring every
+                // named field, when there is exactly one
+                let owners =
+                    env.Types
+                    |> Map.toList
+                    |> List.choose (fun (_, def) ->
+                        match def with
+                        | Record d when named |> List.forall (fun n -> d.Fields |> List.exists (fun (f, _) -> f = n)) ->
+                            Some d.Fields
+                        | _ -> None)
+
+                match owners with
+                | [ one ] -> one
+                | _ -> []
+
+        let fieldTy (f: string) =
+            fieldTys |> List.tryPick (fun (n, t) -> if n = f then Some t else None)
+
+        fields
+        |> List.tryPick (fun ((f, fs), sub) ->
+            if fs.Start.Col <= jcol && jcol < fs.End.Col then
+                fieldTy f
+            else
+                patFieldTypeAt env jcol (fieldTy f) sub)
+    | Ast.PTuple ps ->
+        let tys =
+            match ty with
+            | Some(TTuple ts) when ts.Length = ps.Length -> ts |> List.map Some
+            | _ -> ps |> List.map (fun _ -> None)
+
+        List.zip tys ps |> List.tryPick (fun (t, sp) -> patFieldTypeAt env jcol t sp)
+    | Ast.PCase(ctor, Some inner, _) ->
+        let payload =
+            env.Types
+            |> Map.tryPick (fun _ def ->
+                match def with
+                | Union d -> d.Cases |> List.tryPick (fun (c, pl) -> if c = ctor then pl else None)
+                | _ -> None)
+
+        patFieldTypeAt env jcol payload inner
+    | _ -> None
+
+/// patFieldTypeAt over every pattern in the typed tree, innermost first
+let rec private patFieldHoverAt (env: TypeEnv) (jcol: int) (te: Check.TypedExpr) : Ty option =
+    match Check.childExprs te |> List.tryPick (patFieldHoverAt env jcol) with
+    | Some t -> Some t
+    | None ->
+        match te.Kind with
+        | Check.TEMatch(s, arms) -> arms |> List.tryPick (fun (p, _, _) -> patFieldTypeAt env jcol (Some s.Ty) p)
+        | Check.TELambdaPat(p, _) ->
+            let dom =
+                match te.Ty with
+                | TFun(d, _) -> Some d
+                | _ -> None
+
+            patFieldTypeAt env jcol dom p
+        | _ -> None
+
 // ---- cross-file navigation [D:lsp-cross-file] ---------------------
 // the server retains nothing between requests, so a cross-file target
 // re-analyzes the target file's lines, read through the import channel
@@ -3324,6 +3401,8 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.orElse (sigFlag |> Option.map fst)
             |> Option.orElse createSig
             |> Option.orElse fieldInLiteral
+            |> Option.orElseWith (fun () ->
+                teOf chk |> Option.bind (patFieldHoverAt chk.Env jcol) |> Option.map formatTy)
             |> Option.orElse constructorSig
             |> Option.orElse binderSig
             |> Option.orElse ownBinderSig
