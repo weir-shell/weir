@@ -1,15 +1,22 @@
 # Changelog
 
-## v0.0.86
-
-<!-- v0.0.85 was tagged but never published (the osx-x64 build job died
-     in Apple's linker on a misaligned pointer inside the .NET 11.0.0
-     NativeAOT runtime pack, dotnet/runtime#136007); its changes ship
-     here under v0.0.86. Tags stay immutable — the v0.0.85 tag is
-     burned, not re-pointed. -->
+## v0.0.87
 
 ### Added
 
+- **`Reply` builds a handler's response.** `Reply.text 200 "ok"`,
+  `Reply.empty 404` and `Reply.json 200 lines` return the ordinary
+  `HttpServerResponse` record, so a handler no longer writes
+  `{ status = …; headers = []; body = … }` in every arm. Headers are a
+  record update: `{ Reply.text 200 "ok" with headers = [...] }`.
+- **A module can document itself.** `///` lines directly above the
+  `module` line are the module's doc. `#help modules` shows the first
+  line, `#help Name` shows all of it, and the editor shows it when you
+  hover the module's name on its `import` line or in front of a member.
+- **`#help modules`.** The module list moved out of `#help` into its
+  own listing: the built-in modules first, then the modules you
+  imported in their own section, each with its doc's first line or its
+  file.
 - **`within serve` takes options, and a server can be two lines.**
   The head now takes the server's name and `key=value` options, the
   way `retry` does: `within serve srv port=8080 handler=route`. Each
@@ -43,16 +50,47 @@
 
 ### Changed
 
+- **`#help` shows only the directives.** With the modules under it
+  the list ran to 52 lines and the directives scrolled off the screen.
+  `#help modules` has the rest.
+- **Tab at an empty prompt types `#help`.** It used to type `#` and
+  list the directives on a second Tab. `#` and Tab still lists them.
+- **A module's name alone shows its help.** `Bytes` at the prompt was
+  a type error telling you to use a member. It now prints what
+  `#help Bytes` prints, or just the member names in columns when that
+  would not fit the screen. Scripts and `-e` keep the error.
+- **Tab's candidates are colored at the start of a command.** Programs
+  on PATH, weir names and modules take the colors they have once typed.
 - **The handler is part of `ServerConfig`.** The record gained a
   `handler` field, so a whole server is one value: `within serve srv
   = cfg`, with `cfg = { Server.defaults with port = Some 8080;
-  handler = route }`. Existing scripts keep working:
+  handler = route }`. **This breaks every existing server script:**
+  the handler is no longer a second word after the record.
   `within serve srv = { port = Some 8080; maxConcurrent = 4 } handler`
-  still checks and runs (the handler written after the record is the
-  one used, and a `{ port; maxConcurrent }` record takes the defaults
-  for the rest). One thing no longer works: a `ServerConfig` can't be
-  printed with `show` or compared with `=`, because it holds a
-  function.
+  is now a parse error that shows both new spellings. Write the
+  handler as a field,
+  `within serve srv = { port = Some 8080; maxConcurrent = 4; handler = handler }`,
+  or as an option, `within serve srv port=8080 maxConcurrent=4
+  handler=handler`. A `{ port; maxConcurrent }` record on the
+  `within serve` line still takes the defaults for the fields it
+  leaves out. A `ServerConfig` also can't be printed with `show` or
+  compared with `=` any more, because it holds a function.
+- **A `Text` response is sent as `text/plain`.** A handler's `Text`
+  body used to leave with no `Content-Type` at all, so a browser
+  guessed, and request text echoed into the reply (a path, a query)
+  could be read as HTML and run. It now carries
+  `Content-Type: text/plain; charset=utf-8` unless the handler sets
+  its own. A handler that returned HTML through `Text` needs to say
+  so: `headers = [("Content-Type", "text/html")]`.
+- **A busy server answers 503 instead of queueing without limit.**
+  Requests that arrive while every handler is busy wait in line, and
+  that line had no end: a server slower than its traffic kept
+  collecting requests and their bodies until clients gave up. The new
+  `maxQueued` option bounds it (default: 16 times the default
+  `maxConcurrent`); past it the server answers `503` with
+  `Retry-After: 1` at once. A `ServerConfig` written out in full now
+  needs `maxQueued` and `handler` too; `{ Server.defaults with … }`
+  and the `key=value` options need neither.
 - **A function missing arguments says which.** At the REPL and under
   `-e`, a named function applied to only some of its arguments used to
   echo `<builtin> : Bytes -> Bytes` or `<fun> : int -> int`. It now
@@ -67,6 +105,10 @@
 
 ### Fixed
 
+- **REPL coloring keeps a command's argument in one color.**
+  `git tag v0.123.0` painted `123` and `0` as numbers, and
+  `--some-flag` as an operator followed by a word. An argument is one
+  dim word now.
 - **Hover on a `within proc` or `within serve` name shows its type.**
   Hovering `srv` in `within serve srv …` said `string`. It says
   `Server` (and `Proc` for `within proc`).
@@ -91,6 +133,14 @@
   type.** In `| { method = Get; path = "/health" } -> …`, hovering
   `method` or `path` showed the type of the whole `match`. It shows
   `HttpMethod` and `string`.
+
+## v0.0.86
+
+<!-- v0.0.85 was tagged but never published (the osx-x64 build job died
+     in Apple's linker on a misaligned pointer inside the .NET 11.0.0
+     NativeAOT runtime pack, dotnet/runtime#136007); its changes ship
+     here under v0.0.86. Tags stay immutable — the v0.0.85 tag is
+     burned, not re-pointed. -->
 
 ### Removed
 
