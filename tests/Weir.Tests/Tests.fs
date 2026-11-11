@@ -34702,6 +34702,110 @@ let serveTests =
                 "expected Option<int>, got int — serve's port is optional: `port = Some 8080` for that port, `port = None` for a free one"
                 "the pre-Option spelling names its repair"
         }
+        test "Server.defaults is the resting config, and the internal key is the same object [D:serve-defaults]" {
+            let v = Weir.Builtins.valueEnv.Value["Server.defaults"]
+
+            Expect.isTrue
+                (obj.ReferenceEquals(Weir.Builtins.valueEnv.Value["|serveDefaults"], v))
+                "the key=value base is Server.defaults itself"
+
+            match v with
+            | VRecord("ServerConfig", f) ->
+                let get n = f |> List.find (fst >> (=) n) |> snd
+                Expect.equal (get "port") (VUnion("None", None)) "a free port"
+
+                Expect.equal
+                    (get "maxConcurrent")
+                    (VInt(int64 (max 8 System.Environment.ProcessorCount)))
+                    "the processor count, floored at 8"
+
+                Expect.equal (get "bodyTimeout") (VDur 30000L) "30s"
+                Expect.equal (get "maxBody") (VSize(16L * 1024L * 1024L)) "16MiB"
+            | other -> failtest $"not a ServerConfig: {other}"
+
+            Expect.isFalse (Weir.Effects.isCommandReifier "|serveDefaults") "a library desugar, not a command"
+            Expect.isFalse (Weir.Effects.effectfulName "|serveDefaults") "pure"
+        }
+        test "the default handler: GET / is 200, anything else 404, both carrying the hint [D:serve-defaults]" {
+            let handler =
+                match Weir.Builtins.valueEnv.Value["Server.defaults"] with
+                | VRecord(_, f) ->
+                    match f |> List.find (fst >> (=) "handler") |> snd with
+                    | VBuiltin h -> h
+                    | other -> failtest $"not a builtin: {other}"
+                | other -> failtest $"not a record: {other}"
+
+            let ask (m: string) (path: string) =
+                let req =
+                    VRecord(
+                        "HttpServerRequest",
+                        [
+                            "method", VUnion(m, None)
+                            "path", VStr path
+                            "query", VStr ""
+                            "headers", VSeq []
+                            "body", VStr ""
+                        ]
+                    )
+
+                match handler req with
+                | VRecord("HttpServerResponse", f) ->
+                    let get n = f |> List.find (fst >> (=) n) |> snd
+
+                    match get "status", get "headers", get "body" with
+                    | VInt st, VSeq hs, VUnion("Text", Some(VStr body)) ->
+                        match List.ofSeq hs with
+                        | [ VTuple [ VStr "Content-Type"; VStr ct ] ] -> st, ct, body
+                        | other -> failtest $"unexpected headers: {other}"
+                    | other -> failtest $"unexpected response: {other}"
+                | other -> failtest $"not a response: {other}"
+
+            let st, ct, body = ask "Get" "/"
+            Expect.equal st 200L "GET / answers"
+            Expect.equal ct "text/plain; charset=utf-8" "as plain text"
+            Expect.stringContains body "no handler is set" "says what is missing"
+            Expect.stringContains body "within serve s handler=route" "and shows the line that sets one"
+
+            for m, path in [ "Get", "/health"; "Post", "/" ] do
+                let st2, _, body2 = ask m path
+                Expect.equal st2 404L $"{m} {path} is not found"
+                Expect.equal body2 body "with the same hint"
+        }
+        test "the handler is a ServerConfig field; a literal may leave it and the bounds out [D:serve-defaults]" {
+            clean
+                [
+                    okHandler
+                    "let cfg = { Server.defaults with port = Some 8080; handler = h }"
+                    "within serve srv = cfg h"
+                    "    print $\"{Server.port srv}\""
+                ]
+                "an update of the defaults is a ServerConfig"
+
+            clean
+                [
+                    okHandler
+                    "within serve srv = { port = None; maxConcurrent = 1; handler = h } Server.defaults.handler"
+                    "    print \"ok\""
+                ]
+                "the literal takes handler like its other optional fields"
+
+            mustSay
+                [
+                    "within serve srv = { port = None; maxConcurrent = 1; handler = 5 } Server.defaults.handler"
+                    "    print \"ok\""
+                ]
+                "HttpServerRequest -> HttpServerResponse"
+                "a handler field of the wrong type names the function type"
+
+            clean
+                [
+                    okHandler
+                    "let cfg = { port = None; maxConcurrent = 1; bodyTimeout = 1s; maxBody = 1MiB; handler = h }"
+                    "within serve srv = cfg h"
+                    "    print \"ok\""
+                ]
+                "the full record is an ordinary literal"
+        }
         test "Serve.start 0 binds a free port and the handle reports the BOUND one [D:serve-port-option]" {
             let h = Weir.Serve.start 0 (limits 1024L)
 

@@ -6155,7 +6155,52 @@ let private asServer (who: string) (v: Value) : Serve.Handle =
     | VServer h -> h
     | v -> unreachable $"the checker rejects '{who}' on {formatValue v}"
 
+// the handler `Server.defaults` rests at [D:serve-defaults]: a server
+// started with no handler says so and shows the line that sets one —
+// `GET /` answers 200, anything else 404 with the same hint
+let private serveLandingHint =
+    "weir is serving, but no handler is set.\n\n"
+    + "Set one with handler=, a function from the request to a response:\n\n"
+    + "    let route = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"hello\" }\n"
+    + "    within serve s handler=route\n"
+    + "    until stopped\n"
+
+let private serveLandingHandler: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VRecord("HttpServerRequest", f) ->
+            let isRoot =
+                match recGet "method" f, recGet "path" f with
+                | VUnion("Get", None), VStr "/" -> true
+                | _ -> false
+
+            VRecord(
+                "HttpServerResponse",
+                [
+                    "status", VInt(if isRoot then 200L else 404L)
+                    "headers", VSeq [ VTuple [ VStr "Content-Type"; VStr "text/plain; charset=utf-8" ] ]
+                    "body", VUnion("Text", Some(VStr serveLandingHint))
+                ]
+            )
+        | v -> unreachable $"the checker rejects a serve request of {formatValue v}")
+
+// the resting server [D:serve-defaults]: maxConcurrent is the CPU count
+// with a floor of 8 — handlers mostly wait on I/O, and a 1-CPU container
+// must not serve serially
+let private serverDefaults: Value =
+    VRecord(
+        "ServerConfig",
+        [
+            "port", VUnion("None", None)
+            "maxConcurrent", VInt(int64 (max 8 System.Environment.ProcessorCount))
+            "bodyTimeout", VDur 30_000L
+            "maxBody", VSize(16L * 1024L * 1024L)
+            "handler", serveLandingHandler
+        ]
+    )
+
 let private serverMembers: (string * Ty * Value) list = [
+    "defaults", TNamed("ServerConfig", []), serverDefaults
     "port", TFun(serverTy, TInt), VBuiltin(fun v -> VInt(int64 (asServer "Server.port" v).Port))
     "running", TFun(serverTy, TBool), VBuiltin(fun v -> VBool(not (asServer "Server.running" v).Closed))
     // the stream-producer failure channel [D:serve-stream]: a Stream
@@ -7199,6 +7244,11 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 (Some "Errors from `poll watch=…` include this automatically.")
             |> named [ "p" ]
             // ---- Server: the scoped-listener handle [D:http-serve] ----
+            "Server.defaults",
+            bd
+                "The default server settings: port = None (a free port), maxConcurrent = the number of processors, at least 8, bodyTimeout = 30s, maxBody = 16MiB, and a handler that answers `GET /` with a page saying no handler is set. `{ Server.defaults with port = Some 8080; handler = route }` changes some of them."
+                None
+                (Some "The listener accepts connections from this machine only (loopback).")
             "Server.port",
             bd
                 "The port the listener bound — the port asked for, or the free one picked for `port = None`."
@@ -8855,7 +8905,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 None
             "ServerConfig",
             bd
-                "`within serve`'s settings: port (Some n for that port, None for a free one the kernel picks), maxConcurrent (handlers at once; the rest queue), and the optional bodyTimeout (default 30s) and maxBody (default 16 MiB)."
+                "`within serve`'s settings: port (Some n for that port, None for a free one the kernel picks), maxConcurrent (handlers at once; the rest queue), bodyTimeout (how long a request body may take to arrive), maxBody (the largest request body accepted) and handler (the function from a request to its response). `Server.defaults` holds the default for each."
                 None
                 None
             "Op",
@@ -8964,7 +9014,7 @@ let moduleBlurbs: Map<string, string> =
         "Plan", "plan/apply: preview a plan's ops before applying"
         "Poll", "poll's options record: defaults"
         "Proc", "scoped process handles: pid, running, tail, wait, stop"
-        "Server", "scoped HTTP listener handles: port, running (see within serve)"
+        "Server", "scoped HTTP listener handles: port, running; defaults, the default settings (see within serve)"
         "Retry", "retry's options record: defaults"
         "Secret", "rendering-masked values: of, map, reveal"
         "Color", "terminal colour: red/green/…, bold/dim/underline, sgr — auto-off when piped"

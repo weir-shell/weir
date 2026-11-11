@@ -7473,24 +7473,20 @@ and private withinContracts
                 match arg with
                 | Some a -> infer ctx env a |> Result.map Some
                 | None -> Ok None
-            // serve's arg is the config record [D:http-serve] — a
-            // ServerConfig `{ port; maxConcurrent }`; the handler rides
-            // opts (below), typed against the request->response function.
-            // bodyTimeout is optional in the literal [D:serve-body-timeout]:
-            // a bare `{ port; maxConcurrent }` literal is accepted and the
-            // timeout rests at its default, so the field addition does not
-            // break existing serve scripts. The generic record resolver
-            // matches by exact field set, so the two-field literal is
-            // checked here against the allowed shape; any non-literal
-            // config (a variable, `{ ServerConfig.defaults with … }`)
-            // falls through to the ordinary ServerConfig check.
+            // serve's arg is the config record [D:http-serve]; the handler
+            // is one of its fields [D:serve-defaults], and the two-atom
+            // form's handler rides opts (below). A literal naming port and
+            // maxConcurrent may leave the other fields out
+            // [D:serve-body-timeout] [D:serve-max-body]: it is checked as
+            // an update of the defaults, so every omitted field rests there.
+            // Any other config (a variable, `{ Server.defaults with … }`)
+            // takes the ordinary ServerConfig check.
             | WithinServe ->
                 match arg with
                 | Some({ Kind = ERecord fields } as a) ->
                     let names = fields |> List.map (fun (n, _, _) -> n) |> Set.ofList
                     let core = Set.ofList [ "port"; "maxConcurrent" ]
-                    // maxBody is optional the same way [D:serve-max-body]
-                    let optional = Set.ofList [ "bodyTimeout"; "maxBody" ]
+                    let optional = Set.ofList [ "bodyTimeout"; "maxBody"; "handler" ]
 
                     if Set.isSubset core names && Set.isSubset (Set.difference names core) optional then
                         let fieldTy name =
@@ -7498,28 +7494,44 @@ and private withinContracts
                             | "port" -> TNamed("Option", [ TInt ])
                             | "bodyTimeout" -> TDur
                             | "maxBody" -> TSize
+                            | "handler" -> TFun(TNamed("HttpServerRequest", []), TNamed("HttpServerResponse", []))
                             | _ -> TInt
 
-                        fields
-                        |> List.fold
-                            (fun acc (n, _, v) ->
-                                acc
-                                |> Result.bind (fun ts ->
-                                    match check ctx env v (fieldTy n), n with
-                                    // the pre-Option spelling names its repair
-                                    // [D:serve-port-option]
-                                    | Error _, "port" when (infer ctx env v |> Result.map (fun t -> t.Ty)) = Ok TInt ->
-                                        err
-                                            v.Span
-                                            "expected Option<int>, got int — serve's port is optional: `port = Some 8080` for that port, `port = None` for a free one"
-                                    | r, _ -> r |> Result.map (fun tv -> (n, tv) :: ts)))
-                            (Ok [])
-                        |> Result.map (fun tfields ->
-                            Some {
-                                Kind = TERecord("ServerConfig", List.rev tfields)
-                                Ty = TNamed("ServerConfig", [])
-                                Span = a.Span
-                            })
+                        result {
+                            let! tdefaults =
+                                infer ctx env {
+                                    Kind = EVar "|serveDefaults"
+                                    Span = {
+                                        Start = a.Span.Start
+                                        End = a.Span.Start
+                                    }
+                                }
+
+                            let! tfields =
+                                fields
+                                |> List.fold
+                                    (fun acc (n, _, v) ->
+                                        acc
+                                        |> Result.bind (fun ts ->
+                                            match check ctx env v (fieldTy n), n with
+                                            // the pre-Option spelling names its repair
+                                            // [D:serve-port-option]
+                                            | Error _, "port" when
+                                                (infer ctx env v |> Result.map (fun t -> t.Ty)) = Ok TInt
+                                                ->
+                                                err
+                                                    v.Span
+                                                    "expected Option<int>, got int — serve's port is optional: `port = Some 8080` for that port, `port = None` for a free one"
+                                            | r, _ -> r |> Result.map (fun tv -> ([ n ], tv) :: ts)))
+                                    (Ok [])
+
+                            return
+                                Some {
+                                    Kind = TEUpdate(tdefaults, List.rev tfields)
+                                    Ty = TNamed("ServerConfig", [])
+                                    Span = a.Span
+                                }
+                        }
                     else
                         // an unexpected field set — the ordinary check
                         // produces the located "no declared record" or

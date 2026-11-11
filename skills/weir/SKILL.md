@@ -3458,7 +3458,7 @@ not the teaching.
 - `Poll`: `defaults`
 - `Plan`: `apply` `isEmpty` `ops` `preview` — the value a `plan` block yields: `ops` the recorded `Op`s, `preview` one line each, `apply` performs them in order
 - `Proc`: `pid` `running` `stop` `tail` `wait`
-- `Server`: `port` `running` `streamErrors` — `streamErrors` lists the errors of `Stream` bodies that raised partway (the client got a truncated body; never raised out of the handler)
+- `Server`: `defaults` `port` `running` `streamErrors` — `defaults` is the default `ServerConfig` (`{ Server.defaults with port = Some 8080 }`); `streamErrors` lists the errors of `Stream` bodies that raised partway (the client got a truncated body; never raised out of the handler)
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
 - `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor) and shows bidi controls as a visible `\uXXXX`; a bare CR passes.
@@ -3493,6 +3493,6 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `PromptStatus`: { `ok` `exit` `duration` }
 - type `Result`: `Ok` `Error`
 - type `Retry`: { `attempts` `delay` `timeout` }
-- type `ServerConfig`: { `port` `maxConcurrent` `bodyTimeout` `maxBody` }
+- type `ServerConfig`: { `port` `maxConcurrent` `bodyTimeout` `maxBody` `handler` }
 - type `UuidNamespaces`: { `dns` `url` `oid` `x500` }
 - type `Yaml`: `YStr` `YInt` `YFloat` `YBool` `YNull` `YSeq` `YMap`

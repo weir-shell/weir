@@ -6994,35 +6994,33 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if maxConcurrent < 1 then
                 failwith $"serve: maxConcurrent is at least 1, got {maxConcurrent}"
 
-            // the request-body read timeout [D:serve-body-timeout]:
-            // optional in the config literal, defaulting to 30s — a
+            // the request-body read timeout [D:serve-body-timeout]: a
             // slow client dribbling the body cannot park a handler
             // slot forever
             let bodyTimeoutMs =
-                match List.tryFind (fun (n, _) -> n = "bodyTimeout") cfg with
-                | Some(_, VDur ms) -> toIntArg "serve bodyTimeout (ms)" Amount ms
-                | Some(_, v) -> unreachable $"serve bodyTimeout {formatValue v}"
-                | None -> 30_000
+                match recGet "bodyTimeout" cfg with
+                | VDur ms -> toIntArg "serve bodyTimeout (ms)" Amount ms
+                | v -> unreachable $"serve bodyTimeout {formatValue v}"
 
             if bodyTimeoutMs < 1 then
                 failwith $"serve: bodyTimeout is at least 1ms, got {bodyTimeoutMs}ms"
 
-            // the request-body size bound [D:serve-max-body]: optional,
-            // 16 MiB, answered 413 past it
+            // the request-body size bound [D:serve-max-body]: 413 past it
             let maxBody =
-                match List.tryFind (fun (n, _) -> n = "maxBody") cfg with
-                | Some(_, VSize b) -> b
-                | Some(_, v) -> unreachable $"serve maxBody {formatValue v}"
-                | None -> 16L * 1024L * 1024L
+                match recGet "maxBody" cfg with
+                | VSize b -> b
+                | v -> unreachable $"serve maxBody {formatValue v}"
 
             if maxBody < 0L then
                 failwith $"serve: maxBody cannot be negative, got {formatSize maxBody}"
 
-            // the handler closure, evaluated once at scope entry
+            // the handler closure, evaluated once at scope entry: the
+            // config's field, or the two-atom form's handler atom over it
+            // [D:serve-defaults]
             let handler =
                 match topts with
                 | Some h -> eval env h
-                | None -> unreachable "the parser gives within serve its handler"
+                | None -> recGet "handler" cfg
 
             // request primitives -> the HttpServerRequest Value the handler sees
             let requestValue (r: Serve.SReq) : Value =
