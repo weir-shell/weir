@@ -1184,6 +1184,32 @@
       ]
     },
     {
+      "name": "Reply",
+      "members": [
+        {
+          "name": "empty",
+          "signature": "Reply.empty (status: int) : HttpServerResponse",
+          "summary": "A response with this status and no body. The result is an ordinary HttpServerResponse record, so headers are a record update.",
+          "example": "(Reply.empty 404).status",
+          "pointer": null
+        },
+        {
+          "name": "json",
+          "signature": "Reply.json (status: int) (lines: seq\u003Cstring\u003E) : HttpServerResponse",
+          "summary": "A response with this status and a JSON body: the lines \u0060to json\u0060 produces.",
+          "example": "Reply.json 200 ([1; 2] |\u003E to json)",
+          "pointer": null
+        },
+        {
+          "name": "text",
+          "signature": "Reply.text (status: int) (body: string) : HttpServerResponse",
+          "summary": "A response with this status and a text body.",
+          "example": "{ Reply.text 200 \u0022ok\u0022 with headers = [(\u0022cache-control\u0022, \u0022no-store\u0022)] }",
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Result",
       "members": [
         {
