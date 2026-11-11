@@ -461,6 +461,14 @@ type Value =
 
 and Env = Map<string, Value>
 
+/// the parameter names a function value still takes [D:partial-echo] —
+/// the closure's own binder, then its body's lambda chain; a builtin or
+/// a pattern binder names nothing
+let closureParamNames (v: Value) : string list =
+    match v with
+    | VClosure(p, body, _) -> p :: Check.lambdaParamNames body
+    | _ -> []
+
 // One renderer, limits threaded [D:repl-echo]: show keeps its shipped
 // constants byte-identical (20 items, "; ...", unclipped strings); the
 // REPL echo runs the same core tighter (10, "; …", 120-char clip,

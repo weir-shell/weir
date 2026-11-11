@@ -933,9 +933,17 @@ type SigStyle = {
     Name: string -> string
     Ty: string -> string
     Punct: string -> string
+    // an already-supplied parameter of a partial application
+    // [D:partial-echo]
+    Bound: string -> string
 }
 
-let plainSigStyle: SigStyle = { Name = id; Ty = id; Punct = id }
+let plainSigStyle: SigStyle = {
+    Name = id
+    Ty = id
+    Punct = id
+    Bound = id
+}
 
 /// The annotated declaration form for hover [D:annotated-signature]:
 /// `name (p1: t1) (p2: t2) : result`, decomposing `ty` by the given
@@ -943,8 +951,11 @@ let plainSigStyle: SigStyle = { Name = id; Ty = id; Punct = id }
 /// result). Valid F# declaration syntax — claims nothing false. Zero
 /// names -> `name : ty`, no empty parens. The plain arrow `formatTy`
 /// stays the fallback (unnamed values) and the truth for type errors.
+/// `applied` leading parameters are already supplied [D:partial-echo]:
+/// they render as bare names, the rest as the usual `(p: t)` groups.
 let private signatureParts
     (st: SigStyle)
+    (applied: int)
     (name: string)
     (paramNames: string list)
     (ty: Ty)
@@ -981,11 +992,12 @@ let private signatureParts
 
         let parts =
             ps
-            |> List.map (fun (n, t) ->
+            |> List.mapi (fun i (n, t) ->
                 sb.Append " " |> ignore
                 let start = sb.Length
 
                 (match t with
+                 | _ when i < applied -> sb.Append(st.Bound n)
                  | TUnit -> sb.Append(st.Punct "()")
                  | _ -> sb.Append(st.Punct "(" + n + st.Punct ": " + st.Ty(formatTy t) + st.Punct ")"))
                 |> ignore
@@ -995,7 +1007,39 @@ let private signatureParts
         sb.Append(st.Punct " : " + st.Ty(formatTy result)).ToString(), parts
 
 let formatSignatureWith (st: SigStyle) (name: string) (paramNames: string list) (ty: Ty) : string =
-    fst (signatureParts st name paramNames ty)
+    fst (signatureParts st 0 name paramNames ty)
+
+/// the signature of a partial application [D:partial-echo] — the one
+/// composition, with the first `applied` parameters already supplied
+let formatPartialSignatureWith
+    (st: SigStyle)
+    (applied: int)
+    (name: string)
+    (paramNames: string list)
+    (ty: Ty)
+    : string =
+    fst (signatureParts st applied name paramNames ty)
+
+/// what a partial application has and lacks, in words [D:partial-echo]:
+/// `bound` in application order, `missing` as the caller spells them;
+/// `lastPiped` says the last bound parameter arrived through `|>`
+let partialClauses (bound: string list) (missing: string list) (lastPiped: bool) : string =
+    let named, piped =
+        match List.rev bound with
+        | last :: earlier when lastPiped -> List.rev earlier, Some last
+        | _ -> bound, None
+
+    [
+        match named with
+        | [] -> ()
+        | [ one ] -> $"{one} is bound"
+        | many -> (String.concat ", " many) + " are bound"
+        match piped with
+        | Some p -> $"the piped value is {p}"
+        | None -> ()
+        "still needs " + String.concat ", " missing
+    ]
+    |> String.concat "; "
 
 let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
     formatSignatureWith plainSigStyle name paramNames ty
@@ -1004,7 +1048,7 @@ let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
 /// offsets in it [D:signature-help] — the one composition, so the
 /// offsets cannot drift from the text
 let formatSignatureParts (name: string) (paramNames: string list) (ty: Ty) : string * (string * int * int) list =
-    signatureParts plainSigStyle name paramNames ty
+    signatureParts plainSigStyle 0 name paramNames ty
 
 /// Echo var normalization [D:repl-fn-echo]: the checker's fresh names
 /// ('a1, 'a2, 'b3…) rename to 'a, 'b, … in first-appearance order.
@@ -1606,6 +1650,7 @@ let sigTintStyle: SigStyle = {
     Name = Color.bold true
     Ty = Color.yellow true
     Punct = Color.dim true
+    Bound = Color.dim true
 }
 
 // the waiting indicator [D:waiting-indicator]: whoever owns the terminal

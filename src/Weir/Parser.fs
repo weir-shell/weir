@@ -4516,7 +4516,7 @@ seqExprRef.Value <-
 let private segExpr = segOpp.ExpressionParser
 
 
-let private cmdWordChar c =
+let cmdWordChar c =
     not (System.Char.IsWhiteSpace c)
     && c <> '|'
     && c <> '('

@@ -8,6 +8,36 @@
      here under v0.0.86. Tags stay immutable — the v0.0.85 tag is
      burned, not re-pointed. -->
 
+### Changed
+
+- **A function missing arguments says which.** At the REPL and under
+  `-e`, a named function applied to only some of its arguments used to
+  echo `<builtin> : Bytes -> Bytes` or `<fun> : int -> int`. It now
+  echoes its signature with the supplied parameters as bare names and
+  a line naming what is bound and what is still needed —
+  `"x" |> Str.toUtf8 |> Bytes.hmacSha256` answers
+  `partial application — the piped value is key; still needs msg`. In a
+  script the same line was "computes a Bytes -> Bytes and discards it —
+  bind it, or pipe it to print"; the error (still `discard`) now reads
+  `'Bytes.hmacSha256' is partially applied — the piped value is key;
+  still needs msg (Bytes)`.
+
+### Fixed
+
+- **REPL coloring reads a hyphenated command as one word.**
+  `argo-workflows` painted `argo` as an unknown head and `-workflows`
+  as an operator and a plain word; `dpkg-query` painted as the `dpkg`
+  program with an argument. The head is now the whole command word,
+  as the parser reads it.
+- **REPL coloring paints a module name the same everywhere.** In
+  `Str.toUtf8 "x" |> Bytes.toHex`, `Str` was bold and `Bytes` yellow.
+  A known module in front of a `.` is bold wherever it stands; types
+  and constructors keep yellow.
+- **Hover on a function's name ignores an inner `let` of the same
+  name.** With `let myFunc () =` whose body binds `let myFunc = 10`,
+  hovering the outer `myFunc` showed `int`. It shows the function's own
+  signature again.
+
 ### Removed
 
 - **No Intel macOS binary.** `weir-<tag>-osx-x64` is no longer built;

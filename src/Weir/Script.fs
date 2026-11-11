@@ -3376,6 +3376,19 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
 
                 let word = line.Substring(start, i - start)
 
+                // the head word as the parser reads it: `argo-workflows`
+                // is one command name, not `argo` minus `workflows`
+                // [D:repl-color-words]
+                let fullEnd =
+                    let mutable k = i
+
+                    while k < line.Length && free k && Parser.cmdWordChar line[k] do
+                        k <- k + 1
+
+                    k
+
+                let full = line.Substring(start, fullEnd - start)
+
                 let code =
                     // the head slot is Complete's one predicate
                     // [D:let-rhs-head]: the statement head and the
@@ -3395,7 +3408,8 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                     | Complete.HeadSlot.Forced ->
                         // ^head: PATH only — `^x` names a program,
                         // never a keyword, a form, or an alias
-                        Some(if Extern.exists word then "34" else "31")
+                        i <- fullEnd
+                        Some(if Extern.exists full then "34" else "31")
                     | slot ->
                         if
                             slot <> Complete.HeadSlot.No
@@ -3422,13 +3436,31 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                             Some "34" // the kind is form, not a name [D:within-kinds]
                         elif (prevWord = "from" || prevWord = "to") && Builtins.allAdapterNames.Contains word then
                             Some "34" // the adapter is form, not a name [D:form-word-hover]
+                        elif slot <> Complete.HeadSlot.No && fullEnd > i && Extern.exists full then
+                            i <- fullEnd
+                            cmdMode <- true
+                            Some "1;34" // PATH, by its whole name
                         elif slot <> Complete.HeadSlot.No && isKnown word then
                             // the fish trick: the head resolves live
                             Some "1" // known: bold
+                        elif
+                            Char.IsUpper word[0]
+                            && i < line.Length
+                            && line[i] = '.'
+                            && (not cmdMode || holes[start])
+                            && isKnown word
+                        then
+                            // a module qualifier reads the same wherever
+                            // it stands — the head's known tint
+                            // [D:repl-color-words]
+                            Some "1"
                         elif slot <> Complete.HeadSlot.No && Extern.exists word then
                             cmdMode <- true
                             Some "1;34" // PATH: bold blue
                         elif slot = Complete.HeadSlot.Stmt || slot = Complete.HeadSlot.Stage then
+                            if not (Char.IsUpper word[0]) then
+                                i <- fullEnd
+
                             Some "31" // unresolved statement or stage head: red
                         elif Char.IsUpper word[0] then
                             // the casing rule: types/ctors/modules — at the
@@ -3437,6 +3469,7 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                             // [D:constructors-not-heads]
                             Some "33"
                         elif slot = Complete.HeadSlot.LetRhs then
+                            i <- fullEnd
                             Some "31" // unresolved lowercase RHS head: red
                         elif cmdMode && not holes[start] then
                             Some "2" // argv words: dim (inert data)
@@ -3802,6 +3835,99 @@ let printResult (v: Eval.Value) =
     // the assert idiom is silent on success [D:exit-reifiers]
     | Eval.VUnit -> ()
     | other -> Console.WriteLine(Eval.formatValue other)
+
+// ---- partial application, named [D:partial-echo]: an expression that
+// applies a named function to fewer arguments than it names. One
+// analysis for the REPL echo, the -e echo, and the statement gate.
+type PartialApp = {
+    Name: string
+    Params: string list
+    HeadTy: Ty
+    Applied: int
+    LastPiped: bool
+}
+
+/// a builtin head's display name (a bare alias names its home) and its
+/// documented parameters; None when the name is rebound in `tenv`
+let builtinParamNames (tenv: TypeEnv) (name: string) : (string * string list) option =
+    let schemeIn (te: TypeEnv) =
+        match name.Split '.' with
+        | [| m; mem |] -> te.Modules |> Map.tryFind m |> Option.bind (Map.tryFind mem)
+        | _ -> Map.tryFind name te.Values
+
+    let qualified =
+        match Map.tryFind name Builtins.bareAliasHomes with
+        | Some m when not (name.Contains ".") -> $"{m}.{name}"
+        | _ -> name
+
+    match schemeIn tenv, schemeIn Builtins.typeEnv with
+    | Some mine, Some builtin when obj.ReferenceEquals(mine, builtin) ->
+        Map.tryFind qualified Builtins.builtinDocs.Value
+        |> Option.map (fun d -> qualified, d.Params)
+    | _ -> None
+
+let private arrowParts (ty: Ty) : Ty list =
+    let rec go t =
+        match t with
+        | TFun(dom, cod) -> dom :: go cod
+        | _ -> []
+
+    go ty
+
+/// `names` resolves a head to its display name and parameter names
+let partialApp (names: string -> (string * string list) option) (te: Check.TypedExpr) : PartialApp option =
+    match te.Ty with
+    | TFun _ ->
+        Check.partialSpine te
+        |> Option.bind (fun (head, headTy, applied, piped) ->
+            names head
+            |> Option.bind (fun (shown, ps) ->
+                let ps = List.truncate (arrowParts headTy).Length ps
+
+                if ps.Length > applied then
+                    Some {
+                        Name = shown
+                        Params = ps
+                        HeadTy = headTy
+                        Applied = applied
+                        LastPiped = piped
+                    }
+                else
+                    None))
+    | _ -> None
+
+/// the echo's two lines: the signature with the bound parameters bare,
+/// then what is bound and what is missing
+let partialEchoLines (st: SigStyle) (p: PartialApp) : string list = [
+    formatPartialSignatureWith st p.Applied p.Name p.Params (normalizeEchoVars p.HeadTy)
+    "partial application — "
+    + partialClauses (List.truncate p.Applied p.Params) (List.skip p.Applied p.Params) p.LastPiped
+]
+
+// the partial-application lesson's marker — codeOf reads it back
+let partialDiscardMark = " is partially applied — "
+
+/// the statement gate's lesson for a discarded partial application; a
+/// head with no known parameter names still says how many are missing
+let partialDiscard (tenv: TypeEnv) (te: Check.TypedExpr) : string option =
+    match partialApp (builtinParamNames tenv) te with
+    | Some p ->
+        let missing =
+            List.zip p.Params (List.truncate p.Params.Length (arrowParts p.HeadTy))
+            |> List.skip p.Applied
+            |> List.map (fun (n, t) -> $"{n} ({formatTy t})")
+
+        Some(
+            $"'{p.Name}'{partialDiscardMark}"
+            + partialClauses (List.truncate p.Applied p.Params) missing p.LastPiped
+        )
+    | None ->
+        match Check.partialSpine te, arrowParts te.Ty with
+        | Some(head, _, _, _), (_ :: _ as rest) ->
+            let tys = rest |> List.map formatTy |> String.concat ", "
+            let noun = if rest.Length = 1 then "argument" else "arguments"
+            Some $"'{head}'{partialDiscardMark}still needs {rest.Length} more {noun} ({tys})"
+        | _ -> None
 
 // The statement rule: a pure expression statement must have type unit.
 // Classification is the parser's mode decision alone (SCmd vs SExpr) — no
@@ -5029,6 +5155,11 @@ let rec private checkStatementCore
                 let gated =
                     match te.Ty with
                     | TVar _ when Check.divergesTo e -> None
+                    // a discarded partial application names what is
+                    // missing [D:partial-echo]; an uncalled unit function
+                    // keeps its own lesson
+                    | TFun(dom, _) as ty when gateExprs && dom <> TUnit ->
+                        partialDiscard tenv te |> Option.orElse (discardError ty)
                     | ty -> if gateExprs then discardError ty else None
 
                 match gated with
@@ -7265,7 +7396,7 @@ let private codeOf (parse: bool) (msg: string) : string =
         "parse"
     elif msg.StartsWith "binding names start lowercase" then
         "lowercase-binding"
-    elif msg.Contains "discards it" then
+    elif msg.Contains "discards it" || msg.Contains partialDiscardMark then
         "discard"
     elif msg.StartsWith "a sequenced expression must be unit" then
         "non-unit-statement"

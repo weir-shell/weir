@@ -187,6 +187,17 @@ A **named function** echoes what `#help` would show:
 - a function defined in the session: `name : type` (with or without
   `#types`) plus a dim line with the first line of its definition (the
   latest one, if redefined)
+- a named function given only some of its arguments: its signature
+  with the supplied parameters as bare names, then a line saying what
+  is bound and what is still missing. If the last argument came in
+  through `|>`, the line says which parameter the piped value became:
+
+  ```
+  weir> "msg" |> Str.toUtf8 |> Bytes.hmacSha256
+  Bytes.hmacSha256 key (msg: Bytes) : Bytes
+  partial application — the piped value is key; still needs msg
+  ```
+
 - an anonymous or composed function: `<fun> : ty`, since it has no
   name
 

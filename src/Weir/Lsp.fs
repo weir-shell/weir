@@ -990,14 +990,6 @@ let rec private varUseType (name: string) (te: Check.TypedExpr) : Ty option =
     | Check.TEVar n when n = name -> Some te.Ty
     | _ -> Check.childExprs te |> List.tryPick (varUseType name)
 
-/// the parameter names of a curried value — the lambda chain a `let f a b`
-/// desugars to; the annotated signature reads them off the binder spans
-/// [D:annotated-signature]
-let rec private lambdaParamNames (te: Check.TypedExpr) : string list =
-    match te.Kind with
-    | Check.TELambda(p, _, body) -> p :: lambdaParamNames body
-    | _ -> []
-
 /// render a let binding's hover [D:annotated-signature]: the param
 /// signature (`f (x) : ret`) when there is a named param, else the flat
 /// value type (`name : ty`) — matching F#, which names only named params,
@@ -1016,7 +1008,7 @@ let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : s
     | None ->
         match te.Kind with
         | Check.TELet(n, _, tvalue, _) when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
-            Some(sigOrFlat n (lambdaParamNames tvalue) tvalue.Ty)
+            Some(sigOrFlat n (Check.lambdaParamNames tvalue) tvalue.Ty)
         | _ -> None
 
 // ---- cross-file navigation [D:lsp-cross-file] ---------------------
@@ -3245,7 +3237,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                                  | _, Script.CLet(bn, te) when bn = mem -> Some te
                                  | _ -> None))
                          |> Option.bind (fun te ->
-                             match te.Ty, lambdaParamNames te with
+                             match te.Ty, Check.lambdaParamNames te with
                              | TFun _, [] -> None // unnamed function -> arrow
                              | mty, ps -> Some(sigOrFlat name ps mty))
                      | _ -> None)
@@ -3285,6 +3277,48 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 |> Option.map (fun (rn, f, fty, sigLines, sigStmts) ->
                     formatTy fty, sigFlagDoc si.SigPath rn f sigLines sigStmts))
 
+        // a top-level let hovers as its annotated signature, on the
+        // binder name only — never a fallback for an unresolved spot
+        // a partial's own binder is hole-bound [D:block-recovery]:
+        // its type is not known until the statement checks
+        let topLetSig () =
+            match chk.Kind with
+            | Script.KLet(name, sch, te) when
+                word = Some name
+                && (match sch.Ty with
+                    | TVar v -> not (v.StartsWith "__hole")
+                    | _ -> true)
+                ->
+                // the purity badge, display stage of [D:pure]: the
+                // rare pure function is surfaced; effectful stays
+                // the unbadged norm (weir is effect-normal), and a
+                // missing badge is conservative, never a lie
+                let badge =
+                    if
+                        Purity.tyHasFun sch.Ty
+                        && (Can.pureTopBindings stmts |> Map.tryFind name |> Option.defaultValue false)
+                    then
+                        "  (pure)"
+                    else
+                        ""
+
+                Some(sigOrFlat name (Check.lambdaParamNames te) sch.Ty + badge)
+            | _ -> None
+
+        // the statement's own binder answers before any use of the name
+        // in its body: an inner let shadowing it would otherwise lend
+        // the binder its type
+        let ownBinderSig =
+            let mutable s = jcol - 1
+
+            while s > 0 && isWord ll.Text[s - 1] do
+                s <- s - 1
+
+            if s <= ll.Text.Length && ll.Text.Substring(0, s).Trim() = "let" then
+                topLetSig ()
+            else
+                None
+
         let ty =
             (sigHead |> Option.map fst)
             |> Option.orElse (sigFlag |> Option.map fst)
@@ -3292,6 +3326,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.orElse fieldInLiteral
             |> Option.orElse constructorSig
             |> Option.orElse binderSig
+            |> Option.orElse ownBinderSig
             |> Option.orElse patBinderTy
             |> Option.orElse builtinSig
             |> Option.orElse moduleMemberSig
@@ -3329,30 +3364,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.orElseWith (fun () -> node |> Option.map (fun n -> formatTy n.Ty))
             |> Option.orElseWith (fun () ->
                 match chk.Kind with
-                // a top-level let hovers as its annotated signature, on the
-                // binder name only — never a fallback for an unresolved spot
-                // a partial's own binder is hole-bound [D:block-recovery]:
-                // its type is not known until the statement checks
-                | Script.KLet(name, sch, te) when
-                    word = Some name
-                    && (match sch.Ty with
-                        | TVar v -> not (v.StartsWith "__hole")
-                        | _ -> true)
-                    ->
-                    // the purity badge, display stage of [D:pure]: the
-                    // rare pure function is surfaced; effectful stays
-                    // the unbadged norm (weir is effect-normal), and a
-                    // missing badge is conservative, never a lie
-                    let badge =
-                        if
-                            Purity.tyHasFun sch.Ty
-                            && (Can.pureTopBindings stmts |> Map.tryFind name |> Option.defaultValue false)
-                        then
-                            "  (pure)"
-                        else
-                            ""
-
-                    Some(sigOrFlat name (lambdaParamNames te) sch.Ty + badge)
+                | Script.KLet _ -> topLetSig ()
                 // a member signature line hovers the sig verbatim
                 // [D:module-signatures]
                 | Script.KSig(name, sd) when word = Some name -> Some $"{name} : {formatTy sd.Ty}"
@@ -3749,7 +3761,13 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                 | Some(l, c) -> l, c, l, c + n.Length
                 | None -> l1, c1, l1, c1
 
-            sym n (Some(sigOrFlat n (lambdaParamNames value) value.Ty)) 12 (l1, c1, l2, c2 + 1) sel (nestedFns ll value)
+            sym
+                n
+                (Some(sigOrFlat n (Check.lambdaParamNames value) value.Ty))
+                12
+                (l1, c1, l2, c2 + 1)
+                sel
+                (nestedFns ll value)
             :: nestedFns ll body
         | _ -> Check.childExprs te |> List.collect (nestedFns ll)
 
@@ -3883,7 +3901,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                         (members @ validate)
                 ]
             | Script.KLet(name, sch, te) ->
-                let ps = lambdaParamNames te
+                let ps = Check.lambdaParamNames te
                 let kind = if isFun sch.Ty || not ps.IsEmpty then 12 else 13
                 let l1, c1, l2, c2 = rangeOf ll
 
@@ -4490,7 +4508,7 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                                 |> Option.bind (fun (mlines, mstmts) ->
                                     letSiteIn mstmts None mem |> Option.bind (fun (dl, dc, _) -> docAt mlines dl dc))
 
-                            lambdaParamNames te, te.Ty, doc))
+                            Check.lambdaParamNames te, te.Ty, doc))
                 | _ ->
                     // a top-level function of this file: the last binder above
                     let userLet =
@@ -4499,7 +4517,7 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                         |> List.rev
                         |> List.tryPick (fun (_, c) ->
                             match c.Kind with
-                            | Script.KLet(n, sch, te) when n = head -> Some(lambdaParamNames te, sch.Ty)
+                            | Script.KLet(n, sch, te) when n = head -> Some(Check.lambdaParamNames te, sch.Ty)
                             | _ -> None)
                         |> Option.map (fun (ps, ty) ->
                             let doc =

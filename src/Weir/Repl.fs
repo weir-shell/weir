@@ -2563,7 +2563,7 @@ let functionEchoLines
 
 /// the live wrapper: keys on the value being a function and the
 /// expression being a plain name — anything else declines
-let private functionEcho (env: TypeEnv) (te: Check.TypedExpr) (v: Eval.Value) : string list option =
+let private functionEcho (env: TypeEnv) (values: Eval.Env) (te: Check.TypedExpr) (v: Eval.Value) : string list option =
     match v with
     | Eval.VClosure _
     | Eval.VClosurePat _
@@ -2571,7 +2571,20 @@ let private functionEcho (env: TypeEnv) (te: Check.TypedExpr) (v: Eval.Value) : 
         match te.Kind with
         | Check.TEVar name when Types.isUserName name ->
             functionEchoLines Types.Color.onStdout.Value (glanceWidth ()) env lastDefLine name
-        | _ -> None
+        | _ ->
+            // a named function short of arguments [D:partial-echo]
+            let names (head: string) =
+                match Script.builtinParamNames env head with
+                | Some r -> Some r
+                | None -> Map.tryFind head values |> Option.map (fun f -> head, Eval.closureParamNames f)
+
+            let style =
+                if Types.Color.onStdout.Value then
+                    sigTintStyle
+                else
+                    plainSigStyle
+
+            Script.partialApp names te |> Option.map (Script.partialEchoLines style)
     | _ -> None
 
 // a name bound by the session (a let, an init declaration) — not a
@@ -2886,7 +2899,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                     // one cap at a tty and piped [D:echo-cap-100]: #echo moves both
                     let cap = echoCap
 
-                    match functionEcho state.TypeEnv te ev with
+                    match functionEcho state.TypeEnv state.Values te ev with
                     // a named function value echoes its mini-help
                     // [D:repl-fn-echo] — never the opaque `<fun>` line
                     | Some lines -> lines |> List.iter Console.WriteLine

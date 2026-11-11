@@ -7889,6 +7889,18 @@ let derivedOrdTests =
             ordShow "[{ x = 2.5 }; { x = 1.5 }] |> Seq.sort" "[{ x = 1.5 }; { x = 2.5 }]"
             Expect.stringContains (ordErrMsg "{ x = 1.0 } == { x = 1.0 }") "it holds a float" ""
         }
+        test "a top-level binder hovers its own signature, not an inner let that shadows it" {
+            let lines = [
+                "let myFunc () ="
+                "    let myFunc = 10"
+                "    print $\"{myFunc}\""
+                "    ()"
+            ]
+
+            Expect.equal (Weir.Lsp.hoverType lines 1 5) (Some "myFunc : unit -> unit") "the statement's own binder"
+            Expect.equal (Weir.Lsp.hoverType lines 2 9) (Some "myFunc : int") "the inner binder keeps its own"
+            Expect.equal (Weir.Lsp.hoverType lines 3 14) (Some "int") "a use resolves to the inner one"
+        }
         test "the attribute's doc hovers; a type's hover shows its key in order, a member's its position" {
             Expect.stringStarts
                 (Map.find "Ord" Weir.Builtins.attrDocs)
@@ -10127,6 +10139,75 @@ let replEchoTests =
                 None
                 "nothing to name — the caller falls back to <fun>/<builtin> : ty"
         }
+        test "a named function short of arguments echoes what is bound and what is missing [D:partial-echo]" {
+            let builtins = Weir.Script.builtinParamNames Weir.Builtins.typeEnv
+
+            let lines src =
+                Weir.Script.partialApp builtins (checkOk src)
+                |> Option.map (Weir.Script.partialEchoLines plainSigStyle)
+
+            Expect.equal
+                (lines "\"k\" |> Str.toUtf8 |> Bytes.hmacSha256")
+                (Some [
+                    "Bytes.hmacSha256 key (msg: Bytes) : Bytes"
+                    "partial application — the piped value is key; still needs msg"
+                ])
+                "the piped value names the parameter it landed in"
+
+            Expect.equal
+                (lines "Seq.map (fun x -> x + 1)")
+                (Some [
+                    "Seq.map f (xs: seq<int>) : seq<int>"
+                    "partial application — f is bound; still needs xs"
+                ])
+                "applied, with the head's instantiated types"
+
+            Expect.equal
+                (lines "\"a\" |> Str.replace \"b\"" |> Option.map List.last)
+                (Some "partial application — old is bound; the piped value is new; still needs s")
+                "an applied argument, then the piped one"
+
+            Expect.equal (lines "Bytes.hmacSha256") None "a bare name is the mini-help's"
+            Expect.equal (lines "Str.toUtf8 >> Bytes.toHex") None "a composition has no named head"
+            Expect.equal (lines "(fun x -> x + 1)") None "a lambda has no named head"
+            Expect.equal (lines "Str.toUtf8 \"k\"") None "a full application is a value"
+
+            // a head the resolver cannot name declines
+            Expect.equal
+                (Weir.Script.partialApp (fun _ -> None) (checkOk "Seq.map (fun x -> x + 1)"))
+                None
+                "no parameter names, no claim"
+        }
+        test "the partial signature is the one composition: nothing applied is formatSignature [D:partial-echo]" {
+            let d = Map.find "Seq.map" Weir.Builtins.builtinDocs.Value
+            let sch = Weir.Builtins.typeEnv.Modules["Seq"]["map"]
+
+            Expect.equal
+                (formatPartialSignatureWith plainSigStyle 0 "Seq.map" d.Params sch.Ty)
+                (formatSignature "Seq.map" d.Params sch.Ty)
+                "applied 0 is the #help signature, byte for byte"
+        }
+        test "a discarded partial application names what is missing, tagged discard [D:partial-echo]" {
+            Expect.equal
+                (errorMsgsIn "disc.weir" [ "let k = Str.toUtf8 \"k\""; "k |> Bytes.hmacSha256" ])
+                [
+                    "'Bytes.hmacSha256' is partially applied — the piped value is key; still needs msg (Bytes)"
+                ]
+                "a builtin head names its parameters"
+
+            Expect.equal
+                (errorMsgsIn "disc.weir" [ "let f a b = a + b + 1"; "f 1" ])
+                [ "'f' is partially applied — still needs 1 more argument (int)" ]
+                "a script function says how many"
+
+            Expect.equal
+                (errorMsgsIn "disc.weir" [ "let cleanup () = print \"c\""; "cleanup" ])
+                [
+                    "this statement computes a unit -> unit and discards it"
+                    + Weir.Script.callItTail
+                ]
+                "an uncalled unit function keeps its own lesson"
+        }
         test "a failing #infer drafted type surfaces line:col + an offending-line snippet [D:infer-diagnostic]" {
             // a deliberately un-checkable drafted type: a leading-digit
             // field name weir rejects — number the drafted lines and
@@ -10264,6 +10345,30 @@ let replColorTests =
             // there [D:windows-s2]), so ^show paints red even though
             // bare show would be bold
             Expect.stringContains (colorize "^show x") "\x1b[31mshow\x1b[0m" "force ignores bindings"
+        }
+        test "a head is the parser's whole command word, hyphens included [D:repl-color-words]" {
+            Expect.stringContains
+                (colorize "zzz-nope list")
+                "\x1b[31mzzz-nope\x1b[0m"
+                "an unknown hyphenated head is red as one word"
+
+            Expect.stringContains (colorize "let v = zzz-nope list") "\x1b[31mzzz-nope\x1b[0m" "the let-RHS head too"
+
+            Expect.equal (strip (colorize "zzz-nope list")) "zzz-nope list" "transparent"
+            // a known head keeps its own extent: `ls-1` is not one word
+            Expect.stringContains (colorize "ls -la") "\x1b[1mls\x1b[0m" "a known head is unchanged"
+        }
+        test "a module qualifier paints the same at the head and after a pipe [D:repl-color-words]" {
+            let c =
+                Weir.Script.colorizeRepl (fun n -> n = "Str" || n = "Bytes") "Str.toUtf8 \"x\" |> Bytes.toHex"
+
+            Expect.stringContains c "\x1b[1mStr\x1b[0m" "the head qualifier"
+            Expect.stringContains c "\x1b[1mBytes\x1b[0m" "the piped-into qualifier, same tint"
+            // an unknown uppercase word keeps the casing-law tint
+            Expect.stringContains
+                (Weir.Script.colorizeRepl (fun _ -> false) "let n = Nope.x 1")
+                "\x1b[33mNope\x1b[0m"
+                "not a module: casing law"
         }
         test "lexical spans: keyword, string, comment, number, uppercase" {
             let out = colorize "let n = Some 42 // done"

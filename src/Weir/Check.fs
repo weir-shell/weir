@@ -8521,6 +8521,33 @@ let childExprs (te: TypedExpr) : TypedExpr list =
             | IStr _ -> None)
     | TEYaml(tpl, _, _) -> yamlTplTypedExprs tpl
 
+/// the parameter names of a curried value — the lambda chain a `let f a b`
+/// desugars to; the annotated signature reads them off the binder spans
+/// [D:annotated-signature]
+let rec lambdaParamNames (te: TypedExpr) : string list =
+    match te.Kind with
+    | TELambda(p, _, body) -> p :: lambdaParamNames body
+    | _ -> []
+
+/// the application spine under an expression [D:partial-echo]: the named
+/// head, its instantiated type, how many arguments reach it (applied or
+/// piped), and whether the last one arrived through `|>`. None for a
+/// bare name or an unnamed head.
+let partialSpine (te: TypedExpr) : (string * Ty * int * bool) option =
+    let rec go (n: TypedExpr) (applied: int) =
+        match n.Kind with
+        | TEVar name when applied > 0 && Types.isUserName name -> Some(name, n.Ty, applied)
+        | TEApp(fn, _)
+        | TEPipe(_, fn) -> go fn (applied + 1)
+        | _ -> None
+
+    let piped =
+        match te.Kind with
+        | TEPipe _ -> true
+        | _ -> false
+
+    go te 0 |> Option.map (fun (name, ty, applied) -> name, ty, applied, piped)
+
 /// the first child `f` answers on, visiting in childExprs order
 /// without building the list — the walks on the check path use this
 /// and its derivatives; childExprs stays for the editor services

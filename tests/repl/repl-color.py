@@ -71,6 +71,11 @@ if "\x1b[32m" not in t:
 if not re.search(r"\x1b\[31mzzznope\x1b\[0m", t):
     failures.append("unresolved head must paint red")
 
+# a hyphenated head is one command word, as the parser reads it
+th = run({}, ["zzz-nope arg\r"])
+if not re.search(r"\x1b\[31mzzz-nope\x1b\[0m", th):
+    failures.append("an unresolved hyphenated head must paint red as one word")
+
 # the yaml district marker tints like the `!` markers [D:yaml-district];
 # the `to yaml` adapter must not (the classifier is shared, not a second one)
 # the marker line opens the multiline buffer (Enter-completeness), so
