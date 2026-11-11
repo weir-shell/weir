@@ -1,6 +1,6 @@
 # PLAN: `within serve` joins the options family
 
-**Status: BLESSED** — rulings 1–4 below are the user's (2026-11-11).
+**Status: DONE** — [D:serve-defaults]; rulings 1–4 below are the user's (2026-11-11).
 
 ## The receipt
 
