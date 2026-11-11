@@ -7015,7 +7015,8 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
             bd
                 "Re-run an indented body until it succeeds: `retry attempts=5 delay=30s` followed by the body. If the body returns a bool, true means success. If it returns another value, add `until r` and a predicate block; retry then returns the value that passed. Running out of attempts raises. An error raised inside the body is not retried, it propagates; to retry a failing command, turn its result into data with `| succeeds` or `| complete`."
                 (Some "retry attempts=2 delay=1ms true")
-                (Some "The options are a record, so you can also write `retry { Retry.defaults with attempts = 3 }`.")
+                (Some
+                    "The options are a record, so you can also write `retry { Retry.defaults with attempts = 3 }`. `timeout=2m` sets the optional ceiling on the whole retry: in key=value options a plain value for an optional key means Some.")
             "poll",
             bd
                 "Like retry, but bounded by time instead of attempts: `poll timeout=5m interval=10s` followed by a body that checks readiness. With `watch=<proc>`, poll fails immediately if that scoped process dies (the error includes its last output), and a timeout error reports the process's state."
@@ -7024,7 +7025,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                     "To wait for a server to come up, start it with `within proc srv = …`, then `poll timeout=10s watch=srv` with `Net.portOpen <port>` as the body.")
             "repeat",
             bd
-                "Run an indented block until the program is asked to stop: `repeat interval=1s` followed by the block, which runs, then the interval passes, then it runs again. The first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Ctrl+C on Windows) lets the iteration in hand finish and returns, so the code after the loop runs and the program exits 0; a second signal tears down as usual. A bool block ends the loop when true; `until r` binds a value block's result and returns it once the predicate holds; `timeout=(Some 5m)` raises when it passes, as poll's does. Waits inside the block are not ended by the request — only the interval is."
+                "Run an indented block until the program is asked to stop: `repeat interval=1s` followed by the block, which runs, then the interval passes, then it runs again. The first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Ctrl+C on Windows) lets the iteration in hand finish and returns, so the code after the loop runs and the program exits 0; a second signal tears down as usual. A bool block ends the loop when true; `until r` binds a value block's result and returns it once the predicate holds; `timeout=5m` raises when it passes, as poll's does. Waits inside the block are not ended by the request — only the interval is."
                 (Some "repeat interval=1ms true")
                 (Some
                     "A server or sidecar held until the operator stops it is a `within` scope with `until stopped` after its block instead.")
@@ -7038,7 +7039,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                  + ". After the block, `until stopped` holds the scope until the first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), then it closes by its normal path and the program exits 0; an `always` cleanup comes after it.")
                 (Some "within tmp d\n    print d")
                 (Some
-                    "`within proc srv = <command>` binds a Proc handle; the process and its children are killed and reaped when the block exits.")
+                    "`within proc srv = <command>` binds a Proc handle; the process and its children are killed and reaped when the block exits. `within serve srv port=8080 handler=route` binds a Server handle; its options are `Server.defaults`' fields, and with no block, `until stopped` goes directly under the head.")
             // the purity assertion's two spellings [D:pure-stage1] — its
             // own head, never `within pure`
             "pure",
@@ -7246,15 +7247,14 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
             // ---- Server: the scoped-listener handle [D:http-serve] ----
             "Server.defaults",
             bd
-                "The default server settings: port = None (a free port), maxConcurrent = the number of processors, at least 8, bodyTimeout = 30s, maxBody = 16MiB, and a handler that answers `GET /` with a page saying no handler is set. `{ Server.defaults with port = Some 8080; handler = route }` changes some of them."
-                None
+                "The default server settings: port = None (a free port), maxConcurrent = the number of processors, at least 8, bodyTimeout = 30s, maxBody = 16MiB, and a handler that answers `GET /` with a page saying no handler is set. `within serve srv port=8080 handler=route` is short for `within serve srv = { Server.defaults with port = Some 8080; handler = route }`."
+                (Some "Server.defaults.maxConcurrent >= 8")
                 (Some "The listener accepts connections from this machine only (loopback).")
             "Server.port",
             bd
                 "The port the listener bound — the port asked for, or the free one picked for `port = None`."
                 None
-                (Some
-                    "within serve srv = { port = Some 8080; maxConcurrent = 4 } handler binds the handle; see #help within")
+                (Some "`within serve srv port=8080 handler=route` binds the handle; see #help within")
             |> named [ "srv" ]
             "Server.running",
             bd "True while the listener is still open (the scope has not exited)." None None

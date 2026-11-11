@@ -8,8 +8,51 @@
      here under v0.0.86. Tags stay immutable — the v0.0.85 tag is
      burned, not re-pointed. -->
 
+### Added
+
+- **`within serve` takes options, and a server can be two lines.**
+  The head now takes the server's name and `key=value` options, the
+  way `retry` does: `within serve srv port=8080 handler=route`. Each
+  option replaces one field of the new `Server.defaults`: `port`
+  (default `None`, a free port), `maxConcurrent` (the number of
+  processors, at least 8), `bodyTimeout` (`30s`), `maxBody` (`16MiB`)
+  and `handler`. With no block, `until stopped` goes directly under
+  the head:
+
+  ```
+  within serve srv
+  until stopped
+  ```
+
+  That serves on a free port until Ctrl+C and prints `serving on
+  http://localhost:<port> — Ctrl+C to stop` on stderr. With no
+  `handler=`, `GET /` answers with a page saying no handler is set and
+  showing the line that sets one; other requests get a 404. A server
+  with a block prints nothing, as before.
+- **A plain value for an optional key in `key=value` options.**
+  `port=8080` means `port=(Some 8080)`, and `retry timeout=2m` and
+  `repeat timeout=5m` work the same way. The `Some` spelling and
+  `None` still work. Records you write yourself are unchanged:
+  `{ Server.defaults with port = Some 8080 }` still needs the `Some`.
+- **Hover explains a form before the line is finished.** Hovering
+  `within`, a kind such as `serve`, or `retry`, `poll` or `repeat`
+  now answers even when the statement does not parse yet. A kind
+  shows how its head is written; `serve`, `retry`, `poll` and `repeat`
+  also list their option keys and defaults. Completion offers the
+  option keys after `within serve srv `.
+
 ### Changed
 
+- **The handler is part of `ServerConfig`.** The record gained a
+  `handler` field, so a whole server is one value: `within serve srv
+  = cfg`, with `cfg = { Server.defaults with port = Some 8080;
+  handler = route }`. Existing scripts keep working:
+  `within serve srv = { port = Some 8080; maxConcurrent = 4 } handler`
+  still checks and runs (the handler written after the record is the
+  one used, and a `{ port; maxConcurrent }` record takes the defaults
+  for the rest). One thing no longer works: a `ServerConfig` can't be
+  printed with `show` or compared with `=`, because it holds a
+  function.
 - **A function missing arguments says which.** At the REPL and under
   `-e`, a named function applied to only some of its arguments used to
   echo `<builtin> : Bytes -> Bytes` or `<fun> : int -> int`. It now
@@ -24,6 +67,13 @@
 
 ### Fixed
 
+- **Hover on a `within proc` or `within serve` name shows its type.**
+  Hovering `srv` in `within serve srv …` said `string`. It says
+  `Server` (and `Proc` for `within proc`).
+- **A `within serve` head with nothing after it says what is
+  missing.** `within serve` alone, or `within serve port=8080` without
+  the server's name, used to report a generic parse or type error.
+  The error now shows how the head is written.
 - **REPL coloring reads a hyphenated command as one word.**
   `argo-workflows` painted `argo` as an unknown head and `-workflows`
   as an operator and a plain word; `dpkg-query` painted as the `dpkg`

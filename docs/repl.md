@@ -142,9 +142,11 @@ path is quoted: `File.read ~/.b<TAB>` gives `File.read "/home/you/.bashrc"`.
 After `import`, a path completes quoted and lists only directories and
 `.weir` files: `import li<TAB>` gives `import "lib/"`.
 
-**Options.** After `retry`, `poll`, `repeat` or `within lock "p"`, Tab
-offers the option keys you haven't given yet: `repeat int<TAB>` gives
-`repeat interval=`. A `yaml` marker offers `patch`, `by=` and
+**Options.** After `retry`, `poll`, `repeat`, `within serve s` or
+`within lock "p"`, Tab offers the option keys you haven't given yet:
+`repeat int<TAB>` gives `repeat interval=`, and `within serve s
+<TAB>` lists `port=`, `maxConcurrent=`, `bodyTimeout=`, `maxBody=`
+and `handler=`. A `yaml` marker offers `patch`, `by=` and
 `schema=`, in the order they're written. Below a `within` block,
 `until <TAB>` offers `stopped`.
 

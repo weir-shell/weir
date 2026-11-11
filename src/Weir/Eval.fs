@@ -7393,7 +7393,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 | _ -> false
 
             if heldWithNoBlock body then
-                eprintfn "serving on http://localhost:%d — Ctrl+C to stop" handle.Port
+                System.Console.Error.WriteLine $"serving on http://localhost:{handle.Port} — Ctrl+C to stop"
 
             let v =
                 try

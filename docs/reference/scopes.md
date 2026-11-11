@@ -12,7 +12,7 @@ signal.
 | `within` … `always` | nothing — a body plus cleanup | runs the `always` block |
 | `within lock "path"` | an advisory file lock | releases it — the kernel does, even on `kill -9` |
 | `within proc h = cmd` | a background process | kills and reaps its tree |
-| `within serve s = cfg handler` | an HTTP listener | closes the socket — the port frees |
+| `within serve s port=8080 handler=route` | an HTTP listener | closes the socket — the port frees |
 
 The block is an ordinary block: its statements run and the last
 expression is its value. It also works as a plain statement.
@@ -169,7 +169,7 @@ program exits 0. This is how a server or sidecar stays up until the
 operator stops it:
 
 ```weir-demo
-within serve srv = { port = Some 8080; maxConcurrent = 4 } handler
+within serve srv port=8080 handler=route
     print $"listening on {Server.port srv}"
 until stopped
 
@@ -209,7 +209,7 @@ within proc fwd = kubectl port-forward svc/db 5432:5432
     poll timeout=30s interval=200ms watch=fwd
         Net.portOpen 5432
     within proc tun = ssh -N -R 9000:localhost:8080 bastion
-        within serve srv = { port = Some 8080; maxConcurrent = 4 } handler
+        within serve srv port=8080 handler=route
             print "up"
         until stopped
 print "tunnels closed"
@@ -244,12 +244,12 @@ daemon and belongs under systemd; weir has no `nohup`.
 An HTTP server that lives as long as the block:
 
 ```
-let handler = fun req ->
-    match req.path with
-    | "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+let route = fun rq ->
+    match rq.method, rq.path with
+    | Get, "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
 
-within serve srv = { port = Some 8080; maxConcurrent = 4 } handler
+within serve srv port=8080 handler=route
     print $"listening on {Server.port srv}"
 until stopped
 ```
@@ -257,7 +257,62 @@ until stopped
 The handler is a plain function, `HttpServerRequest ->
 HttpServerResponse`, called once per request. Route with `match`.
 When the block exits, however it exits, the socket closes and the port
-is free. There is no `stop`.
+is free. There is no `stop`. The listener accepts connections from
+this machine only.
+
+The head takes the server's name, then options as `key=value` pairs.
+Each pair replaces one field of `Server.defaults`:
+
+| Key | Type | Default |
+|---|---|---|
+| `port` | `Option<int>` | `None`: a free port, reported by `Server.port` |
+| `maxConcurrent` | `int` | the number of processors, at least 8 |
+| `bodyTimeout` | `Duration` | `30s` |
+| `maxBody` | `Size` | `16MiB` |
+| `handler` | `HttpServerRequest -> HttpServerResponse` | answers `GET /` with a page saying no handler is set, anything else with 404 |
+
+A plain value for an `Option` key means `Some`: `port=8080` is
+`port=(Some 8080)`, and `port=None` still asks for a free port. This
+holds in `key=value` options only (`retry timeout=2m` too); a record
+you write takes the `Some`.
+
+```weir
+let route = fun rq -> HttpServerResponse { status = 200; headers = []; body = Text $"you asked for {rq.path}" }
+
+within serve srv handler=route
+    let reply = Http.get $"http://127.0.0.1:{Server.port srv}/hello" |> Http.expect |> Seq.head
+    print reply
+```
+
+The options are the record `ServerConfig`, so the same server can be
+written with a record after `=`. These three heads are the same
+server:
+
+```
+within serve srv port=8080 handler=route
+
+within serve srv = { Server.defaults with port = Some 8080; handler = route }
+
+let cfg = { Server.defaults with port = Some 8080; handler = route }
+within serve srv = cfg
+```
+
+A second word after the record, `within serve srv = cfg route`, is a
+handler used in place of the record's. A record literal that names
+`port` and `maxConcurrent` may leave the other fields out; they take
+their defaults.
+
+With no block, `until stopped` comes directly under the head. weir
+then prints one line on stderr, `serving on http://localhost:<port> —
+Ctrl+C to stop`, because nothing else would say where the server is.
+With a block it prints nothing: the block is where you announce it.
+
+```weir-demo
+within serve srv port=8080 handler=route
+until stopped
+```
+
+A head with neither a block nor `until stopped` is an error.
 
 Without [`until stopped`](#until-stopped) the server closes as soon as
 the block's body finishes, which suits tests and one-shot exchanges.

@@ -953,7 +953,7 @@ processes, is covered under Parallelism):
 | `within` … `always` | nothing; just a body plus cleanup | runs the `always` block |
 | `within lock "path"` | an advisory file lock | releases it (the OS does this even on `kill -9`) |
 | `within proc h = cmd` | a background process | kills and reaps its tree |
-| `within serve s = cfg handler` | an HTTP listener | closes the socket, freeing the port |
+| `within serve s port=8080 handler=route` | an HTTP listener | closes the socket, freeing the port |
 
 To work with a scratch tree of files, use `Dir.create` to make
 directories, `Path.glob` to find files, and `Dir.deleteAll` to
@@ -2040,30 +2040,82 @@ safely is up to you ([SECURITY.md](../SECURITY.md)).
 This is the server side. `within serve` runs an HTTP listener for
 the duration of a block, and closes the socket however the block
 exits, so the port is freed. It works like `within proc`. The
-handler is a plain synchronous function that picks a response by
-matching on `req.path`. The response `body` uses the same `HttpBody`
-union as the client, plus `Stream of seq<string>` for a lazy body
-that's sent in chunks as it's produced:
+smallest server needs no block at all:
 
 ```weir-demo
-let handler = fun req ->
-    match req.path with
-    | "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
-    | "/events" -> HttpServerResponse { status = 200; headers = []; body = Stream (Seq.initInfinite show) }
+within serve srv
+until stopped
+```
+
+It picks a free port, prints `serving on http://localhost:<port> —
+Ctrl+C to stop` on stderr, and answers `GET /` with a page saying
+that no handler is set. Options go after the name as `key=value`
+pairs, the way `retry` takes them, and `handler=` is the function
+that answers requests:
+
+```weir-demo
+let handler = fun rq ->
+    match rq.method, rq.path with
+    | Get, "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+    | Post, Regex @"^/topic/([^/]+)$" topic ->
+        HttpServerResponse { status = 202; headers = []; body = Text $"queued on {topic}" }
+    | Get, "/events" -> HttpServerResponse { status = 200; headers = []; body = Stream (Seq.initInfinite show) }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
 
-within serve srv = { port = Some 8080; maxConcurrent = 8 } handler
+within serve srv port=8080 handler=handler
     print $"serving on {Server.port srv}"
 until stopped
 ```
 
-`maxConcurrent` limits how many requests are handled at once, the
-same way `Seq.pmapWith` limits parallel work. The server handle has
-only `Server.port`, `Server.running` and `Server.streamErrors` (the
-errors of `Stream` bodies that failed partway). There's no `stop`:
-the server stops when the block ends. `until stopped` holds it open
-until Ctrl+C or SIGTERM, then lets running requests finish; without
-it, the server closes as soon as the block's body is done.
+The handler is a plain synchronous function that picks a response by
+matching on the method and the path together. A string arm matches
+one path; the `Regex` arm captures a path segment into `topic`. The
+`^` and `$` anchors make the regex match the whole path: the `Regex`
+pattern is a search, so without them `/x/topic/a/b` would match too.
+The response `body` uses the same `HttpBody` union as the client,
+plus `Stream of seq<string>` for a lazy body that's sent in chunks as
+it's produced.
+
+The options, and what each one is when you leave it out:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `port` | `None` | the port to listen on; `None` takes a free one, which `Server.port` reports |
+| `maxConcurrent` | the number of processors, at least 8 | how many requests are handled at once; the rest queue, the same way `Seq.pmapWith` limits parallel work |
+| `bodyTimeout` | `30s` | how long a request body may take to arrive (408 after that) |
+| `maxBody` | `16MiB` | the largest request body accepted (413 past it) |
+| `handler` | a page saying no handler is set | the function from a request to its response |
+
+`port` is an `Option<int>`. In `key=value` options a plain value for
+an optional key means `Some`, so `port=8080` is `port=(Some 8080)`;
+`retry timeout=2m` works the same way.
+
+The options are a record, `ServerConfig`, and the defaults are
+`Server.defaults`. `port=8080 handler=handler` is short for an update
+of it, which you can also build yourself and pass after `=` (in a
+record you write the `Some`):
+
+```weir-demo
+let cfg = { Server.defaults with port = Some 8080; handler = handler }
+
+within serve srv = cfg
+    print $"serving on {Server.port srv}"
+until stopped
+```
+
+The older two-word form, `within serve srv = cfg handler`, still
+works; a handler written there is used in place of the record's.
+
+weir prints the `serving on …` line only when there is no block. A
+block is where you say what you want said, as the examples above do.
+
+The server handle has only `Server.port`, `Server.running` and
+`Server.streamErrors` (the errors of `Stream` bodies that failed
+partway). There's no `stop`: the server stops when the block ends.
+`until stopped` holds it open until Ctrl+C or SIGTERM, then lets
+running requests finish; without it, the server closes as soon as
+the block's body is done. It accepts connections from this machine
+only.
 
 TLS, routing libraries and WebSockets are left out on purpose. Put a
 reverse proxy in front, `match` on the path, and use `Stream`

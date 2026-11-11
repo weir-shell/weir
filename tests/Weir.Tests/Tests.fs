@@ -16746,6 +16746,36 @@ let semanticTokenTests =
                 | Ok out2 -> Expect.equal out2 out "fmt is idempotent with docs present"
                 | Error e -> failtestf "second fmt failed: %s" e
         }
+        test "fmt keeps a block-less serve head and its until stopped at one column [D:serve-defaults]" {
+            let canon = [
+                "within serve s port=8080"
+                "until stopped"
+                "always"
+                "    print \"bye\""
+                ""
+                "let run () ="
+                "    within serve s"
+                "    until stopped"
+                ""
+                "run ()"
+            ]
+
+            let messy = [
+                "within serve s port=8080"
+                "until stopped"
+                "always"
+                "  print \"bye\""
+                ""
+                "let run () ="
+                "  within serve s"
+                "  until stopped"
+                ""
+                "run ()"
+            ]
+
+            Expect.equal (Weir.Fmt.formatLines messy) (Ok canon) "re-indented, the edge kept under its head"
+            Expect.equal (Weir.Fmt.formatLines canon) (Ok canon) "idempotent"
+        }
         test "doc comments: fmt never anchors a /// inside a heredoc/yaml block into its content [D:content-bytes]" {
             match Weir.Fmt.formatLines [ "let t = yaml"; "    a: 1"; "/// doc"; "    b: 2"; "print t" ] with
             | Ok out ->
