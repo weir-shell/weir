@@ -13485,6 +13485,23 @@ let headSlotCompletionTests =
             Expect.isFalse (sug "retrying " |> List.contains "attempts=") "a word boundary: not the head"
             Expect.isFalse (sug "retry attempts=" |> List.contains "attempts=") "the value slot is not the key slot"
         }
+        test "within serve offers its option keys after the server's name [D:serve-defaults]" {
+            Expect.equal
+                (sug "within serve s ")
+                [ "port="; "maxConcurrent="; "bodyTimeout="; "maxBody="; "handler=" ]
+                "ServerConfig's fields"
+
+            Expect.equal (sug "within serve s port=8080 h") [ "handler=" ] "prefix-filtered"
+
+            Expect.equal
+                (sug "within serve s port=(Some 8080) handler=route ")
+                [ "maxConcurrent="; "bodyTimeout="; "maxBody=" ]
+                "a given key is not offered again"
+
+            Expect.isFalse (sug "within serve " |> List.contains "port=") "the name slot is not the key slot"
+            Expect.isFalse (sug "within serve s port=" |> List.contains "port=") "the value slot is not the key slot"
+            Expect.isFalse (sug "within serve s = " |> List.contains "port=") "the record form takes a value"
+        }
         test "within lock offers timeout= after its path [D:head-key-complete]" {
             Expect.equal (sug "within lock \"state.json\" ") [ "timeout=" ] "after the path"
             Expect.equal (sug "within lock \"a b\" ti") [ "timeout=" ] "a spaced path, prefix-filtered"
@@ -13966,14 +13983,14 @@ let withinKindsTests =
 
             Expect.equal
                 (Weir.Lsp.hoverType lines 2 8)
-                (Some "cd — consumes: the working directory for the block, restored after")
+                (Some "cd — consumes: the working directory for the block, restored after\nwithin cd <dir>")
                 "the consuming kind"
 
             let t = [ "within tmp scratch"; "    print scratch" ]
 
             Expect.equal
                 (Weir.Lsp.hoverType t 1 8)
-                (Some "tmp — binds: a fresh directory, removed when the block exits")
+                (Some "tmp — binds: a fresh directory, removed when the block exits\nwithin tmp <name>")
                 "the binding kind"
         }
         test "hover on `within` itself answers (the form carries weir's novelty); an ordinary keyword stays silent" {
@@ -34910,6 +34927,74 @@ let serveTests =
                 Expect.throwsC (fun () -> run "repeat interval=5ms timeout=30ms (1 == 2)" |> ignore) id
 
             Expect.stringContains ex.Message "repeat: timed out after" "the lifted timeout is the one that runs"
+        }
+        test "a form word hovers at token level: the statement need not parse [D:serve-defaults]" {
+            let hover lines line col =
+                Weir.Lsp.hoverType lines line col |> Option.defaultValue "<none>"
+
+            let n = max 8 System.Environment.ProcessorCount
+
+            for lines in
+                [
+                    [ "within serve" ]
+                    [ "within serve s port=" ]
+                    [ "let f () ="; "    within serve"; "f ()" ]
+                ] do
+                let line = List.length lines |> min 2
+                let col = (List.item (line - 1) lines).IndexOf "serve" + 2
+                let hv = hover lines line col
+
+                Expect.stringContains
+                    hv
+                    "serve — binds: an HTTP server that runs until the block exits"
+                    $"the kind's doc: {lines}"
+
+                Expect.stringContains
+                    hv
+                    "within serve <name> [key=value …]  (or `within serve <name> = <config>`), then a block or `until stopped`"
+                    $"the shape line: {lines}"
+
+                Expect.stringContains
+                    hv
+                    "keys: port: Option<int>, maxConcurrent: int, bodyTimeout: Duration, maxBody: Size, handler: HttpServerRequest -> HttpServerResponse"
+                    $"the keys, off ServerConfig: {lines}"
+
+                Expect.stringContains
+                    hv
+                    $"defaults: port = None, maxConcurrent = {n}, bodyTimeout = 30s, maxBody = 16 MiB, handler = <landing page>"
+                    $"the defaults, off Server.defaults: {lines}"
+
+            Expect.stringContains (hover [ "within" ] 1 3) "within <kind> — a scoped block" "the keyword alone"
+
+            Expect.stringContains
+                (hover [ "retry" ] 1 3)
+                "keys: attempts: int, delay: Duration, timeout: Option<Duration>\ndefaults: attempts = 5, delay = 1s, timeout = None"
+                "a half-typed retry"
+
+            Expect.stringContains
+                (hover [ "poll timeout=" ] 1 2)
+                "keys: timeout: Duration, interval: Duration\ndefaults: timeout = 1m, interval = 1s"
+                "a half-typed poll"
+
+            Expect.stringContains
+                (hover [ "let n = repeat interval=" ] 1 11)
+                "keys: interval: Duration, timeout: Option<Duration>\ndefaults: timeout = None (interval is required)"
+                "a half-typed repeat"
+
+            Expect.stringContains
+                (hover [ "within lock \"p\""; "    print \"a\"" ] 1 9)
+                "within lock <path> [timeout=<duration>]"
+                "every kind carries its shape line"
+
+            Expect.equal
+                (hover [ okHandler; "within serve srv port=8080 handler=h"; "    print \"x\"" ] 2 15)
+                "Server"
+                "the binder is the handle, in the options head"
+
+            Expect.equal (hover [ "within serve srv"; "until stopped" ] 1 15) "Server" "and in the block-less form"
+
+            Expect.equal (hover [ "let x = \"within serve\" +" ] 1 18) "<none>" "the same letters in a string are data"
+            Expect.equal (hover [ "within serve // retry" ] 1 18) "<none>" "and in a comment"
         }
         test "= config is the record form; a second atom is a handler over the record's [D:serve-defaults]" {
             Expect.equal

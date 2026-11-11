@@ -2815,7 +2815,40 @@ let renameFor
 // ordinary keywords keep the silence guard); a binding kind's binder
 // is always the resource's type — a use-less binder must not fall
 // through to the enclosing node's type (the same wrong-answer class).
-let private withinFormHover (text: string) (jcol: int) : string option =
+// a key=value head's keys and where each rests [D:serve-defaults]: the
+// types off the options record, the values off the defaults record the
+// sugar updates — the one source, so neither line can drift from the run
+let private optionKeyLines (env: TypeEnv) (tyName: string) (baseKey: string) : string =
+    let keys =
+        match Map.tryFind tyName env.Types with
+        | Some(Record d) ->
+            d.Fields
+            |> List.map (fun (fn, t) -> $"{fn}: {formatTy t}")
+            |> String.concat ", "
+        | _ -> ""
+
+    let defaults =
+        match Builtins.valueEnv.Value.TryFind baseKey with
+        | Some(Eval.VRecord(_, fields)) ->
+            fields
+            // repeat's base carries a placeholder interval [D:repeat]
+            |> List.filter (fun (n, _) -> not (baseKey = "|repeatDefaults" && n = "interval"))
+            |> List.map (fun (n, v) ->
+                match v with
+                | Eval.VBuiltin _ when baseKey = "|serveDefaults" -> $"{n} = <landing page>"
+                | _ -> $"{n} = {Eval.formatValue v}")
+            |> String.concat ", "
+        | _ -> ""
+
+    let required =
+        if baseKey = "|repeatDefaults" then
+            " (interval is required)"
+        else
+            ""
+
+    $"keys: {keys}\ndefaults: {defaults}{required}"
+
+let private withinFormHover (env: TypeEnv) (text: string) (jcol: int) : string option =
     let endsWithWord (kw: string) (s: string) =
         s.EndsWith kw
         && (s.Length = kw.Length || not (isWord s[s.Length - kw.Length - 1]))
@@ -2848,13 +2881,33 @@ let private withinFormHover (text: string) (jcol: int) : string option =
             match Ast.withinKinds |> List.tryFind (fun k -> k.Name = w && not k.Standalone) with
             | Some wk when endsWithWord "within" before ->
                 let nature = if wk.Binds then "binds" else "consumes"
-                Some $"{wk.Name} — {nature}: {wk.Doc}"
+
+                let options =
+                    match wk.Id with
+                    | Ast.WithinServe -> "\n" + optionKeyLines env "ServerConfig" "|serveDefaults"
+                    | _ -> ""
+
+                Some $"{wk.Name} — {nature}: {wk.Doc}\n{wk.Shape}{options}"
             | _ ->
                 Ast.withinKinds
                 |> List.tryPick (fun k ->
                     if k.Binds && endsWithWord k.Name before then
                         let b2 = before.Substring(0, before.Length - k.Name.Length).TrimEnd()
-                        if endsWithWord "within" b2 then Some "string" else None
+
+                        if endsWithWord "within" b2 then
+                            // the binder's type by kind [D:within-kind-union]
+                            match k.Id with
+                            | Ast.WithinProc -> Some "Proc"
+                            | Ast.WithinServe -> Some "Server"
+                            | Ast.WithinTmp
+                            | Ast.WithinCd
+                            | Ast.WithinEnv
+                            | Ast.WithinLock
+                            | Ast.WithinPure
+                            | Ast.WithinReadonly
+                            | Ast.WithinPlan -> Some "string"
+                        else
+                            None
                     else
                         None))
 
@@ -2887,31 +2940,23 @@ let private adapterFormHover (text: string) (jcol: int) : string option =
 // key=value head desugars over), so a new key appears here with no
 // second edit; a hand-written list would drift.
 let private retryPollFormHover (env: TypeEnv) (text: string) (jcol: int) : string option =
-    let keysOf tyName =
-        match Map.tryFind tyName env.Types with
-        | Some(Record d) ->
-            d.Fields
-            |> List.map (fun (fn, t) -> $"{fn}: {formatTy t}")
-            |> String.concat ", "
-        | _ -> ""
-
     wordAt text jcol
     |> Option.bind (fun w ->
         match w with
         | "retry" ->
             Some(
-                "retry key=value … — a bounded retry loop: the body reruns until it yields true (a VALUE body adds an `until` segment); exhaustion raises\nkeys: "
-                + keysOf "Retry"
+                "retry key=value … — a bounded retry loop: the body reruns until it yields true (a VALUE body adds an `until` segment); exhaustion raises\n"
+                + optionKeyLines env "Retry" "|retryDefaults"
             )
         | "poll" ->
             Some(
-                "poll key=value … — retry's wall-clock twin: rerun until true or the timeout elapses; timing out raises\nkeys: "
-                + keysOf "Poll"
+                "poll key=value … — retry's wall-clock twin: rerun until true or the timeout elapses; timing out raises\n"
+                + optionKeyLines env "Poll" "|pollDefaults"
             )
         | "repeat" ->
             Some(
-                "repeat interval=… — the loop a stop signal ends: run the block, wait the interval, run it again; the first SIGINT/SIGTERM/SIGHUP lets the iteration in hand finish and returns (a second one tears down). An `until` segment or a bool block ends it too; a timeout raises\nkeys: "
-                + keysOf "Repeat"
+                "repeat interval=… — the loop a stop signal ends: run the block, wait the interval, run it again; the first SIGINT/SIGTERM/SIGHUP lets the iteration in hand finish and returns (a second one tears down). An `until` segment or a bool block ends it too; a timeout raises\n"
+                + optionKeyLines env "Repeat" "|repeatDefaults"
             )
         | "until" ->
             Some
@@ -2982,7 +3027,7 @@ let private pforFormHover (text: string) (jcol: int) : string option =
         | _ -> None)
 
 let private formWordHover (env: TypeEnv) (text: string) (jcol: int) : string option =
-    withinFormHover text jcol
+    withinFormHover env text jcol
     |> Option.orElse (pforFormHover text jcol)
     |> Option.orElse (adapterFormHover text jcol)
     |> Option.orElse (retryPollFormHover env text jcol)
@@ -3127,12 +3172,17 @@ let private schemaHover (path: string) (name: string) : string option =
 /// site for a usage / field / case reference (definitionFor) [Group 1a],
 /// else the builtin's [D:builtin-docs].
 let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string option =
-    let _, stmts, _, _, partials = analyzeCached path lines
+    let _, stmts, env0, _, partials = analyzeCached path lines
 
     match toLogical (withPartials stmts partials) line col with
     // a hole has no type to show [D:block-recovery] — null, the honest
-    // answer [D:hover-silence]
-    | Some(_, chk, jcol) when inHole chk jcol -> None
+    // answer [D:hover-silence]; a form word in it still says what the
+    // form is [D:serve-defaults]
+    | Some(ll, chk, jcol) when inHole chk jcol ->
+        if inStringOrComment lines line col then
+            None
+        else
+            formWordHover chk.Env ll.Text jcol
     | Some(ll, chk, jcol) when
         not (inStringOrComment lines line col)
         && (formWordHover chk.Env ll.Text jcol).IsSome
@@ -3541,7 +3591,15 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         | Some t, None -> Some t
         | None, Some d -> Some d
         | None, None -> None
-    | _ -> None
+    | Some _ -> None
+    // no statement holds the cursor — the line did not parse. A form word
+    // answers from the line's own text [D:serve-defaults]: the shape is
+    // what a half-typed head is missing
+    | None ->
+        if line < 1 || line > List.length lines || inStringOrComment lines line col then
+            None
+        else
+            formWordHover env0 (List.item (line - 1) lines) col
 
 /// hoverAt with no file identity — the unit pins' single-file surface
 /// (imports and signatures resolve relative to the real path, so the

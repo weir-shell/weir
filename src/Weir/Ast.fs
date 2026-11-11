@@ -89,6 +89,8 @@ type WithinKind = {
     Binds: bool
     Standalone: bool
     Doc: string
+    // the head as written — the hover's shape line [D:serve-defaults]
+    Shape: string
 }
 
 let withinKinds: WithinKind list = [
@@ -98,6 +100,7 @@ let withinKinds: WithinKind list = [
         Binds = true
         Standalone = false
         Doc = "a fresh directory, removed when the block exits"
+        Shape = "within tmp <name>"
     }
     {
         Id = WithinCd
@@ -105,6 +108,7 @@ let withinKinds: WithinKind list = [
         Binds = false
         Standalone = false
         Doc = "the working directory for the block, restored after"
+        Shape = "within cd <dir>"
     }
     {
         Id = WithinEnv
@@ -112,6 +116,7 @@ let withinKinds: WithinKind list = [
         Binds = false
         Standalone = false
         Doc = "environment variables set for the commands the block runs"
+        Shape = "within env NAME=value …  (or one value: a seq of Env.pair)"
     }
     // the no-orphan law [D:scoped-procs]: the process lives exactly
     // as long as the block
@@ -121,6 +126,7 @@ let withinKinds: WithinKind list = [
         Binds = true
         Standalone = false
         Doc = "a background process, stopped together with anything it started when the block exits"
+        Shape = "within proc <name> = <command>"
     }
     // the scoped HTTP listener [D:http-serve]: the socket lives
     // exactly as long as the block, freed on every exit path (the
@@ -132,6 +138,8 @@ let withinKinds: WithinKind list = [
         Binds = true
         Standalone = false
         Doc = "an HTTP server that runs until the block exits; its port is freed however the block ends"
+        Shape =
+            "within serve <name> [key=value …]  (or `within serve <name> = <config>`), then a block or `until stopped`"
     }
     // advisory file lock [D:within-lock] — the one kind whose
     // guarantee survives kill -9 (the kernel releases it)
@@ -141,6 +149,7 @@ let withinKinds: WithinKind list = [
         Binds = false
         Standalone = false
         Doc = "an advisory file lock, held for the block and released however it ends, even on kill -9"
+        Shape = "within lock <path> [timeout=<duration>]"
     }
     // [D:pure-stage1]: in the family (the union's exhaustiveness,
     // the grammar inventory) but its own head — the one kind that
@@ -151,6 +160,7 @@ let withinKinds: WithinKind list = [
         Binds = false
         Standalone = true
         Doc = "a block that must have no effects at all"
+        Shape = "pure"
     }
     // [D:pure-stage2]: one tier up from pure — the body must reach no
     // external mutation; ambient reads (fs.read, env, clock, query-net)
@@ -161,6 +171,7 @@ let withinKinds: WithinKind list = [
         Binds = false
         Standalone = true
         Doc = "a block that may read (files, the environment, the clock, HTTP GETs) but change nothing"
+        Shape = "readonly"
     }
     // [D:plan-apply]: the third standalone head — like readonly it
     // partitions ambient/mutation, but instead of refusing mutation it
@@ -173,6 +184,7 @@ let withinKinds: WithinKind list = [
         Standalone = true
         Doc =
             "a block whose file, directory and HTTP changes are recorded instead of made (reads still run); it returns a Plan you can inspect and apply"
+        Shape = "plan"
     }
 ]
 

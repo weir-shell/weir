@@ -654,6 +654,10 @@ let private loopHeadKeys =
 let private lockHeadKeys =
     System.Text.RegularExpressions.Regex(@"^within\s+lock\s+" + keyValueAtom + @"$")
 
+// `within serve <name>` and its options given so far [D:serve-defaults]
+let private serveHeadKeys =
+    System.Text.RegularExpressions.Regex(@"^within\s+serve\s+[A-Za-z_]\w*((?:\s+[A-Za-z_]\w*=" + keyValueAtom + @")*)$")
+
 let headKeyOffers (env: TypeEnv) (before: string) : string list option =
     let stmt =
         let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
@@ -661,8 +665,23 @@ let headKeyOffers (env: TypeEnv) (before: string) : string list option =
 
     let stmt = letRhsCut stmt |> Option.map _.Trim() |> Option.defaultValue stmt
     let m = loopHeadKeys.Match stmt
+    let serve = serveHeadKeys.Match stmt
 
-    if m.Success then
+    let givenIn (pairs: string) =
+        System.Text.RegularExpressions.Regex.Matches(pairs, @"\s([A-Za-z_]\w*)=")
+        |> Seq.map _.Groups[1].Value
+        |> Set.ofSeq
+
+    if serve.Success then
+        // the options record's fields, as the loop heads' [D:serve-defaults]
+        let fields =
+            match Map.tryFind "ServerConfig" env.Types with
+            | Some(Record d) -> d.Fields |> List.map fst
+            | _ -> []
+
+        let given = givenIn serve.Groups[1].Value
+        Some(fields |> List.filter (given.Contains >> not) |> List.map (fun k -> k + "="))
+    elif m.Success then
         let head = m.Groups[1].Value
 
         let fields =
@@ -672,10 +691,7 @@ let headKeyOffers (env: TypeEnv) (before: string) : string list option =
 
         let keys = if head = "poll" then fields @ [ "watch" ] else fields
 
-        let given =
-            System.Text.RegularExpressions.Regex.Matches(m.Groups[2].Value, @"\s([A-Za-z_]\w*)=")
-            |> Seq.map _.Groups[1].Value
-            |> Set.ofSeq
+        let given = givenIn m.Groups[2].Value
 
         Some(keys |> List.filter (given.Contains >> not) |> List.map (fun k -> k + "="))
     elif lockHeadKeys.IsMatch stmt then
