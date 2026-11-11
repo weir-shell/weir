@@ -30681,7 +30681,7 @@ let heldScopeTests =
                     "within env [Env.pair \"A\" \"1\"]"
                     "within lock \"/tmp/held.lock\""
                     "within proc p = sleep 1"
-                    "within serve srv = { port = Some 8599; maxConcurrent = 1 } (fun r -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" })"
+                    "within serve srv = { port = Some 8599; maxConcurrent = 1; handler = (fun r -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }) }"
                     "within"
                 ] do
                 Expect.isEmpty (errs [ head; "    print \"b\""; "until stopped"; "print \"after\"" ]) head
@@ -34696,7 +34696,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 8080; maxConcurrent = 4 } h"
+                    "within serve srv = { port = Some 8080; maxConcurrent = 4; handler = h }"
                     "    print $\"on {Server.port srv}\""
                     "    let x = 1"
                     "    print $\"{x}\""
@@ -34710,7 +34710,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 8080; maxConcurrent = 2 } h"
+                    "within serve srv = { port = Some 8080; maxConcurrent = 2; handler = h }"
                     "    print \"up\""
                     "    let y = 2"
                     "    print $\"{y}\""
@@ -34721,7 +34721,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = h }"
                     "    print $\"{Server.running srv}\""
                 ]
                 "Server.running on the binder"
@@ -34729,7 +34729,7 @@ let serveTests =
             mustSay
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = h }"
                     "    print $\"{Proc.pid srv}\""
                 ]
                 "expected Proc, got Server"
@@ -34743,7 +34743,7 @@ let serveTests =
             mustSay
                 [
                     "let bad = fun req -> 5"
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } bad"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = bad }"
                     "    print \"ok\""
                 ]
                 "HttpServerResponse"
@@ -34751,7 +34751,7 @@ let serveTests =
         }
         test "the config must be a ServerConfig record" {
             mustSay
-                [ okHandler; "within serve srv = 8080 h"; "    print \"ok\"" ]
+                [ "within serve srv = 8080"; "    print \"ok\"" ]
                 "ServerConfig"
                 "a bare int config names the record"
         }
@@ -34759,7 +34759,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = None; maxConcurrent = 1 } h"
+                    "within serve srv = { port = None; maxConcurrent = 1; handler = h }"
                     "    print $\"{Server.port srv}\""
                 ]
                 "None picks a free port"
@@ -34767,7 +34767,7 @@ let serveTests =
             mustSay
                 [
                     okHandler
-                    "within serve srv = { port = 8080; maxConcurrent = 1 } h"
+                    "within serve srv = { port = 8080; maxConcurrent = 1; handler = h }"
                     "    print \"ok\""
                 ]
                 "expected Option<int>, got int — serve's port is optional: `port = Some 8080` for that port, `port = None` for a free one"
@@ -34852,7 +34852,7 @@ let serveTests =
                 [
                     okHandler
                     "let cfg = { Server.defaults with port = Some 8080; handler = h }"
-                    "within serve srv = cfg h"
+                    "within serve srv = { cfg with handler = h }"
                     "    print $\"{Server.port srv}\""
                 ]
                 "an update of the defaults is a ServerConfig"
@@ -34860,14 +34860,14 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = None; maxConcurrent = 1; handler = h } Server.defaults.handler"
+                    "within serve srv = { port = None; maxConcurrent = 1; handler = h }"
                     "    print \"ok\""
                 ]
                 "the literal takes handler like its other optional fields"
 
             mustSay
                 [
-                    "within serve srv = { port = None; maxConcurrent = 1; handler = 5 } Server.defaults.handler"
+                    "within serve srv = { port = None; maxConcurrent = 1; handler = 5 }"
                     "    print \"ok\""
                 ]
                 "HttpServerRequest -> HttpServerResponse"
@@ -34877,7 +34877,7 @@ let serveTests =
                 [
                     okHandler
                     "let cfg = { port = None; maxConcurrent = 1; maxQueued = 8; bodyTimeout = 1s; maxBody = 1MiB; handler = h }"
-                    "within serve srv = cfg h"
+                    "within serve srv = { cfg with handler = h }"
                     "    print \"ok\""
                 ]
                 "the full record is an ordinary literal"
@@ -35047,16 +35047,21 @@ let serveTests =
             Expect.equal (hover [ "let x = \"within serve\" +" ] 1 18) "<none>" "the same letters in a string are data"
             Expect.equal (hover [ "within serve // retry" ] 1 18) "<none>" "and in a comment"
         }
-        test "= config is the record form; a second atom is a handler over the record's [D:serve-defaults]" {
+        test "= config is the record form: one record, the handler its field [D:serve-defaults] [D:serve-one-record]" {
             Expect.equal
                 (shape [ "within serve s = cfg"; "    print \"b\"" ])
                 "(sexpr (within serve s cfg (print \"b\")))"
                 "one atom: the record carries the handler"
 
-            Expect.equal
-                (shape [ "within serve s = cfg h"; "    print \"b\"" ])
-                "(sexpr (within serve s cfg handler=h (print \"b\")))"
-                "two atoms: the handler rides its own slot"
+            mustSay
+                [ okHandler; "within serve s = Server.defaults h"; "    print \"b\"" ]
+                "within serve takes one record after `=` — the handler is its `handler` field"
+                "a handler word after the record is refused"
+
+            mustSay
+                [ okHandler; "within serve s = Server.defaults h"; "    print \"b\"" ]
+                "handler=route"
+                "the refusal shows the option spelling"
 
             clean
                 [
@@ -35090,7 +35095,14 @@ let serveTests =
                 "always alone"
 
             clean [ "within serve s"; "until stopped"; "print \"after\"" ] "checks clean"
-            clean [ okHandler; "within serve s = Server.defaults h"; "until stopped" ] "after the two-atom head too"
+
+            clean
+                [
+                    okHandler
+                    "within serve s = { Server.defaults with handler = h }"
+                    "until stopped"
+                ]
+                "after the record head too"
 
             clean
                 [
@@ -35142,7 +35154,7 @@ let serveTests =
             clean
                 [
                     "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Stream [\"a\"; \"b\"] }"
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = h }"
                     "    print \"ok\""
                 ]
                 "a Stream response body"
@@ -35417,6 +35429,29 @@ let serveTests =
                 Expect.isFalse (body.Contains "\nevent: evil") "no forged field line"
             | other -> failtest $"one reply expected: {other}"
         }
+        test "a Text body leaves as text/plain unless the handler types it [D:serve-text-type]" {
+            let get = "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+
+            let reply (headers: (string * string) list) (body: Weir.Serve.SBody) =
+                wire
+                    (fun _ -> {
+                        Status = 200
+                        Headers = headers
+                        Body = body
+                    })
+                    [ get ]
+                |> List.head
+
+            Expect.stringContains
+                (reply [] (Weir.Serve.RText "<b>x</b>"))
+                "Content-Type: text/plain; charset=utf-8"
+                "an untyped Text body is never left for the browser to sniff"
+
+            let typed = reply [ "Content-Type", "text/html" ] (Weir.Serve.RText "<b>x</b>")
+            Expect.stringContains typed "Content-Type: text/html" "the handler's type stands"
+            Expect.isFalse (typed.Contains "text/plain") "and is the only one"
+            Expect.isFalse ((reply [] Weir.Serve.RNoBody).Contains "Content-Type") "no body, no type"
+        }
         test "maxBody: a body past the bound is 413 whether declared or chunked; within it reads whole (H20)" {
             let echo (r: Weir.Serve.SReq) : Weir.Serve.SResp = {
                 Status = 200
@@ -35450,7 +35485,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1; maxBody = 1MiB } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; maxBody = 1MiB; handler = h }"
                     "    print \"ok\""
                 ]
                 "maxBody alone"
@@ -35458,7 +35493,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 2s; maxBody = 64KiB } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 2s; maxBody = 64KiB; handler = h }"
                     "    print \"ok\""
                 ]
                 "both optional fields"
@@ -35466,7 +35501,7 @@ let serveTests =
             mustSay
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1; maxBody = 5 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; maxBody = 5; handler = h }"
                     "    print \"ok\""
                 ]
                 "Size"
@@ -35479,7 +35514,7 @@ let serveTests =
             // from patterns — the standing weir rule, not a serve concern)
             clean
                 [
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } (fun req -> match req.method with | Other v -> HttpServerResponse { status = 405; headers = []; body = Text v } | Query -> HttpServerResponse { status = 200; headers = []; body = Text \"q\" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" })"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = (fun req -> match req.method with | Other v -> HttpServerResponse { status = 405; headers = []; body = Text v } | Query -> HttpServerResponse { status = 200; headers = []; body = Text \"q\" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }) }"
                     "    print \"ok\""
                 ]
                 "an inlined handler matching Other and Query"
@@ -35625,7 +35660,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = h }"
                     "    print \"ok\""
                 ]
                 "bodyTimeout omitted"
@@ -35634,7 +35669,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 5s } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 5s; handler = h }"
                     "    print \"ok\""
                 ]
                 "bodyTimeout supplied"
@@ -35643,7 +35678,7 @@ let serveTests =
             mustSay
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 5 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 5; handler = h }"
                     "    print \"ok\""
                 ]
                 "Duration"

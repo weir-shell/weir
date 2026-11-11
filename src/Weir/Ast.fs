@@ -1010,13 +1010,9 @@ let rec sexpr (e: Expr) : string =
         let bn = binder |> Option.map fst |> Option.defaultValue ""
         let av = arg |> Option.map sexpr |> Option.defaultValue ""
 
-        // the opts slot is lock's timeout, serve's two-atom handler
-        let key =
-            match k with
-            | WithinServe -> "handler"
-            | _ -> "timeout"
-
-        let ov = opts |> Option.map (fun o -> $"{key}={sexpr o}") |> Option.defaultValue ""
+        // the opts slot is lock's timeout
+        let ov =
+            opts |> Option.map (fun o -> $"timeout={sexpr o}") |> Option.defaultValue ""
 
         let ba = [ bn; av; ov ] |> List.filter ((<>) "") |> String.concat " "
         $"(within {withinKindName k} {ba} {sexpr b})"

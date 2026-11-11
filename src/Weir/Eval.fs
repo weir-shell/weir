@@ -7023,13 +7023,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if maxBody < 0L then
                 failwith $"serve: maxBody cannot be negative, got {formatSize maxBody}"
 
-            // the handler closure, evaluated once at scope entry: the
-            // config's field, or the two-atom form's handler atom over it
-            // [D:serve-defaults]
-            let handler =
-                match topts with
-                | Some h -> eval env h
-                | None -> recGet "handler" cfg
+            // the handler closure, read once at scope entry: the config's
+            // field [D:serve-defaults]
+            let handler = recGet "handler" cfg
 
             // request primitives -> the HttpServerRequest Value the handler sees
             let requestValue (r: Serve.SReq) : Value =

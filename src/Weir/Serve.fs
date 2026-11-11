@@ -744,7 +744,11 @@ let writeResponse (ctx: SCtx) (resp: SResp) (onStreamFailure: string -> unit) : 
         | RJson _ -> defaultType "application/json"
         | RForm _ -> defaultType "application/x-www-form-urlencoded"
         | RStream _ -> defaultType "text/event-stream"
-        | _ -> ()
+        // a Text body is text unless the handler says otherwise
+        // [D:serve-text-type]: left untyped, a browser sniffs it, and
+        // request text echoed into it would run as markup
+        | RText _ -> defaultType "text/plain; charset=utf-8"
+        | RNoBody -> ()
 
     if ok then
         try

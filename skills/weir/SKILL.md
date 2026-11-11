@@ -971,8 +971,9 @@ within tmp d
   (`port=None` still checks), and `retry timeout=2m` likewise — never in
   a record you write. The options are the record `ServerConfig`, so
   `within serve srv = cfg` takes one (`let cfg = { Server.defaults with
-  port = Some 8080; handler = route }`); a second atom, `= cfg route`,
-  is a handler used over the record's. NO BLOCK: `until stopped`
+  port = Some 8080; handler = route }`) — ONE record, the handler its
+  field; a second word after it (`= cfg route`, the pre-0.0.87
+  spelling) is a parse error [D:serve-one-record]. NO BLOCK: `until stopped`
   directly under the head (`within serve srv` / `until stopped`) serves
   until the stop signal and prints `serving on http://localhost:<port>
   — Ctrl+C to stop` on stderr; with a block weir prints nothing. A head

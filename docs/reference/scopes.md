@@ -298,10 +298,10 @@ let cfg = { Server.defaults with port = Some 8080; handler = route }
 within serve srv = cfg
 ```
 
-A second word after the record, `within serve srv = cfg route`, is a
-handler used in place of the record's. A record literal that names
-`port` and `maxConcurrent` may leave the other fields out; they take
-their defaults.
+Exactly one record follows the `=`; the handler is its `handler`
+field. A record literal written there that names `port` and
+`maxConcurrent` may leave the other fields out; they take their
+defaults.
 
 With no block, `until stopped` comes directly under the head. weir
 then prints one line on stderr, `serving on http://localhost:<port> —

@@ -2944,10 +2944,10 @@ let private withinExprBody =
                         // the scoped listener [D:http-serve], an options head
                         // [D:serve-defaults]: a binder, then `key=value`
                         // pairs over the defaults (retry's desugar), or `=`
-                        // and a config atom with an optional handler atom
-                        // over the record's. Atoms, never greedy exprs (the
-                        // within-cd argument rule). arg = config, opts = the
-                        // two-atom form's handler (the EWithin slots reused).
+                        // and one config atom — the handler is the record's
+                        // field, never a second word [D:serve-one-record].
+                        // An atom, never a greedy expr (the within-cd
+                        // argument rule). arg = config.
                         let shape =
                             "`within serve s port=8080 handler=route` (options over Server.defaults), or `within serve s = config` (a ServerConfig record), then an indented block or `until stopped`"
 
@@ -2972,17 +2972,22 @@ let private withinExprBody =
                             str_ws "="
                             >>. (postfixAtom
                                  <?> "the server's config (a ServerConfig record; parenthesize a compound)")
-                            .>>. ((followedBy blockEnd >>% None)
-                                  <|> (postfixAtom
-                                       <?> "the server's handler (HttpServerRequest -> HttpServerResponse; parenthesize a lambda), or the scope's block on the next line"
-                                       |>> Some))
-                            .>> (notFollowedBy (pchar '=')
+                            .>> (followedBy blockEnd
+                                 // options after `name=value`: the name was
+                                 // read as the binder — the teach below
+                                 <|> followedBy (attempt (identSpanned .>> pchar '='))
+                                 <|> (getPosition
+                                      >>= fun at ->
+                                          failFatallyAt
+                                              at
+                                              "within serve takes one record after `=` — the handler is its `handler` field: `within serve s = { config with handler = route }`, or an option: `within serve s port=8080 handler=route`"))
+                            .>> (notFollowedBy (attempt (identSpanned .>> pchar '='))
                                  <|> (getPosition
                                       >>= fun at ->
                                           failFatallyAt
                                               at
                                               $"within serve takes a name for the server before its options — {shape}"))
-                            |>> fun (cfgE, handlerE) -> Some cfgE, handlerE
+                            |>> fun cfgE -> Some cfgE, None
 
                         let options =
                             getPosition .>>. many kv

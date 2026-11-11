@@ -7503,8 +7503,7 @@ and private withinContracts
                 | Some a -> infer ctx env a |> Result.map Some
                 | None -> Ok None
             // serve's arg is the config record [D:http-serve]; the handler
-            // is one of its fields [D:serve-defaults], and the two-atom
-            // form's handler rides opts (below). A literal naming port and
+            // is one of its fields [D:serve-defaults]. A literal naming port and
             // maxConcurrent may leave the other fields out
             // [D:serve-body-timeout] [D:serve-max-body]: it is checked as
             // an update of the defaults, so every omitted field rests there.
@@ -7600,14 +7599,9 @@ and private withinContracts
             | WithinReadonly
             | WithinPlan -> Ok None
 
-        // opts is a Duration for lock (timeout=), the handler function
-        // for serve [D:http-serve], and absent elsewhere — the kind
-        // decides its type, so a dropped node cannot masquerade
+        // opts is a Duration for lock (timeout=) and absent elsewhere
         let! topts =
             match kind, opts with
-            | WithinServe, Some o ->
-                check ctx env o (TFun(TNamed("HttpServerRequest", []), TNamed("HttpServerResponse", [])))
-                |> Result.map Some
             | _, Some o -> check ctx env o TDur |> Result.map Some
             | _, None -> Ok None
 

@@ -2108,9 +2108,6 @@ within serve srv = cfg
 until stopped
 ```
 
-The older two-word form, `within serve srv = cfg handler`, still
-works; a handler written there is used in place of the record's.
-
 weir prints the `serving on …` line only when there is no block. A
 block is where you say what you want said, as the examples above do.
 
