@@ -7537,7 +7537,26 @@ and private withinContracts
                         // produces the located "no declared record" or
                         // field-type diagnostic
                         check ctx env a (TNamed("ServerConfig", [])) |> Result.map Some
-                | Some a -> check ctx env a (TNamed("ServerConfig", [])) |> Result.map Some
+                | Some a ->
+                    check ctx env a (TNamed("ServerConfig", []))
+                    |> Result.map Some
+                    |> Result.mapError (fun e ->
+                        // `within serve port=8080`: an option where the
+                        // server's name goes reads as binder `=` config
+                        // [D:serve-defaults]
+                        match binder, typeDefFor env "ServerConfig" with
+                        | Some(n, bs), Some(Record def) when
+                            a.Span.Start.Line = bs.End.Line
+                            && a.Span.Start.Col = bs.End.Col + 1
+                            && def.Fields |> List.exists (fun (f, _) -> f = n)
+                              ->
+                              {
+                                  e with
+                                      Message =
+                                          $"within serve takes a name for the server before its options — `within serve s {n}=…`"
+                                      Span = bs
+                              }
+                        | _ -> e)
                 | None -> Ok None
             | WithinTmp -> Ok None
             // pure carries no resource [D:pure-stage1] — no arg, no

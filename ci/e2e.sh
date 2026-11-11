@@ -17695,6 +17695,60 @@ WEOF
         echo "e2e ok: within serve + until stopped — a TERM closes by the normal path (in-flight request answered, always runs, exit 0); a second TERM cuts"
     fi
 
+    # within serve joins the options family [D:serve-defaults]: key=value
+    # options over Server.defaults, `= config` with the handler in the
+    # record, the two-atom handler over the record's, the short literal
+    # resting at the default handler — and no announce while a block is
+    # written
+    cat > "$rpdir/sdforms.weir" <<'WEOF'
+let a = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "from-record" }
+let b = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "from-atom" }
+let get srv = Http.get $"http://127.0.0.1:{Server.port srv}/" |> Http.expect |> Seq.head
+within serve s handler=a
+    print $"kv={get s}"
+let cfg = { Server.defaults with handler = a }
+within serve s = cfg
+    print $"record={get s}"
+within serve s = cfg b
+    print $"atom={get s}"
+within serve s = { port = None; maxConcurrent = 2 }
+    let r = Http.send (Http.get $"http://127.0.0.1:{Server.port s}/nope")
+    print $"legacy={r.status}"
+within serve s
+    print $"floor={Server.defaults.maxConcurrent >= 8}"
+WEOF
+    rc=0; out=$(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy $BIN "$rpdir/sdforms.weir" 2>"$rpdir/sdforms.err") || rc=$?
+    [ "$rc" = "0" ] || fail "the serve option forms run: rc=$rc $out $(cat "$rpdir/sdforms.err")"
+    [ "$(echo "$out" | tr '\n' ',')" = "kv=from-record,record=from-record,atom=from-atom,legacy=404,floor=true," ] || fail "the serve option forms: $out"
+    [ ! -s "$rpdir/sdforms.err" ] || fail "a serve scope with a block announces nothing: $(cat "$rpdir/sdforms.err")"
+    echo "e2e ok: within serve — key=value options, = config, the two-atom handler over the record's, the short literal on the default handler; silent with a block"
+
+    # no block [D:serve-defaults]: `until stopped` directly under the head
+    # serves until the TERM and announces on stderr; with no handler set the
+    # landing page answers GET / (200, text/plain) and anything else 404
+    if command -v curl >/dev/null 2>&1; then
+        sdport=8562
+        printf 'within serve s port=(Some %s)\nuntil stopped\nalways\n    print "closing"\nprint "after"\n' "$sdport" > "$rpdir/sdbare.weir"
+        : > "$rpdir/sdbare.err"
+        $BIN "$rpdir/sdbare.weir" > "$rpdir/sdbare.out" 2> "$rpdir/sdbare.err" &
+        sdpid=$!
+        for _ in $(seq 1 200); do grep -qF "to stop" "$rpdir/sdbare.err" 2>/dev/null && break; sleep 0.05; done
+        [ "$(cat "$rpdir/sdbare.err")" = "serving on http://localhost:$sdport — Ctrl+C to stop" ] || { kill "$sdpid" 2>/dev/null || true; fail "a block-less serve announces one line on stderr: '$(cat "$rpdir/sdbare.err")'"; }
+        root=$(curl -s --max-time 5 -w '\n%{http_code} %{content_type}' "http://localhost:$sdport/" || true)
+        other=$(curl -s --max-time 5 -w '\n%{http_code}' -X POST "http://localhost:$sdport/topic/a" || true)
+        kill -TERM "$sdpid"
+        rc=0; wait "$sdpid" || rc=$?
+        [ "$rc" = "0" ] || fail "a block-less serve closes normally on a TERM (exit 0), got $rc: $(cat "$rpdir/sdbare.err")"
+        echo "$root" | grep -qF "weir is serving, but no handler is set." || fail "the landing page says no handler is set: $root"
+        echo "$root" | grep -qF "within serve s handler=route" || fail "the landing page shows the line that sets one: $root"
+        [ "$(echo "$root" | tail -1)" = "200 text/plain; charset=utf-8" ] || fail "the landing page is 200 text/plain: $root"
+        [ "$(echo "$other" | tail -1)" = "404" ] || fail "any other request is a 404: $other"
+        echo "$other" | grep -qF "within serve s handler=route" || fail "the 404 carries the same hint: $other"
+        [ "$(tr '\n' ',' < "$rpdir/sdbare.out")" = "closing,after," ] || fail "the always, then the line after: $(cat "$rpdir/sdbare.out")"
+        [ "$(wc -l < "$rpdir/sdbare.err")" = "1" ] || fail "the announce is the only stderr line: $(cat "$rpdir/sdbare.err")"
+        echo "e2e ok: within serve — no block + until stopped announces where it listens, the default handler answers (200 at GET /, 404 elsewhere), a TERM closes it, exit 0"
+    fi
+
     # held scopes [D:held-scope]: the body, the hold, then the normal close —
     # the always runs while the resource is still held (tmp dir present, the
     # scoped process alive), then the release; exit 0. A stop already

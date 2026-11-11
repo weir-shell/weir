@@ -2941,27 +2941,103 @@ let private withinExprBody =
                                         Span = { Start = pos p; End = body.Span.End }
                                     }
                     | Ast.WithinServe ->
-                        // the scoped listener [D:http-serve]: binder `=`
-                        // then two atoms — a config record and a handler
-                        // lambda (`{ port = 8080 } handler`). Atoms, never
-                        // greedy exprs (the within-cd argument rule), so
-                        // the config and handler stay two words and the
-                        // body's first statement is not swallowed. arg =
-                        // config, opts = handler (the EWithin slots reused).
-                        identSpanned .>> ws .>> str_ws "="
+                        // the scoped listener [D:http-serve], an options head
+                        // [D:serve-defaults]: a binder, then `key=value`
+                        // pairs over the defaults (retry's desugar), or `=`
+                        // and a config atom with an optional handler atom
+                        // over the record's. Atoms, never greedy exprs (the
+                        // within-cd argument rule). arg = config, opts = the
+                        // two-atom form's handler (the EWithin slots reused).
+                        let shape =
+                            "`within serve s port=8080 handler=route` (options over Server.defaults), or `within serve s = config` (a ServerConfig record), then an indented block or `until stopped`"
+
+                        let blockEnd =
+                            eof
+                            <|> skipChar ';'
+                            <|> skipString sibSepStr
+                            <|> skipAnyOf ")]}"
+                            <|> (keyword "until" >>% ())
+                            <|> (keyword "always" >>% ())
+
+                        let defaults at = {
+                            Kind = EVar "|serveDefaults"
+                            Span = { Start = at; End = at }
+                        }
+
+                        let kv =
+                            attempt (identSpanned .>> pchar '=')
+                            .>>. (postfixAtom <?> "the key's value (an atom; parenthesize a compound)")
+
+                        let record =
+                            str_ws "="
+                            >>. (postfixAtom
+                                 <?> "the server's config (a ServerConfig record; parenthesize a compound)")
+                            .>>. ((followedBy blockEnd >>% None)
+                                  <|> (postfixAtom
+                                       <?> "the server's handler (HttpServerRequest -> HttpServerResponse; parenthesize a lambda), or the scope's block on the next line"
+                                       |>> Some))
+                            .>> (notFollowedBy (pchar '=')
+                                 <|> (getPosition
+                                      >>= fun at ->
+                                          failFatallyAt
+                                              at
+                                              $"within serve takes a name for the server before its options — {shape}"))
+                            |>> fun (cfgE, handlerE) -> Some cfgE, handlerE
+
+                        let options =
+                            getPosition .>>. many kv
+                            >>= fun (at, pairs) ->
+                                match
+                                    pairs
+                                    |> List.groupBy (fun ((k, _), _) -> k)
+                                    |> List.tryFind (fun (_, g) -> g.Length > 1)
+                                with
+                                | Some(k, g) ->
+                                    // anchor on the second spelling [D:anchor-before-read]
+                                    let ((_, ks), _) = g[1]
+                                    failFatallyAtCol ks.Start.Col $"duplicate key '{k}' — each option is given once"
+                                | None ->
+                                    match pairs with
+                                    | [] -> preturn (Some(defaults (pos at)), None)
+                                    | _ ->
+                                        preturn (
+                                            Some {
+                                                Kind =
+                                                    EUpdate(
+                                                        defaults (pos at),
+                                                        pairs |> List.map (fun ((k, ks), v) -> [ (k, ks) ], v)
+                                                    )
+                                                Span = {
+                                                    Start = pos at
+                                                    End = (List.last pairs |> snd).Span.End
+                                                }
+                                            },
+                                            None
+                                        )
+
+                        ((identSpanned .>> ws)
+                         <|> (getPosition
+                              >>= fun at -> failFatallyAt at $"within serve takes a name for the server — {shape}"))
                         >>= fun (binder, bspan) ->
-                            (postfixAtom <?> "the server's config (a record; parenthesize a compound)")
-                            >>= fun cfgE ->
-                                (postfixAtom
-                                 <?> "the server's handler (HttpServerRequest -> HttpServerResponse; parenthesize a lambda)")
-                                >>= fun handlerE ->
-                                    (opt (str_ws ";" <|> str_ws sibSepStr))
-                                    >>. (withPatNames
-                                             { PKind = PVar binder; PSpan = bspan }
-                                             (withStmtLetCmd (withExprParen false seqExpr))
-                                         <?> "the scope's block")
+                            (record <|> options)
+                            >>= fun (cfgE, handlerE) ->
+                                (opt (str_ws ";" <|> str_ws sibSepStr)) >>. getPosition
+                                >>= fun at ->
+                                    // no block [D:serve-defaults]: `until
+                                    // stopped` or `always` directly under
+                                    // the head — the edge stays written
+                                    ((followedBy ((keyword "until" >>% ()) <|> (keyword "always" >>% ()))
+                                      >>% Ast.absentBody (pos at))
+                                     <|> (followedBy (eof <|> skipAnyOf ")]}")
+                                          >>. failFatallyAt
+                                                  at
+                                                  "within serve needs an indented block, or `until stopped` on the next line to serve until the script is stopped")
+                                     <|> (withPatNames
+                                              { PKind = PVar binder; PSpan = bspan }
+                                              (withStmtLetCmd (withExprParen false seqExpr))
+                                          <?> "the scope's block"))
                                     |>> fun body -> {
-                                        Kind = EWithin(wk.Id, Some(binder, bspan), Some cfgE, Some handlerE, body)
+                                        Kind = EWithin(wk.Id, Some(binder, bspan), cfgE, handlerE, body)
                                         Span = { Start = pos p; End = body.Span.End }
                                     }
                     | Ast.WithinTmp ->

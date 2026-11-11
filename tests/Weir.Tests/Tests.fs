@@ -34482,6 +34482,14 @@ let serveTests =
     let okHandler =
         "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
 
+    let shape (lines: string list) =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Ok [ ll ] ->
+            match Weir.Parser.parseLineFull cmdResolver ll.Text with
+            | Ok s -> Weir.Ast.sexprStmt s
+            | Error f -> failtest f.Message
+        | other -> failtest $"unexpected assembly: {other}"
+
     let freePort () =
         let probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
         probe.Start()
@@ -34805,6 +34813,124 @@ let serveTests =
                     "    print \"ok\""
                 ]
                 "the full record is an ordinary literal"
+        }
+        test "key=value options are an update of the defaults, by construction [D:serve-defaults]" {
+            Expect.equal
+                (shape [ "within serve s port=(Some 8080) handler=h"; "    print \"b\"" ])
+                "(sexpr (within serve s {|serveDefaults with port = (Some 8080); handler = h} (print \"b\")))"
+                "the pairs desugar over the internal key"
+
+            Expect.equal
+                (shape [ "within serve s"; "    print \"b\"" ])
+                "(sexpr (within serve s |serveDefaults (print \"b\")))"
+                "no options is the defaults themselves"
+
+            clean
+                [
+                    okHandler
+                    "within serve s port=(Some 8080) maxConcurrent=2 bodyTimeout=5s maxBody=1MiB handler=h"
+                    "    print $\"{Server.port s}\""
+                ]
+                "every key"
+
+            clean
+                [ "within serve s port=None"; "    FOO=1 sh -c \"true\""; "    print \"b\"" ]
+                "a first block line shaped NAME=value cmd is the block's, not one more option"
+
+            mustSay
+                [ "within serve s prot=None"; "    print \"b\"" ]
+                "ServerConfig has no field 'prot'. Did you mean 'port'?"
+                "an unknown key names the nearest one"
+
+            mustSay
+                [ "within serve s port=None port=None"; "    print \"b\"" ]
+                "duplicate key 'port' — each option is given once"
+                "a repeated key"
+
+            mustSay
+                [ "within serve s maxConcurrent=\"4\""; "    print \"b\"" ]
+                "expected int, got string"
+                "a value of the wrong type"
+        }
+        test "= config is the record form; a second atom is a handler over the record's [D:serve-defaults]" {
+            Expect.equal
+                (shape [ "within serve s = cfg"; "    print \"b\"" ])
+                "(sexpr (within serve s cfg (print \"b\")))"
+                "one atom: the record carries the handler"
+
+            Expect.equal
+                (shape [ "within serve s = cfg h"; "    print \"b\"" ])
+                "(sexpr (within serve s cfg handler=h (print \"b\")))"
+                "two atoms: the handler rides its own slot"
+
+            clean
+                [
+                    okHandler
+                    "let cfg = { Server.defaults with port = Some 8080; handler = h }"
+                    "within serve s = cfg"
+                    "    print $\"{Server.port s}\""
+                ]
+                "a ServerConfig value alone"
+
+            clean
+                [ "within serve s = { port = None; maxConcurrent = 2 }"; "    print \"b\"" ]
+                "the short literal alone: its handler rests at the default"
+
+            mustSay [ "within serve s = 8080"; "    print \"b\"" ] "expected ServerConfig, got int" "not a record"
+        }
+        test "no block: until stopped and/or always directly under the head [D:serve-defaults]" {
+            Expect.equal
+                (shape [ "within serve s"; "until stopped" ])
+                "(sexpr (within serve s |serveDefaults (held ())))"
+                "the held server with no block"
+
+            Expect.equal
+                (shape [ "within serve s port=None"; "until stopped"; "always"; "    print \"c\"" ])
+                "(sexpr (within serve s {|serveDefaults with port = None} (within (held ()) (always (print \"c\")))))"
+                "with a cleanup"
+
+            Expect.equal
+                (shape [ "within serve s = cfg"; "always"; "    print \"c\"" ])
+                "(sexpr (within serve s cfg (within () (always (print \"c\")))))"
+                "always alone"
+
+            clean [ "within serve s"; "until stopped"; "print \"after\"" ] "checks clean"
+            clean [ okHandler; "within serve s = Server.defaults h"; "until stopped" ] "after the two-atom head too"
+
+            clean
+                [
+                    "within serve s"
+                    "until stopped"
+                    "always"
+                    "    print $\"{Server.running s}\""
+                ]
+                "the binder reaches the cleanup"
+        }
+        test "a serve head with no block and no until stopped names the shape [D:serve-defaults]" {
+            mustSay
+                [ "within serve s" ]
+                "within serve needs an indented block, or `until stopped` on the next line"
+                "the head alone"
+
+            mustSay
+                [ "let f () ="; "    within serve s port=None"; "f ()" ]
+                "within serve needs an indented block, or `until stopped` on the next line"
+                "the head alone, nested"
+
+            mustSay
+                [ "within serve"; "until stopped" ]
+                "within serve takes a name for the server — `within serve s port=8080"
+                "no binder"
+
+            mustSay
+                [ "within serve port=None handler=h"; "until stopped" ]
+                "within serve takes a name for the server before its options"
+                "options where the name goes"
+
+            mustSay
+                [ "within serve port=None"; "until stopped" ]
+                "within serve takes a name for the server before its options — `within serve s port=…`"
+                "one option where the name goes"
         }
         test "Serve.start 0 binds a free port and the handle reports the BOUND one [D:serve-port-option]" {
             let h = Weir.Serve.start 0 (limits 1024L)

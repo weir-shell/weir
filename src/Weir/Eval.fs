@@ -7384,6 +7384,17 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             let frame = Session.pushFrame release
 
+            // a server held with no block says where it listens
+            // [D:serve-defaults]; a written block is the opt-out
+            let rec heldWithNoBlock (b: TypedExpr) =
+                match b.Kind with
+                | TEHold { Kind = TEUnit; Span = sp } -> sp.Start = sp.End
+                | TEAlways(inner, _) -> heldWithNoBlock inner
+                | _ -> false
+
+            if heldWithNoBlock body then
+                eprintfn "serving on http://localhost:%d — Ctrl+C to stop" handle.Port
+
             let v =
                 try
                     try

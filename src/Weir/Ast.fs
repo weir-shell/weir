@@ -57,8 +57,8 @@ type WithinKindId =
     // the scoped HTTP listener [D:http-serve]: the socket lives
     // exactly as long as the block — served until the scope exits
     // (normal, raise, SIGINT/SIGTERM), the listener closed on every
-    // path (the port frees). Binds a `Server` handle; takes a config
-    // atom + a handler atom.
+    // path (the port frees). Binds a `Server` handle; takes key=value
+    // options or a config record [D:serve-defaults].
     | WithinServe
     | WithinLock
     // the purity assertion [D:pure-stage1] — the family's first
@@ -125,7 +125,7 @@ let withinKinds: WithinKind list = [
     // the scoped HTTP listener [D:http-serve]: the socket lives
     // exactly as long as the block, freed on every exit path (the
     // no-orphan law applied to ports). Binds a Server handle; takes
-    // a config atom + a handler atom.
+    // key=value options or a config record [D:serve-defaults].
     {
         Id = WithinServe
         Name = "serve"
@@ -920,6 +920,19 @@ let qualCase (qual: (string * Span) option) (ctor: string) : string =
     | Some(m, _) -> m + "." + ctor
     | None -> ctor
 
+/// the block a body-less `within serve` leaves out [D:serve-defaults]: a
+/// unit of zero width at the head's end — a written `()` has its two
+/// columns, so the two stay apart for the announce and the formatter
+let absentBody (at: Pos) : Expr = {
+    Kind = EUnit
+    Span = { Start = at; End = at }
+}
+
+let isAbsentBody (e: Expr) : bool =
+    match e.Kind with
+    | EUnit -> e.Span.Start = e.Span.End
+    | _ -> false
+
 let rec sexprPat (p: Pattern) : string =
     match p.PKind with
     | PWildcard -> "_"
@@ -978,8 +991,13 @@ let rec sexpr (e: Expr) : string =
         let bn = binder |> Option.map fst |> Option.defaultValue ""
         let av = arg |> Option.map sexpr |> Option.defaultValue ""
 
-        let ov =
-            opts |> Option.map (fun o -> $"timeout={sexpr o}") |> Option.defaultValue ""
+        // the opts slot is lock's timeout, serve's two-atom handler
+        let key =
+            match k with
+            | WithinServe -> "handler"
+            | _ -> "timeout"
+
+        let ov = opts |> Option.map (fun o -> $"{key}={sexpr o}") |> Option.defaultValue ""
 
         let ba = [ bn; av; ov ] |> List.filter ((<>) "") |> String.concat " "
         $"(within {withinKindName k} {ba} {sexpr b})"

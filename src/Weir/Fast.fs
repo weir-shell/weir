@@ -3735,7 +3735,9 @@ and private withinExpr (st: St) : Expr =
                                 | ECmd _ -> mk (Some(b, bspan)) (Some cmdE) None (withLocals st [ b ] block)
                                 | _ -> refuse st
                 | WithinServe ->
-                    // the scoped listener [D:http-serve]: a config atom, a handler atom
+                    // the scoped listener [D:http-serve]: a config atom, a handler
+                    // atom; the options head, the lone config and the block-less
+                    // form are the grammar's [D:serve-defaults]
                     let b, bspan = identSpanned st
 
                     if isNull' b then

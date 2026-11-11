@@ -741,8 +741,8 @@ let isReadonlyHead (piece: string) : bool = isDistrictHead "readonly" piece
 let isPlanHead (piece: string) : bool = isDistrictHead "plan" piece
 
 // the binder-head scanner [D:scoped-procs] [D:http-serve]: a `within
-// proc <b> =` / `within serve <b> =` head whose tail is a resource spec
-// (a command for proc, `{config} handler` atoms for serve), so the
+// proc <b> =` / `within serve <b> …` head whose tail is a resource spec
+// (a command for proc, options or `{config} handler` atoms for serve), so the
 // first block statement must join at the machine boundary too — a space
 // join would feed it to the tail (proc: the command's argv; serve: the
 // handler application). This scan is `;`-blind (it finds the marker
@@ -756,7 +756,7 @@ let isPlanHead (piece: string) : bool = isDistrictHead "plan" piece
 // A fast reject — Contains is allocation-free and vectorized — skips the
 // per-char foldOutsideStrings scan on the vast majority of segments,
 // which carry no marker at all.
-let private endsInBinderHeadSeg (marker: string) (lastSeg: string) : bool =
+let private endsInBinderHeadSeg (needsEq: bool) (marker: string) (lastSeg: string) : bool =
     if not (lastSeg.Contains marker) then
         false
     else
@@ -783,13 +783,14 @@ let private endsInBinderHeadSeg (marker: string) (lastSeg: string) : bool =
                 lastSeg
 
         lastStart >= 0
-        && (let rest = lastSeg.Substring(lastStart + marker.Length)
+        && (not needsEq
+            || (let rest = lastSeg.Substring(lastStart + marker.Length)
 
-            match rest.IndexOf '=' with
-            | -1 -> false
-            | eq ->
-                rest.Substring(0, eq).Trim()
-                |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
+                match rest.IndexOf '=' with
+                | -1 -> false
+                | eq ->
+                    rest.Substring(0, eq).Trim()
+                    |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')))
 
 // the last segment of a full logical-line text (after the last sibling
 // sentinel) — the whole-text callers (dangleOpensBlock on a short piece)
@@ -798,16 +799,20 @@ let private lastSegOf (text: string) : string =
     | -1 -> text
     | i -> text.Substring(i + 1)
 
-let private endsInBinderHead (marker: string) (text: string) : bool =
-    endsInBinderHeadSeg marker (lastSegOf text)
+let private endsInBinderHead (needsEq: bool) (marker: string) (text: string) : bool =
+    endsInBinderHeadSeg needsEq marker (lastSegOf text)
 
-let endsInProcHead (text: string) : bool = endsInBinderHead "within proc " text
+let endsInProcHead (text: string) : bool =
+    endsInBinderHead true "within proc " text
 
 // the serve head [D:http-serve]: same shape as proc's — a `within serve
-// <b> =` binder head whose block joins sentineled — routed through the
+// <b> …` binder head whose block joins sentineled — routed through the
 // same `;`-blind scanner so an inline config record `{ a; b }` on the
-// head line does not defeat the body attach
-let endsInServeHead (text: string) : bool = endsInBinderHead "within serve " text
+// head line does not defeat the body attach. Every serve head qualifies,
+// `=` or not [D:serve-defaults]: its tail is key=value pairs or atoms,
+// and a first block line `NAME=value cmd` must not read as one more pair
+let endsInServeHead (text: string) : bool =
+    endsInBinderHead false "within serve " text
 
 let private isLoopHead (t: string) : bool =
     let afterLet =
@@ -1636,11 +1641,11 @@ let private bufEndsInBareRepeat (b: PendBuf) : bool =
 
 let private bufEndsInProcHead (b: PendBuf) : bool =
     bufLastSegContains b "within proc "
-    && endsInBinderHeadSeg "within proc " (bufLastSeg b)
+    && endsInBinderHeadSeg true "within proc " (bufLastSeg b)
 
 let private bufEndsInServeHead (b: PendBuf) : bool =
     bufLastSegContains b "within serve "
-    && endsInBinderHeadSeg "within serve " (bufLastSeg b)
+    && endsInBinderHeadSeg false "within serve " (bufLastSeg b)
 
 // `within env A=1 …` [D:within-env-pairs]: its block joins sentineled too,
 // so a first body line that is itself `B=2 cmd` stays that command's own
@@ -1648,7 +1653,7 @@ let private bufEndsInServeHead (b: PendBuf) : bool =
 // identifier glued to `=`; a bound `within env e` keeps the space join)
 let private bufEndsInEnvHead (b: PendBuf) : bool =
     bufLastSegContains b "within env "
-    && endsInBinderHeadSeg "within env " (bufLastSeg b)
+    && endsInBinderHeadSeg true "within env " (bufLastSeg b)
 
 // materialize a LogicalLine from a finished pending buffer (segments are
 // reversed at the boundary exactly as before)
