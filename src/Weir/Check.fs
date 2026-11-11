@@ -6116,6 +6116,35 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | Some dup -> return! err expr.Span $"duplicate update of field '{dup}'"
             | None ->
 
+                // in key=value options a plain T for an Option<T> key means
+                // Some [D:serve-defaults] — `port=8080`, `timeout=2m`; a
+                // written record stays strict
+                let lifts =
+                    match source.Kind with
+                    | EVar base' -> isOptionsBase base'
+                    | _ -> false
+
+                let checkLeaf (value: Expr) (fieldTy: Ty) : Result<TypedExpr, TypeError> =
+                    match check ctx env value fieldTy, resolve ctx fieldTy with
+                    | Error e, TNamed("Option", [ inner ]) when lifts ->
+                        match check ctx env value inner with
+                        | Ok tv ->
+                            Ok {
+                                Kind =
+                                    TEApp(
+                                        {
+                                            Kind = TEVar "Some"
+                                            Ty = TFun(inner, fieldTy)
+                                            Span = value.Span
+                                        },
+                                        tv
+                                    )
+                                Ty = fieldTy
+                                Span = value.Span
+                            }
+                        | Error _ -> Error e
+                    | r, _ -> r
+
                 // subjectSpan = the expression whose type must be a record:
                 // the source at the first hop, the previous field at deeper
                 // ones — the non-record error blames the non-record, never
@@ -6142,7 +6171,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                     let fieldTy = substParams def.Params targs declared
 
                                     if List.isEmpty rest then
-                                        check ctx env value fieldTy
+                                        checkLeaf value fieldTy
                                     else
                                         updOne fieldSpan fieldTy rest value
                                 | None ->
@@ -6171,7 +6200,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                     t
 
                             if List.isEmpty rest then
-                                check ctx env value fieldTy
+                                checkLeaf value fieldTy
                             else
                                 updOne fieldSpan fieldTy rest value
                         | TFun _ as fty ->

@@ -34852,6 +34852,65 @@ let serveTests =
                 "expected int, got string"
                 "a value of the wrong type"
         }
+        test
+            "in key=value options a plain T for an Option<T> key means Some; a written record stays strict [D:serve-defaults]" {
+            clean
+                [
+                    "let p = 8081"
+                    "within serve s port=8080"
+                    "    print \"a\""
+                    "within serve s port=p"
+                    "    print \"b\""
+                ]
+                "a plain int is Some of it"
+
+            clean
+                [
+                    "let q = Some 8080"
+                    "within serve s port=(Some 8080)"
+                    "    print \"a\""
+                    "within serve s port=None"
+                    "    print \"b\""
+                    "within serve s port=q"
+                    "    print \"c\""
+                ]
+                "the Option spellings still check"
+
+            mustSay
+                [ "within serve s port=\"8080\""; "    print \"a\"" ]
+                "expected Option<int>, got string"
+                "neither T nor Option<T> names the key's type"
+
+            mustSay
+                [ "let cfg = { Server.defaults with port = 8080 }" ]
+                "expected Option<int>, got int"
+                "the public record update is strict"
+
+            mustSay
+                [ "within serve s = { port = 8080; maxConcurrent = 1 }"; "    print \"a\"" ]
+                "serve's port is optional: `port = Some 8080`"
+                "the literal is strict and names its repair [D:serve-port-option]"
+
+            clean [ "retry attempts=2 timeout=2m"; "    true" ] "retry's timeout"
+            clean [ "repeat interval=1s timeout=5m"; "    true" ] "repeat's timeout"
+            clean [ "retry attempts=2 timeout=(Some 2m)"; "    true" ] "the Some spelling stays"
+
+            mustSay
+                [ "let o = { Retry.defaults with timeout = 2m }" ]
+                "expected Option<Duration>, got Duration"
+                "Retry's written update is strict"
+
+            clean
+                [ "type T = Some of string | Nope"; "retry attempts=1 timeout=1s"; "    true" ]
+                "a user case named Some does not capture the lift"
+
+            expectValue "retry attempts=2 delay=0ms timeout=2m (1 + 1) until r (r == 2)" (VInt 2L)
+
+            let ex =
+                Expect.throwsC (fun () -> run "repeat interval=5ms timeout=30ms (1 == 2)" |> ignore) id
+
+            Expect.stringContains ex.Message "repeat: timed out after" "the lifted timeout is the one that runs"
+        }
         test "= config is the record form; a second atom is a handler over the record's [D:serve-defaults]" {
             Expect.equal
                 (shape [ "within serve s = cfg"; "    print \"b\"" ])

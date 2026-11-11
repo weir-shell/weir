@@ -920,6 +920,13 @@ let qualCase (qual: (string * Span) option) (ctor: string) : string =
     | Some(m, _) -> m + "." + ctor
     | None -> ctor
 
+/// a key=value head's desugar base (`|retryDefaults`, `|serveDefaults`,
+/// …) [D:desugar-capture]: un-typeable, so an update of one is always
+/// the sugar's and never a written record — the mark the option lift
+/// reads [D:serve-defaults]
+let isOptionsBase (name: string) : bool =
+    name.StartsWith "|" && name.EndsWith "Defaults"
+
 /// the block a body-less `within serve` leaves out [D:serve-defaults]: a
 /// unit of zero width at the head's end — a written `()` has its two
 /// columns, so the two stay apart for the announce and the formatter

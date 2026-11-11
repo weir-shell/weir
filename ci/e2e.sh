@@ -17699,7 +17699,8 @@ WEOF
     # options over Server.defaults, `= config` with the handler in the
     # record, the two-atom handler over the record's, the short literal
     # resting at the default handler — and no announce while a block is
-    # written
+    # written; and a plain value for an Option key means Some (`port=8562`
+    # below, `timeout=2m` here)
     cat > "$rpdir/sdforms.weir" <<'WEOF'
 let a = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "from-record" }
 let b = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "from-atom" }
@@ -17716,10 +17717,15 @@ within serve s = { port = None; maxConcurrent = 2 }
     print $"legacy={r.status}"
 within serve s
     print $"floor={Server.defaults.maxConcurrent >= 8}"
+let lifted = retry attempts=2 delay=1ms timeout=2m
+    1 + 1
+until r
+    r == 2
+print $"lifted={lifted}"
 WEOF
     rc=0; out=$(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy $BIN "$rpdir/sdforms.weir" 2>"$rpdir/sdforms.err") || rc=$?
     [ "$rc" = "0" ] || fail "the serve option forms run: rc=$rc $out $(cat "$rpdir/sdforms.err")"
-    [ "$(echo "$out" | tr '\n' ',')" = "kv=from-record,record=from-record,atom=from-atom,legacy=404,floor=true," ] || fail "the serve option forms: $out"
+    [ "$(echo "$out" | tr '\n' ',')" = "kv=from-record,record=from-record,atom=from-atom,legacy=404,floor=true,lifted=2," ] || fail "the serve option forms: $out"
     [ ! -s "$rpdir/sdforms.err" ] || fail "a serve scope with a block announces nothing: $(cat "$rpdir/sdforms.err")"
     echo "e2e ok: within serve — key=value options, = config, the two-atom handler over the record's, the short literal on the default handler; silent with a block"
 
@@ -17728,7 +17734,7 @@ WEOF
     # landing page answers GET / (200, text/plain) and anything else 404
     if command -v curl >/dev/null 2>&1; then
         sdport=8562
-        printf 'within serve s port=(Some %s)\nuntil stopped\nalways\n    print "closing"\nprint "after"\n' "$sdport" > "$rpdir/sdbare.weir"
+        printf 'within serve s port=%s\nuntil stopped\nalways\n    print "closing"\nprint "after"\n' "$sdport" > "$rpdir/sdbare.weir"
         : > "$rpdir/sdbare.err"
         $BIN "$rpdir/sdbare.weir" > "$rpdir/sdbare.out" 2> "$rpdir/sdbare.err" &
         sdpid=$!
