@@ -26475,19 +26475,19 @@ let httpTests =
             Expect.stringContains m "does not interpolate" "the auth union carries the Secret whole instead"
         }
         test "the request body carries pre-serialized `to json` lines (no generic, no Jsonable class)" {
-            // Json is a content-type tag over seq<string>; the caller's
+            // RawJson is a content-type tag over seq<string>; the caller's
             // `to json` is the typed serialization [D:http]
             let e = env |> declare "type P = { name: string }"
 
             let v =
-                evalWith e "{ Http.defaults with body = Json ({ name = \"a\" } |> to json) }"
+                evalWith e "{ Http.defaults with body = RawJson ({ name = \"a\" } |> to json) }"
 
             match v with
             | VRecord("HttpRequest", f) ->
                 match Weir.Eval.recGet "body" f with
-                | VUnion("Json", Some(VSeq lines)) ->
+                | VUnion("RawJson", Some(VSeq lines)) ->
                     Expect.equal (lines |> Seq.map strOf |> List.ofSeq) [ "{\"name\":\"a\"}" ] "one document line"
-                | v -> failtest $"body not Json: {v}"
+                | v -> failtest $"body not RawJson: {v}"
             | v -> failtest $"not a request: {v}"
         }
         test "a constructor equals its record form BYTE-IDENTICALLY [D:http-s2] — a producer, not a drift" {
@@ -39910,6 +39910,7 @@ let helpUxTests =
                     "YAML"
                     "TOML"
                     "XML"
+                    "HTML"
                     "NDJSON" // newline-delimited JSON, `jsonl`'s long name
                     "UTF-8" // encodings and character notation
                     "U+FFFD" // the replacement character
@@ -40033,12 +40034,46 @@ let helpUxTests =
         test "Reply builds the ordinary response record [D:reply]" {
             let body src =
                 run
-                    $"match ({src}).body with | Text t -> t | NoBody -> \"<none>\" | Json ls -> Str.join \"\" ls | _ -> \"?\""
+                    $"match ({src}).body with | Text t -> t | NoBody -> \"<none>\" | RawJson ls -> Str.join \"\" ls | _ -> \"?\""
 
             Expect.equal (run "(Reply.text 201 \"made\").status") (VInt 201L) "text status"
             Expect.equal (body "Reply.text 201 \"made\"") (VStr "made") "text body"
             Expect.equal (body "Reply.empty 404") (VStr "<none>") "empty"
-            Expect.equal (body "Reply.json 200 ([1; 2] |> to json)") (VStr "[1,2]") "json"
+            // the value renders at the call site [D:json-value]
+            Expect.equal (body "Reply.json 200 {| ok = 10 |}") (VStr "{\"ok\":10}") "a value, applied"
+            Expect.equal (body "[ \"a\" ] |> Reply.json 200") (VStr "[\"a\"]") "a value, piped"
+            Expect.equal (body "[1; 2] |> to json |> Reply.rawJson 200") (VStr "[1,2]") "rendered lines"
+
+            Expect.stringContains
+                (checkErr "Reply.json 200 (fun x -> x + 1)").Message
+                "is not admitted"
+                "the jsonable law, at the call site"
+
+            Expect.stringContains (checkErr "Reply.json 200").Message "takes the value" "no function value"
+
+            Expect.stringContains
+                (checkErr "Reply.json 200 ([ 1 ] |> to json)").Message
+                "Reply.rawJson"
+                "a `to json` stage is refused"
+
+            // [D:reply-members]
+            let headers src =
+                run $"({src}).headers |> Seq.map (fun (k, v) -> k + \"=\" + v) |> Str.join \";\""
+
+            Expect.equal
+                (headers "Reply.html 200 \"<p>\" |> Reply.header \"a\" \"b\"")
+                (VStr "content-type=text/html; charset=utf-8;a=b")
+                "html types itself; header appends"
+
+            Expect.equal (body "Reply.html 200 \"<p>\"") (VStr "<p>") "html body"
+            Expect.equal (headers "Reply.redirect 302 \"/login\"") (VStr "location=/login") "redirect"
+            Expect.equal (body "Reply.redirect 302 \"/login\"") (VStr "<none>") "redirect has no body"
+
+            Expect.equal
+                (run "match ([ \"a\"; \"b\" ] |> Reply.stream 200).body with | Stream xs -> Seq.length xs | _ -> 0")
+                (VInt 2L)
+                "stream"
+
             Expect.equal (run "(Reply.empty 404).headers |> Seq.length") (VInt 0L) "no headers"
 
             Expect.equal
@@ -40721,14 +40756,39 @@ let httpDxTests =
                 ])
                 "a jsonable payload is admitted"
         }
-        test "the pre-rendered spelling is unchanged: Json (x |> to json) still checks" {
+        test "rendered lines are RawJson; Json refuses a `to json` stage and has no bare or pattern form [D:json-value]" {
             Expect.isEmpty
                 (checkOf [
                     "type P = { a: int }"
-                    "let r = Http.send { Http.post \"http://x\" with body = Json ({ a = 1 } |> to json) }"
+                    "let r = Http.send { Http.post \"http://x\" with body = RawJson ({ a = 1 } |> to json) }"
                     "print $\"{r.status}\""
                 ])
                 "a seq<string> payload is the pre-rendered document"
+
+            let refusal src =
+                match checkOf [ src ] with
+                | d :: _ -> d.Message
+                | [] -> failtest $"expected a refusal: {src}"
+
+            Expect.stringContains
+                (refusal "print (Json ([ 1 ] |> to json))")
+                "drop the `to` stage"
+                "the old spelling would encode twice"
+
+            Expect.stringContains (refusal "print ([ [ 1 ] ] |> Seq.map Json)") "takes the value" "no function value"
+
+            Expect.stringContains
+                (refusal "print (match (Reply.empty 200).body with | Json _ -> 1 | _ -> 0)")
+                "the case to match is `RawJson lines`"
+                "no Json pattern"
+        }
+        test "Json renders every value, a list of strings and the empty list included [D:json-value]" {
+            let lines src =
+                run $"match ({src}) with | RawJson ls -> Str.join \"\" ls | _ -> \"?\""
+
+            Expect.equal (lines "Json [ \"a\"; \"b\" ]") (VStr "[\"a\",\"b\"]") "strings are an array"
+            Expect.equal (lines "Json []") (VStr "[]") "the empty array"
+            Expect.equal (lines "{| k = 1 |} |> Json") (VStr "{\"k\":1}") "piped"
         }
         test "the jsonable law refuses an unjsonable payload, in to json's words" {
             match

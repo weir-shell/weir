@@ -415,7 +415,7 @@ ever re-parses your command line.
 | `os.environ.get("PORT")` | `Env.get "PORT"`, or `Env.load Config` for typed settings (one error reports every bad field) |
 | `argparse` | `Args.load Cli`; the flags come from a record you declare |
 | `json.loads(...)` → dict soup | `\|> from json T` → your declared record |
-| `requests.post(url, json=payload)` | `Http.send { Http.defaults with method = Post; url = u; body = Json (payload \|> to json) }` |
+| `requests.post(url, json=payload)` | `Http.send { Http.defaults with method = Post; url = u; body = Json payload }` |
 | `-7 % 3 == 2` (floored) | `-7 % 3 == -1` (truncated, as in F#, .NET and C) |
 
 With `Http.send`, the response status is data you inspect, auth can be

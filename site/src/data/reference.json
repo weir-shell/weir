@@ -686,7 +686,7 @@
         {
           "name": "send",
           "signature": "Http.send (request: HttpRequest) : HttpResponse",
-          "summary": "Send a request and return the response. A non-2xx status such as 404 is returned, not raised; only network failures raise. A Json body sends \u0060to json\u0060 output exactly as given. Auth values hold Secrets, and show masks them.",
+          "summary": "Send a request and return the response. A non-2xx status such as 404 is returned, not raised; only network failures raise. A \u0060Json value\u0060 body is sent exactly as \u0060to json\u0060 renders it. Auth values hold Secrets, and show masks them.",
           "example": null,
           "pointer": null
         },
@@ -1194,10 +1194,45 @@
           "pointer": null
         },
         {
+          "name": "header",
+          "signature": "Reply.header (name: string) (value: string) (response: HttpServerResponse) : HttpServerResponse",
+          "summary": "The response with one more header. The headers it already has are kept, which a \u0060with headers = \u2026\u0060 update would replace.",
+          "example": "Reply.html 200 \u0022\u003Ch1\u003Eok\u003C/h1\u003E\u0022 |\u003E Reply.header \u0022cache-control\u0022 \u0022no-store\u0022",
+          "pointer": null
+        },
+        {
+          "name": "html",
+          "signature": "Reply.html (status: int) (body: string) : HttpServerResponse",
+          "summary": "A response with this status and an HTML body: a Text body sent as \u0060text/html; charset=utf-8\u0060. The text is sent as written, so escape anything that came from a request.",
+          "example": "Reply.html 200 \u0022\u003Ch1\u003Eok\u003C/h1\u003E\u0022",
+          "pointer": null
+        },
+        {
           "name": "json",
-          "signature": "Reply.json (status: int) (lines: seq\u003Cstring\u003E) : HttpServerResponse",
-          "summary": "A response with this status and a JSON body: the lines \u0060to json\u0060 produces.",
-          "example": "Reply.json 200 ([1; 2] |\u003E to json)",
+          "signature": "Reply.json (status: int) (value: \u0027a) : HttpServerResponse",
+          "summary": "A response with this status and the value as its JSON body: any shape \u0060to json\u0060 admits, rendered where it is written, so it is applied or piped, never passed as a function.",
+          "example": "Reply.json 200 {| ok = true |}",
+          "pointer": null
+        },
+        {
+          "name": "rawJson",
+          "signature": "Reply.rawJson (status: int) (lines: seq\u003Cstring\u003E) : HttpServerResponse",
+          "summary": "A response with this status and a JSON body that is already rendered: the lines of a document, sent as they are.",
+          "example": "Reply.rawJson 200 [ \u0022{}\u0022 ]",
+          "pointer": null
+        },
+        {
+          "name": "redirect",
+          "signature": "Reply.redirect (status: int) (location: string) : HttpServerResponse",
+          "summary": "A response with this status, no body and a \u0060location\u0060 header.",
+          "example": "Reply.redirect 302 \u0022/login\u0022",
+          "pointer": null
+        },
+        {
+          "name": "stream",
+          "signature": "Reply.stream (status: int) (events: seq\u003Cstring\u003E) : HttpServerResponse",
+          "summary": "A response with this status whose body is sent as server-sent events, one per element, as each is produced.",
+          "example": "[ \u0022one\u0022; \u0022two\u0022 ] |\u003E Reply.stream 200",
           "pointer": null
         },
         {
@@ -2746,7 +2781,7 @@
     },
     {
       "name": "HttpBody",
-      "summary": "A request or response body: NoBody, Json of any value \u0060to json\u0060 takes (sent with application/json), Text of a string, Form of key/value pairs (percent-encoded), or, in a \u0060within serve\u0060 response, Stream of a seq, sent as server-sent events while it is produced.",
+      "summary": "A request or response body: NoBody, RawJson of rendered lines (sent with application/json; \u0060Json value\u0060 builds one from any value \u0060to json\u0060 takes), Text of a string, Form of key/value pairs (percent-encoded), or, in a \u0060within serve\u0060 response, Stream of a seq, sent as server-sent events while it is produced.",
       "example": null,
       "pointer": null,
       "kind": "union",
@@ -2756,7 +2791,7 @@
           "payload": null
         },
         {
-          "name": "Json",
+          "name": "RawJson",
           "payload": "seq\u003Cstring\u003E"
         },
         {
