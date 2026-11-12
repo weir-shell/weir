@@ -176,6 +176,14 @@ if out.count("let f x = x + 1") < 2:
 if out.count("let f x = x + 2") < 2:
     failures.append(f"(g) redefinition must show the LAST accepted definition: {out!r}")
 
+# --- (g1): Reply.json alone echoes its help — the checker refuses it as
+# a value [D:json-value], the prompt still answers what it is ---
+out = session([(b"Reply.json\r", 0.8)])
+if "(status: int)" not in out or "HttpServerResponse" not in out:
+    failures.append(f"(g1) Reply.json alone must echo its signature: {out!r}")
+if "type error" in out or "takes the value it renders" in out:
+    failures.append(f"(g1) Reply.json alone is a question, not an error: {out!r}")
+
 # --- (g2): a named function short of arguments echoes what is bound and
 # what is missing, never the opaque <builtin>/<fun> [D:partial-echo] ---
 out = session([(b'"k" |> Str.toUtf8 |> Bytes.hmacSha256\r', 0.8)])

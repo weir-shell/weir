@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.0.89
+
+### Fixed
+
+- **`Reply.json` alone at the prompt shows its help.** It printed the
+  "takes the value it renders" check error; it now echoes the signature
+  and summary like any other function name.
+
 ## v0.0.88
 
 ### Added
