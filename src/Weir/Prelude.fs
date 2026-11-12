@@ -70,9 +70,14 @@ let source = [
     // way [D:serve-max-body]: optional, 16 MiB, 413 past it.
     // port is optional [D:serve-port-option]: None binds a free port,
     // which Server.port reports
-    "type ServerConfig = { port: Option<int>; maxConcurrent: int; bodyTimeout: Duration; maxBody: Size }"
     "type HttpServerRequest = { method: HttpMethod; path: string; query: string; headers: seq<string * string>; body: string }"
     "type HttpServerResponse = { status: int; headers: seq<string * string>; body: HttpBody }"
+    // the handler is a field [D:serve-defaults]: one record carries the
+    // whole server, so `{ Server.defaults with … }` and the key=value
+    // head name it like any other option
+    // maxQueued bounds the requests waiting for a handler slot
+    // [D:serve-queue]: past it the server answers 503
+    "type ServerConfig = { port: Option<int>; maxConcurrent: int; maxQueued: int; bodyTimeout: Duration; maxBody: Size; handler: HttpServerRequest -> HttpServerResponse }"
     // the plan/apply Op union [D:plan-apply] — the user-visible,
     // equatable+showable reification of an external mutation captured
     // inside a `plan` block. Each arm mirrors a mutation builtin's

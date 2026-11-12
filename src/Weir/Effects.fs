@@ -114,6 +114,8 @@ let libraryDesugars: (string * string * string) list = [
     // required, so Repeat has no public defaults) — read as the record
     // value it is
     "|repeatDefaults", "Repeat", "defaults"
+    // within serve's key=value base [D:serve-defaults]
+    "|serveDefaults", "Server", "defaults"
     // a typed `~` in a command word [D:tilde]
     "|home", "Path", "home"
     // `NAME=value cmd`'s overlay items [D:env-prefix]

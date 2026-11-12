@@ -501,7 +501,7 @@ let private loadShapeDup (env: TypeEnv) (tyName: string) : string option =
 let private bindParams (env: TypeEnv) (bindings: (string * Ty) list) : TypeEnv =
     bindings |> List.fold (fun e (n, t) -> bindValue n (mono t) e) env
 
-let private substParams (ps: string list) (args: Ty list) (ty: Ty) : Ty =
+let substParams (ps: string list) (args: Ty list) (ty: Ty) : Ty =
     let m = List.zip ps args |> Map.ofList
 
     let rec go ty =
@@ -6116,6 +6116,35 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | Some dup -> return! err expr.Span $"duplicate update of field '{dup}'"
             | None ->
 
+                // in key=value options a plain T for an Option<T> key means
+                // Some [D:serve-defaults] — `port=8080`, `timeout=2m`; a
+                // written record stays strict
+                let lifts =
+                    match source.Kind with
+                    | EVar base' -> isOptionsBase base'
+                    | _ -> false
+
+                let checkLeaf (value: Expr) (fieldTy: Ty) : Result<TypedExpr, TypeError> =
+                    match check ctx env value fieldTy, resolve ctx fieldTy with
+                    | Error e, TNamed("Option", [ inner ]) when lifts ->
+                        match check ctx env value inner with
+                        | Ok tv ->
+                            Ok {
+                                Kind =
+                                    TEApp(
+                                        {
+                                            Kind = TEVar "Some"
+                                            Ty = TFun(inner, fieldTy)
+                                            Span = value.Span
+                                        },
+                                        tv
+                                    )
+                                Ty = fieldTy
+                                Span = value.Span
+                            }
+                        | Error _ -> Error e
+                    | r, _ -> r
+
                 // subjectSpan = the expression whose type must be a record:
                 // the source at the first hop, the previous field at deeper
                 // ones — the non-record error blames the non-record, never
@@ -6142,7 +6171,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                     let fieldTy = substParams def.Params targs declared
 
                                     if List.isEmpty rest then
-                                        check ctx env value fieldTy
+                                        checkLeaf value fieldTy
                                     else
                                         updOne fieldSpan fieldTy rest value
                                 | None ->
@@ -6171,7 +6200,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                     t
 
                             if List.isEmpty rest then
-                                check ctx env value fieldTy
+                                checkLeaf value fieldTy
                             else
                                 updOne fieldSpan fieldTy rest value
                         | TFun _ as fty ->
@@ -7473,24 +7502,19 @@ and private withinContracts
                 match arg with
                 | Some a -> infer ctx env a |> Result.map Some
                 | None -> Ok None
-            // serve's arg is the config record [D:http-serve] — a
-            // ServerConfig `{ port; maxConcurrent }`; the handler rides
-            // opts (below), typed against the request->response function.
-            // bodyTimeout is optional in the literal [D:serve-body-timeout]:
-            // a bare `{ port; maxConcurrent }` literal is accepted and the
-            // timeout rests at its default, so the field addition does not
-            // break existing serve scripts. The generic record resolver
-            // matches by exact field set, so the two-field literal is
-            // checked here against the allowed shape; any non-literal
-            // config (a variable, `{ ServerConfig.defaults with … }`)
-            // falls through to the ordinary ServerConfig check.
+            // serve's arg is the config record [D:http-serve]; the handler
+            // is one of its fields [D:serve-defaults]. A literal naming port and
+            // maxConcurrent may leave the other fields out
+            // [D:serve-body-timeout] [D:serve-max-body]: it is checked as
+            // an update of the defaults, so every omitted field rests there.
+            // Any other config (a variable, `{ Server.defaults with … }`)
+            // takes the ordinary ServerConfig check.
             | WithinServe ->
                 match arg with
                 | Some({ Kind = ERecord fields } as a) ->
                     let names = fields |> List.map (fun (n, _, _) -> n) |> Set.ofList
                     let core = Set.ofList [ "port"; "maxConcurrent" ]
-                    // maxBody is optional the same way [D:serve-max-body]
-                    let optional = Set.ofList [ "bodyTimeout"; "maxBody" ]
+                    let optional = Set.ofList [ "maxQueued"; "bodyTimeout"; "maxBody"; "handler" ]
 
                     if Set.isSubset core names && Set.isSubset (Set.difference names core) optional then
                         let fieldTy name =
@@ -7498,34 +7522,69 @@ and private withinContracts
                             | "port" -> TNamed("Option", [ TInt ])
                             | "bodyTimeout" -> TDur
                             | "maxBody" -> TSize
+                            | "handler" -> TFun(TNamed("HttpServerRequest", []), TNamed("HttpServerResponse", []))
                             | _ -> TInt
 
-                        fields
-                        |> List.fold
-                            (fun acc (n, _, v) ->
-                                acc
-                                |> Result.bind (fun ts ->
-                                    match check ctx env v (fieldTy n), n with
-                                    // the pre-Option spelling names its repair
-                                    // [D:serve-port-option]
-                                    | Error _, "port" when (infer ctx env v |> Result.map (fun t -> t.Ty)) = Ok TInt ->
-                                        err
-                                            v.Span
-                                            "expected Option<int>, got int — serve's port is optional: `port = Some 8080` for that port, `port = None` for a free one"
-                                    | r, _ -> r |> Result.map (fun tv -> (n, tv) :: ts)))
-                            (Ok [])
-                        |> Result.map (fun tfields ->
-                            Some {
-                                Kind = TERecord("ServerConfig", List.rev tfields)
-                                Ty = TNamed("ServerConfig", [])
-                                Span = a.Span
-                            })
+                        result {
+                            let! tdefaults =
+                                infer ctx env {
+                                    Kind = EVar "|serveDefaults"
+                                    Span = {
+                                        Start = a.Span.Start
+                                        End = a.Span.Start
+                                    }
+                                }
+
+                            let! tfields =
+                                fields
+                                |> List.fold
+                                    (fun acc (n, _, v) ->
+                                        acc
+                                        |> Result.bind (fun ts ->
+                                            match check ctx env v (fieldTy n), n with
+                                            // the pre-Option spelling names its repair
+                                            // [D:serve-port-option]
+                                            | Error _, "port" when
+                                                (infer ctx env v |> Result.map (fun t -> t.Ty)) = Ok TInt
+                                                ->
+                                                err
+                                                    v.Span
+                                                    "expected Option<int>, got int — serve's port is optional: `port = Some 8080` for that port, `port = None` for a free one"
+                                            | r, _ -> r |> Result.map (fun tv -> ([ n ], tv) :: ts)))
+                                    (Ok [])
+
+                            return
+                                Some {
+                                    Kind = TEUpdate(tdefaults, List.rev tfields)
+                                    Ty = TNamed("ServerConfig", [])
+                                    Span = a.Span
+                                }
+                        }
                     else
                         // an unexpected field set — the ordinary check
                         // produces the located "no declared record" or
                         // field-type diagnostic
                         check ctx env a (TNamed("ServerConfig", [])) |> Result.map Some
-                | Some a -> check ctx env a (TNamed("ServerConfig", [])) |> Result.map Some
+                | Some a ->
+                    check ctx env a (TNamed("ServerConfig", []))
+                    |> Result.map Some
+                    |> Result.mapError (fun e ->
+                        // `within serve port=8080`: an option where the
+                        // server's name goes reads as binder `=` config
+                        // [D:serve-defaults]
+                        match binder, typeDefFor env "ServerConfig" with
+                        | Some(n, bs), Some(Record def) when
+                            a.Span.Start.Line = bs.End.Line
+                            && a.Span.Start.Col = bs.End.Col + 1
+                            && def.Fields |> List.exists (fun (f, _) -> f = n)
+                              ->
+                              {
+                                  e with
+                                      Message =
+                                          $"within serve takes a name for the server before its options — `within serve s {n}=…`"
+                                      Span = bs
+                              }
+                        | _ -> e)
                 | None -> Ok None
             | WithinTmp -> Ok None
             // pure carries no resource [D:pure-stage1] — no arg, no
@@ -7540,14 +7599,9 @@ and private withinContracts
             | WithinReadonly
             | WithinPlan -> Ok None
 
-        // opts is a Duration for lock (timeout=), the handler function
-        // for serve [D:http-serve], and absent elsewhere — the kind
-        // decides its type, so a dropped node cannot masquerade
+        // opts is a Duration for lock (timeout=) and absent elsewhere
         let! topts =
             match kind, opts with
-            | WithinServe, Some o ->
-                check ctx env o (TFun(TNamed("HttpServerRequest", []), TNamed("HttpServerResponse", [])))
-                |> Result.map Some
             | _, Some o -> check ctx env o TDur |> Result.map Some
             | _, None -> Ok None
 
@@ -8520,6 +8574,33 @@ let childExprs (te: TypedExpr) : TypedExpr list =
             | IExpr e -> Some e
             | IStr _ -> None)
     | TEYaml(tpl, _, _) -> yamlTplTypedExprs tpl
+
+/// the parameter names of a curried value — the lambda chain a `let f a b`
+/// desugars to; the annotated signature reads them off the binder spans
+/// [D:annotated-signature]
+let rec lambdaParamNames (te: TypedExpr) : string list =
+    match te.Kind with
+    | TELambda(p, _, body) -> p :: lambdaParamNames body
+    | _ -> []
+
+/// the application spine under an expression [D:partial-echo]: the named
+/// head, its instantiated type, how many arguments reach it (applied or
+/// piped), and whether the last one arrived through `|>`. None for a
+/// bare name or an unnamed head.
+let partialSpine (te: TypedExpr) : (string * Ty * int * bool) option =
+    let rec go (n: TypedExpr) (applied: int) =
+        match n.Kind with
+        | TEVar name when applied > 0 && Types.isUserName name -> Some(name, n.Ty, applied)
+        | TEApp(fn, _)
+        | TEPipe(_, fn) -> go fn (applied + 1)
+        | _ -> None
+
+    let piped =
+        match te.Kind with
+        | TEPipe _ -> true
+        | _ -> false
+
+    go te 0 |> Option.map (fun (name, ty, applied) -> name, ty, applied, piped)
 
 /// the first child `f` answers on, visiting in childExprs order
 /// without building the list — the walks on the check path use this

@@ -6155,7 +6155,55 @@ let private asServer (who: string) (v: Value) : Serve.Handle =
     | VServer h -> h
     | v -> unreachable $"the checker rejects '{who}' on {formatValue v}"
 
+// the handler `Server.defaults` rests at [D:serve-defaults]: a server
+// started with no handler says so and shows the line that sets one —
+// `GET /` answers 200, anything else 404 with the same hint
+let private serveLandingHint =
+    "weir is serving, but no handler is set.\n\n"
+    + "Set one with handler=, a function from the request to a response:\n\n"
+    + "    let route = fun req -> Reply.text 200 \"hello\"\n"
+    + "    within serve s handler=route\n"
+    + "    until stopped\n"
+
+let private serveLandingHandler: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VRecord("HttpServerRequest", f) ->
+            let isRoot =
+                match recGet "method" f, recGet "path" f with
+                | VUnion("Get", None), VStr "/" -> true
+                | _ -> false
+
+            VRecord(
+                "HttpServerResponse",
+                [
+                    "status", VInt(if isRoot then 200L else 404L)
+                    "headers", VSeq [ VTuple [ VStr "Content-Type"; VStr "text/plain; charset=utf-8" ] ]
+                    "body", VUnion("Text", Some(VStr serveLandingHint))
+                ]
+            )
+        | v -> unreachable $"the checker rejects a serve request of {formatValue v}")
+
+// the resting server [D:serve-defaults]: maxConcurrent is the CPU count
+// with a floor of 8 — handlers mostly wait on I/O, and a 1-CPU container
+// must not serve serially
+let private serverDefaults: Value =
+    VRecord(
+        "ServerConfig",
+        [
+            "port", VUnion("None", None)
+            "maxConcurrent", VInt(int64 (max 8 System.Environment.ProcessorCount))
+            // sixteen waiting per default slot [D:serve-queue]: room for a
+            // burst, a bound on what a stalled server holds
+            "maxQueued", VInt(int64 (16 * max 8 System.Environment.ProcessorCount))
+            "bodyTimeout", VDur 30_000L
+            "maxBody", VSize(16L * 1024L * 1024L)
+            "handler", serveLandingHandler
+        ]
+    )
+
 let private serverMembers: (string * Ty * Value) list = [
+    "defaults", TNamed("ServerConfig", []), serverDefaults
     "port", TFun(serverTy, TInt), VBuiltin(fun v -> VInt(int64 (asServer "Server.port" v).Port))
     "running", TFun(serverTy, TBool), VBuiltin(fun v -> VBool(not (asServer "Server.running" v).Closed))
     // the stream-producer failure channel [D:serve-stream]: a Stream
@@ -6167,6 +6215,24 @@ let private serverMembers: (string * Ty * Value) list = [
     "streamErrors",
     TFun(serverTy, TSeq TStr),
     VBuiltin(fun v -> VSeq(Serve.streamErrors (asServer "Server.streamErrors" v) |> List.map VStr))
+]
+
+// Reply [D:reply]: the three responses a handler writes most, as the
+// plain HttpServerResponse record — headers and stream bodies stay an
+// ordinary record update
+let private replyTy = TNamed("HttpServerResponse", [])
+
+let private replyOf (status: Value) (body: Value) : Value =
+    VRecord("HttpServerResponse", [ "status", status; "headers", VSeq []; "body", body ])
+
+let private replyMembers: (string * Ty * Value) list = [
+    "empty", TFun(TInt, replyTy), VBuiltin(fun status -> replyOf status (VUnion("NoBody", None)))
+    "text",
+    TFun(TInt, TFun(TStr, replyTy)),
+    VBuiltin(fun status -> VBuiltin(fun s -> replyOf status (VUnion("Text", Some s))))
+    "json",
+    TFun(TInt, TFun(TSeq TStr, replyTy)),
+    VBuiltin(fun status -> VBuiltin(fun lines -> replyOf status (VUnion("Json", Some lines))))
 ]
 
 // Net [D:scoped-procs]: one readiness probe — poll's body. Remote
@@ -6889,6 +6955,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list = [
     "Uuid", uuidMembers
     "Proc", procMembers
     "Server", serverMembers
+    "Reply", replyMembers
     "Net", netMembers
     "Path", pathMembers
     "Option", optionMembers
@@ -6970,7 +7037,8 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
             bd
                 "Re-run an indented body until it succeeds: `retry attempts=5 delay=30s` followed by the body. If the body returns a bool, true means success. If it returns another value, add `until r` and a predicate block; retry then returns the value that passed. Running out of attempts raises. An error raised inside the body is not retried, it propagates; to retry a failing command, turn its result into data with `| succeeds` or `| complete`."
                 (Some "retry attempts=2 delay=1ms true")
-                (Some "The options are a record, so you can also write `retry { Retry.defaults with attempts = 3 }`.")
+                (Some
+                    "The options are a record, so you can also write `retry { Retry.defaults with attempts = 3 }`. `timeout=2m` sets the optional ceiling on the whole retry: in key=value options a plain value for an optional key means Some.")
             "poll",
             bd
                 "Like retry, but bounded by time instead of attempts: `poll timeout=5m interval=10s` followed by a body that checks readiness. With `watch=<proc>`, poll fails immediately if that scoped process dies (the error includes its last output), and a timeout error reports the process's state."
@@ -6979,7 +7047,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                     "To wait for a server to come up, start it with `within proc srv = …`, then `poll timeout=10s watch=srv` with `Net.portOpen <port>` as the body.")
             "repeat",
             bd
-                "Run an indented block until the program is asked to stop: `repeat interval=1s` followed by the block, which runs, then the interval passes, then it runs again. The first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Ctrl+C on Windows) lets the iteration in hand finish and returns, so the code after the loop runs and the program exits 0; a second signal tears down as usual. A bool block ends the loop when true; `until r` binds a value block's result and returns it once the predicate holds; `timeout=(Some 5m)` raises when it passes, as poll's does. Waits inside the block are not ended by the request — only the interval is."
+                "Run an indented block until the program is asked to stop: `repeat interval=1s` followed by the block, which runs, then the interval passes, then it runs again. The first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Ctrl+C on Windows) lets the iteration in hand finish and returns, so the code after the loop runs and the program exits 0; a second signal tears down as usual. A bool block ends the loop when true; `until r` binds a value block's result and returns it once the predicate holds; `timeout=5m` raises when it passes, as poll's does. Waits inside the block are not ended by the request — only the interval is."
                 (Some "repeat interval=1ms true")
                 (Some
                     "A server or sidecar held until the operator stops it is a `within` scope with `until stopped` after its block instead.")
@@ -6993,7 +7061,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                  + ". After the block, `until stopped` holds the scope until the first stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), then it closes by its normal path and the program exits 0; an `always` cleanup comes after it.")
                 (Some "within tmp d\n    print d")
                 (Some
-                    "`within proc srv = <command>` binds a Proc handle; the process and its children are killed and reaped when the block exits.")
+                    "`within proc srv = <command>` binds a Proc handle; the process and its children are killed and reaped when the block exits. `within serve srv port=8080 handler=route` binds a Server handle; its options are `Server.defaults`' fields, and with no block, `until stopped` goes directly under the head.")
             // the purity assertion's two spellings [D:pure-stage1] — its
             // own head, never `within pure`
             "pure",
@@ -7199,12 +7267,16 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 (Some "Errors from `poll watch=…` include this automatically.")
             |> named [ "p" ]
             // ---- Server: the scoped-listener handle [D:http-serve] ----
+            "Server.defaults",
+            bd
+                "The default server settings: port = None (a free port), maxConcurrent = the number of processors, at least 8, maxQueued = 16 times that, bodyTimeout = 30s, maxBody = 16MiB, and a handler that answers `GET /` with a page saying no handler is set. `within serve srv port=8080 handler=route` is short for `within serve srv = { Server.defaults with port = Some 8080; handler = route }`."
+                (Some "Server.defaults.maxConcurrent >= 8")
+                (Some "The listener accepts connections from this machine only (loopback).")
             "Server.port",
             bd
                 "The port the listener bound — the port asked for, or the free one picked for `port = None`."
                 None
-                (Some
-                    "within serve srv = { port = Some 8080; maxConcurrent = 4 } handler binds the handle; see #help within")
+                (Some "`within serve srv port=8080 handler=route` binds the handle; see #help within")
             |> named [ "srv" ]
             "Server.running",
             bd "True while the listener is still open (the scope has not exited)." None None
@@ -7215,6 +7287,25 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 None
                 (Some "When a Stream body raises, the client's response is cut off and the error is recorded here.")
             |> named [ "srv" ]
+            // ---- Reply: a handler's responses [D:reply] ----
+            "Reply.empty",
+            bd
+                "A response with this status and no body. The result is an ordinary HttpServerResponse record, so headers are a record update."
+                (Some "(Reply.empty 404).status")
+                None
+            |> named [ "status" ]
+            "Reply.text",
+            bd
+                "A response with this status and a text body."
+                (Some "{ Reply.text 200 \"ok\" with headers = [(\"cache-control\", \"no-store\")] }")
+                None
+            |> named [ "status"; "body" ]
+            "Reply.json",
+            bd
+                "A response with this status and a JSON body: the lines `to json` produces."
+                (Some "Reply.json 200 ([1; 2] |> to json)")
+                None
+            |> named [ "status"; "lines" ]
             // ---- Net: readiness probes [D:scoped-procs] ----
             "Net.portOpen",
             bd
@@ -8855,7 +8946,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 None
             "ServerConfig",
             bd
-                "`within serve`'s settings: port (Some n for that port, None for a free one the kernel picks), maxConcurrent (handlers at once; the rest queue), and the optional bodyTimeout (default 30s) and maxBody (default 16 MiB)."
+                "`within serve`'s settings: port (Some n for that port, None for a free one the kernel picks), maxConcurrent (handlers at once; the rest queue), maxQueued (how many may queue; past it the answer is 503), bodyTimeout (how long a request body may take to arrive), maxBody (the largest request body accepted) and handler (the function from a request to its response). `Server.defaults` holds the default for each."
                 None
                 None
             "Op",
@@ -8958,13 +9049,14 @@ let moduleBlurbs: Map<string, string> =
         "Log", "levelled diagnostics to stderr (WEIR_LOG selects)"
         "Map", "immutable maps keyed by any equatable type: get, add, pairs"
         "Net", "network probes: portOpen"
+        "Reply", "a handler's responses: empty, text, json"
         "Option", "presence and absence: map, bind, defaults"
         "Result", "the value or the error message `|> try result` gives: map, defaults, toOption"
         "Path", "path text and discovery: join, confine, glob, temp dirs"
         "Plan", "plan/apply: preview a plan's ops before applying"
         "Poll", "poll's options record: defaults"
         "Proc", "scoped process handles: pid, running, tail, wait, stop"
-        "Server", "scoped HTTP listener handles: port, running (see within serve)"
+        "Server", "scoped HTTP listener handles: port, running; defaults, the default settings (see within serve)"
         "Retry", "retry's options record: defaults"
         "Secret", "rendering-masked values: of, map, reveal"
         "Color", "terminal colour: red/green/…, bold/dim/underline, sgr — auto-off when piped"

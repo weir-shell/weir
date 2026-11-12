@@ -66,7 +66,12 @@ type SResp = {
 
 /// the request-body bounds, applied as the body is read
 /// [D:serve-body-timeout] [D:serve-max-body]
-type Limits = { BodyTimeoutMs: int; MaxBody: int64 }
+type Limits = {
+    BodyTimeoutMs: int
+    MaxBody: int64
+    // how many requests may wait for a handler slot [D:serve-queue]
+    MaxQueued: int
+}
 
 // the body as the request delegate read it, before any handler slot is
 // taken [D:serve-kestrel]: a slow or oversized body is settled here, so
@@ -105,6 +110,9 @@ type Handle = {
     Bound: string list
     mutable Closed: bool
     Queue: Channel<SCtx>
+    // the requests parked on Queue and not yet accepted [D:serve-queue]
+    // — counted here, a single-reader channel cannot be asked
+    mutable Waiting: int
     // every parked request whose delegate still awaits — what stop
     // detaches when the drain runs out [D:serve-drain]
     Live: Collections.Concurrent.ConcurrentDictionary<SCtx, unit>
@@ -240,6 +248,21 @@ let private readBody (http: HttpContext) (lim: Limits) : Task<BodyRead> =
             return result.Value
     }
 
+/// the overload answer [D:serve-queue]: 503 and when to come back. An
+/// unread body cannot stay in frame, so that connection closes.
+let private refuseBusy (http: HttpContext) (bodyUnread: bool) : Task =
+    task {
+        http.Response.StatusCode <- 503
+        http.Response.ContentType <- "text/plain; charset=utf-8"
+        http.Response.Headers.RetryAfter <- "1"
+
+        if bodyUnread then
+            http.Response.Headers.Connection <- "close"
+
+        http.Response.ContentLength <- Nullable 11L
+        do! http.Response.WriteAsync "server busy"
+    }
+
 /// the request delegate [D:serve-kestrel]: refuse a foreign Host, read the
 /// body, park the request on the channel, and await the worker's finish.
 /// Runs on Kestrel's pool — a parked request costs no thread.
@@ -261,6 +284,9 @@ let private onRequest (h: Handle) (lim: Limits) (features: IFeatureCollection) :
             http.Response.ContentType <- "text/plain; charset=utf-8"
             http.Response.ContentLength <- Nullable 12L
             do! http.Response.WriteAsync "unknown host"
+        elif Volatile.Read(&h.Waiting) >= lim.MaxQueued then
+            // full before the body is read: refuse without buffering it
+            do! refuseBusy http true
         else
             let! body = readBody http lim
 
@@ -281,20 +307,31 @@ let private onRequest (h: Handle) (lim: Limits) (features: IFeatureCollection) :
 
             // add-then-check against stop's set-then-sweep, under one lock:
             // either stop sees this request in Live or it sees Closed
+            // the queue may have filled while this body was read
+            // [D:serve-queue]: None is that refusal
             let parked =
                 lock h.LiveLock (fun () ->
                     if h.Closed then
-                        false
+                        Some false
+                    elif h.Waiting >= lim.MaxQueued then
+                        None
                     else
                         h.Live[s] <- ()
-                        h.Queue.Writer.TryWrite s)
+                        let wrote = h.Queue.Writer.TryWrite s
 
-            if parked then
+                        if wrote then
+                            Interlocked.Increment(&h.Waiting) |> ignore
+
+                        Some wrote)
+
+            match parked with
+            | Some true ->
                 do! s.Done.Task
                 h.Live.TryRemove s |> ignore
-            else
+            | Some false ->
                 h.Live.TryRemove s |> ignore
                 http.Abort()
+            | None -> do! refuseBusy http s.CloseAfter
     }
 
 // a free loopback port, asked of the kernel [D:serve-port-option]: picked
@@ -354,6 +391,7 @@ let start (port: int) (lim: Limits) : Handle =
         Bound = bound
         Closed = false
         Queue = Channel.CreateUnbounded<SCtx>(UnboundedChannelOptions(SingleReader = true))
+        Waiting = 0
         Live = Collections.Concurrent.ConcurrentDictionary<SCtx, unit>(HashIdentity.Reference)
         LiveLock = obj ()
         StreamErrors = System.Collections.Generic.List<string>()
@@ -461,6 +499,7 @@ let stop (h: Handle) (drainMs: int) : unit =
         let mutable s = Unchecked.defaultof<SCtx>
 
         while h.Queue.Reader.TryRead(&s) do
+            Interlocked.Decrement(&h.Waiting) |> ignore
             detach s
 
         use cts = new CancellationTokenSource(max 0 drainMs)
@@ -495,6 +534,8 @@ let accept (h: Handle) : SCtx option =
         let mutable s = Unchecked.defaultof<SCtx>
 
         if h.Queue.Reader.TryRead(&s) then
+            Interlocked.Decrement(&h.Waiting) |> ignore
+
             if h.Closed || s.Http.RequestAborted.IsCancellationRequested then
                 detach s
                 go ()
@@ -703,7 +744,11 @@ let writeResponse (ctx: SCtx) (resp: SResp) (onStreamFailure: string -> unit) : 
         | RJson _ -> defaultType "application/json"
         | RForm _ -> defaultType "application/x-www-form-urlencoded"
         | RStream _ -> defaultType "text/event-stream"
-        | _ -> ()
+        // a Text body is text unless the handler says otherwise
+        // [D:serve-text-type]: left untyped, a browser sniffs it, and
+        // request text echoed into it would run as markup
+        | RText _ -> defaultType "text/plain; charset=utf-8"
+        | RNoBody -> ()
 
     if ok then
         try

@@ -5924,25 +5924,11 @@ let completionTests =
             // control: a non-record element still offers nothing
             Expect.equal (sgs "src |> Seq.map (fun e -> e.") [] "a string element offers no fields"
         }
-        test "the empty prompt offers the session directives, not the flood [D:empty-prompt-directives]" {
+        test "the empty prompt completes to #help, not the flood [D:empty-prompt-directives]" {
             // guards `suggest "" 0` against the `StartsWith ""` flood
             // (1130 items: 954 PATH execs + the universe). A fresh Tab
-            // teaches the REPL's affordances, `#help` first.
-            Expect.equal
-                (suggest "" 0)
-                [
-                    "#help"
-                    "#keys"
-                    "#find"
-                    "#echo"
-                    "#types"
-                    "#infer"
-                    "#save"
-                    "#history"
-                    "#alias"
-                    "#quit"
-                ]
-                "the curated directive set"
+            // fills in `#help`, the list of everything else [D:help-modules]
+            Expect.equal (suggest "" 0) [ "#help" ] "one candidate, so one Tab completes it"
 
             // filtered completion is unaffected (a real prefix at a head).
             // Assert only environment-stable facts: the `File` module is
@@ -7888,6 +7874,33 @@ let derivedOrdTests =
         test "x floats: an ordered record with a float field orders; == on it still refuses" {
             ordShow "[{ x = 2.5 }; { x = 1.5 }] |> Seq.sort" "[{ x = 1.5 }; { x = 2.5 }]"
             Expect.stringContains (ordErrMsg "{ x = 1.0 } == { x = 1.0 }") "it holds a float" ""
+        }
+        test "a top-level binder hovers its own signature, not an inner let that shadows it" {
+            let lines = [
+                "let myFunc () ="
+                "    let myFunc = 10"
+                "    print $\"{myFunc}\""
+                "    ()"
+            ]
+
+            Expect.equal (Weir.Lsp.hoverType lines 1 5) (Some "myFunc : unit -> unit") "the statement's own binder"
+            Expect.equal (Weir.Lsp.hoverType lines 2 9) (Some "myFunc : int") "the inner binder keeps its own"
+            Expect.equal (Weir.Lsp.hoverType lines 3 14) (Some "int") "a use resolves to the inner one"
+        }
+        test "a field name in a record pattern hovers the field's type, not the match's" {
+            let lines = [
+                "let repro () ="
+                "    let handler rq ="
+                "      match rq with"
+                "      | { method = Get; path = \"/health\" } -> { status = 200; body = Text \"ok\"; headers = [] }"
+                "      | _ -> { status = 404; body = Text \"no\"; headers = [] }"
+                "    handler"
+            ]
+
+            let at (word: string) = lines[3].IndexOf word + 2
+            Expect.equal (Weir.Lsp.hoverType lines 4 (at "method")) (Some "HttpMethod") "method"
+            Expect.equal (Weir.Lsp.hoverType lines 4 (at "path")) (Some "string") "path"
+            Expect.equal (Weir.Lsp.hoverType lines 4 (at "status")) (Some "int") "a literal's field is unchanged"
         }
         test "the attribute's doc hovers; a type's hover shows its key in order, a member's its position" {
             Expect.stringStarts
@@ -10127,6 +10140,75 @@ let replEchoTests =
                 None
                 "nothing to name — the caller falls back to <fun>/<builtin> : ty"
         }
+        test "a named function short of arguments echoes what is bound and what is missing [D:partial-echo]" {
+            let builtins = Weir.Script.builtinParamNames Weir.Builtins.typeEnv
+
+            let lines src =
+                Weir.Script.partialApp builtins (checkOk src)
+                |> Option.map (Weir.Script.partialEchoLines plainSigStyle)
+
+            Expect.equal
+                (lines "\"k\" |> Str.toUtf8 |> Bytes.hmacSha256")
+                (Some [
+                    "Bytes.hmacSha256 key (msg: Bytes) : Bytes"
+                    "partial application — the piped value is key; still needs msg"
+                ])
+                "the piped value names the parameter it landed in"
+
+            Expect.equal
+                (lines "Seq.map (fun x -> x + 1)")
+                (Some [
+                    "Seq.map f (xs: seq<int>) : seq<int>"
+                    "partial application — f is bound; still needs xs"
+                ])
+                "applied, with the head's instantiated types"
+
+            Expect.equal
+                (lines "\"a\" |> Str.replace \"b\"" |> Option.map List.last)
+                (Some "partial application — old is bound; the piped value is new; still needs s")
+                "an applied argument, then the piped one"
+
+            Expect.equal (lines "Bytes.hmacSha256") None "a bare name is the mini-help's"
+            Expect.equal (lines "Str.toUtf8 >> Bytes.toHex") None "a composition has no named head"
+            Expect.equal (lines "(fun x -> x + 1)") None "a lambda has no named head"
+            Expect.equal (lines "Str.toUtf8 \"k\"") None "a full application is a value"
+
+            // a head the resolver cannot name declines
+            Expect.equal
+                (Weir.Script.partialApp (fun _ -> None) (checkOk "Seq.map (fun x -> x + 1)"))
+                None
+                "no parameter names, no claim"
+        }
+        test "the partial signature is the one composition: nothing applied is formatSignature [D:partial-echo]" {
+            let d = Map.find "Seq.map" Weir.Builtins.builtinDocs.Value
+            let sch = Weir.Builtins.typeEnv.Modules["Seq"]["map"]
+
+            Expect.equal
+                (formatPartialSignatureWith plainSigStyle 0 "Seq.map" d.Params sch.Ty)
+                (formatSignature "Seq.map" d.Params sch.Ty)
+                "applied 0 is the #help signature, byte for byte"
+        }
+        test "a discarded partial application names what is missing, tagged discard [D:partial-echo]" {
+            Expect.equal
+                (errorMsgsIn "disc.weir" [ "let k = Str.toUtf8 \"k\""; "k |> Bytes.hmacSha256" ])
+                [
+                    "'Bytes.hmacSha256' is partially applied — the piped value is key; still needs msg (Bytes)"
+                ]
+                "a builtin head names its parameters"
+
+            Expect.equal
+                (errorMsgsIn "disc.weir" [ "let f a b = a + b + 1"; "f 1" ])
+                [ "'f' is partially applied — still needs 1 more argument (int)" ]
+                "a script function says how many"
+
+            Expect.equal
+                (errorMsgsIn "disc.weir" [ "let cleanup () = print \"c\""; "cleanup" ])
+                [
+                    "this statement computes a unit -> unit and discards it"
+                    + Weir.Script.callItTail
+                ]
+                "an uncalled unit function keeps its own lesson"
+        }
         test "a failing #infer drafted type surfaces line:col + an offending-line snippet [D:infer-diagnostic]" {
             // a deliberately un-checkable drafted type: a leading-digit
             // field name weir rejects — number the drafted lines and
@@ -10264,6 +10346,52 @@ let replColorTests =
             // there [D:windows-s2]), so ^show paints red even though
             // bare show would be bold
             Expect.stringContains (colorize "^show x") "\x1b[31mshow\x1b[0m" "force ignores bindings"
+        }
+        test "a head is the parser's whole command word, hyphens included [D:repl-color-words]" {
+            Expect.stringContains
+                (colorize "zzz-nope list")
+                "\x1b[31mzzz-nope\x1b[0m"
+                "an unknown hyphenated head is red as one word"
+
+            Expect.stringContains (colorize "let v = zzz-nope list") "\x1b[31mzzz-nope\x1b[0m" "the let-RHS head too"
+
+            Expect.equal (strip (colorize "zzz-nope list")) "zzz-nope list" "transparent"
+            // a known head keeps its own extent: `ls-1` is not one word
+            Expect.stringContains (colorize "ls -la") "\x1b[1mls\x1b[0m" "a known head is unchanged"
+        }
+        test "an argv word is one dim token: versions and flags hold no numbers or operators [D:repl-color-words]" {
+            let known n = n = "print"
+
+            let c =
+                Weir.Script.colorizeRepl known "sh tag v0.123.0 --some-flag -la $x | Seq.head"
+
+            Expect.stringContains c "\x1b[2mv0.123.0\x1b[0m" "a version is one word"
+            Expect.stringContains c "\x1b[2m--some-flag\x1b[0m" "a long flag is one word"
+            Expect.stringContains c "\x1b[2m-la\x1b[0m" "a short flag is one word"
+            Expect.stringContains c "\x1b[36m$x\x1b[0m" "a splice keeps its tint"
+            Expect.isFalse (c.Contains "\x1b[2mhead") "after | the stage is expression land"
+        }
+        test "the Tab listing paints a candidate without moving the columns [D:repl-color-words]" {
+            let items = [ "alpha"; "be"; "gamma"; "d" ]
+            let plain = Weir.Repl.completionListing 20 items
+
+            let painted =
+                Weir.Repl.completionListingWith (fun s -> "\x1b[1m" + s + "\x1b[0m") 20 items
+
+            Expect.equal (painted |> List.map strip) plain "strip after paint is the plain listing"
+            Expect.isTrue (painted |> List.forall (fun l -> l.Contains "\x1b[1m")) "every line is painted"
+        }
+        test "a module qualifier paints the same at the head and after a pipe [D:repl-color-words]" {
+            let c =
+                Weir.Script.colorizeRepl (fun n -> n = "Str" || n = "Bytes") "Str.toUtf8 \"x\" |> Bytes.toHex"
+
+            Expect.stringContains c "\x1b[1mStr\x1b[0m" "the head qualifier"
+            Expect.stringContains c "\x1b[1mBytes\x1b[0m" "the piped-into qualifier, same tint"
+            // an unknown uppercase word keeps the casing-law tint
+            Expect.stringContains
+                (Weir.Script.colorizeRepl (fun _ -> false) "let n = Nope.x 1")
+                "\x1b[33mNope\x1b[0m"
+                "not a module: casing law"
         }
         test "lexical spans: keyword, string, comment, number, uppercase" {
             let out = colorize "let n = Some 42 // done"
@@ -13365,6 +13493,30 @@ let headSlotCompletionTests =
             Expect.isFalse (sug "retrying " |> List.contains "attempts=") "a word boundary: not the head"
             Expect.isFalse (sug "retry attempts=" |> List.contains "attempts=") "the value slot is not the key slot"
         }
+        test "within serve offers its option keys after the server's name [D:serve-defaults]" {
+            Expect.equal
+                (sug "within serve s ")
+                [
+                    "port="
+                    "maxConcurrent="
+                    "maxQueued="
+                    "bodyTimeout="
+                    "maxBody="
+                    "handler="
+                ]
+                "ServerConfig's fields"
+
+            Expect.equal (sug "within serve s port=8080 h") [ "handler=" ] "prefix-filtered"
+
+            Expect.equal
+                (sug "within serve s port=(Some 8080) handler=route ")
+                [ "maxConcurrent="; "maxQueued="; "bodyTimeout="; "maxBody=" ]
+                "a given key is not offered again"
+
+            Expect.isFalse (sug "within serve " |> List.contains "port=") "the name slot is not the key slot"
+            Expect.isFalse (sug "within serve s port=" |> List.contains "port=") "the value slot is not the key slot"
+            Expect.isFalse (sug "within serve s = " |> List.contains "port=") "the record form takes a value"
+        }
         test "within lock offers timeout= after its path [D:head-key-complete]" {
             Expect.equal (sug "within lock \"state.json\" ") [ "timeout=" ] "after the path"
             Expect.equal (sug "within lock \"a b\" ti") [ "timeout=" ] "a spaced path, prefix-filtered"
@@ -13846,14 +13998,14 @@ let withinKindsTests =
 
             Expect.equal
                 (Weir.Lsp.hoverType lines 2 8)
-                (Some "cd — consumes: the working directory for the block, restored after")
+                (Some "cd — consumes: the working directory for the block, restored after\nwithin cd <dir>")
                 "the consuming kind"
 
             let t = [ "within tmp scratch"; "    print scratch" ]
 
             Expect.equal
                 (Weir.Lsp.hoverType t 1 8)
-                (Some "tmp — binds: a fresh directory, removed when the block exits")
+                (Some "tmp — binds: a fresh directory, removed when the block exits\nwithin tmp <name>")
                 "the binding kind"
         }
         test "hover on `within` itself answers (the form carries weir's novelty); an ordinary keyword stays silent" {
@@ -16608,6 +16760,36 @@ let semanticTokenTests =
                 match Weir.Fmt.formatLines out with
                 | Ok out2 -> Expect.equal out2 out "fmt is idempotent with docs present"
                 | Error e -> failtestf "second fmt failed: %s" e
+        }
+        test "fmt keeps a block-less serve head and its until stopped at one column [D:serve-defaults]" {
+            let canon = [
+                "within serve s port=8080"
+                "until stopped"
+                "always"
+                "    print \"bye\""
+                ""
+                "let run () ="
+                "    within serve s"
+                "    until stopped"
+                ""
+                "run ()"
+            ]
+
+            let messy = [
+                "within serve s port=8080"
+                "until stopped"
+                "always"
+                "  print \"bye\""
+                ""
+                "let run () ="
+                "  within serve s"
+                "  until stopped"
+                ""
+                "run ()"
+            ]
+
+            Expect.equal (Weir.Fmt.formatLines messy) (Ok canon) "re-indented, the edge kept under its head"
+            Expect.equal (Weir.Fmt.formatLines canon) (Ok canon) "idempotent"
         }
         test "doc comments: fmt never anchors a /// inside a heredoc/yaml block into its content [D:content-bytes]" {
             match Weir.Fmt.formatLines [ "let t = yaml"; "    a: 1"; "/// doc"; "    b: 2"; "print t" ] with
@@ -30499,7 +30681,7 @@ let heldScopeTests =
                     "within env [Env.pair \"A\" \"1\"]"
                     "within lock \"/tmp/held.lock\""
                     "within proc p = sleep 1"
-                    "within serve srv = { port = Some 8599; maxConcurrent = 1 } (fun r -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" })"
+                    "within serve srv = { port = Some 8599; maxConcurrent = 1; handler = (fun r -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }) }"
                     "within"
                 ] do
                 Expect.isEmpty (errs [ head; "    print \"b\""; "until stopped"; "print \"after\"" ]) head
@@ -34362,6 +34544,14 @@ let serveTests =
     let okHandler =
         "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
 
+    let shape (lines: string list) =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Ok [ ll ] ->
+            match Weir.Parser.parseLineFull cmdResolver ll.Text with
+            | Ok s -> Weir.Ast.sexprStmt s
+            | Error f -> failtest f.Message
+        | other -> failtest $"unexpected assembly: {other}"
+
     let freePort () =
         let probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
         probe.Start()
@@ -34372,6 +34562,7 @@ let serveTests =
     let limits (maxBody: int64) : Weir.Serve.Limits = {
         BodyTimeoutMs = 5000
         MaxBody = maxBody
+        MaxQueued = 1024
     }
 
     // serve `answer` on a fresh port for the duration of `f port`
@@ -34505,7 +34696,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 8080; maxConcurrent = 4 } h"
+                    "within serve srv = { port = Some 8080; maxConcurrent = 4; handler = h }"
                     "    print $\"on {Server.port srv}\""
                     "    let x = 1"
                     "    print $\"{x}\""
@@ -34519,7 +34710,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 8080; maxConcurrent = 2 } h"
+                    "within serve srv = { port = Some 8080; maxConcurrent = 2; handler = h }"
                     "    print \"up\""
                     "    let y = 2"
                     "    print $\"{y}\""
@@ -34530,7 +34721,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = h }"
                     "    print $\"{Server.running srv}\""
                 ]
                 "Server.running on the binder"
@@ -34538,7 +34729,7 @@ let serveTests =
             mustSay
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = h }"
                     "    print $\"{Proc.pid srv}\""
                 ]
                 "expected Proc, got Server"
@@ -34552,7 +34743,7 @@ let serveTests =
             mustSay
                 [
                     "let bad = fun req -> 5"
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } bad"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = bad }"
                     "    print \"ok\""
                 ]
                 "HttpServerResponse"
@@ -34560,7 +34751,7 @@ let serveTests =
         }
         test "the config must be a ServerConfig record" {
             mustSay
-                [ okHandler; "within serve srv = 8080 h"; "    print \"ok\"" ]
+                [ "within serve srv = 8080"; "    print \"ok\"" ]
                 "ServerConfig"
                 "a bare int config names the record"
         }
@@ -34568,7 +34759,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = None; maxConcurrent = 1 } h"
+                    "within serve srv = { port = None; maxConcurrent = 1; handler = h }"
                     "    print $\"{Server.port srv}\""
                 ]
                 "None picks a free port"
@@ -34576,11 +34767,377 @@ let serveTests =
             mustSay
                 [
                     okHandler
-                    "within serve srv = { port = 8080; maxConcurrent = 1 } h"
+                    "within serve srv = { port = 8080; maxConcurrent = 1; handler = h }"
                     "    print \"ok\""
                 ]
                 "expected Option<int>, got int — serve's port is optional: `port = Some 8080` for that port, `port = None` for a free one"
                 "the pre-Option spelling names its repair"
+        }
+        test "Server.defaults is the resting config, and the internal key is the same object [D:serve-defaults]" {
+            let v = Weir.Builtins.valueEnv.Value["Server.defaults"]
+
+            Expect.isTrue
+                (obj.ReferenceEquals(Weir.Builtins.valueEnv.Value["|serveDefaults"], v))
+                "the key=value base is Server.defaults itself"
+
+            match v with
+            | VRecord("ServerConfig", f) ->
+                let get n = f |> List.find (fst >> (=) n) |> snd
+                Expect.equal (get "port") (VUnion("None", None)) "a free port"
+
+                Expect.equal
+                    (get "maxConcurrent")
+                    (VInt(int64 (max 8 System.Environment.ProcessorCount)))
+                    "the processor count, floored at 8"
+
+                Expect.equal
+                    (get "maxQueued")
+                    (VInt(int64 (16 * max 8 System.Environment.ProcessorCount)))
+                    "sixteen waiting per default slot [D:serve-queue]"
+
+                Expect.equal (get "bodyTimeout") (VDur 30000L) "30s"
+                Expect.equal (get "maxBody") (VSize(16L * 1024L * 1024L)) "16MiB"
+            | other -> failtest $"not a ServerConfig: {other}"
+
+            Expect.isFalse (Weir.Effects.isCommandReifier "|serveDefaults") "a library desugar, not a command"
+            Expect.isFalse (Weir.Effects.effectfulName "|serveDefaults") "pure"
+        }
+        test "the default handler: GET / is 200, anything else 404, both carrying the hint [D:serve-defaults]" {
+            let handler =
+                match Weir.Builtins.valueEnv.Value["Server.defaults"] with
+                | VRecord(_, f) ->
+                    match f |> List.find (fst >> (=) "handler") |> snd with
+                    | VBuiltin h -> h
+                    | other -> failtest $"not a builtin: {other}"
+                | other -> failtest $"not a record: {other}"
+
+            let ask (m: string) (path: string) =
+                let req =
+                    VRecord(
+                        "HttpServerRequest",
+                        [
+                            "method", VUnion(m, None)
+                            "path", VStr path
+                            "query", VStr ""
+                            "headers", VSeq []
+                            "body", VStr ""
+                        ]
+                    )
+
+                match handler req with
+                | VRecord("HttpServerResponse", f) ->
+                    let get n = f |> List.find (fst >> (=) n) |> snd
+
+                    match get "status", get "headers", get "body" with
+                    | VInt st, VSeq hs, VUnion("Text", Some(VStr body)) ->
+                        match List.ofSeq hs with
+                        | [ VTuple [ VStr "Content-Type"; VStr ct ] ] -> st, ct, body
+                        | other -> failtest $"unexpected headers: {other}"
+                    | other -> failtest $"unexpected response: {other}"
+                | other -> failtest $"not a response: {other}"
+
+            let st, ct, body = ask "Get" "/"
+            Expect.equal st 200L "GET / answers"
+            Expect.equal ct "text/plain; charset=utf-8" "as plain text"
+            Expect.stringContains body "no handler is set" "says what is missing"
+            Expect.stringContains body "within serve s handler=route" "and shows the line that sets one"
+
+            for m, path in [ "Get", "/health"; "Post", "/" ] do
+                let st2, _, body2 = ask m path
+                Expect.equal st2 404L $"{m} {path} is not found"
+                Expect.equal body2 body "with the same hint"
+        }
+        test "the handler is a ServerConfig field; a literal may leave it and the bounds out [D:serve-defaults]" {
+            clean
+                [
+                    okHandler
+                    "let cfg = { Server.defaults with port = Some 8080; handler = h }"
+                    "within serve srv = { cfg with handler = h }"
+                    "    print $\"{Server.port srv}\""
+                ]
+                "an update of the defaults is a ServerConfig"
+
+            clean
+                [
+                    okHandler
+                    "within serve srv = { port = None; maxConcurrent = 1; handler = h }"
+                    "    print \"ok\""
+                ]
+                "the literal takes handler like its other optional fields"
+
+            mustSay
+                [
+                    "within serve srv = { port = None; maxConcurrent = 1; handler = 5 }"
+                    "    print \"ok\""
+                ]
+                "HttpServerRequest -> HttpServerResponse"
+                "a handler field of the wrong type names the function type"
+
+            clean
+                [
+                    okHandler
+                    "let cfg = { port = None; maxConcurrent = 1; maxQueued = 8; bodyTimeout = 1s; maxBody = 1MiB; handler = h }"
+                    "within serve srv = { cfg with handler = h }"
+                    "    print \"ok\""
+                ]
+                "the full record is an ordinary literal"
+        }
+        test "key=value options are an update of the defaults, by construction [D:serve-defaults]" {
+            Expect.equal
+                (shape [ "within serve s port=(Some 8080) handler=h"; "    print \"b\"" ])
+                "(sexpr (within serve s {|serveDefaults with port = (Some 8080); handler = h} (print \"b\")))"
+                "the pairs desugar over the internal key"
+
+            Expect.equal
+                (shape [ "within serve s"; "    print \"b\"" ])
+                "(sexpr (within serve s |serveDefaults (print \"b\")))"
+                "no options is the defaults themselves"
+
+            clean
+                [
+                    okHandler
+                    "within serve s port=(Some 8080) maxConcurrent=2 bodyTimeout=5s maxBody=1MiB handler=h"
+                    "    print $\"{Server.port s}\""
+                ]
+                "every key"
+
+            clean
+                [ "within serve s port=None"; "    FOO=1 sh -c \"true\""; "    print \"b\"" ]
+                "a first block line shaped NAME=value cmd is the block's, not one more option"
+
+            mustSay
+                [ "within serve s prot=None"; "    print \"b\"" ]
+                "ServerConfig has no field 'prot'. Did you mean 'port'?"
+                "an unknown key names the nearest one"
+
+            mustSay
+                [ "within serve s port=None port=None"; "    print \"b\"" ]
+                "duplicate key 'port' — each option is given once"
+                "a repeated key"
+
+            mustSay
+                [ "within serve s maxConcurrent=\"4\""; "    print \"b\"" ]
+                "expected int, got string"
+                "a value of the wrong type"
+        }
+        test
+            "in key=value options a plain T for an Option<T> key means Some; a written record stays strict [D:serve-defaults]" {
+            clean
+                [
+                    "let p = 8081"
+                    "within serve s port=8080"
+                    "    print \"a\""
+                    "within serve s port=p"
+                    "    print \"b\""
+                ]
+                "a plain int is Some of it"
+
+            clean
+                [
+                    "let q = Some 8080"
+                    "within serve s port=(Some 8080)"
+                    "    print \"a\""
+                    "within serve s port=None"
+                    "    print \"b\""
+                    "within serve s port=q"
+                    "    print \"c\""
+                ]
+                "the Option spellings still check"
+
+            mustSay
+                [ "within serve s port=\"8080\""; "    print \"a\"" ]
+                "expected Option<int>, got string"
+                "neither T nor Option<T> names the key's type"
+
+            mustSay
+                [ "let cfg = { Server.defaults with port = 8080 }" ]
+                "expected Option<int>, got int"
+                "the public record update is strict"
+
+            mustSay
+                [ "within serve s = { port = 8080; maxConcurrent = 1 }"; "    print \"a\"" ]
+                "serve's port is optional: `port = Some 8080`"
+                "the literal is strict and names its repair [D:serve-port-option]"
+
+            clean [ "retry attempts=2 timeout=2m"; "    true" ] "retry's timeout"
+            clean [ "repeat interval=1s timeout=5m"; "    true" ] "repeat's timeout"
+            clean [ "retry attempts=2 timeout=(Some 2m)"; "    true" ] "the Some spelling stays"
+
+            mustSay
+                [ "let o = { Retry.defaults with timeout = 2m }" ]
+                "expected Option<Duration>, got Duration"
+                "Retry's written update is strict"
+
+            clean
+                [ "type T = Some of string | Nope"; "retry attempts=1 timeout=1s"; "    true" ]
+                "a user case named Some does not capture the lift"
+
+            expectValue "retry attempts=2 delay=0ms timeout=2m (1 + 1) until r (r == 2)" (VInt 2L)
+
+            let ex =
+                Expect.throwsC (fun () -> run "repeat interval=5ms timeout=30ms (1 == 2)" |> ignore) id
+
+            Expect.stringContains ex.Message "repeat: timed out after" "the lifted timeout is the one that runs"
+        }
+        test "a form word hovers at token level: the statement need not parse [D:serve-defaults]" {
+            let hover lines line col =
+                Weir.Lsp.hoverType lines line col |> Option.defaultValue "<none>"
+
+            let n = max 8 System.Environment.ProcessorCount
+
+            for lines in
+                [
+                    [ "within serve" ]
+                    [ "within serve s port=" ]
+                    [ "let f () ="; "    within serve"; "f ()" ]
+                ] do
+                let line = List.length lines |> min 2
+                let col = (List.item (line - 1) lines).IndexOf "serve" + 2
+                let hv = hover lines line col
+
+                Expect.stringContains
+                    hv
+                    "serve — binds: an HTTP server that runs until the block exits"
+                    $"the kind's doc: {lines}"
+
+                Expect.stringContains
+                    hv
+                    "within serve <name> [key=value …]  (or `within serve <name> = <config>`), then a block or `until stopped`"
+                    $"the shape line: {lines}"
+
+                Expect.stringContains
+                    hv
+                    "keys: port: Option<int>, maxConcurrent: int, maxQueued: int, bodyTimeout: Duration, maxBody: Size, handler: HttpServerRequest -> HttpServerResponse"
+                    $"the keys, off ServerConfig: {lines}"
+
+                Expect.stringContains
+                    hv
+                    $"defaults: port = None, maxConcurrent = {n}, maxQueued = {16 * n}, bodyTimeout = 30s, maxBody = 16 MiB, handler = <landing page>"
+                    $"the defaults, off Server.defaults: {lines}"
+
+            Expect.stringContains (hover [ "within" ] 1 3) "within <kind> — a scoped block" "the keyword alone"
+
+            Expect.stringContains
+                (hover [ "retry" ] 1 3)
+                "keys: attempts: int, delay: Duration, timeout: Option<Duration>\ndefaults: attempts = 5, delay = 1s, timeout = None"
+                "a half-typed retry"
+
+            Expect.stringContains
+                (hover [ "poll timeout=" ] 1 2)
+                "keys: timeout: Duration, interval: Duration\ndefaults: timeout = 1m, interval = 1s"
+                "a half-typed poll"
+
+            Expect.stringContains
+                (hover [ "let n = repeat interval=" ] 1 11)
+                "keys: interval: Duration, timeout: Option<Duration>\ndefaults: timeout = None (interval is required)"
+                "a half-typed repeat"
+
+            Expect.stringContains
+                (hover [ "within lock \"p\""; "    print \"a\"" ] 1 9)
+                "within lock <path> [timeout=<duration>]"
+                "every kind carries its shape line"
+
+            Expect.equal
+                (hover [ okHandler; "within serve srv port=8080 handler=h"; "    print \"x\"" ] 2 15)
+                "Server"
+                "the binder is the handle, in the options head"
+
+            Expect.equal (hover [ "within serve srv"; "until stopped" ] 1 15) "Server" "and in the block-less form"
+
+            Expect.equal (hover [ "let x = \"within serve\" +" ] 1 18) "<none>" "the same letters in a string are data"
+            Expect.equal (hover [ "within serve // retry" ] 1 18) "<none>" "and in a comment"
+        }
+        test "= config is the record form: one record, the handler its field [D:serve-defaults] [D:serve-one-record]" {
+            Expect.equal
+                (shape [ "within serve s = cfg"; "    print \"b\"" ])
+                "(sexpr (within serve s cfg (print \"b\")))"
+                "one atom: the record carries the handler"
+
+            mustSay
+                [ okHandler; "within serve s = Server.defaults h"; "    print \"b\"" ]
+                "within serve takes one record after `=` — the handler is its `handler` field"
+                "a handler word after the record is refused"
+
+            mustSay
+                [ okHandler; "within serve s = Server.defaults h"; "    print \"b\"" ]
+                "handler=route"
+                "the refusal shows the option spelling"
+
+            clean
+                [
+                    okHandler
+                    "let cfg = { Server.defaults with port = Some 8080; handler = h }"
+                    "within serve s = cfg"
+                    "    print $\"{Server.port s}\""
+                ]
+                "a ServerConfig value alone"
+
+            clean
+                [ "within serve s = { port = None; maxConcurrent = 2 }"; "    print \"b\"" ]
+                "the short literal alone: its handler rests at the default"
+
+            mustSay [ "within serve s = 8080"; "    print \"b\"" ] "expected ServerConfig, got int" "not a record"
+        }
+        test "no block: until stopped and/or always directly under the head [D:serve-defaults]" {
+            Expect.equal
+                (shape [ "within serve s"; "until stopped" ])
+                "(sexpr (within serve s |serveDefaults (held ())))"
+                "the held server with no block"
+
+            Expect.equal
+                (shape [ "within serve s port=None"; "until stopped"; "always"; "    print \"c\"" ])
+                "(sexpr (within serve s {|serveDefaults with port = None} (within (held ()) (always (print \"c\")))))"
+                "with a cleanup"
+
+            Expect.equal
+                (shape [ "within serve s = cfg"; "always"; "    print \"c\"" ])
+                "(sexpr (within serve s cfg (within () (always (print \"c\")))))"
+                "always alone"
+
+            clean [ "within serve s"; "until stopped"; "print \"after\"" ] "checks clean"
+
+            clean
+                [
+                    okHandler
+                    "within serve s = { Server.defaults with handler = h }"
+                    "until stopped"
+                ]
+                "after the record head too"
+
+            clean
+                [
+                    "within serve s"
+                    "until stopped"
+                    "always"
+                    "    print $\"{Server.running s}\""
+                ]
+                "the binder reaches the cleanup"
+        }
+        test "a serve head with no block and no until stopped names the shape [D:serve-defaults]" {
+            mustSay
+                [ "within serve s" ]
+                "within serve needs an indented block, or `until stopped` on the next line"
+                "the head alone"
+
+            mustSay
+                [ "let f () ="; "    within serve s port=None"; "f ()" ]
+                "within serve needs an indented block, or `until stopped` on the next line"
+                "the head alone, nested"
+
+            mustSay
+                [ "within serve"; "until stopped" ]
+                "within serve takes a name for the server — `within serve s port=8080"
+                "no binder"
+
+            mustSay
+                [ "within serve port=None handler=h"; "until stopped" ]
+                "within serve takes a name for the server before its options"
+                "options where the name goes"
+
+            mustSay
+                [ "within serve port=None"; "until stopped" ]
+                "within serve takes a name for the server before its options — `within serve s port=…`"
+                "one option where the name goes"
         }
         test "Serve.start 0 binds a free port and the handle reports the BOUND one [D:serve-port-option]" {
             let h = Weir.Serve.start 0 (limits 1024L)
@@ -34597,7 +35154,7 @@ let serveTests =
             clean
                 [
                     "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Stream [\"a\"; \"b\"] }"
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = h }"
                     "    print \"ok\""
                 ]
                 "a Stream response body"
@@ -34872,6 +35429,29 @@ let serveTests =
                 Expect.isFalse (body.Contains "\nevent: evil") "no forged field line"
             | other -> failtest $"one reply expected: {other}"
         }
+        test "a Text body leaves as text/plain unless the handler types it [D:serve-text-type]" {
+            let get = "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+
+            let reply (headers: (string * string) list) (body: Weir.Serve.SBody) =
+                wire
+                    (fun _ -> {
+                        Status = 200
+                        Headers = headers
+                        Body = body
+                    })
+                    [ get ]
+                |> List.head
+
+            Expect.stringContains
+                (reply [] (Weir.Serve.RText "<b>x</b>"))
+                "Content-Type: text/plain; charset=utf-8"
+                "an untyped Text body is never left for the browser to sniff"
+
+            let typed = reply [ "Content-Type", "text/html" ] (Weir.Serve.RText "<b>x</b>")
+            Expect.stringContains typed "Content-Type: text/html" "the handler's type stands"
+            Expect.isFalse (typed.Contains "text/plain") "and is the only one"
+            Expect.isFalse ((reply [] Weir.Serve.RNoBody).Contains "Content-Type") "no body, no type"
+        }
         test "maxBody: a body past the bound is 413 whether declared or chunked; within it reads whole (H20)" {
             let echo (r: Weir.Serve.SReq) : Weir.Serve.SResp = {
                 Status = 200
@@ -34905,7 +35485,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1; maxBody = 1MiB } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; maxBody = 1MiB; handler = h }"
                     "    print \"ok\""
                 ]
                 "maxBody alone"
@@ -34913,7 +35493,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 2s; maxBody = 64KiB } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 2s; maxBody = 64KiB; handler = h }"
                     "    print \"ok\""
                 ]
                 "both optional fields"
@@ -34921,7 +35501,7 @@ let serveTests =
             mustSay
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1; maxBody = 5 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; maxBody = 5; handler = h }"
                     "    print \"ok\""
                 ]
                 "Size"
@@ -34934,7 +35514,7 @@ let serveTests =
             // from patterns — the standing weir rule, not a serve concern)
             clean
                 [
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } (fun req -> match req.method with | Other v -> HttpServerResponse { status = 405; headers = []; body = Text v } | Query -> HttpServerResponse { status = 200; headers = []; body = Text \"q\" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" })"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = (fun req -> match req.method with | Other v -> HttpServerResponse { status = 405; headers = []; body = Text v } | Query -> HttpServerResponse { status = 200; headers = []; body = Text \"q\" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }) }"
                     "    print \"ok\""
                 ]
                 "an inlined handler matching Other and Query"
@@ -35080,7 +35660,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; handler = h }"
                     "    print \"ok\""
                 ]
                 "bodyTimeout omitted"
@@ -35089,7 +35669,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 5s } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 5s; handler = h }"
                     "    print \"ok\""
                 ]
                 "bodyTimeout supplied"
@@ -35098,7 +35678,7 @@ let serveTests =
             mustSay
                 [
                     okHandler
-                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 5 } h"
+                    "within serve srv = { port = Some 80; maxConcurrent = 1; bodyTimeout = 5; handler = h }"
                     "    print \"ok\""
                 ]
                 "Duration"
@@ -39411,14 +39991,67 @@ let helpUxTests =
             let memberRows = lines |> Array.filter (fun l -> l.StartsWith "  ") |> Array.length
             Expect.equal memberRows 8 "one row per member, exactly"
         }
-        test "(c) bare #help: modules one per line with blurbs; #find is listed" {
+        test "(c) bare #help is the directives alone; #help modules lists the modules with blurbs [D:help-modules]" {
             let t = Weir.Repl.helpTextForTest ""
             Expect.stringContains t "#find" "#find is in the directive list"
+            Expect.stringContains t "#help modules" "the directive list points at the modules"
+            Expect.isFalse (t.Contains "Modules:") "no module list under the directives"
+
+            let m = Weir.Repl.helpTextForTest "modules"
 
             Expect.isTrue
-                (t.Split '\n'
+                (m.Split '\n'
                  |> Array.exists (fun l -> l.TrimStart().StartsWith "Seq " && l.Contains "lazy sequence"))
-                $"the Seq line carries its blurb: {t}"
+                $"the Seq line carries its blurb: {m}"
+
+            Expect.isFalse (m.Contains "Imported:") "no imports, no Imported section"
+        }
+        test "a bare module name echoes its help when it fits, else the member grid [D:module-echo]" {
+            let full =
+                "Bytes (2 members):\n  a  doc\n  b  doc\n\n#help Bytes.<member> shows one member's doc"
+
+            Expect.equal (Weir.Repl.moduleEchoText full (Some 24) 80 "Bytes" [ "a"; "b" ]) full "fits: the #help text"
+            Expect.equal (Weir.Repl.moduleEchoText full None 80 "Bytes" [ "a"; "b" ]) full "no terminal: the #help text"
+
+            Expect.equal
+                (Weir.Repl.moduleEchoText full (Some 5) 80 "Bytes" [ "a"; "b" ])
+                "Bytes (2 members):\n  a  b\n\n#help Bytes for descriptions, #help Bytes.<member> for one"
+                "too tall: names only, and where the descriptions are"
+        }
+        test "Reply builds the ordinary response record [D:reply]" {
+            let body src =
+                run
+                    $"match ({src}).body with | Text t -> t | NoBody -> \"<none>\" | Json ls -> Str.join \"\" ls | _ -> \"?\""
+
+            Expect.equal (run "(Reply.text 201 \"made\").status") (VInt 201L) "text status"
+            Expect.equal (body "Reply.text 201 \"made\"") (VStr "made") "text body"
+            Expect.equal (body "Reply.empty 404") (VStr "<none>") "empty"
+            Expect.equal (body "Reply.json 200 ([1; 2] |> to json)") (VStr "[1,2]") "json"
+            Expect.equal (run "(Reply.empty 404).headers |> Seq.length") (VInt 0L) "no headers"
+
+            Expect.equal
+                (run "({ Reply.text 200 \"ok\" with headers = [(\"a\", \"b\")] }).headers |> Seq.length")
+                (VInt 1L)
+                "headers are a record update"
+        }
+        test "the /// run above the module line is the module's doc [D:module-doc]" {
+            Expect.equal
+                (Weir.Script.moduleDocOf [
+                    "/// Topic pub/sub."
+                    "/// Call init first."
+                    "module Flume"
+                    ""
+                    "let x = 1"
+                ])
+                [ "Topic pub/sub."; "Call init first." ]
+                "the contiguous run"
+
+            Expect.equal (Weir.Script.moduleDocOf [ "/// stray"; ""; "module Flume" ]) [] "a blank line breaks the run"
+
+            Expect.equal
+                (Weir.Script.moduleDocOf [ "module Flume"; "/// doubles"; "let twice : int -> int" ])
+                []
+                "a member's doc is not the module's"
         }
         test "(d) #find fallback: case-insensitive substring, deterministic (the piped path)" {
             let t = Weir.Repl.findFallbackForTest "SHA256"

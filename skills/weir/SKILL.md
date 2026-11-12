@@ -956,19 +956,40 @@ within tmp d
   raise-by-default does not apply — failure becomes visible through
   `watch=` or `Proc.wait`, nowhere else. Nested scopes release LIFO.
   The command position takes splices and env sigils like any command;
-- A SCOPED HTTP LISTENER is `within serve srv = { port;
-  maxConcurrent } handler` (the config is a `ServerConfig`: `port` —
-  an `Option<int>`, `Some 8080` binds that port, `None` an ephemeral
-  one the kernel picks [D:serve-port-option] — `maxConcurrent`,
-  `bodyTimeout`, `maxBody`) + an indented block [D:http-serve]: the
+- A SCOPED HTTP LISTENER is `within serve srv port=8080 handler=route`
+  + an indented block [D:http-serve]. The head is the server's name,
+  then `key=value` OPTIONS — `retry`'s rule, each pair one field of
+  `Server.defaults` [D:serve-defaults]: `port` (an `Option<int>`,
+  default `None` = an ephemeral port the kernel picks
+  [D:serve-port-option]), `maxConcurrent` (default: the processor
+  count, at least 8), `maxQueued` (16 per default slot; past it the
+  server answers 503 with `Retry-After` [D:serve-queue]), `bodyTimeout`
+  (30s), `maxBody` (16MiB), `handler`
+  (default: a landing page — `GET /` 200 saying no handler is set,
+  anything else 404). IN `key=value` OPTIONS A PLAIN VALUE FOR AN
+  `Option` KEY MEANS `Some`: `port=8080` is `port=(Some 8080)`
+  (`port=None` still checks), and `retry timeout=2m` likewise — never in
+  a record you write. The options are the record `ServerConfig`, so
+  `within serve srv = cfg` takes one (`let cfg = { Server.defaults with
+  port = Some 8080; handler = route }`) — ONE record, the handler its
+  field; a second word after it (`= cfg route`, the pre-0.0.87
+  spelling) is a parse error [D:serve-one-record]. NO BLOCK: `until stopped`
+  directly under the head (`within serve srv` / `until stopped`) serves
+  until the stop signal and prints `serving on http://localhost:<port>
+  — Ctrl+C to stop` on stderr; with a block weir prints nothing. A head
+  with neither a block nor `until stopped` is a parse error. The
   socket lifetime IS the block — served until the scope exits
   (normal, raise, SIGINT/SIGTERM) and CLOSED on every path, so the
   port frees (a second bind then succeeds). Same no-orphan discipline
   as `within proc`, port edition. The handler is a plain SYNCHRONOUS
   `HttpServerRequest -> HttpServerResponse` function — no async
   surface; the runtime multiplexes connections on tasks under it (the
-  `pmap`/`spawn` doctrine). It ROUTES on `req.path` with an ordinary
-  `match` — weir's union dispatch, not a routing framework.
+  `pmap`/`spawn` doctrine). It ROUTES with an ordinary `match` on
+  `rq.method, rq.path` — weir's union dispatch, not a routing
+  framework: a string arm for a fixed path, a `Regex` arm to capture a
+  segment (`| Post, Regex @"^/topic/([^/]+)$" topic -> …`). Anchor it
+  with `^…$` so the regex matches the WHOLE path: the `Regex` pattern
+  is a search, so without them `/x/topic/a/b` would match too.
   `HttpServerRequest` carries `method`/`path`/`query` (the raw string,
   no leading `?` — `Str.trySplitOnce "=" req.query`)/`headers` (pairs,
   one per value: a repeated header such as a proxied `X-Forwarded-For`
@@ -1021,9 +1042,9 @@ within tmp d
   `req.body` is decoded per the request's declared charset (UTF-8 when
   none); a charset weir cannot decode is answered 415 before any
   handler, never guessed at [D:serve-charset].
-  The config is `{ port; maxConcurrent }` plus either optional field
-  (`{ port = Some 8080; maxConcurrent = 4; maxBody = 1MiB }`; `port =
-  None` for an ephemeral port). The handle surface is `Server.port`
+  A config LITERAL naming `port` and `maxConcurrent` may leave the
+  other fields out (`{ port = Some 8080; maxConcurrent = 4; maxBody =
+  1MiB }`); they rest at `Server.defaults`. The handle surface is `Server.port`
   (the port actually BOUND — the kernel's pick under `None`)/`Server.running`/
   `Server.streamErrors` — no `stop` (the scope IS the teardown). ONE type
   family: `HttpMethod`, header pairs and the body union are shared
@@ -1034,15 +1055,27 @@ within tmp d
 
 ```weir
 // the scope opens the socket and frees it on exit — this block binds
-// the handle, reads its port, and exits at once (no client needed)
-let handler = fun req ->
-    match req.path with
-    | "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
-    | "/stream" -> HttpServerResponse { status = 200; headers = []; body = Stream ["a"; "b"; "c"] }
-    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
+// the handle, asks itself two routes, and exits (no outside client)
+let route = fun rq ->
+    match rq.method, rq.path with
+    | Get, "/health" -> Reply.text 200 "ok"
+    | Post, Regex @"^/topic/([^/]+)$" topic ->
+        Reply.text 202 $"queued on {topic}"
+    | Get, "/stream" -> HttpServerResponse { status = 200; headers = []; body = Stream ["a"; "b"; "c"] }
+    | _ -> Reply.text 404 "not found"
 
-within serve srv = { port = Some 8410; maxConcurrent = 4 } handler
+within serve srv port=8410 handler=route
     print $"listening on {Server.port srv}, open={Server.running srv}"
+    let posted = Http.send { Http.get "http://127.0.0.1:8410/topic/news" with method = Post }
+    print $"{posted.status} {posted.body |> Seq.head}"
+    let nested = Http.send { Http.get "http://127.0.0.1:8410/x/topic/a/b" with method = Post }
+    print $"{nested.status}"
+```
+
+```weir-demo
+// no block: serve until stopped, announced on stderr
+within serve srv port=8080 handler=route
+until stopped
 ```
 - A bare `within` (no kind) + `always` is the exit discipline alone
   [D:within-always]: the indented body runs, then the `always` block
@@ -1078,8 +1111,8 @@ within serve srv = { port = Some 8410; maxConcurrent = 4 } handler
   after a within's `until`, not a value (any other word errors); the
   scope's value is the block's. Refused in `plan` and `pure`;
   `readonly` admits it. The server/sidecar spelling:
-  `within serve srv = … handler` + body, then `until stopped` at the
-  `within`'s column.
+  `within serve srv handler=route` + body, then `until stopped` at the
+  `within`'s column (or no body at all, for `serve`).
 - `within lock "path"` holds an ADVISORY file lock for the block
   [D:within-lock]: created if missing, nothing bound (there is
   nothing to ask a lock). Blocking by default; `timeout=30s` bounds
@@ -1344,8 +1377,9 @@ print (show (Plan.isEmpty p))
   loop use `repeat`, not `for` over `Seq.initInfinite`. The bounded
   ones, `retry`/`poll`, are compound forms:
   `retry attempts=5 delay=30s` + an indented body block (optional
-  total-time ceiling `timeout=(Some 2m)` — an `Option<Duration>`,
-  default `None`; it cancels a pending delay), then
+  total-time ceiling `timeout=2m` — an `Option<Duration>`, default
+  `None`, a plain value in the head meaning `Some`
+  [D:serve-defaults]; it cancels a pending delay), then
   optionally `until r` + an indented predicate block binding the
   body's value. A `bool` body IS the predicate (no `until`, yields
   unit); a value body REQUIRES `until` and yields the value.
@@ -1376,7 +1410,7 @@ print (show (Plan.isEmpty p))
   [D:stop-caused-failure]. `interval=` is required and positive (a
   missing or literal-zero one is a check error). The rest mirrors
   `poll`: a bool block ends it when true, `until r` returns the value
-  that passed, `timeout=(Some 5m)` raises. Refused inside `plan`. A
+  that passed, `timeout=5m` raises. Refused inside `plan`. A
   `for` over `Seq.initInfinite` also runs until a signal, but the
   signal TEARS IT DOWN mid-iteration — `repeat` is the graceful one.
   `repeat … until stopped` is a parse error (a repeat already ends
@@ -3452,13 +3486,14 @@ not the teaching.
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
+- `Reply`: `empty` `json` `text` — a handler's responses: `Reply.text 200 "ok"`, an ordinary `HttpServerResponse`
 - `Result`: `defaultValue` `isOk` `map` `toOption` — what `e |> try result` gives (`Ok v` / `Error msg`)
 - `Option`: `bind` `defaultValue` `defaultWith` `flatten` `iter` `map` `orElse` `orElseWith` — `bind` chains lookups that may each fail (`f` returns an Option; no nesting); `flatten` collapses `Option<Option<T>>`
 - `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `isName` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `toName` `under` `which` — `isName` is true for one file name valid on Linux, macOS and Windows; `toName` turns any text into one; `which name : Option<string>` is the full path of the program a command head would run, found as the spawn finds it: on the PATH the command runs with (a `within env` overlay's included [D:overlay-path]) and PATHEXT on Windows; a name with a `/` answers itself when the file exists; an ambient read (readonly admits it, pure refuses) [D:path-which]; `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`) — home is `$HOME` verbatim when set, the OS lookup when unset, and an empty HOME raises [D:home-verbatim]; HOME and `XDG_*` are read through a `within env` overlay [D:home-overlay]; in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
 - `Poll`: `defaults`
 - `Plan`: `apply` `isEmpty` `ops` `preview` — the value a `plan` block yields: `ops` the recorded `Op`s, `preview` one line each, `apply` performs them in order
 - `Proc`: `pid` `running` `stop` `tail` `wait`
-- `Server`: `port` `running` `streamErrors` — `streamErrors` lists the errors of `Stream` bodies that raised partway (the client got a truncated body; never raised out of the handler)
+- `Server`: `defaults` `port` `running` `streamErrors` — `defaults` is the default `ServerConfig` (`{ Server.defaults with port = Some 8080 }`); `streamErrors` lists the errors of `Stream` bodies that raised partway (the client got a truncated body; never raised out of the handler)
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
 - `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor) and shows bidi controls as a visible `\uXXXX`; a bare CR passes.
@@ -3493,6 +3528,6 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `PromptStatus`: { `ok` `exit` `duration` }
 - type `Result`: `Ok` `Error`
 - type `Retry`: { `attempts` `delay` `timeout` }
-- type `ServerConfig`: { `port` `maxConcurrent` `bodyTimeout` `maxBody` }
+- type `ServerConfig`: { `port` `maxConcurrent` `maxQueued` `bodyTimeout` `maxBody` `handler` }
 - type `UuidNamespaces`: { `dns` `url` `oid` `x500` }
 - type `Yaml`: `YStr` `YInt` `YFloat` `YBool` `YNull` `YSeq` `YMap`

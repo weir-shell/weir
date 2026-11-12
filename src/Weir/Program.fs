@@ -200,13 +200,27 @@ let private evalOnce (input: string) : int =
                                             Console.WriteLine
                                                 $": {formatEchoTy te.Ty} (binary output — the echo refuses a terminal; redirect to a file, or print deliberately)"
                                         else
-                                            let rendered, hint = Eval.echoValue Eval.echoPipedCap v
-                                            // the REPL echo's renderer [D:echo-one-renderer]
-                                            let rendered = Eval.echoRender Console.IsOutputRedirected rendered
+                                            // a named function short of arguments
+                                            // echoes what it lacks [D:partial-echo]
+                                            let names (head: string) =
+                                                match Script.builtinParamNames chk.Env head with
+                                                | Some r -> Some r
+                                                | None ->
+                                                    Map.tryFind head venv
+                                                    |> Option.map (fun f -> head, Eval.closureParamNames f)
 
-                                            let tail' = Eval.echoTail hint
+                                            match Script.partialApp names te with
+                                            | Some p ->
+                                                Script.partialEchoLines plainSigStyle p |> List.iter Console.WriteLine
+                                            | None ->
 
-                                            Console.WriteLine $"{rendered} : {formatEchoTy te.Ty}{tail'}"
+                                                let rendered, hint = Eval.echoValue Eval.echoPipedCap v
+                                                // the REPL echo's renderer [D:echo-one-renderer]
+                                                let rendered = Eval.echoRender Console.IsOutputRedirected rendered
+
+                                                let tail' = Eval.echoTail hint
+
+                                                Console.WriteLine $"{rendered} : {formatEchoTy te.Ty}{tail'}"
 
                                     0
                             with

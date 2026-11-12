@@ -71,7 +71,10 @@ above the implementation.
   general implementation is an error.
 - **Order.** The signature comes first. A signature with no
   implementation is an error.
-- **Docs.** `///` goes on the signature line.
+- **Docs.** `///` goes on the signature line. `///` lines directly
+  above the `module` line document the module itself: `#help modules`
+  shows the first line, `#help Name` and the editor's hover show all
+  of it.
 - **Types** are always exported.
 - **Scripts** can't use signatures; types there are always inferred.
 

@@ -51,9 +51,8 @@ with `^` completes from PATH only, skipping bindings and aliases.
 Completion never runs anything. At most it reads a directory, a
 signature file, or a cached PATH entry.
 
-**At an empty prompt.** Tab offers the session directives, not
-everything: the first Tab types the `#` they share, a second lists
-them. `#help` itself lists the modules and members.
+**At an empty prompt.** Tab types `#help`, not a list of everything;
+Enter then shows the directives. `#` and Tab lists the directives.
 Once you start typing you get the usual filtered list. Tab in an
 argument position still lists the directory.
 
@@ -106,7 +105,9 @@ parameter or a `let` in the same block. An argument without `$`
 completes paths only.
 
 **Long lists.** When several candidates match, Tab lists them all in
-columns that fit the terminal; past 200 it counts the rest.
+columns that fit the terminal; past 200 it counts the rest. At the
+start of a command the candidates are colored as they would be once
+typed: programs on PATH bold blue, weir names and modules bold.
 
 **Type names.** Where a type is written, Tab offers type names: after
 `from json`, `from toml` and the other adapters, only the types that
@@ -142,9 +143,11 @@ path is quoted: `File.read ~/.b<TAB>` gives `File.read "/home/you/.bashrc"`.
 After `import`, a path completes quoted and lists only directories and
 `.weir` files: `import li<TAB>` gives `import "lib/"`.
 
-**Options.** After `retry`, `poll`, `repeat` or `within lock "p"`, Tab
-offers the option keys you haven't given yet: `repeat int<TAB>` gives
-`repeat interval=`. A `yaml` marker offers `patch`, `by=` and
+**Options.** After `retry`, `poll`, `repeat`, `within serve s` or
+`within lock "p"`, Tab offers the option keys you haven't given yet:
+`repeat int<TAB>` gives `repeat interval=`, and `within serve s
+<TAB>` lists `port=`, `maxConcurrent=`, `bodyTimeout=`, `maxBody=`
+and `handler=`. A `yaml` marker offers `patch`, `by=` and
 `schema=`, in the order they're written. Below a `within` block,
 `until <TAB>` offers `stopped`.
 
@@ -178,6 +181,12 @@ Type variables in the type line are renamed to `'a`, `'b`, …; error
 messages use the checker's internal names instead. `NO_COLOR` turns
 off the styling.
 
+### Modules
+
+A module's name alone (`Bytes`) shows what `#help Bytes` shows. If
+that is taller than the terminal you get the member names in columns
+and a line pointing at `#help Bytes` for the descriptions.
+
 ### Functions and `let`s
 
 A **named function** echoes what `#help` would show:
@@ -187,6 +196,17 @@ A **named function** echoes what `#help` would show:
 - a function defined in the session: `name : type` (with or without
   `#types`) plus a dim line with the first line of its definition (the
   latest one, if redefined)
+- a named function given only some of its arguments: its signature
+  with the supplied parameters as bare names, then a line saying what
+  is bound and what is still missing. If the last argument came in
+  through `|>`, the line says which parameter the piped value became:
+
+  ```
+  weir> "msg" |> Str.toUtf8 |> Bytes.hmacSha256
+  Bytes.hmacSha256 key (msg: Bytes) : Bytes
+  partial application — the piped value is key; still needs msg
+  ```
+
 - an anonymous or composed function: `<fun> : ty`, since it has no
   name
 
@@ -247,8 +267,10 @@ only applies to lazy ones. It applies to a piped session too.
 
 ## Help
 
-`#help` lists the directives and the modules, one module per line
-with a short description. `#keys` lists the editor's
+`#help` lists the directives. `#help modules` lists the modules, one
+per line with a short description: the built-in ones first, then the
+modules you imported, each with the first line of its doc (or its file
+when it has none). `#keys` lists the editor's
 [key bindings](#multi-line-editing).
 
 - `#help Seq` lists one module's members, one per line, each with the

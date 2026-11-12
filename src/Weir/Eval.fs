@@ -461,6 +461,14 @@ type Value =
 
 and Env = Map<string, Value>
 
+/// the parameter names a function value still takes [D:partial-echo] —
+/// the closure's own binder, then its body's lambda chain; a builtin or
+/// a pattern binder names nothing
+let closureParamNames (v: Value) : string list =
+    match v with
+    | VClosure(p, body, _) -> p :: Check.lambdaParamNames body
+    | _ -> []
+
 // One renderer, limits threaded [D:repl-echo]: show keeps its shipped
 // constants byte-identical (20 items, "; ...", unclipped strings); the
 // REPL echo runs the same core tighter (10, "; …", 120-char clip,
@@ -6986,35 +6994,38 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if maxConcurrent < 1 then
                 failwith $"serve: maxConcurrent is at least 1, got {maxConcurrent}"
 
-            // the request-body read timeout [D:serve-body-timeout]:
-            // optional in the config literal, defaulting to 30s — a
+            // the waiting line's bound [D:serve-queue]: past it, 503
+            let maxQueued =
+                match recGet "maxQueued" cfg with
+                | VInt n -> toIntArg "serve maxQueued" Amount n
+                | v -> unreachable $"serve maxQueued {formatValue v}"
+
+            if maxQueued < 1 then
+                failwith $"serve: maxQueued is at least 1, got {maxQueued}"
+
+            // the request-body read timeout [D:serve-body-timeout]: a
             // slow client dribbling the body cannot park a handler
             // slot forever
             let bodyTimeoutMs =
-                match List.tryFind (fun (n, _) -> n = "bodyTimeout") cfg with
-                | Some(_, VDur ms) -> toIntArg "serve bodyTimeout (ms)" Amount ms
-                | Some(_, v) -> unreachable $"serve bodyTimeout {formatValue v}"
-                | None -> 30_000
+                match recGet "bodyTimeout" cfg with
+                | VDur ms -> toIntArg "serve bodyTimeout (ms)" Amount ms
+                | v -> unreachable $"serve bodyTimeout {formatValue v}"
 
             if bodyTimeoutMs < 1 then
                 failwith $"serve: bodyTimeout is at least 1ms, got {bodyTimeoutMs}ms"
 
-            // the request-body size bound [D:serve-max-body]: optional,
-            // 16 MiB, answered 413 past it
+            // the request-body size bound [D:serve-max-body]: 413 past it
             let maxBody =
-                match List.tryFind (fun (n, _) -> n = "maxBody") cfg with
-                | Some(_, VSize b) -> b
-                | Some(_, v) -> unreachable $"serve maxBody {formatValue v}"
-                | None -> 16L * 1024L * 1024L
+                match recGet "maxBody" cfg with
+                | VSize b -> b
+                | v -> unreachable $"serve maxBody {formatValue v}"
 
             if maxBody < 0L then
                 failwith $"serve: maxBody cannot be negative, got {formatSize maxBody}"
 
-            // the handler closure, evaluated once at scope entry
-            let handler =
-                match topts with
-                | Some h -> eval env h
-                | None -> unreachable "the parser gives within serve its handler"
+            // the handler closure, read once at scope entry: the config's
+            // field [D:serve-defaults]
+            let handler = recGet "handler" cfg
 
             // request primitives -> the HttpServerRequest Value the handler sees
             let requestValue (r: Serve.SReq) : Value =
@@ -7122,6 +7133,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 Serve.start (defaultArg port 0) {
                     BodyTimeoutMs = bodyTimeoutMs
                     MaxBody = maxBody
+                    MaxQueued = maxQueued
                 }
 
             // the scope-close drain [D:serve-drain]: in-flight handlers get
@@ -7377,6 +7389,17 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     Session.closeNode serveNode)
 
             let frame = Session.pushFrame release
+
+            // a server held with no block says where it listens
+            // [D:serve-defaults]; a written block is the opt-out
+            let rec heldWithNoBlock (b: TypedExpr) =
+                match b.Kind with
+                | TEHold { Kind = TEUnit; Span = sp } -> sp.Start = sp.End
+                | TEAlways(inner, _) -> heldWithNoBlock inner
+                | _ -> false
+
+            if heldWithNoBlock body then
+                System.Console.Error.WriteLine $"serving on http://localhost:{handle.Port} — Ctrl+C to stop"
 
             let v =
                 try

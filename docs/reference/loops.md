@@ -43,9 +43,12 @@ until r
 print (out.stdout |> Seq.head)
 ```
 
-`retry` also takes a total-time ceiling, `timeout=(Some 2m)` (an
+`retry` also takes a total-time ceiling, `timeout=2m` (an
 `Option<Duration>`, default `None`). When it passes, the retry fails
-without waiting out the pending delay.
+without waiting out the pending delay. In `key=value` options a plain
+value for an `Option` key means `Some`, so `timeout=2m` and
+`timeout=(Some 2m)` are the same; a `Retry` record you write yourself
+takes the `Some`.
 
 `poll timeout=5m interval=10s` has the same form, limited by time: the
 loop for waiting until something is ready. `watch=<proc handle>` makes
@@ -102,7 +105,7 @@ Details:
 
 The other ways out mirror `poll`. A `bool` block ends the loop when
 true; `until r` binds a value block and returns the value that passed;
-`timeout=(Some 5m)` raises when time is up:
+`timeout=5m` raises when time is up:
 
 ```weir
 let n = repeat interval=10ms

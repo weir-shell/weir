@@ -176,6 +176,20 @@ if out.count("let f x = x + 1") < 2:
 if out.count("let f x = x + 2") < 2:
     failures.append(f"(g) redefinition must show the LAST accepted definition: {out!r}")
 
+# --- (g2): a named function short of arguments echoes what is bound and
+# what is missing, never the opaque <builtin>/<fun> [D:partial-echo] ---
+out = session([(b'"k" |> Str.toUtf8 |> Bytes.hmacSha256\r', 0.8)])
+if "partial application" not in out or "the piped value is key; still needs msg" not in out:
+    failures.append(f"(g2) a piped partial builtin must name key and msg: {out!r}")
+if "<builtin>" in out:
+    failures.append(f"(g2) the opaque <builtin> line must be gone for a named partial: {out!r}")
+
+out = session([(b"let add a b = a + b + 1\r", 0.8), (b"add 1\r", 0.8)])
+if "a is bound; still needs b" not in out:
+    failures.append(f"(g2) a session function partial must name its parameters: {out!r}")
+if "<fun> : int -> int" in out:
+    failures.append(f"(g2) the opaque <fun> line must be gone for a named partial: {out!r}")
+
 # --- (h): a bare command that exits nonzero renders a quiet exit-code
 # status (there is no $?, so the code must show), not the loud `error:` —
 # the raise is caught on the inherit path and the session continues

@@ -3738,7 +3738,7 @@ let h = fun req ->
     Duration.sleep 5s
     HttpServerResponse { status = 200; headers = []; body = Text "ok" }
 within
-    within serve _s = { port = Some $svportC1; maxConcurrent = 2 } h
+    within serve _s = { port = Some $svportC1; maxConcurrent = 2; handler = h }
         poll timeout=8s interval=50ms
             Net.portOpen $svportC1
         within proc _c = curl -s -m 10 "http://127.0.0.1:$svportC1/x"
@@ -4463,7 +4463,7 @@ let handler = fun req ->
     | _ ->
         exit 7
         HttpServerResponse { status = 200; headers = []; body = Text "ok" }
-within serve srv = { port = Some $svportT; maxConcurrent = 4 } handler
+within serve srv = { port = Some $svportT; maxConcurrent = 4; handler = handler }
     within proc _c = curl -s -m 10 "http://127.0.0.1:$svportT/park"
         Duration.sleep 300ms
         let _r = Http.send { Http.defaults with url = "http://127.0.0.1:$svportT/x" } |> try result
@@ -5324,7 +5324,7 @@ SCN
         hiport=8494
         cat > "$hidir/hi.scn" <<SCN
 SLEEP 700
-SEND within serve srv = { port = Some $hiport; maxConcurrent = 2 } (fun req -> Duration.sleep 10s; HttpServerResponse { status = 200; headers = []; body = Text "late" })\x1b\r    print (Str.toUpper "serving")\x1b\r    Duration.sleep 30s\x1b\ralways\x1b\r    Duration.sleep 700ms\x1b\r    print (Str.toUpper \$"errs={Server.streamErrors srv |> Seq.length}")\r
+SEND within serve srv = { port = Some $hiport; maxConcurrent = 2; handler = (fun req -> Duration.sleep 10s; HttpServerResponse { status = 200; headers = []; body = Text "late" }) }\x1b\r    print (Str.toUpper "serving")\x1b\r    Duration.sleep 30s\x1b\ralways\x1b\r    Duration.sleep 700ms\x1b\r    print (Str.toUpper \$"errs={Server.streamErrors srv |> Seq.length}")\r
 SLEEP 2500
 SEND \x03
 SLEEP 3000
@@ -13008,7 +13008,7 @@ let handler = fun req ->
         always
             note \$"inner arm {j} cleanup")
     HttpServerResponse { status = 200; headers = []; body = Text "ok" }
-within serve _srv = { port = Some 8495; maxConcurrent = 4 } handler
+within serve _srv = { port = Some 8495; maxConcurrent = 4; handler = handler }
     poll timeout=8s interval=50ms
         Net.portOpen 8495
     within proc _c = curl -s --noproxy "*" -m 20 "http://127.0.0.1:8495/x"
@@ -15810,7 +15810,7 @@ let handler = fun req ->
         HttpServerResponse { status = 200; headers = []; body = Text \$"hello {name}" }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
 
-within serve srv = { port = Some $svport; maxConcurrent = 4 } handler
+within serve srv = { port = Some $svport; maxConcurrent = 4; handler = handler }
     print \$"listening on {Server.port srv}"
     poll timeout=8s interval=100ms
         Net.portOpen $svport
@@ -15870,7 +15870,7 @@ let handler = fun req ->
         \$"chunk-{i}")
     HttpServerResponse { status = 200; headers = []; body = Stream elems }
 
-within serve srv = { port = Some $svport2; maxConcurrent = 4 } handler
+within serve srv = { port = Some $svport2; maxConcurrent = 4; handler = handler }
     poll timeout=8s interval=100ms
         Net.portOpen $svport2
     within proc client = sh "$svdir/capture.sh"
@@ -15903,7 +15903,7 @@ let handler = fun req ->
     let _m2 = sh -c "echo end >> $svdir/markers.txt" | complete
     HttpServerResponse { status = 200; headers = []; body = Text "done" }
 
-within serve srv = { port = Some $svport3; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport3; maxConcurrent = 2; handler = handler }
     poll timeout=8s interval=100ms
         Net.portOpen $svport3
     within proc load = sh -c "for i in 1 2 3 4; do curl -s --max-time 8 http://127.0.0.1:$svport3/slow & done; wait"
@@ -15955,7 +15955,7 @@ while True:
 print('MALFORMED|status=%s' % (d.split(b'\r\n', 1)[0].decode() if d else '(reset)'))
 PYEOF
 cat > "$svdir/method.weir" <<WEOF
-within serve srv = { port = Some $svport4; maxConcurrent = 2 } (fun req -> match req.method with | Get -> HttpServerResponse { status = 200; headers = []; body = Text "GET" } | Query -> HttpServerResponse { status = 200; headers = []; body = Text "QUERY" } | Other v -> HttpServerResponse { status = 405; headers = []; body = Text \$"OTHER:{v}" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text "known" })
+within serve srv = { port = Some $svport4; maxConcurrent = 2; handler = (fun req -> match req.method with | Get -> HttpServerResponse { status = 200; headers = []; body = Text "GET" } | Query -> HttpServerResponse { status = 200; headers = []; body = Text "QUERY" } | Other v -> HttpServerResponse { status = 405; headers = []; body = Text \$"OTHER:{v}" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text "known" }) }
     poll timeout=8s interval=100ms
         Net.portOpen $svport4
     let out = sh -c "python3 '$svdir/methprobe.py' $svport4" | complete
@@ -15992,7 +15992,7 @@ let handler = fun req ->
     | "/half" -> HttpServerResponse { status = 200; headers = []; body = Stream ([1; 2] |> Seq.map (fun i -> if i == 1 then "first" else fail "producer died")) }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
 
-within serve srv = { port = Some $svport5; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport5; maxConcurrent = 2; handler = handler }
     poll timeout=8s interval=100ms
         Net.portOpen $svport5
     let out = sh -c "python3 '$svdir/streamprobe.py' $svport5" | complete
@@ -16051,7 +16051,7 @@ let handler = fun req ->
     | "/badname" -> HttpServerResponse { status = 200; headers = [("Bad Name", "v")]; body = Text "ok" }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
 
-within serve srv = { port = Some $svport5; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport5; maxConcurrent = 2; handler = handler }
     poll timeout=8s interval=100ms
         Net.portOpen $svport5
     let out = sh -c "python3 '$svdir/hdrprobe.py' $svport5" | complete
@@ -16157,13 +16157,13 @@ echo "e2e ok: Http.send — a non-token method, an unaddressable URL and a Trans
 # never "not trusted", and never repaired with the insecure = true it sets
 # [D:tls-handshake-vs-trust]
 cat > "$svdir/portnone.weir" <<'WEOF'
-within serve srv = { port = None; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "free-ok" })
+within serve srv = { port = None; maxConcurrent = 2; handler = (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "free-ok" }) }
     let p = Server.port srv
     print $"bound-nonzero={p > 0}"
     Http.get $"http://127.0.0.1:{p}/" |> Http.expect |> Seq.iter (fun l -> print $"self={l}")
     let tls = Http.send { Http.get $"https://127.0.0.1:{p}/" with insecure = true } |> try result
     print $"tls={tls}"
-    within serve again = { port = Some p; maxConcurrent = 1 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "x" })
+    within serve again = { port = Some p; maxConcurrent = 1; handler = (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "x" }) }
         print "unreachable"
 WEOF
 rc=0; out=$(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy $BIN "$svdir/portnone.weir" 2>&1) || rc=$?
@@ -16176,12 +16176,12 @@ echo "$out" | grep -qF "can opt out: insecure = true" && fail "the repair must n
 echo "$out" | grep -qE "serve: cannot listen on 127.0.0.1:[0-9]+ — the port is already in use \(another process holds it, or a server on it is still closing\)" || fail "a taken port must be named as taken: $out"
 echo "$out" | grep -qF "Failed to bind" && fail "Kestrel's bind text leaked: $out" || true
 for p in -1 0 70000; do
-    printf 'within serve s = { port = Some %s; maxConcurrent = 1 } (fun r -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })\n    print "x"\n' "$p" > "$svdir/portrange.weir"
+    printf 'within serve s = { port = Some %s; maxConcurrent = 1; handler = (fun r -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }) }\n    print "x"\n' "$p" > "$svdir/portrange.weir"
     rc=0; out=$($BIN "$svdir/portrange.weir" 2>&1) || rc=$?
     [ "$rc" = "1" ] || fail "port Some $p must be refused (exit 1), got rc=$rc: $out"
     expect "port Some $p refused in the config's words" "serve: port is 1 to 65535 (None picks a free port), got $p" "$out"
 done
-printf 'within serve s = { port = 8080; maxConcurrent = 1 } (fun r -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })\n    print "x"\n' > "$svdir/portint.weir"
+printf 'within serve s = { port = 8080; maxConcurrent = 1; handler = (fun r -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }) }\n    print "x"\n' > "$svdir/portint.weir"
 rc=0; out=$($BIN check "$svdir/portint.weir" 2>&1) || rc=$?
 [ "$rc" != "0" ] || fail "a bare int port must be a check error: $out"
 expect "a bare int port names its repair" 'serve'"'"'s port is optional: `port = Some 8080` for that port, `port = None` for a free one' "$out"
@@ -16207,7 +16207,7 @@ except Exception:
 print('elapsed=%.1f status=%s' % (time.time() - t0, d.split(b'\r\n', 1)[0].decode() if d else '(none)'))
 PYEOF
 cat > "$svdir/timeout.weir" <<WEOF
-within serve srv = { port = Some $svport6; maxConcurrent = 2; bodyTimeout = 1s } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })
+within serve srv = { port = Some $svport6; maxConcurrent = 2; bodyTimeout = 1s; handler = (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }) }
     poll timeout=8s interval=100ms
         Net.portOpen $svport6
     let out = sh -c "python3 '$svdir/slowbody.py' $svport6" | complete
@@ -16235,7 +16235,7 @@ while True:
 print('status=%s body=%s' % (d.split(b'\r\n', 1)[0].decode(), d.split(b'\r\n\r\n', 1)[-1].decode()))
 PYEOF
 cat > "$svdir/maxbody.weir" <<WEOF
-within serve srv = { port = Some $svport7; maxConcurrent = 2; maxBody = 16B } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"len={Str.length req.body}" })
+within serve srv = { port = Some $svport7; maxConcurrent = 2; maxBody = 16B; handler = (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"len={Str.length req.body}" }) }
     poll timeout=8s interval=100ms
         Net.portOpen $svport7
     let fits = sh -c "python3 '$svdir/maxbody.py' $svport7 16" | complete
@@ -16247,6 +16247,27 @@ out=$($BIN "$svdir/maxbody.weir" 2>&1) || fail "serve maxBody run failed: $out"
 echo "$out" | grep -qF "status=HTTP/1.1 200 OK body=len=16" || fail "H20: a body of exactly maxBody must reach the handler: $out"
 echo "$out" | grep -qF "status=HTTP/1.1 413" || fail "H20: a body past maxBody must be 413: $out"
 echo "e2e ok: within serve — H20 maxBody answers 413 past the bound"
+
+# (H21) the waiting line is bounded [D:serve-queue]: one handler slot,
+# one waiting place — the first request runs, the second waits, and the
+# ones after are answered 503 with Retry-After at once, never queued.
+svport8=8478
+cat > "$svdir/busy.weir" <<WEOF
+let slow = fun req ->
+    Duration.sleep 1500ms
+    Reply.text 200 "done"
+
+within serve srv port=$svport8 maxConcurrent=1 maxQueued=1 handler=slow
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport8
+    let r = sh -c "for i in 1 2 3 4; do (curl -s -o /dev/null -D - -w 'code=%{http_code}\\n' --max-time 10 http://127.0.0.1:$svport8/ | grep -i -E 'code=|retry-after' &) ; sleep 0.3; done; sleep 4" | complete
+    r.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/busy.weir" 2>&1) || fail "serve maxQueued run failed: $out"
+[ "$(echo "$out" | grep -c 'code=200')" = 2 ] || fail "H21: the running request and the one waiting must both be served: $out"
+[ "$(echo "$out" | grep -c 'code=503')" = 2 ] || fail "H21: requests past maxQueued must be 503: $out"
+echo "$out" | grep -qi "retry-after: 1" || fail "H21: the 503 must say when to come back: $out"
+echo "e2e ok: within serve — H21 a full waiting line answers 503 with Retry-After"
 
 # a request body in a charset weir cannot decode is answered 415 before
 # the handler [D:serve-charset], never decoded as UTF-8 with U+FFFD; a
@@ -16266,7 +16287,7 @@ while True:
 sys.stdout.buffer.write(('%s status=%s body=%s\n' % (cs, d.split(b'\r\n', 1)[0].decode(), d.split(b'\r\n\r\n', 1)[-1].decode())).encode('utf-8'))
 PYEOF
 cat > "$svdir/charset.weir" <<WEOF
-within serve srv = { port = Some $svport20; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"handled={req.body}" })
+within serve srv = { port = Some $svport20; maxConcurrent = 2; handler = (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"handled={req.body}" }) }
     poll timeout=8s interval=100ms
         Net.portOpen $svport20
     let unknown = sh -c "python3 '$svdir/charset.py' $svport20 x-weir-none e961" | complete
@@ -16341,7 +16362,7 @@ let handler = fun req ->
         HttpServerResponse { status = 200; headers = []; body = Text \$"<{hops}>" }
     | p -> HttpServerResponse { status = 200; headers = []; body = Text \$"<{p}>" }
 
-within serve srv = { port = Some $svport8; maxConcurrent = 4 } handler
+within serve srv = { port = Some $svport8; maxConcurrent = 4; handler = handler }
     poll timeout=8s interval=100ms
         Net.portOpen $svport8
     let out = sh -c "python3 '$svdir/wire.py' $svport8" | complete
@@ -16364,7 +16385,7 @@ echo "e2e ok: within serve — pipelining (2 and 3 in order), F10 three duplicat
 svport9=8479
 cat > "$svdir/f8curl.weir" <<WEOF
 let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Stream ([1; 2] |> Seq.map (fun i -> if i == 1 then "first" else fail "producer died")) }
-within serve srv = { port = Some $svport9; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport9; maxConcurrent = 2; handler = handler }
     poll timeout=8s interval=100ms
         Net.portOpen $svport9
     let r = curl -s --max-time 5 http://127.0.0.1:$svport9/ | complete
@@ -16381,7 +16402,7 @@ echo "e2e ok: within serve — F8 a producer raise leaves curl exit 18"
 svport10=8480
 if python3 -c "import socket; s=socket.socket(socket.AF_INET6); s.bind(('::1', 0))" 2>/dev/null; then
     cat > "$svdir/v6.weir" <<WEOF
-within serve srv = { port = Some $svport10; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "weir-handler" })
+within serve srv = { port = Some $svport10; maxConcurrent = 2; handler = (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "weir-handler" }) }
     poll timeout=8s interval=100ms
         Net.portOpen $svport10
     let v6 = curl -s -g --noproxy "*" --max-time 5 -w " status=%{http_code}" "http://[::1]:$svport10/" | complete
@@ -16416,7 +16437,7 @@ while True:
 print("FAST %s in %.2fs" % (d.split(b"\r\n", 1)[0].decode(), time.time() - t))
 PYEOF
 cat > "$svdir/loris.weir" <<WEOF
-within serve srv = { port = Some $svport11; maxConcurrent = 1; bodyTimeout = 10s } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })
+within serve srv = { port = Some $svport11; maxConcurrent = 1; bodyTimeout = 10s; handler = (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }) }
     poll timeout=8s interval=100ms
         Net.portOpen $svport11
     let out = sh -c "python3 '$svdir/loris.py' $svport11" | complete
@@ -16439,7 +16460,7 @@ let handler = fun req ->
     | "/status0" -> HttpServerResponse { status = 0; headers = []; body = Text "x" }
     | _ -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
 
-within serve srv = { port = Some $svport12; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport12; maxConcurrent = 2; handler = handler }
     poll timeout=8s interval=100ms
         Net.portOpen $svport12
     let a = curl -s --max-time 5 -w " %{http_code}" http://127.0.0.1:$svport12/raise | complete
@@ -16466,13 +16487,13 @@ let handler = fun req ->
     HttpServerResponse { status = 200; headers = []; body = Text "late" }
 
 within
-    within serve srv = { port = Some $svport13; maxConcurrent = 4 } handler
+    within serve srv = { port = Some $svport13; maxConcurrent = 4; handler = handler }
         poll timeout=8s interval=50ms
             Net.portOpen $svport13
         within proc client = curl -s --max-time 10 http://127.0.0.1:$svport13/
             Duration.sleep 300ms
     print \$"port-open-after-close={Net.portOpen $svport13}"
-    within serve again = { port = Some $svport13; maxConcurrent = 1 } handler
+    within serve again = { port = Some $svport13; maxConcurrent = 1; handler = handler }
         print "rebind ok"
     Duration.sleep 3s
     print "after work"
@@ -16490,7 +16511,7 @@ let handler = fun req ->
     Duration.sleep 30s
     HttpServerResponse { status = 200; headers = []; body = Text "late" }
 
-within serve srv = { port = Some $svport13; maxConcurrent = 8 } handler
+within serve srv = { port = Some $svport13; maxConcurrent = 8; handler = handler }
     poll timeout=8s interval=50ms
         Net.portOpen $svport13
     within proc client = sh -c "for i in 1 2 3 4 5 6 7 8; do curl -s --max-time 40 http://127.0.0.1:$svport13/ & done; wait"
@@ -16519,7 +16540,7 @@ let handler = fun req ->
     sh -c "echo handler-late-cmd >> $svdir/late.log"
     HttpServerResponse { status = 200; headers = []; body = Text "slow" }
 
-within serve srv = { port = Some $svport16; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport16; maxConcurrent = 2; handler = handler }
     poll timeout=8s interval=50ms
         Net.portOpen $svport16
     within proc client = curl -s --max-time 10 http://127.0.0.1:$svport16/
@@ -16552,7 +16573,7 @@ let handler = fun req ->
     HttpServerResponse { status = 200; headers = []; body = Text "late" }
 
 within lock "$svdir/clean.lock"
-    within serve srv = { port = Some $svport17; maxConcurrent = 2 } handler
+    within serve srv = { port = Some $svport17; maxConcurrent = 2; handler = handler }
         poll timeout=8s interval=50ms
             Net.portOpen $svport17
         within proc client = curl -s --max-time 15 http://127.0.0.1:$svport17/
@@ -16583,7 +16604,7 @@ let handler = fun req ->
         File.append log ["cleanup end"]
     HttpServerResponse { status = 200; headers = []; body = Text "late" }
 
-within serve srv = { port = Some $svport18; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport18; maxConcurrent = 2; handler = handler }
     poll timeout=8s interval=50ms
         Net.portOpen $svport18
     within proc client = curl -s --max-time 15 http://127.0.0.1:$svport18/
@@ -16619,7 +16640,7 @@ let handler = fun req ->
 within
     print "body"
 always
-    within serve srv = { port = Some $svport19; maxConcurrent = 2 } handler
+    within serve srv = { port = Some $svport19; maxConcurrent = 2; handler = handler }
         poll timeout=8s interval=50ms
             Net.portOpen $svport19
         within proc client = curl -s --max-time 10 http://127.0.0.1:$svport19/
@@ -16651,7 +16672,7 @@ let handler = fun req ->
     | "/fast" -> HttpServerResponse { status = 200; headers = []; body = Text "fast" }
     | _ -> streamer req
 
-within serve srv = { port = Some $svport14; maxConcurrent = 2 } handler
+within serve srv = { port = Some $svport14; maxConcurrent = 2; handler = handler }
     poll timeout=8s interval=50ms
         Net.portOpen $svport14
     // two clients hold both slots; four more queue behind them and leave
@@ -16679,7 +16700,7 @@ let handler = fun req ->
     Duration.sleep 20s
     HttpServerResponse { status = 200; headers = []; body = Text "late" }
 within
-    within serve srv = { port = Some $svport15; maxConcurrent = 2 } handler
+    within serve srv = { port = Some $svport15; maxConcurrent = 2; handler = handler }
         Duration.sleep 60s
 always
     ["cleaned-up"] |> File.write marker
@@ -17664,7 +17685,7 @@ let handler = fun req ->
     File.append log ["handler"]
     Duration.sleep hold
     HttpServerResponse { status = 200; headers = []; body = Text "late-ok" }
-within serve srv = { port = Some $rpport; maxConcurrent = 2 } handler
+within serve srv = { port = Some $rpport; maxConcurrent = 2; handler = handler }
     poll timeout=8s interval=50ms
         Net.portOpen $rpport
     File.append log ["live"]
@@ -17693,6 +17714,75 @@ WEOF
         [ "$ms" -lt 4000 ] || fail "a second TERM cuts the drain (${ms}ms): $r"
         grep -qxF after "$rpdir/serve.log" && fail "a second TERM: nothing runs after the scope: $(rplog "$rpdir/serve.log")"
         echo "e2e ok: within serve + until stopped — a TERM closes by the normal path (in-flight request answered, always runs, exit 0); a second TERM cuts"
+    fi
+
+    # within serve joins the options family [D:serve-defaults]: key=value
+    # options over Server.defaults, `= config` with the handler in the
+    # record, a record update swapping the handler, the short literal
+    # resting at the default handler — and no announce while a block is
+    # written; and a plain value for an Option key means Some (`port=8562`
+    # below, `timeout=2m` here)
+    cat > "$rpdir/sdforms.weir" <<'WEOF'
+let a = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "from-record" }
+let b = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "from-update" }
+let get srv = Http.get $"http://127.0.0.1:{Server.port srv}/" |> Http.expect |> Seq.head
+within serve s handler=a
+    print $"kv={get s}"
+let cfg = { Server.defaults with handler = a }
+within serve s = cfg
+    print $"record={get s}"
+within serve s = { cfg with handler = b }
+    print $"update={get s}"
+within serve s = { port = None; maxConcurrent = 2 }
+    let r = Http.send (Http.get $"http://127.0.0.1:{Server.port s}/nope")
+    print $"legacy={r.status}"
+within serve s
+    print $"floor={Server.defaults.maxConcurrent >= 8}"
+let lifted = retry attempts=2 delay=1ms timeout=2m
+    1 + 1
+until r
+    r == 2
+print $"lifted={lifted}"
+WEOF
+    rc=0; out=$(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy $BIN "$rpdir/sdforms.weir" 2>"$rpdir/sdforms.err") || rc=$?
+    [ "$rc" = "0" ] || fail "the serve option forms run: rc=$rc $out $(cat "$rpdir/sdforms.err")"
+    [ "$(echo "$out" | tr '\n' ',')" = "kv=from-record,record=from-record,update=from-update,legacy=404,floor=true,lifted=2," ] || fail "the serve option forms: $out"
+    [ ! -s "$rpdir/sdforms.err" ] || fail "a serve scope with a block announces nothing: $(cat "$rpdir/sdforms.err")"
+    echo "e2e ok: within serve — key=value options, = config, a record update swapping the handler, the short literal on the default handler; silent with a block"
+
+    # one record after `=` [D:serve-one-record]: the retired
+    # `= config handler` spelling is refused with the two it became
+    printf 'let h = fun req -> Reply.empty 200\nwithin serve s = Server.defaults h\n    print "x"\n' > "$rpdir/sdtwo.weir"
+    rc=0; out=$($BIN check "$rpdir/sdtwo.weir" 2>&1) || rc=$?
+    [ "$rc" != "0" ] || fail "a handler word after the serve record must be refused: $out"
+    echo "$out" | grep -qF "within serve takes one record after \`=\`" || fail "the refusal names the rule: $out"
+    echo "$out" | grep -qF "handler=route" || fail "the refusal shows the option spelling: $out"
+    echo "e2e ok: within serve — a handler word after the record is refused with its two spellings [D:serve-one-record]"
+
+    # no block [D:serve-defaults]: `until stopped` directly under the head
+    # serves until the TERM and announces on stderr; with no handler set the
+    # landing page answers GET / (200, text/plain) and anything else 404
+    if command -v curl >/dev/null 2>&1; then
+        sdport=8562
+        printf 'within serve s port=%s\nuntil stopped\nalways\n    print "closing"\nprint "after"\n' "$sdport" > "$rpdir/sdbare.weir"
+        : > "$rpdir/sdbare.err"
+        $BIN "$rpdir/sdbare.weir" > "$rpdir/sdbare.out" 2> "$rpdir/sdbare.err" &
+        sdpid=$!
+        for _ in $(seq 1 200); do grep -qF "to stop" "$rpdir/sdbare.err" 2>/dev/null && break; sleep 0.05; done
+        [ "$(cat "$rpdir/sdbare.err")" = "serving on http://localhost:$sdport — Ctrl+C to stop" ] || { kill "$sdpid" 2>/dev/null || true; fail "a block-less serve announces one line on stderr: '$(cat "$rpdir/sdbare.err")'"; }
+        root=$(curl -s --max-time 5 -w '\n%{http_code} %{content_type}' "http://localhost:$sdport/" || true)
+        other=$(curl -s --max-time 5 -w '\n%{http_code}' -X POST "http://localhost:$sdport/topic/a" || true)
+        kill -TERM "$sdpid"
+        rc=0; wait "$sdpid" || rc=$?
+        [ "$rc" = "0" ] || fail "a block-less serve closes normally on a TERM (exit 0), got $rc: $(cat "$rpdir/sdbare.err")"
+        echo "$root" | grep -qF "weir is serving, but no handler is set." || fail "the landing page says no handler is set: $root"
+        echo "$root" | grep -qF "within serve s handler=route" || fail "the landing page shows the line that sets one: $root"
+        [ "$(echo "$root" | tail -1)" = "200 text/plain; charset=utf-8" ] || fail "the landing page is 200 text/plain: $root"
+        [ "$(echo "$other" | tail -1)" = "404" ] || fail "any other request is a 404: $other"
+        echo "$other" | grep -qF "within serve s handler=route" || fail "the 404 carries the same hint: $other"
+        [ "$(tr '\n' ',' < "$rpdir/sdbare.out")" = "closing,after," ] || fail "the always, then the line after: $(cat "$rpdir/sdbare.out")"
+        [ "$(wc -l < "$rpdir/sdbare.err" | tr -d ' ')" = "1" ] || fail "the announce is the only stderr line: $(cat "$rpdir/sdbare.err")"
+        echo "e2e ok: within serve — no block + until stopped announces where it listens, the default handler answers (200 at GET /, 404 elsewhere), a TERM closes it, exit 0"
     fi
 
     # held scopes [D:held-scope]: the body, the hold, then the normal close —

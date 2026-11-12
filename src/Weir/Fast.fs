@@ -3735,31 +3735,9 @@ and private withinExpr (st: St) : Expr =
                                 | ECmd _ -> mk (Some(b, bspan)) (Some cmdE) None (withLocals st [ b ] block)
                                 | _ -> refuse st
                 | WithinServe ->
-                    // the scoped listener [D:http-serve]: a config atom, a handler atom
-                    let b, bspan = identSpanned st
-
-                    if isNull' b then
-                        refuse st
-                    else
-                        ws st
-
-                        if not (strWs st "=") then
-                            refuse st
-                        else
-                            let cfg = postfixAtom st
-
-                            let handler =
-                                if st.Ok && not (isNull' cfg) then
-                                    postfixAtom st
-                                else
-                                    Unchecked.defaultof<_>
-
-                            if not st.Ok then
-                                Unchecked.defaultof<_>
-                            elif isNull' cfg || isNull' handler then
-                                refuse st
-                            else
-                                mk (Some(b, bspan)) (Some cfg) (Some handler) (withLocals st [ b ] block)
+                    // the scoped listener's head is the grammar's
+                    // [D:serve-defaults]
+                    refuse st
                 | WithinCd
                 | WithinEnv
                 | WithinLock ->

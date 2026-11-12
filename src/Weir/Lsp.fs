@@ -978,6 +978,37 @@ let private onSilentToken (text: string) (jcol: int) : bool =
         else
             true // operator / punctuation / whitespace
 
+/// an import alias — on its import line, or qualifying a member —
+/// hovers the module and its own doc [D:module-doc]
+let private moduleAliasHover
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (text: string)
+    (jcol: int)
+    : string option =
+    wordAt text jcol
+    |> Option.bind (fun w ->
+        let mutable s = jcol - 1
+
+        while s > 0 && isWord text[s - 1] do
+            s <- s - 1
+
+        let e = s + w.Length
+        let member_ = s > 0 && text[s - 1] = '.'
+        let qualifier = e < text.Length && text[e] = '.'
+
+        if member_ || not (qualifier || text.TrimStart().StartsWith "import ") then
+            None
+        else
+            stmts
+            |> List.tryPick (fun (_, c) ->
+                match c.Kind with
+                | Script.KImport lm when lm.Alias = w -> Some lm
+                | _ -> None)
+            |> Option.map (fun lm ->
+                match lm.ModuleDoc with
+                | [] -> $"module {w}"
+                | doc -> $"module {w}\n\n" + String.concat "\n" doc))
+
 // hoverType is defined after definitionFor — it composes with it for the
 // Group 1a lookup (a usage / field / case reference resolves to its
 // declaration site, and the `///` doc is read there) [D:hover-completeness].
@@ -989,14 +1020,6 @@ let rec private varUseType (name: string) (te: Check.TypedExpr) : Ty option =
     match te.Kind with
     | Check.TEVar n when n = name -> Some te.Ty
     | _ -> Check.childExprs te |> List.tryPick (varUseType name)
-
-/// the parameter names of a curried value — the lambda chain a `let f a b`
-/// desugars to; the annotated signature reads them off the binder spans
-/// [D:annotated-signature]
-let rec private lambdaParamNames (te: Check.TypedExpr) : string list =
-    match te.Kind with
-    | Check.TELambda(p, _, body) -> p :: lambdaParamNames body
-    | _ -> []
 
 /// render a let binding's hover [D:annotated-signature]: the param
 /// signature (`f (x) : ret`) when there is a named param, else the flat
@@ -1016,7 +1039,84 @@ let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : s
     | None ->
         match te.Kind with
         | Check.TELet(n, _, tvalue, _) when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
-            Some(sigOrFlat n (lambdaParamNames tvalue) tvalue.Ty)
+            Some(sigOrFlat n (Check.lambdaParamNames tvalue) tvalue.Ty)
+        | _ -> None
+
+/// the type of the record-pattern field whose name sits at the column —
+/// a pattern is no expression node, so without this the enclosing
+/// match answers with its own type. `ty` is the type the pattern
+/// matches, threaded down from the scrutinee where it is known.
+let rec private patFieldTypeAt (env: TypeEnv) (jcol: int) (ty: Ty option) (p: Ast.Pattern) : Ty option =
+    match p.PKind with
+    | Ast.PRecord fields ->
+        let named = fields |> List.map (fst >> fst)
+
+        let fieldTys: (string * Ty) list =
+            match ty with
+            | Some(TNamed(k, args)) ->
+                match Map.tryFind k env.Types with
+                | Some(Record d) when d.Params.Length = args.Length ->
+                    d.Fields |> List.map (fun (f, t) -> f, Check.substParams d.Params args t)
+                | Some(Record d) -> d.Fields
+                | _ -> []
+            | Some(TRowVar(_, fs)) -> fs
+            | _ ->
+                // no scrutinee type: the one record declaring every
+                // named field, when there is exactly one
+                let owners =
+                    env.Types
+                    |> Map.toList
+                    |> List.choose (fun (_, def) ->
+                        match def with
+                        | Record d when named |> List.forall (fun n -> d.Fields |> List.exists (fun (f, _) -> f = n)) ->
+                            Some d.Fields
+                        | _ -> None)
+
+                match owners with
+                | [ one ] -> one
+                | _ -> []
+
+        let fieldTy (f: string) =
+            fieldTys |> List.tryPick (fun (n, t) -> if n = f then Some t else None)
+
+        fields
+        |> List.tryPick (fun ((f, fs), sub) ->
+            if fs.Start.Col <= jcol && jcol < fs.End.Col then
+                fieldTy f
+            else
+                patFieldTypeAt env jcol (fieldTy f) sub)
+    | Ast.PTuple ps ->
+        let tys =
+            match ty with
+            | Some(TTuple ts) when ts.Length = ps.Length -> ts |> List.map Some
+            | _ -> ps |> List.map (fun _ -> None)
+
+        List.zip tys ps |> List.tryPick (fun (t, sp) -> patFieldTypeAt env jcol t sp)
+    | Ast.PCase(ctor, Some inner, _) ->
+        let payload =
+            env.Types
+            |> Map.tryPick (fun _ def ->
+                match def with
+                | Union d -> d.Cases |> List.tryPick (fun (c, pl) -> if c = ctor then pl else None)
+                | _ -> None)
+
+        patFieldTypeAt env jcol payload inner
+    | _ -> None
+
+/// patFieldTypeAt over every pattern in the typed tree, innermost first
+let rec private patFieldHoverAt (env: TypeEnv) (jcol: int) (te: Check.TypedExpr) : Ty option =
+    match Check.childExprs te |> List.tryPick (patFieldHoverAt env jcol) with
+    | Some t -> Some t
+    | None ->
+        match te.Kind with
+        | Check.TEMatch(s, arms) -> arms |> List.tryPick (fun (p, _, _) -> patFieldTypeAt env jcol (Some s.Ty) p)
+        | Check.TELambdaPat(p, _) ->
+            let dom =
+                match te.Ty with
+                | TFun(d, _) -> Some d
+                | _ -> None
+
+            patFieldTypeAt env jcol dom p
         | _ -> None
 
 // ---- cross-file navigation [D:lsp-cross-file] ---------------------
@@ -2746,7 +2846,40 @@ let renameFor
 // ordinary keywords keep the silence guard); a binding kind's binder
 // is always the resource's type — a use-less binder must not fall
 // through to the enclosing node's type (the same wrong-answer class).
-let private withinFormHover (text: string) (jcol: int) : string option =
+// a key=value head's keys and where each rests [D:serve-defaults]: the
+// types off the options record, the values off the defaults record the
+// sugar updates — the one source, so neither line can drift from the run
+let private optionKeyLines (env: TypeEnv) (tyName: string) (baseKey: string) : string =
+    let keys =
+        match Map.tryFind tyName env.Types with
+        | Some(Record d) ->
+            d.Fields
+            |> List.map (fun (fn, t) -> $"{fn}: {formatTy t}")
+            |> String.concat ", "
+        | _ -> ""
+
+    let defaults =
+        match Builtins.valueEnv.Value.TryFind baseKey with
+        | Some(Eval.VRecord(_, fields)) ->
+            fields
+            // repeat's base carries a placeholder interval [D:repeat]
+            |> List.filter (fun (n, _) -> not (baseKey = "|repeatDefaults" && n = "interval"))
+            |> List.map (fun (n, v) ->
+                match v with
+                | Eval.VBuiltin _ when baseKey = "|serveDefaults" -> $"{n} = <landing page>"
+                | _ -> $"{n} = {Eval.formatValue v}")
+            |> String.concat ", "
+        | _ -> ""
+
+    let required =
+        if baseKey = "|repeatDefaults" then
+            " (interval is required)"
+        else
+            ""
+
+    $"keys: {keys}\ndefaults: {defaults}{required}"
+
+let private withinFormHover (env: TypeEnv) (text: string) (jcol: int) : string option =
     let endsWithWord (kw: string) (s: string) =
         s.EndsWith kw
         && (s.Length = kw.Length || not (isWord s[s.Length - kw.Length - 1]))
@@ -2779,13 +2912,33 @@ let private withinFormHover (text: string) (jcol: int) : string option =
             match Ast.withinKinds |> List.tryFind (fun k -> k.Name = w && not k.Standalone) with
             | Some wk when endsWithWord "within" before ->
                 let nature = if wk.Binds then "binds" else "consumes"
-                Some $"{wk.Name} — {nature}: {wk.Doc}"
+
+                let options =
+                    match wk.Id with
+                    | Ast.WithinServe -> "\n" + optionKeyLines env "ServerConfig" "|serveDefaults"
+                    | _ -> ""
+
+                Some $"{wk.Name} — {nature}: {wk.Doc}\n{wk.Shape}{options}"
             | _ ->
                 Ast.withinKinds
                 |> List.tryPick (fun k ->
                     if k.Binds && endsWithWord k.Name before then
                         let b2 = before.Substring(0, before.Length - k.Name.Length).TrimEnd()
-                        if endsWithWord "within" b2 then Some "string" else None
+
+                        if endsWithWord "within" b2 then
+                            // the binder's type by kind [D:within-kind-union]
+                            match k.Id with
+                            | Ast.WithinProc -> Some "Proc"
+                            | Ast.WithinServe -> Some "Server"
+                            | Ast.WithinTmp
+                            | Ast.WithinCd
+                            | Ast.WithinEnv
+                            | Ast.WithinLock
+                            | Ast.WithinPure
+                            | Ast.WithinReadonly
+                            | Ast.WithinPlan -> Some "string"
+                        else
+                            None
                     else
                         None))
 
@@ -2818,31 +2971,23 @@ let private adapterFormHover (text: string) (jcol: int) : string option =
 // key=value head desugars over), so a new key appears here with no
 // second edit; a hand-written list would drift.
 let private retryPollFormHover (env: TypeEnv) (text: string) (jcol: int) : string option =
-    let keysOf tyName =
-        match Map.tryFind tyName env.Types with
-        | Some(Record d) ->
-            d.Fields
-            |> List.map (fun (fn, t) -> $"{fn}: {formatTy t}")
-            |> String.concat ", "
-        | _ -> ""
-
     wordAt text jcol
     |> Option.bind (fun w ->
         match w with
         | "retry" ->
             Some(
-                "retry key=value … — a bounded retry loop: the body reruns until it yields true (a VALUE body adds an `until` segment); exhaustion raises\nkeys: "
-                + keysOf "Retry"
+                "retry key=value … — a bounded retry loop: the body reruns until it yields true (a VALUE body adds an `until` segment); exhaustion raises\n"
+                + optionKeyLines env "Retry" "|retryDefaults"
             )
         | "poll" ->
             Some(
-                "poll key=value … — retry's wall-clock twin: rerun until true or the timeout elapses; timing out raises\nkeys: "
-                + keysOf "Poll"
+                "poll key=value … — retry's wall-clock twin: rerun until true or the timeout elapses; timing out raises\n"
+                + optionKeyLines env "Poll" "|pollDefaults"
             )
         | "repeat" ->
             Some(
-                "repeat interval=… — the loop a stop signal ends: run the block, wait the interval, run it again; the first SIGINT/SIGTERM/SIGHUP lets the iteration in hand finish and returns (a second one tears down). An `until` segment or a bool block ends it too; a timeout raises\nkeys: "
-                + keysOf "Repeat"
+                "repeat interval=… — the loop a stop signal ends: run the block, wait the interval, run it again; the first SIGINT/SIGTERM/SIGHUP lets the iteration in hand finish and returns (a second one tears down). An `until` segment or a bool block ends it too; a timeout raises\n"
+                + optionKeyLines env "Repeat" "|repeatDefaults"
             )
         | "until" ->
             Some
@@ -2913,7 +3058,7 @@ let private pforFormHover (text: string) (jcol: int) : string option =
         | _ -> None)
 
 let private formWordHover (env: TypeEnv) (text: string) (jcol: int) : string option =
-    withinFormHover text jcol
+    withinFormHover env text jcol
     |> Option.orElse (pforFormHover text jcol)
     |> Option.orElse (adapterFormHover text jcol)
     |> Option.orElse (retryPollFormHover env text jcol)
@@ -3058,12 +3203,17 @@ let private schemaHover (path: string) (name: string) : string option =
 /// site for a usage / field / case reference (definitionFor) [Group 1a],
 /// else the builtin's [D:builtin-docs].
 let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string option =
-    let _, stmts, _, _, partials = analyzeCached path lines
+    let _, stmts, env0, _, partials = analyzeCached path lines
 
     match toLogical (withPartials stmts partials) line col with
     // a hole has no type to show [D:block-recovery] — null, the honest
-    // answer [D:hover-silence]
-    | Some(_, chk, jcol) when inHole chk jcol -> None
+    // answer [D:hover-silence]; a form word in it still says what the
+    // form is [D:serve-defaults]
+    | Some(ll, chk, jcol) when inHole chk jcol ->
+        if inStringOrComment lines line col then
+            None
+        else
+            formWordHover chk.Env ll.Text jcol
     | Some(ll, chk, jcol) when
         not (inStringOrComment lines line col)
         && (formWordHover chk.Env ll.Text jcol).IsSome
@@ -3077,6 +3227,11 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         // [D:schema-hover] — never the district's own type (an
         // enclosing-node leak otherwise)
         schemaTokenAt chk ll.Text jcol |> Option.bind (schemaHover path)
+    | Some(ll, _, jcol) when
+        not (inStringOrComment lines line col)
+        && (moduleAliasHover stmts ll.Text jcol).IsSome
+        ->
+        moduleAliasHover stmts ll.Text jcol
     | Some(ll, chk, jcol) when not (onSilentToken ll.Text jcol) ->
         // an inner-let binder hovers as its annotated signature (names +
         // types), degrading to the arrow when it has no named params
@@ -3245,7 +3400,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                                  | _, Script.CLet(bn, te) when bn = mem -> Some te
                                  | _ -> None))
                          |> Option.bind (fun te ->
-                             match te.Ty, lambdaParamNames te with
+                             match te.Ty, Check.lambdaParamNames te with
                              | TFun _, [] -> None // unnamed function -> arrow
                              | mty, ps -> Some(sigOrFlat name ps mty))
                      | _ -> None)
@@ -3285,13 +3440,58 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 |> Option.map (fun (rn, f, fty, sigLines, sigStmts) ->
                     formatTy fty, sigFlagDoc si.SigPath rn f sigLines sigStmts))
 
+        // a top-level let hovers as its annotated signature, on the
+        // binder name only — never a fallback for an unresolved spot
+        // a partial's own binder is hole-bound [D:block-recovery]:
+        // its type is not known until the statement checks
+        let topLetSig () =
+            match chk.Kind with
+            | Script.KLet(name, sch, te) when
+                word = Some name
+                && (match sch.Ty with
+                    | TVar v -> not (v.StartsWith "__hole")
+                    | _ -> true)
+                ->
+                // the purity badge, display stage of [D:pure]: the
+                // rare pure function is surfaced; effectful stays
+                // the unbadged norm (weir is effect-normal), and a
+                // missing badge is conservative, never a lie
+                let badge =
+                    if
+                        Purity.tyHasFun sch.Ty
+                        && (Can.pureTopBindings stmts |> Map.tryFind name |> Option.defaultValue false)
+                    then
+                        "  (pure)"
+                    else
+                        ""
+
+                Some(sigOrFlat name (Check.lambdaParamNames te) sch.Ty + badge)
+            | _ -> None
+
+        // the statement's own binder answers before any use of the name
+        // in its body: an inner let shadowing it would otherwise lend
+        // the binder its type
+        let ownBinderSig =
+            let mutable s = jcol - 1
+
+            while s > 0 && isWord ll.Text[s - 1] do
+                s <- s - 1
+
+            if s <= ll.Text.Length && ll.Text.Substring(0, s).Trim() = "let" then
+                topLetSig ()
+            else
+                None
+
         let ty =
             (sigHead |> Option.map fst)
             |> Option.orElse (sigFlag |> Option.map fst)
             |> Option.orElse createSig
             |> Option.orElse fieldInLiteral
+            |> Option.orElseWith (fun () ->
+                teOf chk |> Option.bind (patFieldHoverAt chk.Env jcol) |> Option.map formatTy)
             |> Option.orElse constructorSig
             |> Option.orElse binderSig
+            |> Option.orElse ownBinderSig
             |> Option.orElse patBinderTy
             |> Option.orElse builtinSig
             |> Option.orElse moduleMemberSig
@@ -3329,30 +3529,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.orElseWith (fun () -> node |> Option.map (fun n -> formatTy n.Ty))
             |> Option.orElseWith (fun () ->
                 match chk.Kind with
-                // a top-level let hovers as its annotated signature, on the
-                // binder name only — never a fallback for an unresolved spot
-                // a partial's own binder is hole-bound [D:block-recovery]:
-                // its type is not known until the statement checks
-                | Script.KLet(name, sch, te) when
-                    word = Some name
-                    && (match sch.Ty with
-                        | TVar v -> not (v.StartsWith "__hole")
-                        | _ -> true)
-                    ->
-                    // the purity badge, display stage of [D:pure]: the
-                    // rare pure function is surfaced; effectful stays
-                    // the unbadged norm (weir is effect-normal), and a
-                    // missing badge is conservative, never a lie
-                    let badge =
-                        if
-                            Purity.tyHasFun sch.Ty
-                            && (Can.pureTopBindings stmts |> Map.tryFind name |> Option.defaultValue false)
-                        then
-                            "  (pure)"
-                        else
-                            ""
-
-                    Some(sigOrFlat name (lambdaParamNames te) sch.Ty + badge)
+                | Script.KLet _ -> topLetSig ()
                 // a member signature line hovers the sig verbatim
                 // [D:module-signatures]
                 | Script.KSig(name, sd) when word = Some name -> Some $"{name} : {formatTy sd.Ty}"
@@ -3450,7 +3627,15 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         | Some t, None -> Some t
         | None, Some d -> Some d
         | None, None -> None
-    | _ -> None
+    | Some _ -> None
+    // no statement holds the cursor — the line did not parse. A form word
+    // answers from the line's own text [D:serve-defaults]: the shape is
+    // what a half-typed head is missing
+    | None ->
+        if line < 1 || line > List.length lines || inStringOrComment lines line col then
+            None
+        else
+            formWordHover env0 (List.item (line - 1) lines) col
 
 /// hoverAt with no file identity — the unit pins' single-file surface
 /// (imports and signatures resolve relative to the real path, so the
@@ -3749,7 +3934,13 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                 | Some(l, c) -> l, c, l, c + n.Length
                 | None -> l1, c1, l1, c1
 
-            sym n (Some(sigOrFlat n (lambdaParamNames value) value.Ty)) 12 (l1, c1, l2, c2 + 1) sel (nestedFns ll value)
+            sym
+                n
+                (Some(sigOrFlat n (Check.lambdaParamNames value) value.Ty))
+                12
+                (l1, c1, l2, c2 + 1)
+                sel
+                (nestedFns ll value)
             :: nestedFns ll body
         | _ -> Check.childExprs te |> List.collect (nestedFns ll)
 
@@ -3883,7 +4074,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                         (members @ validate)
                 ]
             | Script.KLet(name, sch, te) ->
-                let ps = lambdaParamNames te
+                let ps = Check.lambdaParamNames te
                 let kind = if isFun sch.Ty || not ps.IsEmpty then 12 else 13
                 let l1, c1, l2, c2 = rangeOf ll
 
@@ -4490,7 +4681,7 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                                 |> Option.bind (fun (mlines, mstmts) ->
                                     letSiteIn mstmts None mem |> Option.bind (fun (dl, dc, _) -> docAt mlines dl dc))
 
-                            lambdaParamNames te, te.Ty, doc))
+                            Check.lambdaParamNames te, te.Ty, doc))
                 | _ ->
                     // a top-level function of this file: the last binder above
                     let userLet =
@@ -4499,7 +4690,7 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                         |> List.rev
                         |> List.tryPick (fun (_, c) ->
                             match c.Kind with
-                            | Script.KLet(n, sch, te) when n = head -> Some(lambdaParamNames te, sch.Ty)
+                            | Script.KLet(n, sch, te) when n = head -> Some(Check.lambdaParamNames te, sch.Ty)
                             | _ -> None)
                         |> Option.map (fun (ps, ty) ->
                             let doc =

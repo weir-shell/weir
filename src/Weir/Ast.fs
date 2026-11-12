@@ -57,8 +57,8 @@ type WithinKindId =
     // the scoped HTTP listener [D:http-serve]: the socket lives
     // exactly as long as the block — served until the scope exits
     // (normal, raise, SIGINT/SIGTERM), the listener closed on every
-    // path (the port frees). Binds a `Server` handle; takes a config
-    // atom + a handler atom.
+    // path (the port frees). Binds a `Server` handle; takes key=value
+    // options or a config record [D:serve-defaults].
     | WithinServe
     | WithinLock
     // the purity assertion [D:pure-stage1] — the family's first
@@ -89,6 +89,8 @@ type WithinKind = {
     Binds: bool
     Standalone: bool
     Doc: string
+    // the head as written — the hover's shape line [D:serve-defaults]
+    Shape: string
 }
 
 let withinKinds: WithinKind list = [
@@ -98,6 +100,7 @@ let withinKinds: WithinKind list = [
         Binds = true
         Standalone = false
         Doc = "a fresh directory, removed when the block exits"
+        Shape = "within tmp <name>"
     }
     {
         Id = WithinCd
@@ -105,6 +108,7 @@ let withinKinds: WithinKind list = [
         Binds = false
         Standalone = false
         Doc = "the working directory for the block, restored after"
+        Shape = "within cd <dir>"
     }
     {
         Id = WithinEnv
@@ -112,6 +116,7 @@ let withinKinds: WithinKind list = [
         Binds = false
         Standalone = false
         Doc = "environment variables set for the commands the block runs"
+        Shape = "within env NAME=value …  (or one value: a seq of Env.pair)"
     }
     // the no-orphan law [D:scoped-procs]: the process lives exactly
     // as long as the block
@@ -121,17 +126,20 @@ let withinKinds: WithinKind list = [
         Binds = true
         Standalone = false
         Doc = "a background process, stopped together with anything it started when the block exits"
+        Shape = "within proc <name> = <command>"
     }
     // the scoped HTTP listener [D:http-serve]: the socket lives
     // exactly as long as the block, freed on every exit path (the
     // no-orphan law applied to ports). Binds a Server handle; takes
-    // a config atom + a handler atom.
+    // key=value options or a config record [D:serve-defaults].
     {
         Id = WithinServe
         Name = "serve"
         Binds = true
         Standalone = false
         Doc = "an HTTP server that runs until the block exits; its port is freed however the block ends"
+        Shape =
+            "within serve <name> [key=value …]  (or `within serve <name> = <config>`), then a block or `until stopped`"
     }
     // advisory file lock [D:within-lock] — the one kind whose
     // guarantee survives kill -9 (the kernel releases it)
@@ -141,6 +149,7 @@ let withinKinds: WithinKind list = [
         Binds = false
         Standalone = false
         Doc = "an advisory file lock, held for the block and released however it ends, even on kill -9"
+        Shape = "within lock <path> [timeout=<duration>]"
     }
     // [D:pure-stage1]: in the family (the union's exhaustiveness,
     // the grammar inventory) but its own head — the one kind that
@@ -151,6 +160,7 @@ let withinKinds: WithinKind list = [
         Binds = false
         Standalone = true
         Doc = "a block that must have no effects at all"
+        Shape = "pure"
     }
     // [D:pure-stage2]: one tier up from pure — the body must reach no
     // external mutation; ambient reads (fs.read, env, clock, query-net)
@@ -161,6 +171,7 @@ let withinKinds: WithinKind list = [
         Binds = false
         Standalone = true
         Doc = "a block that may read (files, the environment, the clock, HTTP GETs) but change nothing"
+        Shape = "readonly"
     }
     // [D:plan-apply]: the third standalone head — like readonly it
     // partitions ambient/mutation, but instead of refusing mutation it
@@ -173,6 +184,7 @@ let withinKinds: WithinKind list = [
         Standalone = true
         Doc =
             "a block whose file, directory and HTTP changes are recorded instead of made (reads still run); it returns a Plan you can inspect and apply"
+        Shape = "plan"
     }
 ]
 
@@ -920,6 +932,26 @@ let qualCase (qual: (string * Span) option) (ctor: string) : string =
     | Some(m, _) -> m + "." + ctor
     | None -> ctor
 
+/// a key=value head's desugar base (`|retryDefaults`, `|serveDefaults`,
+/// …) [D:desugar-capture]: un-typeable, so an update of one is always
+/// the sugar's and never a written record — the mark the option lift
+/// reads [D:serve-defaults]
+let isOptionsBase (name: string) : bool =
+    name.StartsWith "|" && name.EndsWith "Defaults"
+
+/// the block a body-less `within serve` leaves out [D:serve-defaults]: a
+/// unit of zero width at the head's end — a written `()` has its two
+/// columns, so the two stay apart for the announce and the formatter
+let absentBody (at: Pos) : Expr = {
+    Kind = EUnit
+    Span = { Start = at; End = at }
+}
+
+let isAbsentBody (e: Expr) : bool =
+    match e.Kind with
+    | EUnit -> e.Span.Start = e.Span.End
+    | _ -> false
+
 let rec sexprPat (p: Pattern) : string =
     match p.PKind with
     | PWildcard -> "_"
@@ -978,6 +1010,7 @@ let rec sexpr (e: Expr) : string =
         let bn = binder |> Option.map fst |> Option.defaultValue ""
         let av = arg |> Option.map sexpr |> Option.defaultValue ""
 
+        // the opts slot is lock's timeout
         let ov =
             opts |> Option.map (fun o -> $"timeout={sexpr o}") |> Option.defaultValue ""
 
