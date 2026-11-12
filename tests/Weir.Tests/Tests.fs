@@ -16122,6 +16122,30 @@ let lspPolishTests =
                 [ (3, 32, ": seq<int>", 1); (4, 18, ": int", 1) ]
                 "each multi-line stage at its line end; the single-line pipe gets nothing"
         }
+        test "inlay hints: stages sharing a line give that line one hint, its last stage's type [D:pipeline-hint-line]" {
+            let lines = [
+                "let n ="
+                "    [1; 2]"
+                "    |> Seq.map (fun i -> i + 1) |> Seq.map show |> Seq.length"
+                "print $\"{n}\""
+            ]
+
+            let on =
+                Weir.Lsp.inlayHintsFor
+                    {
+                        Weir.Lsp.defaultInlayOptions with
+                            PipelineTypes = true
+                    }
+                    "hints"
+                    lines
+                    1
+                    100
+
+            Expect.equal
+                (on |> List.filter (fun h -> h.PaddingLeft) |> List.map (fun h -> h.Label))
+                [ ": int" ]
+                "one hint, not one per stage"
+        }
         test "invariant: hint == hover at the same binder" {
             let lines = [
                 "let f x y = Str.length x + y"
@@ -40051,10 +40075,22 @@ let helpUxTests =
 
             Expect.stringContains (checkErr "Reply.json 200").Message "takes the value" "no function value"
 
-            Expect.stringContains
-                (checkErr "Reply.json 200 ([ 1 ] |> to json)").Message
-                "Reply.rawJson"
-                "a `to json` stage is refused"
+            // rendered lines are a value like any other [D:json-plain]
+            Expect.equal
+                (body "Reply.json 200 ([ 1 ] |> to json)")
+                (VStr "[\"[1]\"]")
+                "lines given to json are an array of strings"
+
+            // the hover names the member written, not the runtime one
+            match Weir.Lsp.hoverAt "/tmp/h.weir" [ "let r = Reply.json 200 [ 1 ]"; "print r.status" ] 1 16 with
+            | Some h ->
+                Expect.stringContains
+                    h
+                    "Reply.json (status: int) (value: seq<int>) : HttpServerResponse"
+                    "Reply.json's own signature, at the value's type"
+
+                Expect.isFalse (h.Contains "rawJson") "never the raw member's doc"
+            | None -> failtest "Reply.json must hover"
 
             // [D:reply-members]
             let headers src =
@@ -40756,7 +40792,7 @@ let httpDxTests =
                 ])
                 "a jsonable payload is admitted"
         }
-        test "rendered lines are RawJson; Json refuses a `to json` stage and has no bare or pattern form [D:json-value]" {
+        test "rendered lines are RawJson; Json has no bare or pattern form [D:json-value]" {
             Expect.isEmpty
                 (checkOf [
                     "type P = { a: int }"
@@ -40769,11 +40805,6 @@ let httpDxTests =
                 match checkOf [ src ] with
                 | d :: _ -> d.Message
                 | [] -> failtest $"expected a refusal: {src}"
-
-            Expect.stringContains
-                (refusal "print (Json ([ 1 ] |> to json))")
-                "drop the `to` stage"
-                "the old spelling would encode twice"
 
             Expect.stringContains (refusal "print ([ [ 1 ] ] |> Seq.map Json)") "takes the value" "no function value"
 

@@ -3783,6 +3783,8 @@ let inlayHintsFor
                     | None -> ()
             | None -> ()
 
+    let pipeLines = System.Collections.Generic.HashSet<int>()
+
     let rec walk (ll: Script.LogicalLine) (te: Check.TypedExpr) =
         match te.Kind with
         | Check.TELet(name, nameSpan, value, body) ->
@@ -3810,7 +3812,9 @@ let inlayHintsFor
                  let la, _ = Script.translate ll arg.Span.Start.Col
                  let lf, _ = Script.translate ll fn.Span.Start.Col
 
-                 if lf <> la && lf >= 1 && lf <= raw.Length then
+                 // one hint a line: the walk meets the line's last stage
+                 // first, and its type is the line's [D:pipeline-hint-line]
+                 if lf <> la && lf >= 1 && lf <= raw.Length && pipeLines.Add lf then
                      let code = (Script.stripComment raw[lf - 1]).TrimEnd()
                      place lf (code.Length + 1) te.Ty 1 true false)
 

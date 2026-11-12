@@ -6248,16 +6248,18 @@ let private replyHeader (name: Value) (value: Value) (resp: Value) : Value =
         )
     | v -> v
 
+let private replyRawJson: Value =
+    VBuiltin(fun status -> VBuiltin(fun lines -> replyOf status (VUnion("RawJson", Some lines))))
+
 let private replyMembers: (string * Ty * Value) list = [
     "empty", TFun(TInt, replyTy), VBuiltin(fun status -> replyOf status (VUnion("NoBody", None)))
     "text",
     TFun(TInt, TFun(TStr, replyTy)),
     VBuiltin(fun status -> VBuiltin(fun s -> replyOf status (VUnion("Text", Some s))))
-    // the checker renders the value and calls rawJson [D:json-value]
-    "json", TFun(TInt, TFun(tA, replyTy)), VBuiltin(fun _ -> failwith "Reply.json is applied to its value")
-    "rawJson",
-    TFun(TInt, TFun(TSeq TStr, replyTy)),
-    VBuiltin(fun status -> VBuiltin(fun lines -> replyOf status (VUnion("RawJson", Some lines))))
+    // the checker renders the value where it is written; the member
+    // itself receives the lines [D:json-value]
+    "json", TFun(TInt, TFun(tA, replyTy)), replyRawJson
+    "rawJson", TFun(TInt, TFun(TSeq TStr, replyTy)), replyRawJson
     "html",
     TFun(TInt, TFun(TStr, replyTy)),
     VBuiltin(fun status ->

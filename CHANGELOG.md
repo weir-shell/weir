@@ -2,11 +2,23 @@
 
 ## v0.0.89
 
+### Changed
+
+- **`Json (x |> to json)` is no longer a check error.** `Json` and
+  `Reply.json` render whatever they're given, rendered lines included,
+  so this sends an array of strings. For a document that's already
+  rendered use `RawJson lines` or `Reply.rawJson status lines`.
+
 ### Fixed
 
 - **`Reply.json` alone at the prompt shows its help.** It printed the
   "takes the value it renders" check error; it now echoes the signature
   and summary like any other function name.
+- **Hovering `Reply.json` shows its own help.** The editor showed
+  `Reply.rawJson`'s signature and summary.
+- **A pipeline line gets one type hint.** With `pipelineTypes` on, a
+  line holding several `|>` stages showed one hint per stage, in
+  reverse order. It now shows the type after the line's last stage.
 
 ## v0.0.88
 
