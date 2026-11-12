@@ -875,9 +875,9 @@ within tmp d
   [D:json-value] — `Json value` (or `value |> Json`) BUILDS a `RawJson`
   from the VALUE (any shape `to json` admits, the same law checked at
   the call site), byte-exact to the wire (the curl `-d` mangling this
-  exists to prevent); `Json` is never a function value or a pattern,
-  and `Json (x |> to json)` is a check error (it would encode twice).
-  Lines already rendered are `RawJson lines`, the case a `match` sees.
+  exists to prevent); `Json` is never a function value or a pattern.
+  Lines already rendered are `RawJson lines`, the case a `match` sees —
+  `Json (x |> to json)` checks but sends the lines as an array of strings.
   `Form` percent-encodes
   its pairs at send (withQuery's escaper) with
   `application/x-www-form-urlencoded` — the token-endpoint shape, never

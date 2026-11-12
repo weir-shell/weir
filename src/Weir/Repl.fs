@@ -4589,6 +4589,21 @@ let rec private loop (state: State) =
         lastExit <- None
         Console.WriteLine(moduleEcho state.TypeEnv (line.Trim()))
         loop state
+    | line when
+        (line.Trim() = "Reply.json"
+         && Map.containsKey "Reply" state.TypeEnv.Modules
+         && not (Map.containsKey "Reply" state.TypeEnv.Values))
+        ->
+        // the name alone asks what it is, as any function's does
+        // [D:repl-fn-echo]; the checker refuses it as a value
+        // [D:json-value]
+        lastErrored <- false
+        lastExit <- None
+
+        functionEchoLines Types.Color.onStdout.Value (glanceWidth ()) state.TypeEnv lastDefLine "Reply.json"
+        |> Option.iter (List.iter Console.WriteLine)
+
+        loop state
     | line when line.TrimStart().StartsWith "#" ->
         let t = line.Trim()
 
