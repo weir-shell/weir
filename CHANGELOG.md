@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.88
+
+### Fixed
+
+- **An alias's arguments colour as arguments.** After an alias head,
+  `cb BBDD-8900` painted `BBDD` as a type, `-` as an operator and
+  `8900` as a number. The words after an alias are now dim argv, as
+  they are after a program on PATH.
+
 ## v0.0.87
 
 ### Added
