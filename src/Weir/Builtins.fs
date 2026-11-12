@@ -5626,10 +5626,10 @@ let private authHeaders (v: Value) : (string * string) list =
 let private httpBodyOf (v: Value) : (string * string) option =
     match v with
     | VUnion("NoBody", None) -> None
-    // Json carries pre-serialized `to json` lines [D:http]: send joins them
+    // RawJson carries pre-serialized `to json` lines [D:http]: send joins them
     // with \n and sets the content type — byte-exact, the whole point over
     // curl -d (which strips the newlines)
-    | VUnion("Json", Some(VSeq lines)) -> Some("application/json", lines |> Seq.map asString |> String.concat "\n")
+    | VUnion("RawJson", Some(VSeq lines)) -> Some("application/json", lines |> Seq.map asString |> String.concat "\n")
     | VUnion("Text", Some(VStr s)) -> Some("text/plain", s)
     // Stream is the server response's chunked case [D:http-serve]; on the
     // client send path it materializes (request-body streaming is out of
@@ -6222,17 +6222,56 @@ let private serverMembers: (string * Ty * Value) list = [
 // ordinary record update
 let private replyTy = TNamed("HttpServerResponse", [])
 
-let private replyOf (status: Value) (body: Value) : Value =
-    VRecord("HttpServerResponse", [ "status", status; "headers", VSeq []; "body", body ])
+let private replyWith (headers: (string * Value) list) (status: Value) (body: Value) : Value =
+    VRecord(
+        "HttpServerResponse",
+        [
+            "status", status
+            "headers", VSeq(headers |> List.map (fun (k, v) -> VTuple [ VStr k; v ]))
+            "body", body
+        ]
+    )
+
+let private replyOf: Value -> Value -> Value = replyWith []
+
+// one more header on a response [D:reply-members]: html and redirect
+// carry a header of their own, which a `with headers = …` would drop
+let private replyHeader (name: Value) (value: Value) (resp: Value) : Value =
+    match resp with
+    | VRecord(n, fields) ->
+        VRecord(
+            n,
+            fields
+            |> List.map (function
+                | "headers", VSeq hs -> "headers", VSeq(Seq.append hs [ VTuple [ name; value ] ])
+                | f -> f)
+        )
+    | v -> v
 
 let private replyMembers: (string * Ty * Value) list = [
     "empty", TFun(TInt, replyTy), VBuiltin(fun status -> replyOf status (VUnion("NoBody", None)))
     "text",
     TFun(TInt, TFun(TStr, replyTy)),
     VBuiltin(fun status -> VBuiltin(fun s -> replyOf status (VUnion("Text", Some s))))
-    "json",
+    // the checker renders the value and calls rawJson [D:json-value]
+    "json", TFun(TInt, TFun(tA, replyTy)), VBuiltin(fun _ -> failwith "Reply.json is applied to its value")
+    "rawJson",
     TFun(TInt, TFun(TSeq TStr, replyTy)),
-    VBuiltin(fun status -> VBuiltin(fun lines -> replyOf status (VUnion("Json", Some lines))))
+    VBuiltin(fun status -> VBuiltin(fun lines -> replyOf status (VUnion("RawJson", Some lines))))
+    "html",
+    TFun(TInt, TFun(TStr, replyTy)),
+    VBuiltin(fun status ->
+        VBuiltin(fun s ->
+            replyWith [ "content-type", VStr "text/html; charset=utf-8" ] status (VUnion("Text", Some s))))
+    "stream",
+    TFun(TInt, TFun(TSeq TStr, replyTy)),
+    VBuiltin(fun status -> VBuiltin(fun events -> replyOf status (VUnion("Stream", Some events))))
+    "redirect",
+    TFun(TInt, TFun(TStr, replyTy)),
+    VBuiltin(fun status -> VBuiltin(fun url -> replyWith [ "location", url ] status (VUnion("NoBody", None))))
+    "header",
+    TFun(TStr, TFun(TStr, TFun(replyTy, replyTy))),
+    VBuiltin(fun name -> VBuiltin(fun value -> VBuiltin(replyHeader name value)))
 ]
 
 // Net [D:scoped-procs]: one readiness probe — poll's body. Remote
@@ -7302,10 +7341,40 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
             |> named [ "status"; "body" ]
             "Reply.json",
             bd
-                "A response with this status and a JSON body: the lines `to json` produces."
-                (Some "Reply.json 200 ([1; 2] |> to json)")
+                "A response with this status and the value as its JSON body: any shape `to json` admits, rendered where it is written, so it is applied or piped, never passed as a function."
+                (Some "Reply.json 200 {| ok = true |}")
+                None
+            |> named [ "status"; "value" ]
+            "Reply.rawJson",
+            bd
+                "A response with this status and a JSON body that is already rendered: the lines of a document, sent as they are."
+                (Some "Reply.rawJson 200 [ \"{}\" ]")
                 None
             |> named [ "status"; "lines" ]
+            "Reply.html",
+            bd
+                "A response with this status and an HTML body: a Text body sent as `text/html; charset=utf-8`. The text is sent as written, so escape anything that came from a request."
+                (Some "Reply.html 200 \"<h1>ok</h1>\"")
+                None
+            |> named [ "status"; "body" ]
+            "Reply.stream",
+            bd
+                "A response with this status whose body is sent as server-sent events, one per element, as each is produced."
+                (Some "[ \"one\"; \"two\" ] |> Reply.stream 200")
+                None
+            |> named [ "status"; "events" ]
+            "Reply.redirect",
+            bd
+                "A response with this status, no body and a `location` header."
+                (Some "Reply.redirect 302 \"/login\"")
+                None
+            |> named [ "status"; "location" ]
+            "Reply.header",
+            bd
+                "The response with one more header. The headers it already has are kept, which a `with headers = …` update would replace."
+                (Some "Reply.html 200 \"<h1>ok</h1>\" |> Reply.header \"cache-control\" \"no-store\"")
+                None
+            |> named [ "name"; "value"; "response" ]
             // ---- Net: readiness probes [D:scoped-procs] ----
             "Net.portOpen",
             bd
@@ -8431,7 +8500,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 None
             "Http.send",
             (bd
-                "Send a request and return the response. A non-2xx status such as 404 is returned, not raised; only network failures raise. A Json body sends `to json` output exactly as given. Auth values hold Secrets, and show masks them."
+                "Send a request and return the response. A non-2xx status such as 404 is returned, not raised; only network failures raise. A `Json value` body is sent exactly as `to json` renders it. Auth values hold Secrets, and show masks them."
                 None
                 None
              |> named [ "request" ])
@@ -8921,7 +8990,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 None
             "HttpBody",
             bd
-                "A request or response body: NoBody, Json of any value `to json` takes (sent with application/json), Text of a string, Form of key/value pairs (percent-encoded), or, in a `within serve` response, Stream of a seq, sent as server-sent events while it is produced."
+                "A request or response body: NoBody, RawJson of rendered lines (sent with application/json; `Json value` builds one from any value `to json` takes), Text of a string, Form of key/value pairs (percent-encoded), or, in a `within serve` response, Stream of a seq, sent as server-sent events while it is produced."
                 None
                 None
             "HttpRequest",
@@ -9049,7 +9118,7 @@ let moduleBlurbs: Map<string, string> =
         "Log", "levelled diagnostics to stderr (WEIR_LOG selects)"
         "Map", "immutable maps keyed by any equatable type: get, add, pairs"
         "Net", "network probes: portOpen"
-        "Reply", "a handler's responses: empty, text, json"
+        "Reply", "a handler's responses: empty, text, html, json, rawJson, stream, redirect"
         "Option", "presence and absence: map, bind, defaults"
         "Result", "the value or the error message `|> try result` gives: map, defaults, toOption"
         "Path", "path text and discovery: join, confine, glob, temp dirs"

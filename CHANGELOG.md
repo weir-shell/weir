@@ -2,6 +2,33 @@
 
 ## v0.0.88
 
+### Added
+
+- **`Reply` builds more responses.** `Reply.html 200 page` sends a text
+  body as `text/html`, `Reply.redirect 302 "/login"` sets the
+  `location` header, `events |> Reply.stream 200` sends a `Stream`
+  body, and `Reply.rawJson 200 lines` sends JSON that's already
+  rendered. `Reply.header "cache-control" "no-store"` adds one header
+  to a response and keeps the ones it has.
+
+### Changed
+
+- **Breaking: `Json` takes only a value; rendered JSON is `RawJson`.**
+  `Json` used to read a `seq<string>` as an already rendered document,
+  so `Json ["a"; "b"]` sent `ab`. It now renders whatever it's given:
+  `Json ["a"; "b"]` sends `["a","b"]` and `Json []` sends `[]`. Lines
+  that are already JSON go in the new `RawJson` case
+  (`body = RawJson resp.body`), which is also the case a `match` on a
+  body sees; a `Json` pattern is a check error. To migrate:
+  - `Json (x |> to json)` is a check error; write `Json x`.
+  - Lines bound to a name first and then passed to `Json` still check,
+    but are now sent as an array of strings. Change those to `RawJson`.
+  - `Json` can't be passed as a function; `value |> Json` works.
+- **Breaking: `Reply.json` takes the value.**
+  `Reply.json 200 {| ok = true |}` and `rows |> Reply.json 200` render
+  the value as `Json` does. It no longer takes rendered lines
+  (`Reply.rawJson` does) and can't be passed as a function.
+
 ### Fixed
 
 - **An alias's arguments colour as arguments.** After an alias head,

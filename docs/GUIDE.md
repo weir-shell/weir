@@ -1614,9 +1614,10 @@ just saves you writing out the record. Every method has one:
 `get`, `post`, `put`, `delete`, `patch`, `head`, `options` and
 `query`.
 
-`Json` takes any value that `to json` accepts, with the same checks.
-If you give it a `seq<string>`, it's treated as JSON you've already
-written, so `Json (x |> to json)` works too. `Form` is the
+`Json` takes any value that `to json` accepts, with the same checks,
+applied or piped (`payload |> Json`). JSON you've already rendered goes
+in the `RawJson` case instead: `RawJson lines` sends a `seq<string>`
+as it is, and it's the case a `match` on a body sees. `Form` is the
 URL-encoded equivalent, for token endpoints and older servers:
 `body = Form [("grant_type", "client_credentials")]` percent-encodes
 each pair and sets the content type, so you never build `k=v&…` by
@@ -2072,8 +2073,16 @@ matching on the method and the path together. A string arm matches
 one path; the `Regex` arm captures a path segment into `topic`. The
 `^` and `$` anchors make the regex match the whole path: the `Regex`
 pattern is a search, so without them `/x/topic/a/b` would match too.
-`Reply.text 200 "ok"`, `Reply.empty 404` and `Reply.json 200 lines`
-build the common responses. Each is an ordinary `HttpServerResponse`
+`Reply.text 200 "ok"`, `Reply.empty 404` and `Reply.json 200 value`
+build the common responses. `Reply.json` takes the value itself, applied
+or piped (`rows |> Reply.json 200`), and renders it as `to json` would;
+`Reply.rawJson 200 lines` sends JSON that's already rendered.
+`Reply.html 200 page` is a text body sent as `text/html`,
+`Reply.redirect 302 "/login"` sets the `location` header, and
+`events |> Reply.stream 200` sends a `Stream` body.
+`Reply.header "cache-control" "no-store"` adds one header to a
+response and keeps the ones it has
+(`Reply.html 200 page |> Reply.header "cache-control" "no-store"`). Each is an ordinary `HttpServerResponse`
 record, so headers are a record update
 (`{ Reply.text 200 "ok" with headers = [("cache-control", "no-store")] }`),
 and anything else is the record written out. Its `body` uses the same

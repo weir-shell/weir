@@ -3089,6 +3089,15 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
 
         owners
 
+// `Json` is the value form of HttpBody's RawJson [D:json-value] unless
+// the script declares a `Json` of its own
+let private jsonForm (env: TypeEnv) : bool =
+    not (Map.containsKey "Json" env.Values)
+    && ctorOwners env "RawJson" = [ "HttpBody" ]
+
+let private replyModule (env: TypeEnv) : bool =
+    not (Map.containsKey "Reply" env.Values) && Map.containsKey "Reply" env.Modules
+
 // the imported unions declaring a case — the owners ctorOwnersAll
 // leaves out (their cases are not in scope bare), consulted only where
 // a pattern types its scrutinee [D:match-scrutinee-infer]
@@ -3438,7 +3447,13 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                 | Some(Union def) ->
                     match def.Cases |> List.tryFind (fun (c, _) -> c = ctor) with
                     | None ->
-                        let hint = didYouMean ctor (List.map fst def.Cases)
+                        let hint =
+                            if typeName = "HttpBody" && ctor = "Json" then
+                                // [D:json-value]
+                                " — `Json` builds a body from a value; the case to match is `RawJson lines`"
+                            else
+                                didYouMean ctor (List.map fst def.Cases)
+
                         err p.PSpan $"{typeName} has no case '{ctor}'{hint}"
                     | Some(_, None) ->
                         match argPat with
@@ -4629,6 +4644,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             err
                 expr.Span
                 $"weir has no backslash escapes in argv — `{word}` would pass the backslash too; quote the word instead: \"{word.Substring 1}\""
+    // [D:json-value]
+    | EVar "Json" when jsonForm env ->
+        err
+            expr.Span
+            "Json takes the value it renders — `Json value` or `value |> Json`; lines already rendered are `RawJson lines`"
     | EVar name ->
         match Map.tryFind name env.Values with
         | Some sch ->
@@ -4830,64 +4850,73 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         err
             arg.Span
             $"exit {code}: an exit code is 0..255 — the OS keeps only the low byte, so it would exit {code &&& 255L}"
-    | EApp({ Kind = EVar "Json"; Span = headSpan }, arg) when ctorOwners env "Json" = [ "HttpBody" ] ->
-        // Http's Json body takes the value [D:http-dx]: a jsonable
-        // argument routes through `to json`'s own law and wire maps at
-        // the call site, so `body = Json record` renders at the
-        // boundary. A seq<string> argument stays the pre-rendered
-        // document (`Json (x |> to json)` unchanged) — the payload
-        // representation never changes, only what the constructor
-        // admits.
+    // `Json` takes the value [D:json-value]: applied or piped, the
+    // argument renders through `to json`'s law where it is written and
+    // the body is the RawJson case
+    | EApp({ Kind = EVar "Json"; Span = headSpan }, arg)
+    | EPipe(arg, { Kind = EVar "Json"; Span = headSpan }) when jsonForm env ->
         result {
-            let! targ = infer ctx env arg
+            let! payload = jsonPayload ctx env "Json" "RawJson" arg
             let httpBody = TNamed("HttpBody", [])
 
             let ctorHead = {
-                Kind = TEVar "Json"
+                Kind = TEVar "RawJson"
                 Ty = TFun(TSeq TStr, httpBody)
                 Span = headSpan
             }
 
-            let app (payload: TypedExpr) = {
+            return {
                 Kind = TEApp(ctorHead, payload)
                 Ty = httpBody
                 Span = expr.Span
             }
-
-            match resolve ctx targ.Ty with
-            | TSeq inner when resolve ctx inner = TStr -> return app targ
-            | TSeq inner when
-                (match resolve ctx inner with
-                 | TVar _ -> true
-                 | _ -> false)
-                ->
-                // an unresolved element (Json []) keeps the pre-rendered law
-                do! bind ctx env arg.Span TStr (resolve ctx inner)
-                return app targ
-            | TVar _ ->
-                do! bind ctx env arg.Span (TSeq TStr) targ.Ty
-                return app targ
-            | _ ->
-                // generic records cross monomorphized [D:wire-generics]
-                let wty, wenv = wireMono ctx env targ.Ty
-                do! jsonableElem false arg.Span wenv wty
-
-                let! unions = unionWriteTable arg.Span wenv wty
-
-                let tto = {
-                    Kind = TETo("json", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
-                    Ty = TFun(targ.Ty, TSeq TStr)
-                    Span = arg.Span
-                }
-
-                let rendered = {
-                    Kind = TEPipe(targ, tto)
-                    Ty = TSeq TStr
-                    Span = arg.Span
-                }
-
-                return app rendered
         }
+    // Reply.json takes the value as `Json` does [D:json-value]
+    | EApp({
+               Kind = EApp({
+                               Kind = EField({ Kind = EVar "Reply" } as m, "json", fspan)
+                           } as head,
+                           status)
+           } as partial,
+           arg)
+    | EPipe(arg,
+            ({
+                 Kind = EApp({
+                                 Kind = EField({ Kind = EVar "Reply" } as m, "json", fspan)
+                             } as head,
+                             status)
+             } as partial)) when replyModule env ->
+        result {
+            let! thead =
+                infer ctx env {
+                    head with
+                        Kind = EField(m, "rawJson", fspan)
+                }
+
+            let! tstatus = infer ctx env status
+            do! bind ctx env status.Span TInt tstatus.Ty
+            let! payload = jsonPayload ctx env "Reply.json" "Reply.rawJson" arg
+            let replyTy = TNamed("HttpServerResponse", [])
+
+            let tpartial = {
+                Kind = TEApp(thead, tstatus)
+                Ty = TFun(TSeq TStr, replyTy)
+                Span = partial.Span
+            }
+
+            return {
+                Kind =
+                    (match expr.Kind with
+                     | EPipe _ -> TEPipe(payload, tpartial)
+                     | _ -> TEApp(tpartial, payload))
+                Ty = replyTy
+                Span = expr.Span
+            }
+        }
+    | EField({ Kind = EVar "Reply" }, "json", _) when replyModule env ->
+        err
+            expr.Span
+            "Reply.json takes the value it renders — `Reply.json status value` or `value |> Reply.json status`; lines already rendered are `Reply.rawJson status lines`"
     | EApp _ ->
         let head, args = spine expr
 
@@ -7115,6 +7144,50 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 // a plan body's value is discarded (the block yields the Plan
 // [D:plan-apply]), so its tail obeys the sequenced-unit rule; a command
 // tail is armed so the plan's own command refusal names it
+// a Json payload [D:json-value]: the value renders through `to json`'s
+// law and wire maps where it is written
+and private jsonPayload
+    (ctx: Ctx)
+    (env: TypeEnv)
+    (form: string)
+    (raw: string)
+    (arg: Expr)
+    : Result<TypedExpr, TypeError> =
+    match arg.Kind with
+    | EPipe(_, { Kind = ETo _ }) ->
+        err arg.Span $"{form} renders its value itself — drop the `to` stage, or pass lines already rendered to `{raw}`"
+    | _ ->
+        result {
+            let! targ = infer ctx env arg
+
+            // an empty list is the empty array
+            do!
+                match resolve ctx targ.Ty with
+                | TSeq inner ->
+                    match resolve ctx inner with
+                    | TVar _ as v -> bind ctx env arg.Span TStr v
+                    | _ -> Ok()
+                | _ -> Ok()
+
+            // generic records cross monomorphized [D:wire-generics]
+            let wty, wenv = wireMono ctx env targ.Ty
+            do! jsonableElem false arg.Span wenv wty
+
+            let! unions = unionWriteTable arg.Span wenv wty
+
+            let tto = {
+                Kind = TETo("json", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false, None)
+                Ty = TFun(targ.Ty, TSeq TStr)
+                Span = arg.Span
+            }
+
+            return {
+                Kind = TEPipe(targ, tto)
+                Ty = TSeq TStr
+                Span = arg.Span
+            }
+        }
+
 and private inferPlanBody (ctx: Ctx) (env: TypeEnv) (body: Expr) : Result<TypedExpr, TypeError> =
     result {
         let! tbody = infer ctx env (armTail body)

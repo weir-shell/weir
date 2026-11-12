@@ -4856,9 +4856,9 @@ WEOF
     # pure computation holds the terminal ^C's join [D:teardown-joins-arms]:
     # the grace period does not exit while the arms compute — a builtin's
     # own loop, since every evaluated node is a boundary [D:scope-tree]
-    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..300000000] |> Seq.length' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
+    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..600000000] |> Seq.length' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
     t0=$(now_ms)
-    tout=$(printf 'SLEEP 500\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 20 "$BIN" "$sedir/purejoin.weir")
+    tout=$(printf 'SLEEP 500\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 40 "$BIN" "$sedir/purejoin.weir")
     took=$(( $(now_ms) - t0 ))
     echo "$tout" | grep -qF "EXIT -2" || fail "a terminal ^C during a pure-compute join dies by the SIGINT: $tout"
     echo "$tout" | grep -qE "arm [12] |after" && fail "no arm effect or statement after a terminal ^C: $tout"
@@ -13922,7 +13922,7 @@ PYEOF2
 type P = { name: string; count: int }
 let items = [{ name = "a"; count = 1 }; { name = "b"; count = 2 }; { name = "c"; count = 3 }]
 let sent = items |> to jsonl
-let resp = Http.send { Http.defaults with method = Post; url = "http://127.0.0.1:$hport/x"; body = Json sent }
+let resp = Http.send { Http.defaults with method = Post; url = "http://127.0.0.1:$hport/x"; body = RawJson sent }
 let ok = (sent |> Seq.length) == (resp.body |> Seq.length)
 print \$"lines={resp.body |> Seq.length} match={ok}"
 resp.body |> Seq.iter print
@@ -16121,7 +16121,7 @@ awaitTcp $ctwport || { kill $ctwsrv 2>/dev/null || true; fail "ct-override: the 
 cat > "$svdir/ctwire.weir" <<WEOF
 let u = "http://127.0.0.1:$ctwport/"
 Http.send { Http.post u with headers = [("Content-Type", "text/csv")]; body = Text "x" } |> _.body |> Seq.iter (fun l -> print \$"text={l}")
-Http.send { Http.post u with headers = [("content-type", "application/vnd.x+json")]; body = Json ["{}"] } |> _.body |> Seq.iter (fun l -> print \$"json={l}")
+Http.send { Http.post u with headers = [("content-type", "application/vnd.x+json")]; body = RawJson ["{}"] } |> _.body |> Seq.iter (fun l -> print \$"json={l}")
 Http.send { Http.post u with secretHeaders = [("CONTENT-TYPE", Secret.of "text/x")]; body = Form [("a", "b")] } |> _.body |> Seq.iter (fun l -> print \$"form={l}")
 Http.send { Http.post u with body = Text "x" } |> _.body |> Seq.iter (fun l -> print \$"default={l}")
 WEOF

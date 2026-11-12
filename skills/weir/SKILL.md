@@ -871,12 +871,14 @@ within tmp d
   character. On a
   cross-origin redirect `auth`, every `secretHeaders` name and a plain
   `Authorization`/`Proxy-Authorization`/`Cookie` header are dropped. The
-  body is `NoBody`/`Json`/`Text of string`/`Form of seq<string * string>`
-  [D:http-dx] — `Json` takes the VALUE (any shape `to json` admits, the
-  same law checked at the call site) and renders at the boundary,
-  byte-exact to the wire (the curl `-d` mangling this exists to
-  prevent); a `seq<string>` payload is the pre-rendered document, so
-  `Json (x |> to json)` means what it always did. `Form` percent-encodes
+  body is `NoBody`/`RawJson of seq<string>`/`Text of string`/`Form of seq<string * string>`
+  [D:json-value] — `Json value` (or `value |> Json`) BUILDS a `RawJson`
+  from the VALUE (any shape `to json` admits, the same law checked at
+  the call site), byte-exact to the wire (the curl `-d` mangling this
+  exists to prevent); `Json` is never a function value or a pattern,
+  and `Json (x |> to json)` is a check error (it would encode twice).
+  Lines already rendered are `RawJson lines`, the case a `match` sees.
+  `Form` percent-encodes
   its pairs at send (withQuery's escaper) with
   `application/x-www-form-urlencoded` — the token-endpoint shape, never
   hand-built `k=v&…`. `resp.body |> from json
@@ -1001,7 +1003,7 @@ within tmp d
   …`, 405 by choice); `QUERY` reads as `Query`; a malformed method token
   is refused at the boundary with 400. The response `body` is an
   `HttpBody` — the SAME union the `Http` client uses (`NoBody`/`Text`/
-  `Json`/`Form`), plus `Stream of seq<string>`: the runtime PULLS and FLUSHES
+  `RawJson`/`Form`), plus `Stream of seq<string>`: the runtime PULLS and FLUSHES
   each element as produced (chunked, SSE-shaped: one event per element,
   one `data:` line per line of it — a newline cannot forge an event), so a lazy
   producer streams incrementally — the client sees early elements before
@@ -3486,7 +3488,7 @@ not the teaching.
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
-- `Reply`: `empty` `json` `text` — a handler's responses: `Reply.text 200 "ok"`, an ordinary `HttpServerResponse`
+- `Reply`: `empty` `header` `html` `json` `rawJson` `redirect` `stream` `text` — a handler's responses: `Reply.text 200 "ok"`, `Reply.json 200 {| ok = true |}` (the value, as `Json` takes it; rendered lines are `Reply.rawJson 200 lines`), `Reply.html 200 page`, `Reply.redirect 302 "/login"`, `events |> Reply.stream 200`; `resp |> Reply.header "k" "v"` adds a header; each an ordinary `HttpServerResponse`
 - `Result`: `defaultValue` `isOk` `map` `toOption` — what `e |> try result` gives (`Ok v` / `Error msg`)
 - `Option`: `bind` `defaultValue` `defaultWith` `flatten` `iter` `map` `orElse` `orElseWith` — `bind` chains lookups that may each fail (`f` returns an Option; no nesting); `flatten` collapses `Option<Option<T>>`
 - `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `isName` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `toName` `under` `which` — `isName` is true for one file name valid on Linux, macOS and Windows; `toName` turns any text into one; `which name : Option<string>` is the full path of the program a command head would run, found as the spawn finds it: on the PATH the command runs with (a `within env` overlay's included [D:overlay-path]) and PATHEXT on Windows; a name with a `/` answers itself when the file exists; an ambient read (readonly admits it, pure refuses) [D:path-which]; `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`) — home is `$HOME` verbatim when set, the OS lookup when unset, and an empty HOME raises [D:home-verbatim]; HOME and `XDG_*` are read through a `within env` overlay [D:home-overlay]; in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
@@ -3515,7 +3517,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `FileKind`: `Regular` `Directory` `Symlink`
 - type `FileChunk`: { `lines` `next` }
 - type `FileRow`: { `name` `kind` `target` `bytes` `modified` `hidden` `path` }
-- type `HttpBody`: `NoBody` `Json` `Text` `Stream` `Form`
+- type `HttpBody`: `NoBody` `RawJson` `Text` `Stream` `Form`
 - type `HttpMethod`: `Get` `Post` `Put` `Delete` `Patch` `Head` `Options` `Query` `Other`
 - type `HttpRequest`: { `method` `url` `auth` `headers` `secretHeaders` `body` `timeout` `insecure` }
 - type `HttpResponse`: { `status` `headers` `body` }

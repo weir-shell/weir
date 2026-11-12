@@ -7104,7 +7104,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         match recGet "body" f with
                         | VUnion("NoBody", None) -> Serve.RNoBody
                         | VUnion("Text", Some(VStr s)) -> Serve.RText s
-                        | VUnion("Json", Some(VSeq lines)) ->
+                        | VUnion("RawJson", Some(VSeq lines)) ->
                             Serve.RJson(lines |> Seq.map asString |> String.concat "\n")
                         // the lazy body [D:http-serve]: keep it a seq, so
                         // writeResponse pulls and flushes each element as

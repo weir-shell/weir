@@ -358,7 +358,10 @@ http://127.0.0.1:8080` does.
 ### Response
 
 `body` is an `HttpBody`, the same type the `Http` client uses:
-`NoBody`, `Text`, `Json`, `Form`, or `Stream of seq<string>`.
+`NoBody`, `Text`, `RawJson`, `Form`, or `Stream of seq<string>`.
+`Json value` builds a `RawJson` from a value. The `Reply` module
+builds the common responses: `empty`, `text`, `html`, `json`,
+`rawJson`, `stream`, `redirect`, and `header` to add one header.
 
 `Stream` sends each element as it's produced, as server-sent events:
 one event per element, one `data:` line per line, so a newline can't
