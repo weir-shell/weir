@@ -4856,9 +4856,9 @@ WEOF
     # pure computation holds the terminal ^C's join [D:teardown-joins-arms]:
     # the grace period does not exit while the arms compute — a builtin's
     # own loop, since every evaluated node is a boundary [D:scope-tree]
-    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..300000000] |> Seq.length' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
+    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..600000000] |> Seq.length' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
     t0=$(now_ms)
-    tout=$(printf 'SLEEP 500\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 20 "$BIN" "$sedir/purejoin.weir")
+    tout=$(printf 'SLEEP 500\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 40 "$BIN" "$sedir/purejoin.weir")
     took=$(( $(now_ms) - t0 ))
     echo "$tout" | grep -qF "EXIT -2" || fail "a terminal ^C during a pure-compute join dies by the SIGINT: $tout"
     echo "$tout" | grep -qE "arm [12] |after" && fail "no arm effect or statement after a terminal ^C: $tout"
