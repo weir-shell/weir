@@ -10371,6 +10371,18 @@ let replColorTests =
             Expect.stringContains c "\x1b[36m$x\x1b[0m" "a splice keeps its tint"
             Expect.isFalse (c.Contains "\x1b[2mhead") "after | the stage is expression land"
         }
+        test "an alias head arms command mode: its words are dim argv [D:alias-argv-tint]" {
+            let isCb n = n = "cb"
+            let c = Weir.Script.colorizeReplWith isCb isCb "cb BBDD-8900 | Seq.head"
+
+            Expect.stringContains c "\x1b[1mcb\x1b[0m" "the alias keeps the known tint"
+            Expect.stringContains c "\x1b[2mBBDD-8900\x1b[0m" "the argument is one argv word"
+            Expect.isFalse (c.Contains "\x1b[2mhead") "after | the stage is expression land"
+
+            Expect.isFalse
+                ((Weir.Script.colorizeRepl isCb "cb BBDD-8900").Contains "\x1b[2m")
+                "a known name that is no alias stays an expression"
+        }
         test "the Tab listing paints a candidate without moving the columns [D:repl-color-words]" {
             let items = [ "alpha"; "be"; "gamma"; "d" ]
             let plain = Weir.Repl.completionListing 20 items

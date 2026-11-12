@@ -3340,7 +3340,7 @@ let private interpMasks (line: string) : bool[] * bool[] =
 
     (str, hole)
 
-let colorizeRepl (isKnown: string -> bool) (line: string) : string =
+let colorizeReplWith (isAlias: string -> bool) (isKnown: string -> bool) (line: string) : string =
     if line = "" then
         ""
     else
@@ -3476,6 +3476,11 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                             cmdMode <- true
                             Some "1;34" // PATH, by its whole name
                         elif slot <> Complete.HeadSlot.No && isKnown word then
+                            // an alias head is a command: its words are
+                            // argv [D:alias-argv-tint]
+                            if isAlias word then
+                                cmdMode <- true
+
                             // the fish trick: the head resolves live
                             Some "1" // known: bold
                         elif
@@ -3580,6 +3585,9 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
             | None -> sb.Append span |> ignore
 
         sb.ToString()
+
+let colorizeRepl: (string -> bool) -> string -> string =
+    colorizeReplWith (fun _ -> false)
 
 // a `#sig` head directive [D:command-signatures]: tool + optional
 // override path + its physical line (so errors can name the declaration)

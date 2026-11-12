@@ -187,6 +187,11 @@ let private knownInWith (aliases: Set<string>) (env: TypeEnv) (n: string) : bool
 let private knownIn (env: TypeEnv) : string -> bool =
     knownInWith (currentAliases.Value |> Map.keys |> Set.ofSeq) env
 
+// the prompt's colorizer: the session's alias heads arm command mode
+// [D:alias-argv-tint]
+let private colorizeSession (isKnown: string -> bool) : string -> string =
+    Script.colorizeReplWith (fun n -> (currentAliasHead.Value n).IsSome) isKnown
+
 // The session transcript [D:repl-save]: the accepted statements, in
 // order, that `#save` distills into a runnable .weir file (option B — a
 // session is scratch; #save crystallizes its definitions and guarantees
@@ -1700,8 +1705,8 @@ let private readLineTty () : string option =
                     | Some off ->
                         dedentPrefix
                         + ded.Substring(0, off)
-                        + Script.colorizeRepl isKnown (ded.Substring off)
-                    | None -> dedentPrefix + Script.colorizeRepl isKnown ded
+                        + colorizeSession isKnown (ded.Substring off)
+                    | None -> dedentPrefix + colorizeSession isKnown ded
                 else
                     text
 
@@ -2212,7 +2217,7 @@ let private readLineTty () : string option =
                              && sigil = 0
                              && Complete.headSlotAt (text.Substring(0, ws)) <> Complete.HeadSlot.No
                          then
-                             Script.colorizeRepl (knownIn currentEnv.Value)
+                             colorizeSession (knownIn currentEnv.Value)
                          else
                              id
 
