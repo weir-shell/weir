@@ -4,6 +4,21 @@
 
 ### Changed
 
+- **Waiting arms and handlers no longer hold a thread each.** A
+  `Seq.pmap`/`piter`/`pfirst` arm or a `within serve` handler that waits
+  on a command, `Duration.sleep`, `Http.send`/`Http.expect`, a
+  `retry`/`poll`/`repeat` interval or a lazy command's lines is suspended
+  while it waits. 300 one-second arms now peak at roughly 25 to 100
+  threads, where they took 300 to 600, and a 2000-wide sleeping fan-out
+  no longer reaches the process/thread limit. Scripts need no change and
+  there is no new syntax.
+- **Command chains run over kernel pipes.** On Linux and macOS
+  `a | b | c` connects the commands directly, with no copying through
+  weir. A stage killed by SIGPIPE because the next one stopped reading is
+  still not a failure, but a stage that survives the broken pipe and
+  exits nonzero now fails the chain, as under `bash -o pipefail`:
+  `python3 gen.py | head -1` raises if the Python script exits 120.
+  Windows is unchanged.
 - **`Json (x |> to json)` is no longer a check error.** `Json` and
   `Reply.json` render whatever they're given, rendered lines included,
   so this sends an array of strings. For a document that's already

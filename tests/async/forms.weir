@@ -1,0 +1,37 @@
+let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "pong" }
+within serve outer handler=handler
+    let up = $"http://127.0.0.1:{Server.port outer}/x"
+    let rs = [1; 2] |> Seq.pmap (fun i ->
+        let w = [1; 2; 3] |> Seq.pfirst (fun j ->
+            if j == 2 then
+                Duration.sleep 50ms
+                $"won{j}"
+            else
+                let lines = $(sh -c "sleep 5; echo late") |> Str.join ""
+                lines)
+        let ok = Http.expect (Http.get up) |> try result
+        let bad = Http.expect (Http.get "http://127.0.0.1:1/x") |> try result
+        let interp = $"a{(Duration.sleep 5ms; 1)}b{$(sh -c "echo c") |> Str.join ""}"
+        let rec1 = {| x = (Duration.sleep 5ms; 2); y = [ (Duration.sleep 1ms; 3); 4 ] |}
+        let tup = ((Duration.sleep 1ms; 5), ($(sh -c "echo 6") |> Str.join ""))
+        let arith = (Duration.sleep 1ms; 7) + ($(sh -c "echo 8") |> Seq.length)
+        let logic = (Duration.sleep 1ms; false) && fail "not reached"
+        let alF = fun _ ->
+            within
+                Duration.sleep 5ms
+                if i == 0 then "x" else fail "body failed"
+            always
+                Duration.sleep 5ms
+                sh -c $"echo cleanup{i} >&2"
+        let al = alF 0 |> try result
+        let viaServe =
+            within serve srv maxConcurrent=4 handler=handler
+                Duration.sleep 10ms
+                (Http.send (Http.get $"http://127.0.0.1:{Server.port srv}/")).body |> Str.join ""
+        let counted =
+            retry attempts=5 delay=10ms
+                $(sh -c "echo 3") |> Str.join ""
+            until n
+                (Duration.sleep 1ms; n == "3")
+        $"{i} {w} {ok} {bad} {interp} {rec1.x} {rec1.y} {tup} {arith} {logic} {al} {viaServe} {counted}")
+    rs |> Seq.iter print

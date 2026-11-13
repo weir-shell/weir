@@ -1,0 +1,42 @@
+let c n = $(sh -c $"seq 1 {n}")
+let rs = [1; 2] |> Seq.pmap (fun i ->
+    let a = $(sh -c "yes") |> Seq.head
+    let b = $(sh -c "yes") |> Seq.tryHead
+    let e = $(sh -c "yes") |> Seq.isEmpty
+    let e2 = $(sh -c "true") |> Seq.isEmpty
+    let it = $(sh -c "yes") |> Seq.item 5
+    let ti = c 3 |> Seq.tryItem 7
+    let one = $(sh -c "echo solo") |> Seq.exactlyOne
+    let more = c 3 |> Seq.exactlyOne |> try result
+    let none = $(sh -c "true") |> Seq.tryExactlyOne
+    let ex = $(sh -c "yes") |> Seq.exists (fun l -> l == "y")
+    let fa = $(sh -c "yes") |> Seq.forall (fun l -> l == "n")
+    let tf = c 9 |> Seq.tryFind (fun l -> ($(sh -c $"echo {l}") |> Str.join "") == "4")
+    let fi = c 9 |> Seq.find (fun l -> Str.toInt l > 6)
+    let nf = c 3 |> Seq.find (fun l -> l == "x") |> try result
+    let pk = c 9 |> Seq.pick (fun l -> if l == "3" then Some (l + "!") else None)
+    let tp = c 3 |> Seq.tryPick (fun l -> if l == "9" then Some l else None)
+    let co = $(sh -c "yes") |> Seq.contains "y"
+    let nc = c 3 |> Seq.contains "y"
+    let su = c 100 |> Seq.map Str.toInt |> Seq.sum
+    let la = c 5 |> Seq.last
+    let tl = $(sh -c "true") |> Seq.tryLast
+    let mx = c 12 |> Seq.map Str.toInt |> Seq.max
+    let mb = c 12 |> Seq.minBy (fun l -> 0 - Str.toInt l)
+    let av = c 4 |> Seq.map Str.toInt |> Seq.average
+    let rd = c 5 |> Seq.map Str.toInt |> Seq.reduce (fun x y -> x * y)
+    let tw = c 9 |> Seq.takeWhile (fun l -> ($(sh -c $"echo {l}") |> Str.join "") <> "4") |> Str.join ""
+    let sw = c 6 |> Seq.skipWhile (fun l -> ($(sh -c $"echo {l}") |> Str.join "") <> "4") |> Str.join ""
+    let cl = c 3 |> Seq.collect (fun l -> $(sh -c $"echo {l}a; echo {l}b")) |> Str.join ""
+    let db = c 6 |> Seq.distinctBy (fun l -> $(sh -c $"echo $(({l} % 3))") |> Str.join "") |> Str.join ""
+    let sc = c 4 |> Seq.scan (fun acc l -> acc + ($(sh -c $"echo {l}") |> Str.join "")) ">" |> Str.join " "
+    let lp = [10; 20] |> Seq.map (fun x -> x + ($(sh -c "echo 1") |> Seq.length)) |> Seq.sum
+    $"{i} {a} {b} {e} {e2} {it} {ti} {one} {more} {none} {ex} {fa} {tf} {fi} {nf} {pk} {tp} {co} {nc} {su} {la} {tl} {mx} {mb} {av} {rd} {tw} {sw} {cl} {db} {sc} {lp}")
+rs |> Seq.iter print
+[1] |> Seq.piter (fun _ ->
+    for l in $(sh -c "echo f1; echo f2") do
+        print l
+    let h = $(sh -c "echo a; exit 5") |> Seq.head
+    print h
+    let bad = $(sh -c "echo a; exit 6") |> Seq.last
+    print bad)

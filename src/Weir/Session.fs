@@ -792,6 +792,26 @@ let runningCleanup (f: unit -> 'a) : 'a =
         if onMain then
             lock watchdogGate (fun () -> mainCleanups <- mainCleanups - 1)
 
+/// `runningCleanup` for a cleanup a flow awaits [D:async-flows]: entered
+/// here, left when the result is disposed. Off the main flow only — the
+/// main flow's cleanups are the watchdog's to count
+let cleanupScope () : System.IDisposable =
+    if System.Threading.Volatile.Read &hardExiting <> 0 then
+        park ()
+
+    cleanupDepth.Value <- cleanupDepth.Value + 1
+    let home = current.Value
+    let shield = openNode (currentNode ()) NodeKind.Shield
+    current.Value <- shield
+
+    {
+        new System.IDisposable with
+            member _.Dispose() =
+                current.Value <- home
+                closeNode shield
+                cleanupDepth.Value <- cleanupDepth.Value - 1
+    }
+
 let inCleanup () = cleanupDepth.Value > 0
 
 // ---- the main flow's frames [D:scope-tree] -----------------------------
@@ -1343,6 +1363,9 @@ module private Libc =
 
     [<DllImport("libc", SetLastError = true)>]
     extern int poll(PollFd& fds, unativeint nfds, int timeout)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int pipe(int[] fds)
 
     let EINTR = 4
     let EAGAIN = if System.OperatingSystem.IsLinux() then 11 else 35
@@ -2353,6 +2376,247 @@ let waitPipes (streams: System.IO.Stream[]) (ready: bool[]) : unit =
     for k in 0 .. live.Length - 1 do
         if fds[k].revents <> 0s then
             ready[fst live[k]] <- true
+
+// a flow's completion source [D:async-flows]: on the arm scheduler the
+// completing thread hands the flow straight back to that scheduler; the
+// asynchronous kind would go through the runtime's pool first — a pool
+// that may have no thread to give at the process/thread limit
+// [D:pipe-threads]. Off a flow the continuation is arbitrary code, so it
+// stays off the completing thread
+let private flowSource () : System.Threading.Tasks.TaskCompletionSource<bool> =
+    if
+        obj.ReferenceEquals(System.Threading.Tasks.TaskScheduler.Current, System.Threading.Tasks.TaskScheduler.Default)
+    then
+        System.Threading.Tasks.TaskCompletionSource<bool>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+    else
+        System.Threading.Tasks.TaskCompletionSource<bool>()
+
+// ---- suspended pipe waits [D:async-flows] -------------------------------
+// one thread polls the pipes of every suspended read (and stdin feed): a
+// flow waiting for its child's output holds no thread. The poller only
+// says "a fill would not wait" — the fill, and the cut's raise, stay the
+// CutStream's, so a cut behaves exactly as it does for a blocking read
+type private PipeWatch = {
+    Fds: int[]
+    Events: int16
+    Done: System.Threading.Tasks.TaskCompletionSource<bool>
+}
+
+type private PipePoller() =
+    static let pending = System.Collections.Concurrent.ConcurrentQueue<PipeWatch>()
+    static let gate = obj ()
+    static let scratch = System.Runtime.InteropServices.Marshal.AllocHGlobal 64
+    static let mutable wake: int[] = null
+
+    static let loop () =
+        let watches = ResizeArray<PipeWatch>()
+        let mutable fds = Array.zeroCreate<Libc.PollFd> 64
+
+        while true do
+            let mutable w = Unchecked.defaultof<PipeWatch>
+
+            while pending.TryDequeue &w do
+                watches.Add w
+
+            watches.RemoveAll(fun w -> w.Done.Task.IsCompleted) |> ignore
+            let mutable n = 1
+
+            for w in watches do
+                n <- n + w.Fds.Length
+
+            if fds.Length < n then
+                fds <- Array.zeroCreate<Libc.PollFd>(n * 2)
+
+            fds[0].fd <- wake[0]
+            fds[0].events <- 1s
+            fds[0].revents <- 0s
+            let mutable k = 1
+
+            for w in watches do
+                for fd in w.Fds do
+                    fds[k].fd <- fd
+                    fds[k].events <- w.Events
+                    fds[k].revents <- 0s
+                    k <- k + 1
+
+            if Libc.poll (&fds[0], unativeint n, -1) > 0 then
+                if fds[0].revents <> 0s then
+                    Libc.read (wake[0], scratch, 64un) |> ignore
+
+                k <- 1
+
+                for w in watches do
+                    let mutable hit = false
+
+                    for _ in w.Fds do
+                        if fds[k].revents <> 0s then
+                            hit <- true
+
+                        k <- k + 1
+
+                    if hit then
+                        w.Done.TrySetResult true |> ignore
+
+    static member Poke() : unit =
+        Libc.write (wake[1], scratch, 1un) |> ignore
+
+    static member Watch(w: PipeWatch) : unit =
+        lock gate (fun () ->
+            if isNull wake then
+                let ends = Array.zeroCreate<int> 2
+
+                if Libc.pipe ends <> 0 then
+                    failwith "cannot open the pipe poller's wake pipe"
+
+                wake <- ends
+
+                System.Threading.Thread((fun () -> loop ()), IsBackground = true, Name = "weir-pipes").Start())
+
+        pending.Enqueue w
+        PipePoller.Poke()
+
+/// completes once a fill of one of the streams (`pollablePipes`; null =
+/// done) would not wait, or the flow is cut
+let pipesReady (streams: System.IO.Stream[]) : System.Threading.Tasks.Task =
+    let fds =
+        streams
+        |> Array.choose (fun s ->
+            match s with
+            | :? CutStream as c when c.Fd >= 0 -> Some c.Fd
+            | _ -> None)
+
+    let t = waitToken false
+
+    if
+        fds.Length = 0
+        || t.IsCancellationRequested
+        || fds |> Array.exists (fun fd -> Libc.readable fd 0)
+    then
+        System.Threading.Tasks.Task.CompletedTask
+    else
+        let w = {
+            Fds = fds
+            Events = 1s
+            Done = flowSource ()
+        }
+
+        PipePoller.Watch w
+
+        if t.CanBeCanceled then
+            let reg =
+                t.Register(fun () ->
+                    if w.Done.TrySetResult false then
+                        PipePoller.Poke())
+
+            w.Done.Task.ContinueWith(
+                (fun (_: System.Threading.Tasks.Task<bool>) -> reg.Unregister() |> ignore),
+                System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously
+            )
+            |> ignore
+
+        w.Done.Task
+
+/// a child's pipe end as an fd the poller can watch, or -1
+let pipeFd (s: System.IO.Stream) : int =
+    match s with
+    | :? System.IO.Pipes.PipeStream as ps when not (System.OperatingSystem.IsWindows()) ->
+        int (ps.SafePipeHandle.DangerousGetHandle())
+    | _ -> -1
+
+/// completes once a write of up to PIPE_BUF bytes to `fd` would not wait
+/// (or the pipe broke — the write then reports it)
+let pipeWritable (fd: int) : System.Threading.Tasks.Task =
+    if Libc.writable fd 0 then
+        System.Threading.Tasks.Task.CompletedTask
+    else
+        let w = {
+            Fds = [| fd |]
+            Events = 4s
+            Done = flowSource ()
+        }
+
+        PipePoller.Watch w
+        w.Done.Task
+
+let pipesSuspend: bool = not (System.OperatingSystem.IsWindows())
+
+/// a process's exit as a task; already exited completes at once
+let processExit (p: System.Diagnostics.Process) : System.Threading.Tasks.Task =
+    if p.HasExited then
+        System.Threading.Tasks.Task.CompletedTask
+    else
+        p.WaitForExitAsync()
+
+// a wait for `span` that either token ends early; disposed by its waiter
+type private Wake(span: System.TimeSpan, a: System.Threading.CancellationToken, b: System.Threading.CancellationToken) =
+    let done' = flowSource ()
+
+    let timer =
+        if span = System.Threading.Timeout.InfiniteTimeSpan then
+            null
+        else
+            new System.Threading.Timer(
+                (fun _ -> done'.TrySetResult true |> ignore),
+                null,
+                span,
+                System.Threading.Timeout.InfiniteTimeSpan
+            )
+
+    let ra = a.Register(fun () -> done'.TrySetResult true |> ignore)
+    let rb = b.Register(fun () -> done'.TrySetResult true |> ignore)
+
+    member _.Task: System.Threading.Tasks.Task<bool> = done'.Task
+
+    interface System.IDisposable with
+        member _.Dispose() =
+            if not (isNull timer) then
+                timer.Dispose()
+
+            ra.Dispose()
+            rb.Dispose()
+
+/// `waitOrCancel`, holding no thread [D:async-flows]
+let waitOrCancelSuspended
+    (span: System.TimeSpan)
+    (token: System.Threading.CancellationToken)
+    : System.Threading.Tasks.Task<bool> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        checkCancels ()
+        let t = waitToken false
+        let wake = new Wake(span, t, token)
+
+        try
+            let _ = System.Runtime.CompilerServices.AsyncHelpers.Await wake.Task
+            ()
+        finally
+            (wake :> System.IDisposable).Dispose()
+
+        if t.CanBeCanceled then
+            raiseWoken ()
+
+        token.IsCancellationRequested
+    )
+
+/// `sleepInterruptible`, holding no thread [D:async-flows]
+let sleepSuspended (span: System.TimeSpan) : System.Threading.Tasks.Task<bool> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        checkCancels ()
+        let t = waitToken false
+        let wake = new Wake(span, t, System.Threading.CancellationToken.None)
+
+        try
+            let _ = System.Runtime.CompilerServices.AsyncHelpers.Await wake.Task
+            ()
+        finally
+            (wake :> System.IDisposable).Dispose()
+
+        if t.CanBeCanceled then
+            raiseWoken ()
+
+        true
+    )
 
 /// a reader over a child's output, cut as the flow is: the encoding the
 /// Process gave it, a larger buffer
@@ -3369,6 +3633,16 @@ let stopAware (f: unit -> 'a) : 'a =
     finally
         stop.Exit()
 
+/// `stopAware` for a construct a flow awaits [D:async-flows]
+let stopAwareScope () : System.IDisposable =
+    ensureHook ()
+    stop.Enter()
+
+    {
+        new System.IDisposable with
+            member _.Dispose() = stop.Exit()
+    }
+
 let registerTmpDir (dir: string) : unit =
     ensureHook ()
     liveTmpDirs[dir] <- ()
@@ -3437,3 +3711,289 @@ let execScopeRefusal () : string option =
             "'exec' while a scope is open (a within or always block) is refused — exec replaces weir's process, so the scope's teardown would never run; run the command without exec, or exec after the scope"
     else
         None
+
+// the injector's clock, on a thread of its own and never the runtime's
+// pool or timers: near the process/thread limit the pool must stay idle —
+// a worker it cannot add aborts the process [D:pipe-threads]
+type private Pacer(tick: unit -> unit) =
+    let wake = new System.Threading.AutoResetEvent(false)
+    let mutable delay = 2
+    let mutable started = 0
+
+    member _.Change(ms: int, _: int) : bool =
+        System.Threading.Volatile.Write(&delay, ms)
+
+        if System.Threading.Interlocked.CompareExchange(&started, 1, 0) = 0 then
+            System.Threading
+                .Thread(
+                    (fun () ->
+                        while true do
+                            wake.WaitOne() |> ignore
+                            System.Threading.Thread.Sleep(System.Threading.Volatile.Read &delay)
+
+                            try
+                                tick ()
+                            with _ ->
+                                ()),
+                    IsBackground = true,
+                    Name = "weir-arms"
+                )
+                .Start()
+
+        wake.Set()
+
+// ---- the arm scheduler [D:async-flows] ----------------------------------
+// Flows (fan-out arms, serve handlers) run here, never on the runtime's
+// pool: an arm may still block — in a child's exit, a lock, pure compute —
+// and a blocked pool starves every continuation in the process. A running
+// arm has a thread of its own; a suspended one has none. `slack` counts
+// idle threads minus queued tasks: up to the ceiling a queued task starts
+// a thread at once, past it the injector adds threads only while no
+// thread has come free, so a burst of resumptions does not start a
+// thread per arm
+type ArmScheduler() as this =
+    inherit System.Threading.Tasks.TaskScheduler()
+
+    static let ceiling = 64
+
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private onArmThread: bool
+
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private strict: bool
+
+    let queue =
+        new System.Collections.Concurrent.BlockingCollection<System.Threading.Tasks.Task>(
+            System.Collections.Concurrent.ConcurrentQueue<System.Threading.Tasks.Task>()
+        )
+
+    let mutable slack = 0
+    let mutable threads = 0
+    let mutable injecting = 0
+    let mutable burst = 1
+    let mutable freed = 0L
+    let mutable freedSeen = 0L
+    let mutable backoff = 0
+    let mutable shedUntil = 0L
+
+    // room under the process/thread limit [D:pipe-threads]: parked threads
+    // held while the scheduler grows past its ceiling and let go at the
+    // first refusal, so what reports the error — the runtime's own pool
+    // and timers among it — finds a thread to start
+    let reserveGate = obj ()
+    let mutable reserve: System.Threading.ManualResetEventSlim = null
+    let reserved = ResizeArray<System.Threading.Thread>()
+
+    let refused =
+        System.Collections.Concurrent.ConcurrentDictionary<obj, unit -> unit>()
+
+    let injector = Pacer(fun () -> this.Inject())
+
+    static member Strict
+        with get () = ArmScheduler.strict
+        and set (v: bool) = ArmScheduler.strict <- v
+
+    member private this.Loop() =
+        ArmScheduler.onArmThread <- true
+        let mutable t = queue.Take()
+        let mutable go = true
+
+        while go do
+            this.TryExecuteTask t |> ignore
+            System.Threading.Interlocked.Increment(&freed) |> ignore
+            System.Threading.Interlocked.Increment(&slack) |> ignore
+
+            // an idle thread lingers for the next task, except after a
+            // refusal: the limit is reached, so it goes at once
+            let mutable got = false
+            let mutable waited = 0
+
+            while not got
+                  && waited < 1000
+                  && System.Environment.TickCount64 >= System.Threading.Volatile.Read(&shedUntil) do
+                got <- queue.TryTake(&t, 50)
+                waited <- waited + 50
+
+            if not got then
+                if System.Threading.Interlocked.Decrement(&slack) < 0 then
+                    System.Threading.Interlocked.Increment(&slack) |> ignore
+                    t <- queue.Take()
+                else
+                    go <- false
+
+        System.Threading.Interlocked.Decrement(&threads) |> ignore
+
+    member private this.Spawn() =
+        System.Threading.Interlocked.Increment(&threads) |> ignore
+
+        try
+            System.Threading.Thread((fun () -> this.Loop()), IsBackground = true).Start()
+        with _ ->
+            System.Threading.Interlocked.Decrement(&threads) |> ignore
+            reraise ()
+
+    // a thread the OS refuses [D:pipe-threads]: the fan-outs running are
+    // told, and stop with the error naming the limit — their queued arms
+    // then run on the threads the stopped ones free. With no fan-out to
+    // tell (a serve handler alone) the pool runs the task
+    member private this.HoldReserve() =
+        lock reserveGate (fun () ->
+            if isNull reserve then
+                let gate = new System.Threading.ManualResetEventSlim(false)
+
+                reserve <- gate
+
+                for _ in 1..8 do
+                    let t = System.Threading.Thread((fun () -> gate.Wait()), IsBackground = true)
+                    t.Start()
+                    reserved.Add t)
+
+    member private this.DropReserve() =
+        lock reserveGate (fun () ->
+            if not (isNull reserve) then
+                reserve.Set()
+                reserve <- null
+
+                // gone before anyone is told: the room must be there
+                for t in reserved do
+                    t.Join()
+
+                reserved.Clear())
+
+    member private this.SpawnOrDrain() =
+        try
+            if System.Threading.Volatile.Read(&threads) >= ceiling then
+                this.HoldReserve()
+
+            this.Spawn()
+        with _ ->
+            this.DropReserve()
+
+            if refused.IsEmpty then
+                System.Threading.ThreadPool.UnsafeQueueUserWorkItem(
+                    (fun _ -> this.TryExecuteTask(queue.Take()) |> ignore),
+                    null
+                )
+                |> ignore
+            else
+                System.Threading.Interlocked.Decrement(&slack) |> ignore
+                System.Threading.Volatile.Write(&backoff, 1)
+                System.Threading.Volatile.Write(&shedUntil, System.Environment.TickCount64 + 2000L)
+
+                for kv in refused do
+                    try
+                        kv.Value()
+                    with _ ->
+                        ()
+
+    /// `onRefused` runs when a thread an arm needs is refused, until the
+    /// result is disposed
+    member _.WatchRefusals(onRefused: unit -> unit) : System.IDisposable =
+        let key = obj ()
+        let mutable hit = false
+
+        refused[key] <-
+            (fun () ->
+                hit <- true
+                onRefused ())
+
+        {
+            new System.IDisposable with
+                member _.Dispose() =
+                    refused.TryRemove key |> ignore
+
+                    // the idle threads go before the error is reported: the
+                    // report itself needs room under the limit
+                    if hit then
+                        let until = System.Environment.TickCount64 + 500L
+
+                        while System.Threading.Volatile.Read(&slack) > 0
+                              && System.Environment.TickCount64 < until do
+                            System.Threading.Thread.Sleep 5
+        }
+
+    member private this.Inject() =
+        let need = -System.Threading.Volatile.Read(&slack)
+
+        if need > 0 then
+            let now = System.Threading.Volatile.Read(&freed)
+
+            // after a refusal no thread is added for a while: the queued
+            // arms run on the threads the stopped ones free, and the room
+            // let go stays free for the report
+            if
+                now = freedSeen
+                && System.Environment.TickCount64 >= System.Threading.Volatile.Read(&shedUntil)
+            then
+                let mutable n = min need burst
+
+                while n > 0 do
+                    if System.Threading.Interlocked.Increment(&slack) <= 0 then
+                        this.SpawnOrDrain()
+                        n <- n - 1
+                    else
+                        System.Threading.Interlocked.Decrement(&slack) |> ignore
+                        n <- 0
+
+                burst <- min (burst * 2) 1024
+            else
+                freedSeen <- now
+                burst <- 1
+
+            let wait =
+                if System.Threading.Interlocked.Exchange(&backoff, 0) = 1 then
+                    100
+                else
+                    2
+
+            injector.Change(wait, System.Threading.Timeout.Infinite) |> ignore
+        else
+            burst <- 1
+            System.Threading.Volatile.Write(&injecting, 0)
+
+            if System.Threading.Volatile.Read(&slack) < 0 then
+                this.Starved()
+
+    member private this.Starved() =
+        if System.Threading.Interlocked.CompareExchange(&injecting, 1, 0) = 0 then
+            injector.Change(2, System.Threading.Timeout.Infinite) |> ignore
+
+    override this.QueueTask(t: System.Threading.Tasks.Task) =
+        if System.Threading.Interlocked.Decrement(&slack) < 0 then
+            if System.Threading.Volatile.Read(&threads) < ceiling then
+                System.Threading.Interlocked.Increment(&slack) |> ignore
+
+                if ArmScheduler.strict then
+                    this.Spawn()
+                else
+                    this.SpawnOrDrain()
+
+                queue.Add t
+            else
+                queue.Add t
+                this.Starved()
+        else
+            queue.Add t
+
+    override this.TryExecuteTaskInline(t: System.Threading.Tasks.Task, queued: bool) =
+        ArmScheduler.onArmThread && not queued && this.TryExecuteTask t
+
+    override _.GetScheduledTasks() =
+        queue.ToArray() :> seq<System.Threading.Tasks.Task>
+
+let armScheduler = ArmScheduler()
+
+/// start `f` as a flow of its own on the arm scheduler
+let startFlow (f: unit -> System.Threading.Tasks.Task<bool>) : System.Threading.Tasks.Task =
+    System.Threading.Tasks.Task.Factory.StartNew(
+        (fun () -> f () |> ignore),
+        System.Threading.CancellationToken.None,
+        System.Threading.Tasks.TaskCreationOptions.None,
+        armScheduler
+    )
+
+/// `joinThread` for a flow
+let joinTask (t: System.Threading.Tasks.Task) : unit =
+    while not (t.Wait 50) do
+        if interruptible () && teardownRequested () <> 0 then
+            System.Threading.Volatile.Write(&mainJoining, 1)

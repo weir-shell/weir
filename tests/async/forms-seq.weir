@@ -1,0 +1,34 @@
+type Row = { n: string }
+let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "pong" }
+within serve outer handler=handler
+    let up = $"http://127.0.0.1:{Server.port outer}/x"
+    let rs = [1; 2] |> Seq.pmap (fun i ->
+        within tmp d
+            let sorted = $(sh -c "printf 'b\nc\na\n'") |> Seq.sort |> Str.join ""
+            let by = $(sh -c "printf 'bb\nc\naaa\n'") |> Seq.sortBy Str.length |> Seq.take 2 |> Str.join ","
+            let desc = $(sh -c "seq 1 5") |> Seq.map Str.toInt |> Seq.sortDescending |> Seq.head
+            let rev = $(sh -c "seq 1 4") |> Seq.rev |> Str.join ""
+            let grp = $(sh -c "printf 'a1\nb1\na2\n'") |> Seq.groupBy (fun l -> l[0..0]) |> Seq.map (fun (k, g) -> $"{k}{Seq.length g}") |> Str.join ""
+            let cnt = $(sh -c "printf 'x\ny\nx\n'") |> Seq.countBy (fun l -> l) |> Seq.map (fun (k, c) -> $"{k}{c}") |> Str.join ""
+            $(sh -c "seq 1 3") |> File.write $"{d}/out.txt"
+            $(sh -c "echo 4") |> File.append $"{d}/out.txt"
+            let back = File.read $"{d}/out.txt" |> Str.join ""
+            let js = $(sh -c "echo a; echo b") |> to json |> Str.join ""
+            let rows = $(sh -c "echo p; echo q") |> Seq.map (fun l -> { n = l }) |> to json |> Str.join ""
+            let fed = ["b"; "a"; "c"] | sh -c "sort" |> Str.join ""
+            let bigFeed = [1..200000] |> Seq.map (fun n -> $"{n}") | sh -c "wc -l" |> Str.join ""
+            let fedEarly = [1..200000] |> Seq.map (fun n -> $"{n}") | sh -c "head -2" |> Str.join ","
+            let ok = Http.expect (Http.get up) |> Str.join ""
+            let rep =
+                repeat interval=10ms timeout=(Some 2s)
+                    $(sh -c "echo tick") |> Str.join ""
+                until t
+                    t == "tick"
+            let repTimeoutF = fun _ ->
+                repeat interval=20ms timeout=(Some 70ms)
+                    Duration.sleep 1ms
+                    false
+                "unreached"
+            let repTimeout = repTimeoutF 0 |> try result |> fun r -> match r with | Ok v -> v | Error e -> e[0..19]
+            $"{i} {sorted} {by} {desc} {rev} {grp} {cnt} {back} {js} {rows} {fed} {Str.trim bigFeed} {fedEarly} {ok} {rep} {repTimeout}")
+    rs |> Seq.iter print

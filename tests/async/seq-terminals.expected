@@ -1,0 +1,9 @@
+exit=1
+--stdout--
+1 y Some "y" false true y None solo Error "exactlyOne: expected exactly one element, got more" None true false Some "4" 7 Error "find: no matching element" 3! None true false 5050 5 None 12 12 2.5 120 123 456 1a1b2a2b3a3b 123 > >1 >12 >123 >1234 32
+2 y Some "y" false true y None solo Error "exactlyOne: expected exactly one element, got more" None true false Some "4" 7 Error "find: no matching element" 3! None true false 5050 5 None 12 12 2.5 120 123 456 1a1b2a2b3a3b 123 > >1 >12 >123 >1234 32
+a
+f1
+f2
+--stderr--
+seq-terminals.weir:41:15: error: command failed with exit code 6: sh -c echo a; exit 6

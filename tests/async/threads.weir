@@ -1,0 +1,48 @@
+// 300 arms, each waiting about a second: a suspended wait holds no thread,
+// so the peak thread count stays far under the width [D:async-flows].
+// ci/e2e.sh samples /proc/<pid>/status while a mode runs.
+let mode = Self.args |> Seq.head
+let handler = fun req ->
+    Duration.sleep 1s
+    HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+
+let arm i =
+    match mode with
+    | "sleep" ->
+        Duration.sleep 1s
+        "ok"
+    | "complete" ->
+        let r = sh -c "sleep 1; echo ok" | complete
+        Seq.head r.stdout
+    | "lazy" -> $(sh -c "sleep 1; echo OK") |> Seq.map Str.toLower |> Str.join ""
+    | "chain" -> sh -c "sleep 1; echo OK" | sh -c "tr A-Z a-z" |> Str.join ""
+    | "fed" -> ["OK"] | sh -c "sleep 1; tr A-Z a-z" |> Str.join ""
+    | "retry" ->
+        let tried = fun _ ->
+            retry attempts=3 delay=500ms
+                Duration.sleep 1ms
+                i < 0
+            "exhausted"
+        match tried 0 |> try with
+        | Some _ -> "no"
+        | None -> "ok"
+    | _ -> fail $"unknown mode {mode}"
+
+let run () =
+    match mode with
+    | "serve" ->
+        within serve srv maxConcurrent=400 maxQueued=1000 handler=handler
+            let url = $"http://127.0.0.1:{Server.port srv}/"
+            [1..300] |> Seq.pmapWith 300 (fun _ -> Http.expect (Http.get url) |> Str.join "") |> Seq.freeze
+    | "race" ->
+        let w = [1..300] |> Seq.pfirstWith 300 (fun i ->
+            if i == 300 then
+                Duration.sleep 1s
+                "ok"
+            else
+                $(sh -c "sleep 30; echo late") |> Str.join "")
+        Seq.replicate 300 w |> Seq.freeze
+    | _ -> [1..300] |> Seq.pmapWith 300 arm |> Seq.freeze
+
+let rs = run ()
+print $"{rs |> Seq.where (fun r -> r == "ok") |> Seq.length}"

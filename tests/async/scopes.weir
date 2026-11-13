@@ -1,0 +1,40 @@
+let home = pwd
+let rs = [1; 2] |> Seq.pmap (fun i ->
+    let a = ($(sh -c "sleep 0.05; exit 3") |> Seq.length) |> try result
+    let b = (Duration.sleep 10ms; if i == 0 then 1 else fail "boom") |> try
+    let c = (Duration.sleep 10ms; 5) |> try result
+    let moved = (let _h = cd "/tmp" in (Duration.sleep 10ms; if i == 0 then 1 else fail "after cd")) |> try result
+    let here = pwd
+    let o = (Duration.sleep 5ms; Some 4) |> orFail "none"
+    let bad = ((Duration.sleep 5ms; if i == 0 then Some 1 else None) |> orFail "was none") |> try result
+    let lazySeq = $(sh -c "echo a; exit 9") |> try result
+    let w =
+        within tmp d
+            let _x = cd d
+            Duration.sleep 10ms
+            sh -c "touch f"
+            let l = sh -c "ls" | line
+            $"{l} {pwd == d}"
+    let after = pwd
+    let innerF = fun _ ->
+        within cd "/usr"
+            Duration.sleep 10ms
+            if pwd == "" then "x" else fail $"in {pwd}"
+    let inner = innerF 0 |> try result
+    let alF = fun _ ->
+        within
+            Duration.sleep 10ms
+            if i == 0 then "x" else fail "body failed"
+        always
+            print $"cleanup {i}"
+    let al = alF 0 |> try result
+    $"{i} {a} {b} {c} {moved} {here} {o} {bad} {lazySeq} {w} {after} {inner} {pwd} {al}")
+rs |> Seq.iter print
+print $"{pwd == home}"
+[1] |> Seq.piter (fun _ ->
+    within
+        Duration.sleep 10ms
+        let v = (Duration.sleep 5ms; if pwd == "" then Some 1 else None) |> orFail "located raise"
+        print $"{v}"
+    always
+        sh -c "echo cleanup-cmd")

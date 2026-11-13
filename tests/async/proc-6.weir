@@ -1,0 +1,10 @@
+let rs = [1; 2; 3] |> Seq.pmap (fun i ->
+    Duration.sleep 50ms
+    if i == 2 then fail $"arm {i} failed"
+    let _here = cd "/tmp"
+    Duration.sleep 50ms
+    let d = sh -c "pwd" | complete
+    $"{i} {d.stdout |> Str.join ""}") |> try result
+print $"{rs}"
+let neg = [1] |> Seq.pmap (fun _ -> Duration.sleep (0s - 1s)) |> try result
+print $"{neg}"

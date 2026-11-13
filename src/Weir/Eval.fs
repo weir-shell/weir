@@ -5918,6 +5918,316 @@ let ambientRebinders =
 // Proc's starters themselves [D:within-scopes], so every spawn
 // (reifier desugars included) obeys the outer-first rule,
 // not just these Eval paths
+// ---- async flows [D:async-flows] ---------------------------------------
+// A parallel arm or a serve handler is a FLOW: the evaluator below
+// (evalAsync / applyAsync) is the same language as `eval`, written as
+// runtime-async methods [D:runtime-async], so a wait — a command, a sleep,
+// an Http send, a lazy command's next line — suspends the flow instead of
+// parking a thread. weir's syntax has no async; this is the runtime's.
+//
+// Session state is AsyncLocal, and a runtime-async callee's writes to it
+// are dropped when it returns. A frame therefore leaves its ExecutionContext
+// here on every exit, normal or raising, and its caller restores it: a `cd`
+// in a callee reaches the caller as it does in `eval`.
+[<AllowNullLiteral>]
+type Flow() =
+    member val Ec: System.Threading.ExecutionContext = null with get, set
+
+type RepeatCtl = {
+    PastDeadline: unit -> bool
+    StopCaused: exn -> bool
+    Predicate: Value -> bool
+    Finish: Value option -> Value
+    TimedOut: int -> Value
+    Stoppable: Value option -> bool
+    WaitLabel: string
+    WaitInterval: unit -> bool option
+    IntervalMs: int64
+    Slice: int64 -> int64
+}
+
+type RetryCtl = {
+    Before: unit -> unit
+    Predicate: Value -> bool
+    Verdict: Value -> bool
+    Yields: bool
+    Attempts: int
+    DelayMs: int64
+    Expired: unit -> bool
+    Exhausted: int -> Value
+    WaitLabel: string
+    WaitDelay: unit -> bool
+    Slice: int64 -> int64
+    Cts: System.Threading.CancellationTokenSource
+}
+
+// a seq a flow can pull without waiting on a thread [D:async-seq]. It is
+// still a seq<Value>: every consumer that knows nothing of this pulls it
+// through IEnumerator and blocks, as before
+type ISuspSeq = interface end
+
+// TryNext: an element already at hand (no wait); NextAsync: the pull that
+// may suspend. One enumeration uses either the blocking MoveNext or these
+[<AllowNullLiteral>]
+type ISuspPull =
+    abstract TryNext: unit -> bool
+    abstract NextAsync: Flow -> System.Threading.Tasks.Task<bool>
+
+// a command's lines [D:async-seq]: the blocking enumerator is the one
+// `linesOf` always was; a flow pulls through Proc.LinesPull instead, which
+// waits on the pipe poller. The command still starts at the first pull,
+// stops when the consumer does, and raises its exit where it is forced
+type private CommandEnum(blocking: seq<Value>, statement: bool, specs: Proc.Spec list, node: obj) =
+    let mutable inner: System.Collections.Generic.IEnumerator<Value> = null
+    let mutable pull: Proc.LinesPull = null
+    let mutable current = VUnit
+
+    let blame (ex: exn) =
+        match ex with
+        | ExitRequest _ -> ()
+        | _ when isNull node -> ()
+        | _ ->
+            let b = blameFor ex
+
+            if isNull b.Node then
+                b.Node <- node
+                b.Exact <- true
+
+    interface ISuspPull with
+        member _.TryNext() : bool =
+            if not (isNull pull) && pull.TryTake() then
+                current <- VStr pull.Current
+                true
+            else
+                false
+
+        member _.NextAsync(_: Flow) : System.Threading.Tasks.Task<bool> =
+            Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+                if not (isNull inner) then
+                    let more = inner.MoveNext()
+
+                    if more then
+                        current <- inner.Current
+
+                    more
+                else
+                    if isNull pull then
+                        pull <- Proc.LinesPull(statement, specs, true)
+
+                    try
+                        let more = System.Runtime.CompilerServices.AsyncHelpers.Await(pull.NextAsync())
+
+                        if more then
+                            current <- VStr pull.Current
+
+                        more
+                    with ex ->
+                        blame ex
+                        reraise ()
+            )
+
+    interface System.Collections.Generic.IEnumerator<Value> with
+        member _.Current = current
+
+    interface System.Collections.IEnumerator with
+        member _.Current = box current
+
+        member this.MoveNext() =
+            if not (isNull pull) then
+                (this :> ISuspPull).NextAsync(null).GetAwaiter().GetResult()
+            else
+                if isNull inner then
+                    inner <- blocking.GetEnumerator()
+
+                let more = inner.MoveNext()
+
+                if more then
+                    current <- inner.Current
+
+                more
+
+        member _.Reset() = raise (System.NotSupportedException())
+
+    interface System.IDisposable with
+        member _.Dispose() =
+            if not (isNull inner) then
+                inner.Dispose()
+
+            if not (isNull pull) then
+                pull.Close()
+
+type CommandSeq(blocking: seq<Value>, statement: bool, specs: Proc.Spec list, node: obj) =
+    interface ISuspSeq
+
+    interface System.Collections.Generic.IEnumerable<Value> with
+        member _.GetEnumerator() : System.Collections.Generic.IEnumerator<Value> =
+            new CommandEnum(blocking, statement, specs, node)
+
+    interface System.Collections.IEnumerable with
+        member _.GetEnumerator() : System.Collections.IEnumerator =
+            new CommandEnum(blocking, statement, specs, node)
+
+// a builtin's suspending form [D:async-flows], found by the builtin's own
+// object. `arity` > 1 collects curried arguments (registered per partial
+// application, on a flow only); `framed` forms take the flow because they
+// call back into weir code. A null task from `run` means "nothing here can
+// suspend": the builtin's blocking form runs
+[<AllowNullLiteral>]
+type AsyncEntry
+    (arity: int, args: Value list, framed: bool, run: Flow -> Value list -> System.Threading.Tasks.Task<Value>) =
+    member _.Arity = arity
+    member _.Args = args
+    member _.Framed = framed
+    member _.Run = run
+
+let private asyncBuiltins =
+    System.Runtime.CompilerServices.ConditionalWeakTable<obj, AsyncEntry>()
+
+let registerAsync (b: Value) (f: Value -> System.Threading.Tasks.Task<Value>) : unit =
+    match b with
+    | VBuiltin g -> asyncBuiltins.AddOrUpdate(box g, AsyncEntry(1, [], false, (fun _ args -> f (List.head args))))
+    | _ -> ()
+
+let registerAsyncN (b: Value) (arity: int) (run: Flow -> Value list -> System.Threading.Tasks.Task<Value>) : unit =
+    match b with
+    | VBuiltin g -> asyncBuiltins.AddOrUpdate(box g, AsyncEntry(arity, [], true, run))
+    | _ -> ()
+
+let private asyncOf (f: Value -> Value) : AsyncEntry =
+    match asyncBuiltins.TryGetValue(box f) with
+    | true, e -> e
+    | _ -> null
+
+// what can suspend [D:async-flows]: a command, a reifier, a builtin with a
+// suspending form, or a closure whose body reaches one. Pure code is never
+// async — a subtree that cannot suspend runs on `eval`, at its speed. The
+// scan sees through bindings but not through a function passed as a
+// parameter: a miss there blocks, which is what `eval` does
+let private suspendScans =
+    System.Runtime.CompilerServices.ConditionalWeakTable<TypedExpr, obj>()
+
+let rec private bodyMaySuspend
+    (seen: System.Collections.Generic.HashSet<TypedExpr>)
+    (env: Map<string, Value>)
+    (te: TypedExpr)
+    : bool =
+    match te.Kind with
+    | TECmd _ -> true
+    | TEVar v ->
+        (Ast.reifierOfVar v).IsSome
+        || (match Map.tryFind v env with
+            | Some fv -> valueMaySuspend seen fv
+            | None -> false)
+    | _ -> Check.existsChild (bodyMaySuspend seen env) te
+
+and private valueMaySuspend (seen: System.Collections.Generic.HashSet<TypedExpr>) (v: Value) : bool =
+    match v with
+    | VBuiltin f -> not (isNull (asyncOf f))
+    | VClosure(_, body, env)
+    | VClosurePat(_, body, env) ->
+        match suspendScans.TryGetValue body with
+        | true, r -> unbox<bool> r
+        | _ ->
+            if seen.Add body then
+                let r = bodyMaySuspend seen env body
+                suspendScans.AddOrUpdate(body, box r)
+                r
+            else
+                false
+    | _ -> false
+
+/// whether evaluating `te` under `env` can reach a wait a flow suspends
+/// on [D:async-flows] — decided once per node, by the bindings its
+/// first evaluation sees; a miss only blocks, as the sync evaluator does
+let nodeMaySuspend (env: Map<string, Value>) (te: TypedExpr) : bool =
+    match suspendScans.TryGetValue te with
+    | true, r -> unbox<bool> r
+    | _ ->
+        let r =
+            bodyMaySuspend (System.Collections.Generic.HashSet<TypedExpr>(HashIdentity.Reference)) env te
+
+        suspendScans.AddOrUpdate(te, box r)
+        r
+
+/// a suspendable seq drained by a flow, or null when the seq never
+/// suspends [D:async-seq] — Builtins owns the driver and sets this
+let mutable suspDrain: Flow -> Value -> System.Threading.Tasks.Task<Value> =
+    Unchecked.defaultof<_>
+
+let private drainedThen
+    (t: System.Threading.Tasks.Task<Value>)
+    (k: Value -> Value)
+    : System.Threading.Tasks.Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let v = System.Runtime.CompilerServices.AsyncHelpers.Await t
+        k v
+    )
+
+/// `b`, a builtin that reads its seq argument whole, draining a
+/// suspendable one on the flow first [D:async-seq]
+let drainsWhole (b: Value) : Value =
+    match b with
+    | VBuiltin k ->
+        registerAsyncN b 1 (fun flow args ->
+            match args with
+            | [ VSeq _ as v ] when not (obj.ReferenceEquals(suspDrain, null)) ->
+                match suspDrain flow v with
+                | null -> null
+                | t -> drainedThen t k
+            | _ -> null)
+    | _ -> ()
+
+    b
+
+let maySuspend (f: Value) : bool =
+    match f with
+    | VBuiltin g -> not (isNull (asyncOf g))
+    | VClosure(_, body, _)
+    | VClosurePat(_, body, _) ->
+        match suspendScans.TryGetValue body with
+        | true, r -> unbox<bool> r
+        | _ -> valueMaySuspend (System.Collections.Generic.HashSet<TypedExpr>(HashIdentity.Reference)) f
+    | _ -> false
+
+// the run position is thread-static [D:runtime-position], and a flow
+// resumes on whichever arm thread is free: restored after a real
+// suspension, and a raise is pinned before it travels
+let inline awaitLeaf (t: System.Threading.Tasks.Task<'a>) : 'a =
+    if t.IsCompleted then
+        System.Runtime.CompilerServices.AsyncHelpers.Await t
+    else
+        let cur = RunPos.Current
+        let exact = RunPos.Exact
+
+        try
+            let r = System.Runtime.CompilerServices.AsyncHelpers.Await t
+            RunPos.Current <- cur
+            RunPos.Exact <- exact
+            r
+        with ex ->
+            RunPos.Current <- cur
+            RunPos.Exact <- exact
+            pinOnThread ex
+            reraise ()
+
+// await a frame that ran weir code: take back the session state it left
+let inline awaitFrame (flow: Flow) (t: System.Threading.Tasks.Task<'a>) : 'a =
+    try
+        let r = awaitLeaf t
+        let ec = flow.Ec
+
+        if not (isNull ec) then
+            System.Threading.ExecutionContext.Restore ec
+
+        r
+    with _ ->
+        let ec = flow.Ec
+
+        if not (isNull ec) then
+            System.Threading.ExecutionContext.Restore ec
+
+        reraise ()
+
 let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * string) list =
     match cenvO with
     | None -> []
@@ -5993,21 +6303,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
     // and its value is forced there — a lazy seq would otherwise raise
     // after `try` returned. exit and weir's own internal errors pass through
     | TETry(body, asResult) ->
-        let rec force (v: Value) =
-            match v with
-            | VSeq items -> VSeq(items |> Seq.map force |> Seq.toArray :> seq<Value>)
-            | VRecord(n, fields) -> VRecord(n, fields |> List.map (fun (k, x) -> k, force x))
-            // a scalar node keeps its identity — the digits/text a read
-            // node remembers ride it [D:yaml-node-bigint]
-            | VUnion(c, Some p) ->
-                let p' = force p
-                if obj.ReferenceEquals(p, p') then v else VUnion(c, Some p')
-            | VTuple xs -> VTuple(List.map force xs)
-            | VMap m -> VMap(Map.map (fun _ x -> force x) m)
-            | v -> v
-
         try
-            let v = force (eval env body)
+            let v = forceValue (eval env body)
 
             if asResult then
                 VUnion("Ok", Some v)
@@ -6024,210 +6321,42 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 VUnion("None", None)
     // the inverse of try [D:orfail-form]: the raise points at the form;
     // an Error's text is data spliced into the message [D:error-data-escape]
-    | TEOrFail(body, msg, site) ->
-        let v = eval env body
-
-        let label =
-            msg
-            |> Option.map (fun m ->
-                match eval env m with
-                | VStr s -> s
-                | other -> unreachable $"the checker types orFail's message as a string, got {formatValue other}")
-
-        let raiseAtSite (text: string) : Value =
-            RunPos.Current <- box site
-            RunPos.Exact <- true
-            failwith text
-
-        match v, label with
-        | VUnion(("Ok" | "Some"), Some x), _ -> x
-        | VUnion("Error", Some(VStr e)), Some l -> raiseAtSite $"{l}: {quoteData e}"
-        | VUnion("Error", Some(VStr e)), None -> raiseAtSite (quoteData e)
-        | VUnion("None", None), Some l -> raiseAtSite l
-        | VUnion("None", None), None -> raiseAtSite "orFail: no value (None)"
-        | other, _ ->
-            unreachable $"the checker types orFail's left side as a Result or an Option, got {formatValue other}"
+    | TEOrFail(body, msg, site) -> orFailValue env msg site (eval env body)
     | TEInt n -> VInt(int64 n)
     | TEDur n -> VDur n
     | TESize b -> VSize b
     | TEFloat f -> VFloat f
     | TERetry(LoopRepeat, optsE, _, body, until) -> evalRepeat env optsE body until
     | TERetry(kind, optsE, watchE, body, until) ->
-        let isPoll = kind = LoopPoll
-        let head = loopHead kind
+        let ctl = retryCtl env kind optsE watchE until
 
-        let watched =
-            watchE
-            |> Option.map (fun w ->
-                match eval env w with
-                | VProc h -> h
-                | v -> unreachable $"the checker rejects a watch of {formatValue v}")
+        try
+            let rec loop (n: int) =
+                ctl.Before()
+                // raises propagate [D:retry-poll]: retry retries on the
+                // predicate, never on exceptions — command failure becomes
+                // data through the reifier family
+                let v = eval env body
 
-        // the watched child dying is itself the answer [D:scoped-procs]:
-        // fail immediately with its own output, never a blind timeout
-        let watchCheck (sw: System.Diagnostics.Stopwatch) =
-            match watched with
-            | Some h when
-                (try
-                    h.Proc.HasExited
-                 with _ ->
-                     true)
-                ->
-                // elapsed is the poll's own clock — Process.StartTime
-                // throws on an exited child, and the wait's duration
-                // is the number the reader wants anyway
-                failwith (
-                    $"poll: watched process (pid {h.Proc.Id}) exited with code {h.Proc.ExitCode} "
-                    + $"after {formatDuration sw.ElapsedMilliseconds}"
-                    + procTailLine h
-                )
-            | _ -> ()
-
-        let fields =
-            match eval env optsE with
-            | VRecord(_, fs) -> fs
-            | v -> unreachable $"the checker rejects '{head}' options of {formatValue v}"
-
-        let dur name =
-            match recGet name fields with
-            | VDur ms -> ms
-            | v -> unreachable $"the checker rejects a {name} of {formatValue v}"
-
-        // the two bounds [D:retry-poll]: retry counts attempts (with
-        // an optional total-time ceiling), poll counts time — an
-        // unbounded loop is unrepresentable rather than refused
-        let attempts, delayMs, timeoutMs =
-            if isPoll then
-                System.Int32.MaxValue, dur "interval", Some(dur "timeout")
-            else
-                (match recGet "attempts" fields with
-                 | VInt n -> toIntArg head Amount n
-                 | v -> unreachable $"the checker rejects attempts of {formatValue v}"),
-                dur "delay",
-                (match recGet "timeout" fields with
-                 | VUnion("Some", Some(VDur t)) -> Some t
-                 | _ -> None)
-
-        if not isPoll && attempts < 1 then
-            failwith $"{head}: attempts must be at least 1, got {attempts}"
-
-        if delayMs < 0L then
-            let key = if isPoll then "interval" else "delay"
-            failwith $"{head}: a negative {key} ({formatDuration delayMs})"
-
-        // poll is bounded by time alone, so a zero interval re-runs the
-        // body in a busy loop until the timeout — refused like timeout=0s
-        // [D:retry-poll]; retry's attempts bound it, so delay=0ms stays
-        if isPoll && delayMs = 0L then
-            failwith "poll: interval must be positive, got 0ms — a zero interval re-runs the body in a busy loop"
-
-        match timeoutMs with
-        | Some t when t <= 0L -> failwith $"{head}: timeout must be positive, got {formatDuration t}"
-        | _ -> ()
-
-        let sw = System.Diagnostics.Stopwatch.StartNew()
-        // the wait is cancellable from the start [D:retry-poll]: the
-        // timeout ceiling cancels a pending delay instead of waiting
-        // it out; an external token can join the source later
-        use cts = new System.Threading.CancellationTokenSource()
-
-        // .NET timers take at most Int32.MaxValue ms; a longer ceiling is
-        // the stopwatch's, enforced by the wait's slices — every valid
-        // Duration is honoured, as Duration.sleep honours it [D:duration]
-        let maxSliceMs = int64 System.Int32.MaxValue - 1L
-
-        match timeoutMs with
-        | Some t when t <= maxSliceMs ->
-            cts.CancelAfter(System.TimeSpan.FromTicks(t * System.TimeSpan.TicksPerMillisecond))
-        | _ -> ()
-
-        let pastDeadline () =
-            match timeoutMs with
-            | Some t -> sw.ElapsedMilliseconds >= t
-            | None -> false
-
-        // the delay in timer-sized slices, each bounded by what is left of
-        // the timeout — true when the timeout ended the wait
-        let waitDelay () =
-            let mutable left = delayMs
-            let mutable cancelled = false
-
-            while left > 0L && not cancelled do
-                let budget =
-                    match timeoutMs with
-                    | Some t -> t - sw.ElapsedMilliseconds
-                    | None -> System.Int64.MaxValue
-
-                if budget <= 0L then
-                    cancelled <- true
+                if ctl.Predicate v then
+                    if ctl.Yields then v else VUnit
+                elif n >= ctl.Attempts || ctl.Expired() then
+                    ctl.Exhausted n
                 else
-                    let slice = min left (min budget maxSliceMs)
+                    let timedOut =
+                        if ctl.DelayMs > 0L then
+                            // the indicator wraps only the wait between
+                            // attempts — the body may own the terminal
+                            // [D:waiting-indicator]
+                            Waiting.during ctl.WaitLabel ctl.WaitDelay
+                        else
+                            ctl.Expired()
 
-                    cancelled <-
-                        Session.waitOrCancel
-                            (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
-                            cts.Token
+                    if timedOut then ctl.Exhausted n else loop (n + 1)
 
-                    left <- left - slice
-
-            cancelled
-
-        let predicate (v: Value) =
-            match until with
-            | Some((b, _), pred) ->
-                match eval (Map.add b v env) pred with
-                | VBool ok -> ok
-                | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}"
-            | None ->
-                match v with
-                | VBool ok -> ok
-                | pv -> unreachable $"the checker rejects a {head} body of {formatValue pv}"
-
-        let exhausted (n: int) =
-            if isPoll then
-                // the watched state rides the exhaustion message
-                // [D:scoped-procs]: an up-but-never-ready child is
-                // named as such (only poll can reach this message —
-                // the reason watch is a key, not a wrapper)
-                let watchedNote =
-                    match watched with
-                    | Some h -> $"; watched process (pid {h.Proc.Id}) still running{procTailLine h}"
-                    | None -> ""
-
-                failwith $"poll: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s)){watchedNote}"
-            elif n >= attempts then
-                failwith $"retry: exhausted {attempts} attempt(s) over {formatDuration sw.ElapsedMilliseconds}"
-            else
-                // the timeout ended it: the attempts actually made
-                failwith
-                    $"retry: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s) made of {attempts} allowed)"
-
-        let rec loop (n: int) =
-            watchCheck sw
-            // raises propagate [D:retry-poll]: retry retries on the
-            // predicate, never on exceptions — command failure becomes
-            // data through the reifier family
-            let v = eval env body
-
-            if predicate v then
-                match until with
-                | Some _ -> v
-                | None -> VUnit
-            elif n >= attempts || cts.IsCancellationRequested || pastDeadline () then
-                exhausted n
-            else
-                let timedOut =
-                    if delayMs > 0L then
-                        // the indicator wraps only the wait between
-                        // attempts — the body may own the terminal
-                        // [D:waiting-indicator]
-                        Waiting.during $"{head}: waiting {formatDuration delayMs}" waitDelay
-                    else
-                        cts.IsCancellationRequested || pastDeadline ()
-
-                if timedOut then exhausted n else loop (n + 1)
-
-        loop 1
+            loop 1
+        finally
+            ctl.Cts.Dispose()
     | TEStr s -> VStr s
     | TEBool b -> VBool b
     | TEUnit -> VUnit
@@ -6268,7 +6397,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         // value — [D:colour-inherit]'s rationale, completed); only the
         // chain's far-left value head (if any) is a text edge
         let specs = chainSpecs env arg chead cargs cenvO
-        VSeq(Seq.delay (fun () -> Proc.chainLinesOf specs) |> Seq.map VStr)
+        chainSeq false specs
     // the armed statement command inherits at a tty [D:armed-inherit]:
     // a command statement — top level or in a block body — arms as
     // `cmd |print`, and get the bare statement's terminal
@@ -6313,20 +6442,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
              ({ Kind = TEVar "|print" } as fn)) ->
         let f = eval env fn
         let specs = chainSpecs env arg chead cargs cenvO
-        callAtWith fn f (VSeq(Seq.delay (fun () -> Proc.chainStatementLinesOf specs) |> Seq.map VStr))
+        callAtWith fn f (chainSeq true specs)
     | TEPipe(arg, fn) -> callAt env fn arg
-    | TEField(target, field) ->
-        match eval env target with
-        | VRecord(name, fields) ->
-            match recTryGet field fields with
-            | Some v -> v
-            // reachable only through a value built under an earlier
-            // declaration of the type — the REPL replaces a redeclared
-            // type by design [D:dup-type-decl]; say so in the author's terms
-            | None ->
-                failwith
-                    $"this value has no field '{field}' — it was built under an earlier declaration of '{name}'; build it again after the redeclaration"
-        | v -> unreachable $"the checker rejects field access on {formatValue v}"
+    | TEField(target, field) -> fieldOf field (eval env target)
     | TESlice(target, lo, hi, on, loFromEnd, hiFromEnd) ->
         // inclusive, clamping [D:range-slicing]: an absent bound is an open
         // end (lo -> 0, hi -> last), out-of-range and reversed yield the
@@ -6472,27 +6590,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEInterp parts ->
         let sb = System.Text.StringBuilder()
 
-        // the ceiling checked per piece, so the refusal is weir's
-        // [D:int-narrowing] and names the size reached
-        let append (piece: string) =
-            let chars = int64 sb.Length + int64 piece.Length
-
-            if chars > maxStrLen then
-                failwith (strTooLarge "string interpolation" chars)
-
-            sb.Append piece |> ignore
-
         for p in parts do
             match p with
-            | IStr s -> append s
-            | IExpr e ->
-                // a hole renders what show renders [D:interp-show]; a
-                // bare string stays raw (the value, not its quoted form)
-                append (
-                    match eval env e with
-                    | VStr str -> str
-                    | v -> formatValue v
-                )
+            | IStr s -> interpAppend sb s
+            | IExpr e -> interpAppend sb (interpPiece (eval env e))
 
         VStr(sb.ToString())
     | TEFrom(fmt, top, defs, udefs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf top defs udefs
@@ -6510,7 +6611,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TETo("yaml", renames, codecs, unions, stream, guide) ->
         // coded fields become plain values first [D:wire-codecs]
         let render = yamlToImpl renames unions stream guide
-        VBuiltin(fun v -> apply render (encodeTree "yaml" codecs v))
+        drainsWhole (VBuiltin(fun v -> apply render (encodeTree "yaml" codecs v)))
     | TETo("jsonl", renames, codecs, unions, _, _) ->
         VBuiltin(fun v ->
             match v with
@@ -6520,29 +6621,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
         // one document [D:to-jsonl] — the whole value through the same
         // renderer, once; an array document forces its seq (one line
         // cannot stream)
-        VBuiltin(fun v -> VSeq [ VStr(jsonLine renames unions (encodeTree fmt codecs v)) ])
+        drainsWhole (VBuiltin(fun v -> VSeq [ VStr(jsonLine renames unions (encodeTree fmt codecs v)) ]))
     | TEMatch(scrutinee, arms) ->
-        let v0 = eval env scrutinee
-
-        // memoize-once rule [D:seq-patterns]: a match containing any
-        // seq pattern views its scrutinee through one cache — arms
-        // probe the same buffer (never re-pull), rest binds the buffer
-        // suffix plus the untouched tail, and effects run once in
-        // total
-        let rec hasSeqPat (p: Weir.Ast.Pattern) =
-            match p.PKind with
-            | Weir.Ast.PSeqNil
-            | Weir.Ast.PCons _
-            | Weir.Ast.PSeqList _ -> true
-            | Weir.Ast.PTuple ps -> ps |> List.exists hasSeqPat
-            | Weir.Ast.PRecord fields -> fields |> List.exists (snd >> hasSeqPat)
-            | Weir.Ast.PCase(_, Some a, _) -> hasSeqPat a
-            | _ -> false
-
-        let v =
-            match v0 with
-            | VSeq items when arms |> List.exists (fun (p, _, _) -> hasSeqPat p) -> VSeq(Seq.cache items)
-            | _ -> v0
+        let v = matchView arms (eval env scrutinee)
 
         let rec tryArms arms =
             match arms with
@@ -6677,42 +6758,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
         // if it adopts a stuck main flow [D:scope-tree]
         let frame = Session.pushFrame claimAndRun
 
-        match
+        alwaysExit
+            frame
+            claimAndRun
             (try
                 Ok(eval env body)
              with e ->
                  Error e)
-        with
-        | Ok v ->
-            // case 1: a cleanup raise propagates as the scope's raise —
-            // unless a signal's hook already claimed the cleanup
-            Session.releaseFrame frame claimAndRun
-            v
-        | Error original ->
-            // the cleanup runs weir code while the body's raise unwinds: pin
-            // the raise to where it happened first [D:runtime-position]
-            (match original with
-             | :? ExitRequest -> ()
-             | _ ->
-                 let b = blameFor original
-
-                 if isNull b.Node then
-                     b.Node <- RunPos.Current
-                     b.Exact <- RunPos.Exact)
-
-            (try
-                Session.releaseFrame frame claimAndRun
-             with
-             | :? ExitRequest ->
-                 // the checker refuses exit inside always; a raise here
-                 // would swap the original for a code — unreachable
-                 ()
-             | ce ->
-                 eprintfn
-                     "within/always: the cleanup ALSO failed — %s (the original error wins)"
-                     (sanitizeIfTty System.Console.IsErrorRedirected ce.Message))
-
-            raise original
     | TEHold body ->
         // a within's `until stopped` [D:held-scope]: the body, then the hold,
         // stop-aware while it waits [D:stop-request]; the scope around it
@@ -6766,640 +6818,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // content thunks forced at capture).
             let ops = PlanMode.capturing (fun () -> eval env body |> ignore)
             VRecord("Plan", [ "ops", VSeq ops ])
-        | WithinLock ->
-            // advisory file lock [D:within-lock]: an explicit flock(2) on
-            // POSIX [D:lock-advisory] (per-open-file-description, so pmap
-            // arms exclude each other; interoperates with flock(1))
-            // and native share modes on Windows. Blocking by default,
-            // timeout= bounds the wait; the kernel releases on any
-            // death, kill -9 included — the one kind whose guarantee
-            // survives the hard-exit carve-out. Advisory only: a
-            // non-cooperating process ignores it.
-            let path =
-                match eval env (argOf "lock") with
-                | VStr s -> s
-                | v -> unreachable $"the checker rejects a lock path of {formatValue v}"
-
-            if path = "" then
-                failwith "within lock: the lock path is empty — name a lock file"
-
-            let resolved = Session.resolveFs path
-
-            if System.IO.Directory.Exists resolved then
-                failwith
-                    $"within lock: {quoteData resolved} is a directory — the lock is a file (e.g. {quoteData resolved}/.lock)"
-
-            let timeoutMs =
-                topts
-                |> Option.map (fun o ->
-                    match eval env o with
-                    | VDur ms when ms < 0L ->
-                        failwith $"within lock: timeout must not be negative, got {formatDuration ms}"
-                    | VDur ms -> ms
-                    | v -> unreachable $"the checker rejects a lock timeout of {formatValue v}")
-
-            let sw = System.Diagnostics.Stopwatch.StartNew()
-
-            let rec acquire () =
-                match
-                    (try
-                        Some(
-                            new System.IO.FileStream(
-                                resolved,
-                                System.IO.FileMode.OpenOrCreate,
-                                System.IO.FileAccess.ReadWrite,
-                                System.IO.FileShare.None
-                            )
-                        )
-                     with
-                     // DirectoryNotFound is an IOException — a missing
-                     // parent must fail immediately, not spin as "held
-                     // elsewhere"
-                     | :? System.IO.DirectoryNotFoundException ->
-                         failwith
-                             $"within lock: no such directory for {quoteData resolved} — the lock file's parent must exist"
-                     | :? System.UnauthorizedAccessException ->
-                         failwith $"within lock: cannot open {quoteData resolved}: permission denied"
-                     | :? System.IO.IOException -> None)
-                    // POSIX: the lock is an explicit flock — .NET's own is
-                    // disabled for weir [D:lock-advisory]
-                    |> Option.filter (fun fs ->
-                        System.OperatingSystem.IsWindows()
-                        || Session.tryFlockExclusive fs
-                        || (fs.Dispose()
-                            false))
-                with
-                | Some fs -> fs
-                | None ->
-                    match timeoutMs with
-                    | Some ms when sw.ElapsedMilliseconds >= ms ->
-                        failwith
-                            $"within lock: timed out after {formatDuration ms} waiting for {quoteData resolved} (held elsewhere)"
-                    | _ ->
-                        Session.sleepInterruptible (System.TimeSpan.FromMilliseconds 25.0)
-                        acquire ()
-
-            let fs = acquire ()
-            let frame = Session.pushFrame fs.Dispose
-
-            try
-                eval env body
-            finally
-                Session.releaseFrame frame fs.Dispose
-        | WithinCd ->
-            // cd consumes a path [D:within-scopes]: resolved against
-            // the current cwd (so nested relative scopes compose),
-            // verified before the block runs, restored on every
-            // managed exit
-            let path =
-                match eval env (argOf "cd") with
-                | VStr s -> s
-                | v -> unreachable $"the checker rejects a cd path of {formatValue v}"
-
-            let resolved = Session.resolve path
-
-            if not (System.IO.Directory.Exists resolved) then
-                failwith $"within cd: no such directory: {quoteData resolved}"
-
-            let saved = Session.Cwd()
-            Session.setCwd resolved
-            Session.enterWithinCd ()
-
-            let restore () =
-                Session.exitWithinCd ()
-                Session.setCwd saved
-
-            let frame = Session.pushFrame restore
-
-            try
-                eval env body
-            finally
-                Session.releaseFrame frame restore
-        | WithinEnv ->
-            // env pushes an ambient overlay that child spawns see;
-            // weir's own Env.load is untouched [D:within-scopes]
-            Session.pushEnvOverlay (envPairsOf "within env" (eval env (argOf "env")))
-            let frame = Session.pushFrame Session.popEnvOverlay
-
-            try
-                eval env body
-            finally
-                Session.releaseFrame frame Session.popEnvOverlay
-        | WithinProc ->
-            // the scoped process [D:scoped-procs]: spawn with both
-            // streams spilling, bind the handle, and at every exit —
-            // normal and raise alike — tree-kill and reap. The scope
-            // is the lifetime; the exit hook is the hard-exit
-            // backstop.
-            let binderName = binderOf "proc"
-
-            let prog, argv, overlay =
-                match (argOf "proc").Kind with
-                | TECmd(h, args, cenvO) ->
-                    let overlay = overlayOf env cenvO
-                    progOf env h (Proc.spawnPairs None overlay), argvOf env args, overlay
-                | _ -> unreachable "the parser guarantees a command in the proc slot"
-
-            let spill =
-                System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-proc-{System.Guid.NewGuid():N}")
-
-            // created and registered inside the spawn gate, so no spill dir
-            // appears after the teardown kill; removed when the start
-            // refuses [D:teardown-stops-arms]. Its files too: the pumps only
-            // open them, so a hard exit's sweep deletes a tree nothing adds
-            // to [D:hard-exit]
-            let outPath = System.IO.Path.Combine(spill, "out.log")
-            let errPath = System.IO.Path.Combine(spill, "err.log")
-
-            Session.gatedSpawn (fun () ->
-                Session.createRegisteredDir spill
-                Session.createPrivateFile outPath
-                Session.createPrivateFile errPath)
-
-            let p, drain =
-                try
-                    Proc.startSpilled overlay (Proc.specProg prog) argv outPath errPath
-                with _ ->
-                    (try
-                        System.IO.Directory.Delete(spill, true)
-                     with _ ->
-                         ())
-
-                    Session.deregisterTmpDir spill
-                    reraise ()
-
-            Session.registerProc p
-
-            let handle = {
-                Proc = p
-                OutPath = outPath
-                ErrPath = errPath
-                SpillDir = spill
-                Drain = drain
-            }
-
-            let release () =
-                Proc.stopTree p
-                Session.deregisterProc p
-                // pumps settle before the spill dir goes (Windows would
-                // refuse the delete under a live write handle)
-                drain ()
-
-                (try
-                    System.IO.Directory.Delete(spill, true)
-                 with _ ->
-                     ())
-
-                Session.deregisterTmpDir spill
-
-            let frame = Session.pushFrame release
-
-            try
-                eval (Map.add binderName (VProc handle) env) body
-            finally
-                Session.releaseFrame frame release
         | WithinServe ->
-            // the scoped listener [D:http-serve]: open the socket,
-            // serve on a pool of handler threads (the maxConcurrent
-            // ceiling, as pmapWith bounds it), bind the handle, run
-            // the body, and at every exit — normal, raise,
-            // SIGINT/SIGTERM — close the listener so the port frees.
-            // The signal path rides the same registerAlways backstop
-            // the bare within/always uses.
-            let binderName = binderOf "serve"
-
-            let cfg =
-                match eval env (argOf "serve") with
-                | VRecord(_, f) -> f
-                | v -> unreachable $"the checker rejects a serve config of {formatValue v}"
-
-            // the port is optional [D:serve-port-option]: None picks a
-            // free one (Server.port reports it); Some n is checked here,
-            // before the socket, in the config's own words
-            let port =
-                match recGet "port" cfg with
-                | VUnion("None", None) -> None
-                | VUnion("Some", Some(VInt n)) ->
-                    if n < 1L || n > 65535L then
-                        failwith $"serve: port is 1 to 65535 (None picks a free port), got {n}"
-
-                    Some(toIntArg "serve port" Amount n)
-                | v -> unreachable $"serve port {formatValue v}"
-
-            let maxConcurrent =
-                match recGet "maxConcurrent" cfg with
-                | VInt n -> toIntArg "serve maxConcurrent" Amount n
-                | v -> unreachable $"serve maxConcurrent {formatValue v}"
-
-            if maxConcurrent < 1 then
-                failwith $"serve: maxConcurrent is at least 1, got {maxConcurrent}"
-
-            // the waiting line's bound [D:serve-queue]: past it, 503
-            let maxQueued =
-                match recGet "maxQueued" cfg with
-                | VInt n -> toIntArg "serve maxQueued" Amount n
-                | v -> unreachable $"serve maxQueued {formatValue v}"
-
-            if maxQueued < 1 then
-                failwith $"serve: maxQueued is at least 1, got {maxQueued}"
-
-            // the request-body read timeout [D:serve-body-timeout]: a
-            // slow client dribbling the body cannot park a handler
-            // slot forever
-            let bodyTimeoutMs =
-                match recGet "bodyTimeout" cfg with
-                | VDur ms -> toIntArg "serve bodyTimeout (ms)" Amount ms
-                | v -> unreachable $"serve bodyTimeout {formatValue v}"
-
-            if bodyTimeoutMs < 1 then
-                failwith $"serve: bodyTimeout is at least 1ms, got {bodyTimeoutMs}ms"
-
-            // the request-body size bound [D:serve-max-body]: 413 past it
-            let maxBody =
-                match recGet "maxBody" cfg with
-                | VSize b -> b
-                | v -> unreachable $"serve maxBody {formatValue v}"
-
-            if maxBody < 0L then
-                failwith $"serve: maxBody cannot be negative, got {formatSize maxBody}"
-
-            // the handler closure, read once at scope entry: the config's
-            // field [D:serve-defaults]
-            let handler = recGet "handler" cfg
-
-            // request primitives -> the HttpServerRequest Value the handler sees
-            let requestValue (r: Serve.SReq) : Value =
-                // HttpMethod is open-world inbound [D:serve-method]:
-                // the listed verbs read as themselves (QUERY included
-                // — a case the shared client↔server family already
-                // has), and a well-formed but unlisted verb reads as
-                // `Other v` so the handler can route on it and answer
-                // 405 by choice, never misreported as Get. A malformed
-                // token never reaches here (refused with 400 at the
-                // boundary before the handler).
-                let methodValue =
-                    match r.Method.ToUpperInvariant() with
-                    | "GET" -> VUnion("Get", None)
-                    | "POST" -> VUnion("Post", None)
-                    | "PUT" -> VUnion("Put", None)
-                    | "DELETE" -> VUnion("Delete", None)
-                    | "PATCH" -> VUnion("Patch", None)
-                    | "HEAD" -> VUnion("Head", None)
-                    | "OPTIONS" -> VUnion("Options", None)
-                    | "QUERY" -> VUnion("Query", None)
-                    | _ -> VUnion("Other", Some(VStr r.Method))
-
-                VRecord(
-                    "HttpServerRequest",
-                    [
-                        "method", methodValue
-                        "path", VStr r.Path
-                        "query", VStr r.Query
-                        "headers", VSeq(r.Headers |> List.map (fun (k, v) -> VTuple [ VStr k; VStr v ]))
-                        "body", VStr r.Body
-                    ]
-                )
-
-            // the handler's HttpServerResponse Value -> response
-            // primitives. A Stream body stays a lazy seq<Value> mapped
-            // to strings, pulled by Serve.writeResponse
-            // element-by-element (the incremental rule)
-            let responseOf (v: Value) : Serve.SResp =
-                match v with
-                | VRecord("HttpServerResponse", f) ->
-                    let status =
-                        match recGet "status" f with
-                        | VInt n -> toIntArg "serve status" Amount n
-                        | bad -> unreachable $"serve status {formatValue bad}"
-
-                    let headers =
-                        match recGet "headers" f with
-                        | VSeq items -> [
-                            for it in items do
-                                match it with
-                                | VTuple [ VStr k; VStr hv ] -> k, hv
-                                | _ -> ()
-                          ]
-                        | _ -> []
-
-                    // refuse a response header carrying CR/LF/NUL
-                    // [D:http-header-bytes]: the serve face of F3 — a
-                    // handler-returned header cannot forge a second one
-                    // on the wire (nor be silently dropped, F11's
-                    // shape). The located message is surfaced to the
-                    // script through the stream-error channel, and the
-                    // response is refused without the injecting header
-                    // (the accept loop 500s it).
-                    Http.refuseHeaderInjection
-                        "response header"
-                        (fun m -> raise (Serve.ResponseHeaderRefused m))
-                        headers
-
-                    let asString v =
-                        match v with
-                        | VStr s -> s
-                        | other -> formatValue other
-
-                    let body =
-                        match recGet "body" f with
-                        | VUnion("NoBody", None) -> Serve.RNoBody
-                        | VUnion("Text", Some(VStr s)) -> Serve.RText s
-                        | VUnion("RawJson", Some(VSeq lines)) ->
-                            Serve.RJson(lines |> Seq.map asString |> String.concat "\n")
-                        // the lazy body [D:http-serve]: keep it a seq, so
-                        // writeResponse pulls and flushes each element as
-                        // produced — a slow producer streams incrementally
-                        | VUnion("Stream", Some(VSeq lines)) -> Serve.RStream(lines |> Seq.map asString)
-                        // the urlencoded write [D:http-dx] — encoded by the
-                        // same shared escaper as the client send path
-                        | VUnion("Form", Some(VSeq pairs)) ->
-                            pairs
-                            |> Seq.map (fun it ->
-                                match it with
-                                | VTuple [ VStr k; VStr v ] -> k, v
-                                | bad -> unreachable $"serve form pair {formatValue bad}")
-                            |> Http.formUrlEncode
-                            |> Serve.RForm
-                        | bad -> unreachable $"serve body {formatValue bad}"
-
-                    {
-                        Status = status
-                        Headers = headers
-                        Body = body
-                    }
-                | bad -> unreachable $"the checker rejects a serve response of {formatValue bad}"
-
-            let handle =
-                Serve.start (defaultArg port 0) {
-                    BodyTimeoutMs = bodyTimeoutMs
-                    MaxBody = maxBody
-                    MaxQueued = maxQueued
-                }
-
-            // the scope-close drain [D:serve-drain]: in-flight handlers get
-            // this long, together, to finish their responses
-            let drainMs = 2000
-
-            // a live scope for the terminal-^C rule [D:sigint-live-scopes];
-            // a signal unwinds the flow through the close below, and the
-            // kernel closes the socket at any death [D:http-serve]
-            let hooked = Session.registerAlways ()
-
-            // the handler concurrency ceiling [D:http-serve]: N in
-            // flight, excess queues — pmapWith's bound, via a
-            // SemaphoreSlim here. Never disposed [D:serve-drain]: a
-            // handler outliving the scope still releases its slot.
-            let gate = new System.Threading.SemaphoreSlim(maxConcurrent, maxConcurrent)
-            let closing = new System.Threading.CancellationTokenSource()
-            let parentCwd = Session.Cwd()
-            // each running handler with its node [D:serve-cut]
-            let inflight =
-                System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Session.Node>()
-
-            // the scope's node [D:scope-tree]: the body runs in it, each
-            // handler in a node under it
-            let home = Session.currentNode ()
-            let serveNode = Session.openNode home Session.NodeKind.Serve
-
-            // a handler failure the client sees as a 500 is recorded for
-            // the script too [D:serve-handler-errors], on the stream-error
-            // channel the header refusals already use
-            let recordHandlerError (req: Serve.SReq option) (msg: string) =
-                let where =
-                    match req with
-                    | Some r -> $" on {r.Method} {r.Path}"
-                    | None -> ""
-
-                Serve.recordStreamError handle $"serve handler{where} failed: {msg}"
-
-            let internalError ctx =
-                try
-                    Serve.writeResponse
-                        ctx
-                        {
-                            Status = 500
-                            Headers = []
-                            Body = Serve.RText "internal error"
-                        }
-                        ignore
-                with _ ->
-                    ()
-
-            // one request on its own thread. Past the drain a handler still
-            // running is cut at its next effect boundary [D:serve-cut]: the
-            // scope's flow token (the pfirst loser's mechanism) and the
-            // request's node, whose children die with the cut
-            let runHandler (ctx: Serve.SCtx) (node: Session.Node) =
-                let mutable seen = None
-
-                try
-                    Session.setCurrentNode node
-                    // fork the session like a pmap arm — the
-                    // handler sees the scope's cwd, worker-local
-                    Session.enterWorker parentCwd
-
-                    try
-                        // the body was read before the slot
-                        // [D:serve-body-timeout]: a slow body
-                        // arrives here as its 408 signal
-                        let req = Serve.readRequest ctx
-                        seen <- Some req
-
-                        // a malformed method token is refused
-                        // at the boundary [D:serve-method]:
-                        // 400 before the handler, the same
-                        // byte-class refusal Bundle C's
-                        // guard performs
-                        if not (Serve.methodTokenOk req.Method) then
-                            Serve.writeResponse
-                                ctx
-                                {
-                                    Status = 400
-                                    Headers = []
-                                    Body = Serve.RText "malformed request method"
-                                }
-                                ignore
-                        else
-                            let resp = responseOf (apply handler (requestValue req))
-                            // a Stream producer raising mid-body
-                            // goes through the designated
-                            // channel [D:serve-stream]: record
-                            // it on the handle, do not raise
-                            Serve.writeResponse ctx resp (Serve.recordStreamError handle)
-                    with
-                    | Serve.BodyReadTimeout ->
-                        // the client dribbled its body past the
-                        // bound [D:serve-body-timeout] — refuse
-                        // rather than park unboundedly
-                        (try
-                            Serve.writeResponse
-                                ctx
-                                {
-                                    Status = 408
-                                    Headers = []
-                                    Body = Serve.RText "request body read timed out"
-                                }
-                                ignore
-                         with _ ->
-                             ())
-                    | Serve.BodyTooLarge ->
-                        // past maxBody [D:serve-max-body]: the
-                        // rest of the body is never read, so the
-                        // connection closes after the 413
-                        (try
-                            Serve.writeResponse
-                                ctx
-                                {
-                                    Status = 413
-                                    Headers = []
-                                    Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})"
-                                }
-                                ignore
-                         with _ ->
-                             ())
-                    | Serve.BodyCharsetUnknown cs ->
-                        // a body in a charset weir cannot decode
-                        // [D:serve-charset]: refused before the
-                        // handler, never decoded as UTF-8
-                        (try
-                            Serve.writeResponse
-                                ctx
-                                {
-                                    Status = 415
-                                    Headers = []
-                                    Body =
-                                        Serve.RText
-                                            $"request body charset '{cs}' is not one weir decodes — utf-8, utf-16, utf-32, us-ascii or iso-8859-1"
-                                }
-                                ignore
-                         with _ ->
-                             ())
-                    | Serve.ResponseHeaderRefused msg ->
-                        // a handler returned a header carrying
-                        // CR/LF/NUL [D:http-header-bytes] or one
-                        // the wire cannot carry
-                        // [D:http-header-unsendable]: refuse
-                        // the response without the offending
-                        // header (never a silent drop) — a 500
-                        // to the client, and the located message
-                        // to the script via the stream-error
-                        // channel so the author learns which
-                        // header and byte the handler bug carried
-                        Serve.recordStreamError handle msg
-                        internalError ctx
-                    | Serve.ResponseStatusRefused n ->
-                        recordHandlerError seen $"status {n} is not an HTTP status (100 to 999)"
-                        internalError ctx
-                    // cut past the scope: detached, nothing to answer
-                    | :? Session.Cancelled -> ()
-                    // `exit n` in a handler stops the scope [D:serve-handler-exit]:
-                    // no new request, the other handlers and the body cut
-                    // (their children killed, their cleanups whole), the
-                    // scope closes, then the exit; this connection closes
-                    // unanswered
-                    | :? ExitRequest as e ->
-                        System.Threading.Interlocked.CompareExchange(&serveNode.Exit, (e :> exn), null)
-                        |> ignore
-
-                        Session.cutNode serveNode 1 Session.CutReason.HandlerExit true
-                        Serve.abandon ctx
-                    // a REPL ^C passes through as `exit` does [D:repl-interrupt]:
-                    // the evaluation ends, the connection closes unanswered
-                    | :? Session.Interrupted -> Serve.abandon ctx
-                    | ex ->
-                        // a handler raise is a 500 — the server
-                        // survives one bad request, and the
-                        // script hears of it
-                        recordHandlerError seen ex.Message
-                        internalError ctx
-                finally
-                    Serve.finish ctx
-                    Session.exitWorker ()
-                    gate.Release() |> ignore
-                    inflight.TryRemove(System.Threading.Thread.CurrentThread) |> ignore
-                    Session.setCurrentNode null
-                    Session.closeNode node
-
-            // the accept loop on its own thread: it takes a slot, then
-            // blocks in accept until a request is parked or stop() closes
-            // the queue (accept then yields None and the loop ends) — a
-            // slot is held before a request is dequeued, so nothing waits
-            // dequeued while the scope closes [D:serve-drain]. Each request
-            // runs the handler on a worker thread.
-            let acceptLoop () =
-                let rec go () =
-                    let slot =
-                        try
-                            gate.Wait closing.Token
-                            true
-                        with _ ->
-                            false
-
-                    if slot then
-                        match Serve.accept handle with
-                        | None -> gate.Release() |> ignore // the server closed — shut down
-                        // a handler's `exit n` stopped the scope: no new
-                        // request runs [D:serve-handler-exit]
-                        | Some ctx when Session.isCut serveNode ->
-                            Serve.abandon ctx
-                            Serve.finish ctx
-                            gate.Release() |> ignore
-                            go ()
-                        | Some ctx ->
-                            let node = Session.openNode serveNode Session.NodeKind.Handler
-
-                            let worker = System.Threading.Thread(fun () -> runHandler ctx node)
-
-                            worker.IsBackground <- true
-                            inflight[worker] <- node
-                            worker.Start()
-                            go ()
-
-                go ()
-
-            let loopThread = System.Threading.Thread(System.Threading.ThreadStart acceptLoop)
-
-            loopThread.IsBackground <- true
-            loopThread.Start()
-
-            // close the server — frees the port, drops queued requests,
-            // gives in-flight handlers the drain together; idempotent
-            // [D:serve-drain]. A signal landing meanwhile holds the
-            // backstop [D:serve-drain-signal]
-            let release () =
-                Session.closingScope (fun () ->
-                    Serve.stop handle drainMs
-                    closing.Cancel()
-                    Session.deregisterAlways hooked |> ignore
-                    loopThread.Join 500 |> ignore
-
-                    // a handler still running past the drain is cut at its next
-                    // effect boundary and joined whole, its `always` cleanup
-                    // included, so none of its effects lands after the scope
-                    // [D:serve-cut] [D:serve-cut-joins-cleanup]; its writes are
-                    // dropped and its result discarded, never raised
-                    // [D:serve-drain]. Pure compute holds the join, as a pfirst
-                    // loser's does
-                    for kv in inflight do
-                        Session.cutNode kv.Value 1 Session.CutReason.ServeCut true
-
-                    for kv in inflight do
-                        Session.joinThread kv.Key
-
-                    Session.closeNode serveNode)
-
-            let frame = Session.pushFrame release
-
-            // a server held with no block says where it listens
-            // [D:serve-defaults]; a written block is the opt-out
-            let rec heldWithNoBlock (b: TypedExpr) =
-                match b.Kind with
-                | TEHold { Kind = TEUnit; Span = sp } -> sp.Start = sp.End
-                | TEAlways(inner, _) -> heldWithNoBlock inner
-                | _ -> false
-
-            if heldWithNoBlock body then
-                System.Console.Error.WriteLine $"serving on http://localhost:{handle.Port} — Ctrl+C to stop"
+            let struct (env', serveNode, home, frame, release) =
+                serveScope env binder targ topts body
 
             let v =
                 try
@@ -7407,7 +6828,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         Session.setCurrentNode serveNode
 
                         try
-                            eval (Map.add binderName (VServer handle) env) body
+                            eval env' body
                         finally
                             Session.setCurrentNode home
                     with
@@ -7420,37 +6841,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
             match serveNode.Exit with
             | null -> v
             | e -> raise e
+        | WithinLock
+        | WithinCd
+        | WithinEnv
+        | WithinProc
         | WithinTmp ->
-            // kind tmp [D:within-scopes]: a fresh unique directory,
-            // bound as the binder for the block; removed on every
-            // exit, normal and raise alike (the raise path is the
-            // important guarantee). The delete is best-effort (a
-            // vanished dir is fine).
-            let binderName = binderOf "tmp"
-
-            let dir =
-                System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
-
-            // the exit hook's backstop registration [D:exit-hook]: a hard
-            // exit (pfirst exit-race, Ctrl-C) sweeps what this finally
-            // could not; the clean path deregisters and the hook is idle
-            Session.createRegisteredDir dir
-            // opened inside a plan: a captured op under it is refused
-            // [D:plan-within-tmp]
-            PlanMode.noteTmp dir
-
-            let release () =
-                (try
-                    System.IO.Directory.Delete(dir, true)
-                 with _ ->
-                     ())
-
-                Session.deregisterTmpDir dir
-
+            let struct (env', release) = withinScope env kind binder targ topts
             let frame = Session.pushFrame release
 
             try
-                eval (Map.add binderName (VStr dir) env) body
+                eval env' body
             finally
                 Session.releaseFrame frame release
     | TEIf(cond, thn, els) ->
@@ -7479,12 +6879,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
 // request caused ends the loop as the stop [D:stop-caused-failure]. With
 // `until` the form yields a value, so the stop is observed once an
 // iteration has produced one
-and private evalRepeat
-    (env: Env)
-    (optsE: TypedExpr)
-    (body: TypedExpr)
-    (until: ((string * Span) * TypedExpr) option)
-    : Value =
+and private repeatCtl (env: Env) (optsE: TypedExpr) (until: ((string * Span) * TypedExpr) option) : RepeatCtl =
     if PlanMode.active () then
         failwith
             "'repeat' is refused inside 'plan' — a loop that only a stop signal ends cannot be dry-run; run the loop outside the plan"
@@ -7512,99 +6907,128 @@ and private evalRepeat
     | Some t when t <= 0L -> failwith $"repeat: timeout must be positive, got {formatDuration t}"
     | _ -> ()
 
-    Session.stopAware (fun () ->
-        let sw = System.Diagnostics.Stopwatch.StartNew()
-        let maxSliceMs = int64 System.Int32.MaxValue - 1L
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+    let maxSliceMs = int64 System.Int32.MaxValue - 1L
 
-        let pastDeadline () =
-            match timeoutMs with
-            | Some t -> sw.ElapsedMilliseconds >= t
-            | None -> false
+    let pastDeadline () =
+        match timeoutMs with
+        | Some t -> sw.ElapsedMilliseconds >= t
+        | None -> false
 
-        let rec stopCaused (ex: exn) =
-            match ex with
-            | :? Weir.Proc.CommandFailure as cf -> cf.StopCaused
-            | :? System.AggregateException as a when a.InnerExceptions.Count = 1 -> stopCaused a.InnerException
+    let rec stopCaused (ex: exn) =
+        match ex with
+        | :? Weir.Proc.CommandFailure as cf -> cf.StopCaused
+        | :? System.AggregateException as a when a.InnerExceptions.Count = 1 -> stopCaused a.InnerException
+        | _ -> false
+
+    // the interval in timer-sized slices, each bounded by what is left
+    // of the timeout: Some true = the stop request woke it, Some false =
+    // the timeout ended it, None = it elapsed
+    let waitInterval () =
+        let token = Session.stopToken ()
+        let mutable left = intervalMs
+        let mutable ended = None
+
+        while left > 0L && ended.IsNone do
+            let budget =
+                match timeoutMs with
+                | Some t -> t - sw.ElapsedMilliseconds
+                | None -> System.Int64.MaxValue
+
+            if budget <= 0L then
+                ended <- Some false
+            else
+                let slice = min left (min budget maxSliceMs)
+
+                if
+                    Session.waitOrCancel (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond)) token
+                then
+                    ended <- Some true
+
+                left <- left - slice
+
+        match ended with
+        | None when pastDeadline () -> Some false
+        | e -> e
+
+    let predicate (v: Value) =
+        match until with
+        | Some((b, _), pred) ->
+            match eval (Map.add b v env) pred with
+            | VBool ok -> ok
+            | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}"
+        | None ->
+            match v with
+            | VBool ok -> ok
             | _ -> false
 
-        // the interval in timer-sized slices, each bounded by what is left
-        // of the timeout: Some true = the stop request woke it, Some false =
-        // the timeout ended it, None = it elapsed
-        let waitInterval () =
-            let token = Session.stopToken ()
-            let mutable left = intervalMs
-            let mutable ended = None
+    let finish (last: Value option) =
+        match until, last with
+        | Some _, Some v -> v
+        | _ -> VUnit
 
-            while left > 0L && ended.IsNone do
+    let timedOut (n: int) =
+        failwith $"repeat: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} iteration(s))"
+
+    // the stop ends the loop once the form has its value
+    let stoppable (last: Value option) = until.IsNone || last.IsSome
+
+    {
+        PastDeadline = pastDeadline
+        StopCaused = stopCaused
+        Predicate = predicate
+        Finish = finish
+        TimedOut = timedOut
+        Stoppable = stoppable
+        WaitLabel = $"repeat: waiting {formatDuration intervalMs}"
+        WaitInterval = waitInterval
+        IntervalMs = intervalMs
+        Slice =
+            (fun left ->
                 let budget =
                     match timeoutMs with
                     | Some t -> t - sw.ElapsedMilliseconds
                     | None -> System.Int64.MaxValue
 
                 if budget <= 0L then
-                    ended <- Some false
+                    0L
                 else
-                    let slice = min left (min budget maxSliceMs)
+                    min left (min budget maxSliceMs))
+    }
 
-                    if
-                        Session.waitOrCancel
-                            (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
-                            token
-                    then
-                        ended <- Some true
+and private evalRepeat
+    (env: Env)
+    (optsE: TypedExpr)
+    (body: TypedExpr)
+    (until: ((string * Span) * TypedExpr) option)
+    : Value =
+    let ctl = repeatCtl env optsE until
 
-                    left <- left - slice
-
-            match ended with
-            | None when pastDeadline () -> Some false
-            | e -> e
-
-        let predicate (v: Value) =
-            match until with
-            | Some((b, _), pred) ->
-                match eval (Map.add b v env) pred with
-                | VBool ok -> ok
-                | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}"
-            | None ->
-                match v with
-                | VBool ok -> ok
-                | _ -> false
-
-        let finish (last: Value option) =
-            match until, last with
-            | Some _, Some v -> v
-            | _ -> VUnit
-
-        let timedOut (n: int) =
-            failwith $"repeat: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} iteration(s))"
-
-        // the stop ends the loop once the form has its value
-        let stoppable (last: Value option) = until.IsNone || last.IsSome
-
+    Session.stopAware (fun () ->
         let rec loop (n: int) (last: Value option) =
-            if Session.stopRequested () && stoppable last then
-                finish last
+            if Session.stopRequested () && ctl.Stoppable last then
+                ctl.Finish last
             else
                 let v =
                     try
                         Some(eval env body)
-                    with ex when stopCaused ex && stoppable last ->
+                    with ex when ctl.StopCaused ex && ctl.Stoppable last ->
                         None
 
                 match v with
-                | None -> finish last
-                | Some v when predicate v ->
+                | None -> ctl.Finish last
+                | Some v when ctl.Predicate v ->
                     match until with
                     | Some _ -> v
                     | None -> VUnit
-                | Some v when Session.stopRequested () -> finish (Some v)
-                | Some _ when pastDeadline () -> timedOut n
+                | Some v when Session.stopRequested () -> ctl.Finish(Some v)
+                | Some _ when ctl.PastDeadline() -> ctl.TimedOut n
                 | Some v ->
                     // the indicator wraps only the wait between iterations
                     // — the block may own the terminal [D:waiting-indicator]
-                    match Waiting.during $"repeat: waiting {formatDuration intervalMs}" waitInterval with
-                    | Some true -> finish (Some v)
-                    | Some false -> timedOut n
+                    match Waiting.during ctl.WaitLabel ctl.WaitInterval with
+                    | Some true -> ctl.Finish(Some v)
+                    | Some false -> ctl.TimedOut n
                     | None -> loop (n + 1) (Some v)
 
         loop 1 None)
@@ -7793,6 +7217,39 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
 
     specs
 
+and private fieldOf (field: string) (target: Value) : Value =
+    match target with
+    | VRecord(name, fields) ->
+        match recTryGet field fields with
+        | Some v -> v
+        // reachable only through a value built under an earlier
+        // declaration of the type — the REPL replaces a redeclared
+        // type by design [D:dup-type-decl]; say so in the author's terms
+        | None ->
+            failwith
+                $"this value has no field '{field}' — it was built under an earlier declaration of '{name}'; build it again after the redeclaration"
+    | v -> unreachable $"the checker rejects field access on {formatValue v}"
+
+// memoize-once rule [D:seq-patterns]: a match containing any
+// seq pattern views its scrutinee through one cache — arms
+// probe the same buffer (never re-pull), rest binds the buffer
+// suffix plus the untouched tail, and effects run once in
+// total
+and private matchView (arms: (Weir.Ast.Pattern * TypedExpr option * TypedExpr) list) (v0: Value) : Value =
+    let rec hasSeqPat (p: Weir.Ast.Pattern) =
+        match p.PKind with
+        | Weir.Ast.PSeqNil
+        | Weir.Ast.PCons _
+        | Weir.Ast.PSeqList _ -> true
+        | Weir.Ast.PTuple ps -> ps |> List.exists hasSeqPat
+        | Weir.Ast.PRecord fields -> fields |> List.exists (snd >> hasSeqPat)
+        | Weir.Ast.PCase(_, Some a, _) -> hasSeqPat a
+        | _ -> false
+
+    match v0 with
+    | VSeq items when arms |> List.exists (fun (p, _, _) -> hasSeqPat p) -> VSeq(Seq.cache items)
+    | _ -> v0
+
 and apply (fn: Value) (arg: Value) : Value =
     match fn with
     | VClosure(param, body, closureEnv) ->
@@ -7823,14 +7280,981 @@ and private callAt (env: Env) (fn: TypedExpr) (arg: TypedExpr) : Value =
     callAtWith fn f (eval env arg)
 
 // a command's lazy lines; `statement`: armed as a statement, output unused
-and private commandLines
-    (statement: bool)
+and private forceValue (v: Value) : Value =
+    match v with
+    | VSeq items -> VSeq(items |> Seq.map forceValue |> Seq.toArray :> seq<Value>)
+    | VRecord(n, fields) -> VRecord(n, fields |> List.map (fun (k, x) -> k, forceValue x))
+    // a scalar node keeps its identity — the digits/text a read
+    // node remembers ride it [D:yaml-node-bigint]
+    | VUnion(c, Some p) ->
+        let p' = forceValue p
+        if obj.ReferenceEquals(p, p') then v else VUnion(c, Some p')
+    | VTuple xs -> VTuple(List.map forceValue xs)
+    | VMap m -> VMap(Map.map (fun _ x -> forceValue x) m)
+    | v -> v
+
+and private orFailValue (env: Env) (msg: TypedExpr option) (site: TypedExpr) (v: Value) : Value =
+    let label =
+        msg
+        |> Option.map (fun m ->
+            match eval env m with
+            | VStr s -> s
+            | other -> unreachable $"the checker types orFail's message as a string, got {formatValue other}")
+
+    let raiseAtSite (text: string) : Value =
+        RunPos.Current <- box site
+        RunPos.Exact <- true
+        failwith text
+
+    match v, label with
+    | VUnion(("Ok" | "Some"), Some x), _ -> x
+    | VUnion("Error", Some(VStr e)), Some l -> raiseAtSite $"{l}: {quoteData e}"
+    | VUnion("Error", Some(VStr e)), None -> raiseAtSite (quoteData e)
+    | VUnion("None", None), Some l -> raiseAtSite l
+    | VUnion("None", None), None -> raiseAtSite "orFail: no value (None)"
+    | other, _ -> unreachable $"the checker types orFail's left side as a Result or an Option, got {formatValue other}"
+
+and private alwaysExit (frame: Session.Frame) (claimAndRun: unit -> unit) (outcome: Result<Value, exn>) : Value =
+    match outcome with
+    | Ok v ->
+        // case 1: a cleanup raise propagates as the scope's raise —
+        // unless a signal's hook already claimed the cleanup
+        Session.releaseFrame frame claimAndRun
+        v
+    | Error original ->
+        // the cleanup runs weir code while the body's raise unwinds: pin
+        // the raise to where it happened first [D:runtime-position]
+        (match original with
+         | :? ExitRequest -> ()
+         | _ ->
+             let b = blameFor original
+
+             if isNull b.Node then
+                 b.Node <- RunPos.Current
+                 b.Exact <- RunPos.Exact)
+
+        (try
+            Session.releaseFrame frame claimAndRun
+         with
+         | :? ExitRequest ->
+             // the checker refuses exit inside always; a raise here
+             // would swap the original for a code — unreachable
+             ()
+         | ce ->
+             eprintfn
+                 "within/always: the cleanup ALSO failed — %s (the original error wins)"
+                 (sanitizeIfTty System.Console.IsErrorRedirected ce.Message))
+
+        raise original
+
+and private withinScope
     (env: Env)
-    (te: TypedExpr)
-    (head: Check.TCmdHead)
-    (args: TypedExpr list)
-    (cenvO: TypedExpr option)
-    : Value =
+    (kind: WithinKindId)
+    (binder: (string * Span) option)
+    (targ: TypedExpr option)
+    (topts: TypedExpr option)
+    : struct (Env * (unit -> unit)) =
+    let argOf (what: string) =
+        match targ with
+        | Some a -> a
+        | None -> unreachable $"the parser gives within {what} its argument"
+
+    let binderOf (what: string) =
+        match binder with
+        | Some(b, _) -> b
+        | None -> unreachable $"the parser gives within {what} its binder"
+
+    match kind with
+    | WithinLock ->
+        // advisory file lock [D:within-lock]: an explicit flock(2) on
+        // POSIX [D:lock-advisory] (per-open-file-description, so pmap
+        // arms exclude each other; interoperates with flock(1))
+        // and native share modes on Windows. Blocking by default,
+        // timeout= bounds the wait; the kernel releases on any
+        // death, kill -9 included — the one kind whose guarantee
+        // survives the hard-exit carve-out. Advisory only: a
+        // non-cooperating process ignores it.
+        let path =
+            match eval env (argOf "lock") with
+            | VStr s -> s
+            | v -> unreachable $"the checker rejects a lock path of {formatValue v}"
+
+        if path = "" then
+            failwith "within lock: the lock path is empty — name a lock file"
+
+        let resolved = Session.resolveFs path
+
+        if System.IO.Directory.Exists resolved then
+            failwith
+                $"within lock: {quoteData resolved} is a directory — the lock is a file (e.g. {quoteData resolved}/.lock)"
+
+        let timeoutMs =
+            topts
+            |> Option.map (fun o ->
+                match eval env o with
+                | VDur ms when ms < 0L ->
+                    failwith $"within lock: timeout must not be negative, got {formatDuration ms}"
+                | VDur ms -> ms
+                | v -> unreachable $"the checker rejects a lock timeout of {formatValue v}")
+
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+
+        let rec acquire () =
+            match
+                (try
+                    Some(
+                        new System.IO.FileStream(
+                            resolved,
+                            System.IO.FileMode.OpenOrCreate,
+                            System.IO.FileAccess.ReadWrite,
+                            System.IO.FileShare.None
+                        )
+                    )
+                 with
+                 // DirectoryNotFound is an IOException — a missing
+                 // parent must fail immediately, not spin as "held
+                 // elsewhere"
+                 | :? System.IO.DirectoryNotFoundException ->
+                     failwith
+                         $"within lock: no such directory for {quoteData resolved} — the lock file's parent must exist"
+                 | :? System.UnauthorizedAccessException ->
+                     failwith $"within lock: cannot open {quoteData resolved}: permission denied"
+                 | :? System.IO.IOException -> None)
+                // POSIX: the lock is an explicit flock — .NET's own is
+                // disabled for weir [D:lock-advisory]
+                |> Option.filter (fun fs ->
+                    System.OperatingSystem.IsWindows()
+                    || Session.tryFlockExclusive fs
+                    || (fs.Dispose()
+                        false))
+            with
+            | Some fs -> fs
+            | None ->
+                match timeoutMs with
+                | Some ms when sw.ElapsedMilliseconds >= ms ->
+                    failwith
+                        $"within lock: timed out after {formatDuration ms} waiting for {quoteData resolved} (held elsewhere)"
+                | _ ->
+                    Session.sleepInterruptible (System.TimeSpan.FromMilliseconds 25.0)
+                    acquire ()
+
+        let fs = acquire ()
+        struct (env, fs.Dispose)
+    | WithinCd ->
+        // cd consumes a path [D:within-scopes]: resolved against
+        // the current cwd (so nested relative scopes compose),
+        // verified before the block runs, restored on every
+        // managed exit
+        let path =
+            match eval env (argOf "cd") with
+            | VStr s -> s
+            | v -> unreachable $"the checker rejects a cd path of {formatValue v}"
+
+        let resolved = Session.resolve path
+
+        if not (System.IO.Directory.Exists resolved) then
+            failwith $"within cd: no such directory: {quoteData resolved}"
+
+        let saved = Session.Cwd()
+        Session.setCwd resolved
+        Session.enterWithinCd ()
+
+        let restore () =
+            Session.exitWithinCd ()
+            Session.setCwd saved
+
+        struct (env, restore)
+    | WithinEnv ->
+        // env pushes an ambient overlay that child spawns see;
+        // weir's own Env.load is untouched [D:within-scopes]
+        Session.pushEnvOverlay (envPairsOf "within env" (eval env (argOf "env")))
+        struct (env, Session.popEnvOverlay)
+    | WithinProc ->
+        // the scoped process [D:scoped-procs]: spawn with both
+        // streams spilling, bind the handle, and at every exit —
+        // normal and raise alike — tree-kill and reap. The scope
+        // is the lifetime; the exit hook is the hard-exit
+        // backstop.
+        let binderName = binderOf "proc"
+
+        let prog, argv, overlay =
+            match (argOf "proc").Kind with
+            | TECmd(h, args, cenvO) ->
+                let overlay = overlayOf env cenvO
+                progOf env h (Proc.spawnPairs None overlay), argvOf env args, overlay
+            | _ -> unreachable "the parser guarantees a command in the proc slot"
+
+        let spill =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-proc-{System.Guid.NewGuid():N}")
+
+        // created and registered inside the spawn gate, so no spill dir
+        // appears after the teardown kill; removed when the start
+        // refuses [D:teardown-stops-arms]. Its files too: the pumps only
+        // open them, so a hard exit's sweep deletes a tree nothing adds
+        // to [D:hard-exit]
+        let outPath = System.IO.Path.Combine(spill, "out.log")
+        let errPath = System.IO.Path.Combine(spill, "err.log")
+
+        Session.gatedSpawn (fun () ->
+            Session.createRegisteredDir spill
+            Session.createPrivateFile outPath
+            Session.createPrivateFile errPath)
+
+        let p, drain =
+            try
+                Proc.startSpilled overlay (Proc.specProg prog) argv outPath errPath
+            with _ ->
+                (try
+                    System.IO.Directory.Delete(spill, true)
+                 with _ ->
+                     ())
+
+                Session.deregisterTmpDir spill
+                reraise ()
+
+        Session.registerProc p
+
+        let handle = {
+            Proc = p
+            OutPath = outPath
+            ErrPath = errPath
+            SpillDir = spill
+            Drain = drain
+        }
+
+        let release () =
+            Proc.stopTree p
+            Session.deregisterProc p
+            // pumps settle before the spill dir goes (Windows would
+            // refuse the delete under a live write handle)
+            drain ()
+
+            (try
+                System.IO.Directory.Delete(spill, true)
+             with _ ->
+                 ())
+
+            Session.deregisterTmpDir spill
+
+        struct (Map.add binderName (VProc handle) env, release)
+    | WithinTmp ->
+        // kind tmp [D:within-scopes]: a fresh unique directory,
+        // bound as the binder for the block; removed on every
+        // exit, normal and raise alike (the raise path is the
+        // important guarantee). The delete is best-effort (a
+        // vanished dir is fine).
+        let binderName = binderOf "tmp"
+
+        let dir =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-tmp-{System.Guid.NewGuid():N}")
+
+        // the exit hook's backstop registration [D:exit-hook]: a hard
+        // exit (pfirst exit-race, Ctrl-C) sweeps what this finally
+        // could not; the clean path deregisters and the hook is idle
+        Session.createRegisteredDir dir
+        // opened inside a plan: a captured op under it is refused
+        // [D:plan-within-tmp]
+        PlanMode.noteTmp dir
+
+        let release () =
+            (try
+                System.IO.Directory.Delete(dir, true)
+             with _ ->
+                 ())
+
+            Session.deregisterTmpDir dir
+
+        struct (Map.add binderName (VStr dir) env, release)
+    | _ -> unreachable "withinScope takes the lock, cd, env, proc and tmp kinds"
+
+and private retryCtl
+    (env: Env)
+    (kind: LoopKind)
+    (optsE: TypedExpr)
+    (watchE: TypedExpr option)
+    (until: ((string * Span) * TypedExpr) option)
+    : RetryCtl =
+    let isPoll = kind = LoopPoll
+    let head = loopHead kind
+
+    let watched =
+        watchE
+        |> Option.map (fun w ->
+            match eval env w with
+            | VProc h -> h
+            | v -> unreachable $"the checker rejects a watch of {formatValue v}")
+
+    // the watched child dying is itself the answer [D:scoped-procs]:
+    // fail immediately with its own output, never a blind timeout
+    let watchCheck (sw: System.Diagnostics.Stopwatch) =
+        match watched with
+        | Some h when
+            (try
+                h.Proc.HasExited
+             with _ ->
+                 true)
+            ->
+            // elapsed is the poll's own clock — Process.StartTime
+            // throws on an exited child, and the wait's duration
+            // is the number the reader wants anyway
+            failwith (
+                $"poll: watched process (pid {h.Proc.Id}) exited with code {h.Proc.ExitCode} "
+                + $"after {formatDuration sw.ElapsedMilliseconds}"
+                + procTailLine h
+            )
+        | _ -> ()
+
+    let fields =
+        match eval env optsE with
+        | VRecord(_, fs) -> fs
+        | v -> unreachable $"the checker rejects '{head}' options of {formatValue v}"
+
+    let dur name =
+        match recGet name fields with
+        | VDur ms -> ms
+        | v -> unreachable $"the checker rejects a {name} of {formatValue v}"
+
+    // the two bounds [D:retry-poll]: retry counts attempts (with
+    // an optional total-time ceiling), poll counts time — an
+    // unbounded loop is unrepresentable rather than refused
+    let attempts, delayMs, timeoutMs =
+        if isPoll then
+            System.Int32.MaxValue, dur "interval", Some(dur "timeout")
+        else
+            (match recGet "attempts" fields with
+             | VInt n -> toIntArg head Amount n
+             | v -> unreachable $"the checker rejects attempts of {formatValue v}"),
+            dur "delay",
+            (match recGet "timeout" fields with
+             | VUnion("Some", Some(VDur t)) -> Some t
+             | _ -> None)
+
+    if not isPoll && attempts < 1 then
+        failwith $"{head}: attempts must be at least 1, got {attempts}"
+
+    if delayMs < 0L then
+        let key = if isPoll then "interval" else "delay"
+        failwith $"{head}: a negative {key} ({formatDuration delayMs})"
+
+    // poll is bounded by time alone, so a zero interval re-runs the
+    // body in a busy loop until the timeout — refused like timeout=0s
+    // [D:retry-poll]; retry's attempts bound it, so delay=0ms stays
+    if isPoll && delayMs = 0L then
+        failwith "poll: interval must be positive, got 0ms — a zero interval re-runs the body in a busy loop"
+
+    match timeoutMs with
+    | Some t when t <= 0L -> failwith $"{head}: timeout must be positive, got {formatDuration t}"
+    | _ -> ()
+
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+    // the wait is cancellable from the start [D:retry-poll]: the
+    // timeout ceiling cancels a pending delay instead of waiting
+    // it out; an external token can join the source later
+    let cts = new System.Threading.CancellationTokenSource()
+
+    // .NET timers take at most Int32.MaxValue ms; a longer ceiling is
+    // the stopwatch's, enforced by the wait's slices — every valid
+    // Duration is honoured, as Duration.sleep honours it [D:duration]
+    let maxSliceMs = int64 System.Int32.MaxValue - 1L
+
+    match timeoutMs with
+    | Some t when t <= maxSliceMs -> cts.CancelAfter(System.TimeSpan.FromTicks(t * System.TimeSpan.TicksPerMillisecond))
+    | _ -> ()
+
+    let pastDeadline () =
+        match timeoutMs with
+        | Some t -> sw.ElapsedMilliseconds >= t
+        | None -> false
+
+    // the delay in timer-sized slices, each bounded by what is left of
+    // the timeout — true when the timeout ended the wait
+    let waitDelay () =
+        let mutable left = delayMs
+        let mutable cancelled = false
+
+        while left > 0L && not cancelled do
+            let budget =
+                match timeoutMs with
+                | Some t -> t - sw.ElapsedMilliseconds
+                | None -> System.Int64.MaxValue
+
+            if budget <= 0L then
+                cancelled <- true
+            else
+                let slice = min left (min budget maxSliceMs)
+
+                cancelled <-
+                    Session.waitOrCancel
+                        (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
+                        cts.Token
+
+                left <- left - slice
+
+        cancelled
+
+    let predicate (v: Value) =
+        match until with
+        | Some((b, _), pred) ->
+            match eval (Map.add b v env) pred with
+            | VBool ok -> ok
+            | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}"
+        | None ->
+            match v with
+            | VBool ok -> ok
+            | pv -> unreachable $"the checker rejects a {head} body of {formatValue pv}"
+
+    let exhausted (n: int) =
+        if isPoll then
+            // the watched state rides the exhaustion message
+            // [D:scoped-procs]: an up-but-never-ready child is
+            // named as such (only poll can reach this message —
+            // the reason watch is a key, not a wrapper)
+            let watchedNote =
+                match watched with
+                | Some h -> $"; watched process (pid {h.Proc.Id}) still running{procTailLine h}"
+                | None -> ""
+
+            failwith $"poll: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s)){watchedNote}"
+        elif n >= attempts then
+            failwith $"retry: exhausted {attempts} attempt(s) over {formatDuration sw.ElapsedMilliseconds}"
+        else
+            // the timeout ended it: the attempts actually made
+            failwith
+                $"retry: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s) made of {attempts} allowed)"
+
+    {
+        Before = (fun () -> watchCheck sw)
+        Predicate = predicate
+        Verdict =
+            (fun pv ->
+                match pv with
+                | VBool ok -> ok
+                | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}")
+        Yields = until.IsSome
+        Attempts = attempts
+        DelayMs = delayMs
+        Expired = (fun () -> cts.IsCancellationRequested || pastDeadline ())
+        Exhausted = exhausted
+        WaitLabel = $"{head}: waiting {formatDuration delayMs}"
+        WaitDelay = waitDelay
+        Slice =
+            (fun left ->
+                let budget =
+                    match timeoutMs with
+                    | Some t -> t - sw.ElapsedMilliseconds
+                    | None -> System.Int64.MaxValue
+
+                if budget <= 0L then
+                    0L
+                else
+                    min left (min budget maxSliceMs))
+        Cts = cts
+    }
+
+and private chainSeq (statement: bool) (specs: Proc.Spec list) : Value =
+    let lines =
+        if statement then
+            Proc.chainStatementLinesOf
+        else
+            Proc.chainLinesOf
+
+    let blocking = Seq.delay (fun () -> lines specs) |> Seq.map VStr
+
+    if Session.pipesSuspend && not specs.IsEmpty then
+        VSeq(CommandSeq(blocking, statement, specs, null))
+    else
+        VSeq blocking
+
+// the ceiling checked per piece, so the refusal is weir's
+// [D:int-narrowing] and names the size reached
+and private interpAppend (sb: System.Text.StringBuilder) (piece: string) : unit =
+    let chars = int64 sb.Length + int64 piece.Length
+
+    if chars > maxStrLen then
+        failwith (strTooLarge "string interpolation" chars)
+
+    sb.Append piece |> ignore
+
+// a hole renders what show renders [D:interp-show]; a bare string stays
+// raw (the value, not its quoted form)
+and private interpPiece (v: Value) : string =
+    match v with
+    | VStr str -> str
+    | v -> formatValue v
+
+and private serveScope
+    (env: Env)
+    (binder: (string * Span) option)
+    (targ: TypedExpr option)
+    (topts: TypedExpr option)
+    (body: TypedExpr)
+    : struct (Env * Session.Node * Session.Node * Session.Frame * (unit -> unit)) =
+    let argOf (what: string) =
+        match targ with
+        | Some a -> a
+        | None -> unreachable $"the parser gives within {what} its argument"
+
+    let binderOf (what: string) =
+        match binder with
+        | Some(b, _) -> b
+        | None -> unreachable $"the parser gives within {what} its binder"
+
+    // the scoped listener [D:http-serve]: open the socket,
+    // serve on a pool of handler threads (the maxConcurrent
+    // ceiling, as pmapWith bounds it), bind the handle, run
+    // the body, and at every exit — normal, raise,
+    // SIGINT/SIGTERM — close the listener so the port frees.
+    // The signal path rides the same registerAlways backstop
+    // the bare within/always uses.
+    let binderName = binderOf "serve"
+
+    let cfg =
+        match eval env (argOf "serve") with
+        | VRecord(_, f) -> f
+        | v -> unreachable $"the checker rejects a serve config of {formatValue v}"
+
+    // the port is optional [D:serve-port-option]: None picks a
+    // free one (Server.port reports it); Some n is checked here,
+    // before the socket, in the config's own words
+    let port =
+        match recGet "port" cfg with
+        | VUnion("None", None) -> None
+        | VUnion("Some", Some(VInt n)) ->
+            if n < 1L || n > 65535L then
+                failwith $"serve: port is 1 to 65535 (None picks a free port), got {n}"
+
+            Some(toIntArg "serve port" Amount n)
+        | v -> unreachable $"serve port {formatValue v}"
+
+    let maxConcurrent =
+        match recGet "maxConcurrent" cfg with
+        | VInt n -> toIntArg "serve maxConcurrent" Amount n
+        | v -> unreachable $"serve maxConcurrent {formatValue v}"
+
+    if maxConcurrent < 1 then
+        failwith $"serve: maxConcurrent is at least 1, got {maxConcurrent}"
+
+    // the waiting line's bound [D:serve-queue]: past it, 503
+    let maxQueued =
+        match recGet "maxQueued" cfg with
+        | VInt n -> toIntArg "serve maxQueued" Amount n
+        | v -> unreachable $"serve maxQueued {formatValue v}"
+
+    if maxQueued < 1 then
+        failwith $"serve: maxQueued is at least 1, got {maxQueued}"
+
+    // the request-body read timeout [D:serve-body-timeout]: a
+    // slow client dribbling the body cannot park a handler
+    // slot forever
+    let bodyTimeoutMs =
+        match recGet "bodyTimeout" cfg with
+        | VDur ms -> toIntArg "serve bodyTimeout (ms)" Amount ms
+        | v -> unreachable $"serve bodyTimeout {formatValue v}"
+
+    if bodyTimeoutMs < 1 then
+        failwith $"serve: bodyTimeout is at least 1ms, got {bodyTimeoutMs}ms"
+
+    // the request-body size bound [D:serve-max-body]: 413 past it
+    let maxBody =
+        match recGet "maxBody" cfg with
+        | VSize b -> b
+        | v -> unreachable $"serve maxBody {formatValue v}"
+
+    if maxBody < 0L then
+        failwith $"serve: maxBody cannot be negative, got {formatSize maxBody}"
+
+    // the handler closure, read once at scope entry: the config's
+    // field [D:serve-defaults]
+    let handler = recGet "handler" cfg
+
+    // request primitives -> the HttpServerRequest Value the handler sees
+    let requestValue (r: Serve.SReq) : Value =
+        // HttpMethod is open-world inbound [D:serve-method]:
+        // the listed verbs read as themselves (QUERY included
+        // — a case the shared client↔server family already
+        // has), and a well-formed but unlisted verb reads as
+        // `Other v` so the handler can route on it and answer
+        // 405 by choice, never misreported as Get. A malformed
+        // token never reaches here (refused with 400 at the
+        // boundary before the handler).
+        let methodValue =
+            match r.Method.ToUpperInvariant() with
+            | "GET" -> VUnion("Get", None)
+            | "POST" -> VUnion("Post", None)
+            | "PUT" -> VUnion("Put", None)
+            | "DELETE" -> VUnion("Delete", None)
+            | "PATCH" -> VUnion("Patch", None)
+            | "HEAD" -> VUnion("Head", None)
+            | "OPTIONS" -> VUnion("Options", None)
+            | "QUERY" -> VUnion("Query", None)
+            | _ -> VUnion("Other", Some(VStr r.Method))
+
+        VRecord(
+            "HttpServerRequest",
+            [
+                "method", methodValue
+                "path", VStr r.Path
+                "query", VStr r.Query
+                "headers", VSeq(r.Headers |> List.map (fun (k, v) -> VTuple [ VStr k; VStr v ]))
+                "body", VStr r.Body
+            ]
+        )
+
+    // the handler's HttpServerResponse Value -> response
+    // primitives. A Stream body stays a lazy seq<Value> mapped
+    // to strings, pulled by Serve.writeResponse
+    // element-by-element (the incremental rule)
+    let responseOf (v: Value) : Serve.SResp =
+        match v with
+        | VRecord("HttpServerResponse", f) ->
+            let status =
+                match recGet "status" f with
+                | VInt n -> toIntArg "serve status" Amount n
+                | bad -> unreachable $"serve status {formatValue bad}"
+
+            let headers =
+                match recGet "headers" f with
+                | VSeq items -> [
+                    for it in items do
+                        match it with
+                        | VTuple [ VStr k; VStr hv ] -> k, hv
+                        | _ -> ()
+                  ]
+                | _ -> []
+
+            // refuse a response header carrying CR/LF/NUL
+            // [D:http-header-bytes]: the serve face of F3 — a
+            // handler-returned header cannot forge a second one
+            // on the wire (nor be silently dropped, F11's
+            // shape). The located message is surfaced to the
+            // script through the stream-error channel, and the
+            // response is refused without the injecting header
+            // (the accept loop 500s it).
+            Http.refuseHeaderInjection "response header" (fun m -> raise (Serve.ResponseHeaderRefused m)) headers
+
+            let asString v =
+                match v with
+                | VStr s -> s
+                | other -> formatValue other
+
+            let body =
+                match recGet "body" f with
+                | VUnion("NoBody", None) -> Serve.RNoBody
+                | VUnion("Text", Some(VStr s)) -> Serve.RText s
+                | VUnion("RawJson", Some(VSeq lines)) -> Serve.RJson(lines |> Seq.map asString |> String.concat "\n")
+                // the lazy body [D:http-serve]: keep it a seq, so
+                // writeResponse pulls and flushes each element as
+                // produced — a slow producer streams incrementally
+                | VUnion("Stream", Some(VSeq lines)) -> Serve.RStream(lines |> Seq.map asString)
+                // the urlencoded write [D:http-dx] — encoded by the
+                // same shared escaper as the client send path
+                | VUnion("Form", Some(VSeq pairs)) ->
+                    pairs
+                    |> Seq.map (fun it ->
+                        match it with
+                        | VTuple [ VStr k; VStr v ] -> k, v
+                        | bad -> unreachable $"serve form pair {formatValue bad}")
+                    |> Http.formUrlEncode
+                    |> Serve.RForm
+                | bad -> unreachable $"serve body {formatValue bad}"
+
+            {
+                Status = status
+                Headers = headers
+                Body = body
+            }
+        | bad -> unreachable $"the checker rejects a serve response of {formatValue bad}"
+
+    let handle =
+        Serve.start (defaultArg port 0) {
+            BodyTimeoutMs = bodyTimeoutMs
+            MaxBody = maxBody
+            MaxQueued = maxQueued
+        }
+
+    // the scope-close drain [D:serve-drain]: in-flight handlers get
+    // this long, together, to finish their responses
+    let drainMs = 2000
+
+    // a live scope for the terminal-^C rule [D:sigint-live-scopes];
+    // a signal unwinds the flow through the close below, and the
+    // kernel closes the socket at any death [D:http-serve]
+    let hooked = Session.registerAlways ()
+
+    // the handler concurrency ceiling [D:http-serve]: N in
+    // flight, excess queues — pmapWith's bound, via a
+    // SemaphoreSlim here. Never disposed [D:serve-drain]: a
+    // handler outliving the scope still releases its slot.
+    let gate = new System.Threading.SemaphoreSlim(maxConcurrent, maxConcurrent)
+    let closing = new System.Threading.CancellationTokenSource()
+    let parentCwd = Session.Cwd()
+    // each running handler with its node [D:serve-cut]
+    let inflight =
+        System.Collections.Concurrent.ConcurrentDictionary<Session.Node, System.Threading.Tasks.Task>()
+
+    // the scope's node [D:scope-tree]: the body runs in it, each
+    // handler in a node under it
+    let home = Session.currentNode ()
+    let serveNode = Session.openNode home Session.NodeKind.Serve
+
+    // a handler failure the client sees as a 500 is recorded for
+    // the script too [D:serve-handler-errors], on the stream-error
+    // channel the header refusals already use
+    let recordHandlerError (req: Serve.SReq option) (msg: string) =
+        let where =
+            match req with
+            | Some r -> $" on {r.Method} {r.Path}"
+            | None -> ""
+
+        Serve.recordStreamError handle $"serve handler{where} failed: {msg}"
+
+    let internalError ctx =
+        try
+            Serve.writeResponse
+                ctx
+                {
+                    Status = 500
+                    Headers = []
+                    Body = Serve.RText "internal error"
+                }
+                ignore
+        with _ ->
+            ()
+
+    // one request as a flow of its own. Past the drain a handler still
+    // running is cut at its next effect boundary [D:serve-cut]: the
+    // scope's flow token (the pfirst loser's mechanism) and the
+    // request's node, whose children die with the cut
+    let runHandler
+        (ctx: Serve.SCtx)
+        (node: Session.Node)
+        (ended: System.Threading.Tasks.TaskCompletionSource<bool>)
+        : System.Threading.Tasks.Task<bool> =
+        Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let mutable seen = None
+            let flow = Flow()
+            RunPos.Current <- null
+            RunPos.Exact <- false
+
+            try
+                Session.setCurrentNode node
+                // fork the session like a pmap arm — the
+                // handler sees the scope's cwd, worker-local
+                Session.enterWorker parentCwd
+
+                try
+                    // the body was read before the slot
+                    // [D:serve-body-timeout]: a slow body
+                    // arrives here as its 408 signal
+                    let req = Serve.readRequest ctx
+                    seen <- Some req
+
+                    // a malformed method token is refused
+                    // at the boundary [D:serve-method]:
+                    // 400 before the handler, the same
+                    // byte-class refusal Bundle C's
+                    // guard performs
+                    if not (Serve.methodTokenOk req.Method) then
+                        Serve.writeResponse
+                            ctx
+                            {
+                                Status = 400
+                                Headers = []
+                                Body = Serve.RText "malformed request method"
+                            }
+                            ignore
+                    else
+                        let hv = awaitFrame flow (applyAsync flow handler (requestValue req))
+                        let resp = responseOf hv
+                        // a Stream producer raising mid-body
+                        // goes through the designated
+                        // channel [D:serve-stream]: record
+                        // it on the handle, do not raise
+                        Serve.writeResponse ctx resp (Serve.recordStreamError handle)
+                with
+                | Serve.BodyReadTimeout ->
+                    // the client dribbled its body past the
+                    // bound [D:serve-body-timeout] — refuse
+                    // rather than park unboundedly
+                    (try
+                        Serve.writeResponse
+                            ctx
+                            {
+                                Status = 408
+                                Headers = []
+                                Body = Serve.RText "request body read timed out"
+                            }
+                            ignore
+                     with _ ->
+                         ())
+                | Serve.BodyTooLarge ->
+                    // past maxBody [D:serve-max-body]: the
+                    // rest of the body is never read, so the
+                    // connection closes after the 413
+                    (try
+                        Serve.writeResponse
+                            ctx
+                            {
+                                Status = 413
+                                Headers = []
+                                Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})"
+                            }
+                            ignore
+                     with _ ->
+                         ())
+                | Serve.BodyCharsetUnknown cs ->
+                    // a body in a charset weir cannot decode
+                    // [D:serve-charset]: refused before the
+                    // handler, never decoded as UTF-8
+                    (try
+                        Serve.writeResponse
+                            ctx
+                            {
+                                Status = 415
+                                Headers = []
+                                Body =
+                                    Serve.RText
+                                        $"request body charset '{cs}' is not one weir decodes — utf-8, utf-16, utf-32, us-ascii or iso-8859-1"
+                            }
+                            ignore
+                     with _ ->
+                         ())
+                | Serve.ResponseHeaderRefused msg ->
+                    // a handler returned a header carrying
+                    // CR/LF/NUL [D:http-header-bytes] or one
+                    // the wire cannot carry
+                    // [D:http-header-unsendable]: refuse
+                    // the response without the offending
+                    // header (never a silent drop) — a 500
+                    // to the client, and the located message
+                    // to the script via the stream-error
+                    // channel so the author learns which
+                    // header and byte the handler bug carried
+                    Serve.recordStreamError handle msg
+                    internalError ctx
+                | Serve.ResponseStatusRefused n ->
+                    recordHandlerError seen $"status {n} is not an HTTP status (100 to 999)"
+                    internalError ctx
+                // cut past the scope: detached, nothing to answer
+                | :? Session.Cancelled -> ()
+                // `exit n` in a handler stops the scope [D:serve-handler-exit]:
+                // no new request, the other handlers and the body cut
+                // (their children killed, their cleanups whole), the
+                // scope closes, then the exit; this connection closes
+                // unanswered
+                | :? ExitRequest as e ->
+                    System.Threading.Interlocked.CompareExchange(&serveNode.Exit, (e :> exn), null)
+                    |> ignore
+
+                    Session.cutNode serveNode 1 Session.CutReason.HandlerExit true
+                    Serve.abandon ctx
+                // a REPL ^C passes through as `exit` does [D:repl-interrupt]:
+                // the evaluation ends, the connection closes unanswered
+                | :? Session.Interrupted -> Serve.abandon ctx
+                | ex ->
+                    // a handler raise is a 500 — the server
+                    // survives one bad request, and the
+                    // script hears of it
+                    recordHandlerError seen ex.Message
+                    internalError ctx
+            finally
+                Serve.finish ctx
+                Session.exitWorker ()
+                gate.Release() |> ignore
+                inflight.TryRemove node |> ignore
+                Session.setCurrentNode null
+                Session.closeNode node
+                ended.TrySetResult true |> ignore
+
+            true
+        )
+
+    // the accept loop on its own thread: it takes a slot, then
+    // blocks in accept until a request is parked or stop() closes
+    // the queue (accept then yields None and the loop ends) — a
+    // slot is held before a request is dequeued, so nothing waits
+    // dequeued while the scope closes [D:serve-drain]. Each request
+    // runs the handler as a flow of its own.
+    let acceptLoop () =
+        let rec go () =
+            let slot =
+                try
+                    gate.Wait closing.Token
+                    true
+                with _ ->
+                    false
+
+            if slot then
+                match Serve.accept handle with
+                | None -> gate.Release() |> ignore // the server closed — shut down
+                // a handler's `exit n` stopped the scope: no new
+                // request runs [D:serve-handler-exit]
+                | Some ctx when Session.isCut serveNode ->
+                    Serve.abandon ctx
+                    Serve.finish ctx
+                    gate.Release() |> ignore
+                    go ()
+                | Some ctx ->
+                    let node = Session.openNode serveNode Session.NodeKind.Handler
+
+                    let ended =
+                        System.Threading.Tasks.TaskCompletionSource<bool>(
+                            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                        )
+
+                    inflight[node] <- ended.Task
+                    Session.startFlow (fun () -> runHandler ctx node ended) |> ignore
+                    go ()
+
+        go ()
+
+    let loopThread = System.Threading.Thread(System.Threading.ThreadStart acceptLoop)
+
+    loopThread.IsBackground <- true
+    loopThread.Start()
+
+    // close the server — frees the port, drops queued requests,
+    // gives in-flight handlers the drain together; idempotent
+    // [D:serve-drain]. A signal landing meanwhile holds the
+    // backstop [D:serve-drain-signal]
+    let release () =
+        Session.closingScope (fun () ->
+            Serve.stop handle drainMs
+            closing.Cancel()
+            Session.deregisterAlways hooked |> ignore
+            loopThread.Join 500 |> ignore
+
+            // a handler still running past the drain is cut at its next
+            // effect boundary and joined whole, its `always` cleanup
+            // included, so none of its effects lands after the scope
+            // [D:serve-cut] [D:serve-cut-joins-cleanup]; its writes are
+            // dropped and its result discarded, never raised
+            // [D:serve-drain]. Pure compute holds the join, as a pfirst
+            // loser's does
+            for kv in inflight do
+                Session.cutNode kv.Key 1 Session.CutReason.ServeCut true
+
+            for kv in inflight do
+                Session.joinTask kv.Value
+
+            Session.closeNode serveNode)
+
+    let frame = Session.pushFrame release
+
+    // a server held with no block says where it listens
+    // [D:serve-defaults]; a written block is the opt-out
+    let rec heldWithNoBlock (b: TypedExpr) =
+        match b.Kind with
+        | TEHold { Kind = TEUnit; Span = sp } -> sp.Start = sp.End
+        | TEAlways(inner, _) -> heldWithNoBlock inner
+        | _ -> false
+
+    if heldWithNoBlock body then
+        System.Console.Error.WriteLine $"serving on http://localhost:{handle.Port} — Ctrl+C to stop"
+
+    struct (Map.add binderName (VServer handle) env, serveNode, home, frame, release)
+
+and private commandSpec (env: Env) (head: Check.TCmdHead) (args: TypedExpr list) (cenvO: TypedExpr option) : Proc.Spec =
     let argv = argvOf env args
 
     // only the enclosing `within` scopes are captured
@@ -7838,7 +8262,7 @@ and private commandLines
     let overlay = overlayOf env cenvO
     let ambient = Weir.Session.scopedAmbient ()
 
-    let spec: Proc.Spec = {
+    {
         Prog = Proc.specProg (progOf env head (Proc.spawnPairs ambient overlay))
         Args = argv
         Env = overlay
@@ -7847,12 +8271,26 @@ and private commandLines
         Ambient = ambient
     }
 
+and private commandLines
+    (statement: bool)
+    (env: Env)
+    (te: TypedExpr)
+    (head: Check.TCmdHead)
+    (args: TypedExpr list)
+    (cenvO: TypedExpr option)
+    : Value =
+    let spec = commandSpec env head args cenvO
     let lines = if statement then Proc.statementLinesOf else Proc.linesOf
 
     // the command takes the blame wherever it is read [D:runtime-position]
-    VSeq(Seq.delay (fun () -> lines spec) |> Seq.map VStr |> blameOn (box te))
+    let blocking = Seq.delay (fun () -> lines spec) |> Seq.map VStr |> blameOn (box te)
 
-and private callAtWith (fn: TypedExpr) (f: Value) (a: Value) : Value =
+    if Session.pipesSuspend then
+        VSeq(CommandSeq(blocking, statement, [ spec ], box te))
+    else
+        VSeq blocking
+
+and private callPos (fn: TypedExpr) : unit =
 
     // a reifier's call is its command's: blamed at the command, whose
     // program is the reifier's first argument
@@ -7868,6 +8306,8 @@ and private callAtWith (fn: TypedExpr) (f: Value) (a: Value) : Value =
         RunPos.Current <- box at
         RunPos.Exact <- true
 
+and private callAtWith (fn: TypedExpr) (f: Value) (a: Value) : Value =
+    callPos fn
     let r = apply f a
     RunPos.Exact <- false
     r
@@ -7893,6 +8333,703 @@ and private inFunction (f: unit -> Value) : Value =
             b.Frames.Add callSite
 
         reraise ()
+
+// `eval` for a flow [D:async-flows]: the node kinds whose children can
+// wait are spelled out, each exactly as `eval` evaluates it; every other
+// node, and any subtree that cannot suspend, goes to `eval`. NoInlining and
+// the `let r = await …` bindings are compiler workarounds [D:runtime-async]
+and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>] evalAsync
+    (flow: Flow)
+    (env: Env)
+    (te: TypedExpr)
+    : System.Threading.Tasks.Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let v =
+            try
+                if
+                    not (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+                    || not (nodeMaySuspend env te)
+                then
+                    eval env te
+                else
+                    match te.Kind with
+                    | TELet(name, _, value, body) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let x = awaitFrame flow (evalAsync flow env value)
+                        let r = awaitFrame flow (evalAsync flow (Map.add name x env) body)
+                        r
+                    | TELetPat(pat, value, body) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let x = awaitFrame flow (evalAsync flow env value)
+                        let bindings = bindPattern pat x
+                        let env' = bindings |> List.fold (fun m (n, bv) -> Map.add n bv m) env
+                        let r = awaitFrame flow (evalAsync flow env' body)
+                        r
+                    | TEApp(fn, arg) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let f = awaitFrame flow (evalAsync flow env fn)
+                        let a = awaitFrame flow (evalAsync flow env arg)
+                        callPos fn
+                        let r = awaitFrame flow (applyAsync flow f a)
+                        RunPos.Exact <- false
+                        r
+                    | TEPipe({ Kind = TECmd(head, args, cenvO) }, { Kind = TEVar "|print" }) when
+                        Session.pipesSuspend && not (System.Console.IsOutputRedirected)
+                        ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        System.Console.Out.Flush()
+                        let overlay = overlayOf env cenvO
+
+                        let _ =
+                            awaitLeaf (
+                                Proc.runInheritedSuspended {
+                                    Prog = Proc.specProg (progOf env head (Proc.spawnPairs None overlay))
+                                    Args = argvOf env args
+                                    Env = overlay
+                                    Input = None
+                                    Cwd = None
+                                    Ambient = None
+                                }
+                            )
+
+                        VUnit
+                    | TEPipe({ Kind = TECmd(head, args, cenvO) } as c, ({ Kind = TEVar "|print" } as fn)) when
+                        Session.pipesSuspend
+                        ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let f = eval env fn
+                        let spec = commandSpec env head args cenvO
+                        RunPos.Current <- box c
+                        RunPos.Exact <- true
+
+                        let _ =
+                            awaitLeaf (
+                                Proc.statementRelaySuspended spec (fun lines ->
+                                    apply f (VSeq(lines |> Seq.map VStr)) |> ignore)
+                            )
+
+                        RunPos.Exact <- false
+                        VUnit
+                    | TEPipe({
+                                 Kind = TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) })
+                             },
+                             ({ Kind = TEVar "|print" } as fn)) when Session.pipesSuspend ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+
+                        if not (System.Console.IsOutputRedirected) then
+                            System.Console.Out.Flush()
+                            let specs = chainSpecs env arg chead cargs cenvO
+
+                            match specs with
+                            | []
+                            | [ _ ] -> Proc.runChainInherited specs
+                            | _ ->
+                                let _ = awaitLeaf (Proc.runChainInheritedSuspended specs)
+                                ()
+
+                            VUnit
+                        else
+                            let f = eval env fn
+                            let specs = chainSpecs env arg chead cargs cenvO
+                            callPos fn
+                            let r = awaitFrame flow (applyAsync flow f (chainSeq true specs))
+                            RunPos.Exact <- false
+                            r
+                    | TEPipe(arg, fn) when
+                        (match fn.Kind, arg.Kind with
+                         | TECmd _, _
+                         | TEVar "|print", TECmd _
+                         | TEVar "|print", TEPipe(_, { Kind = TECmd _ }) -> false
+                         | _ -> true)
+                        ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let f = awaitFrame flow (evalAsync flow env fn)
+                        let a = awaitFrame flow (evalAsync flow env arg)
+                        callPos fn
+                        let r = awaitFrame flow (applyAsync flow f a)
+                        RunPos.Exact <- false
+                        r
+                    | TEField(target, field) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let t = awaitFrame flow (evalAsync flow env target)
+                        fieldOf field t
+                    | TESeq(a, b) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let _ = awaitFrame flow (evalAsync flow env a)
+                        let r = awaitFrame flow (evalAsync flow env b)
+                        r
+                    | TEIf(cond, thn, els) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let c = awaitFrame flow (evalAsync flow env cond)
+
+                        match c, els with
+                        | VBool true, _ ->
+                            let r = awaitFrame flow (evalAsync flow env thn)
+                            r
+                        | VBool false, Some e ->
+                            let r = awaitFrame flow (evalAsync flow env e)
+                            r
+                        | VBool false, None -> VUnit
+                        | v, _ -> unreachable $"the checker rejects a non-bool condition: {formatValue v}"
+                    | TEMatch(scrutinee, arms) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let v0 = awaitFrame flow (evalAsync flow env scrutinee)
+                        let v = matchView arms v0
+                        let mutable rest = arms
+                        let mutable result = Unchecked.defaultof<Value>
+                        let mutable found = false
+
+                        while not found do
+                            match rest with
+                            | [] -> unreachable $"the checker guarantees totality; no arm matched {formatValue v}"
+                            | (pat, guard, body) :: tail ->
+                                rest <- tail
+
+                                match tryBind pat v with
+                                | Some bindings ->
+                                    let armEnv = bindings |> List.fold (fun e (n, bv) -> Map.add n bv e) env
+                                    let mutable passes = true
+
+                                    match guard with
+                                    | None -> ()
+                                    | Some g ->
+                                        let gv = awaitFrame flow (evalAsync flow armEnv g)
+
+                                        match gv with
+                                        | VBool b -> passes <- b
+                                        | other ->
+                                            unreachable $"the checker rejects a non-bool guard: {formatValue other}"
+
+                                    if passes then
+                                        let r = awaitFrame flow (evalAsync flow armEnv body)
+                                        result <- r
+                                        found <- true
+                                | None -> ()
+
+                        result
+                    | TEBinOp("&&", l, r) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let lv = awaitFrame flow (evalAsync flow env l)
+
+                        match lv with
+                        | VBool false -> VBool false
+                        | VBool true ->
+                            let rv = awaitFrame flow (evalAsync flow env r)
+                            rv
+                        | v -> unreachable $"the checker rejects '&&' on {formatValue v}"
+                    | TEBinOp("||", l, r) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let lv = awaitFrame flow (evalAsync flow env l)
+
+                        match lv with
+                        | VBool true -> VBool true
+                        | VBool false ->
+                            let rv = awaitFrame flow (evalAsync flow env r)
+                            rv
+                        | v -> unreachable $"the checker rejects '||' on {formatValue v}"
+                    | TEBinOp(op, l, r) when op <> ">>" ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let lv = awaitFrame flow (evalAsync flow env l)
+                        let rv = awaitFrame flow (evalAsync flow env r)
+                        binOp op lv rv
+                    | TERecord(name, fields) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let built = ResizeArray<string * Value>()
+                        let mutable rest = fields
+
+                        while not rest.IsEmpty do
+                            let n, fv = rest.Head
+                            rest <- rest.Tail
+                            let v = awaitFrame flow (evalAsync flow env fv)
+                            built.Add((n, v))
+
+                        VRecord(name, List.ofSeq built)
+                    | TEList items ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let built = ResizeArray<Value>()
+                        let mutable rest = items
+
+                        while not rest.IsEmpty do
+                            let v = awaitFrame flow (evalAsync flow env rest.Head)
+                            rest <- rest.Tail
+                            built.Add v
+
+                        VSeq(List.ofSeq built)
+                    | TETuple items ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let built = ResizeArray<Value>()
+                        let mutable rest = items
+
+                        while not rest.IsEmpty do
+                            let v = awaitFrame flow (evalAsync flow env rest.Head)
+                            rest <- rest.Tail
+                            built.Add v
+
+                        VTuple(List.ofSeq built)
+                    | TEInterp parts ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let sb = System.Text.StringBuilder()
+                        let mutable rest = parts
+
+                        while not rest.IsEmpty do
+                            match rest.Head with
+                            | IStr str -> interpAppend sb str
+                            | IExpr e ->
+                                let v = awaitFrame flow (evalAsync flow env e)
+                                interpAppend sb (interpPiece v)
+
+                            rest <- rest.Tail
+
+                        VStr(sb.ToString())
+                    | TETry(body, asResult) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+
+                        try
+                            let r = awaitFrame flow (evalAsync flow env body)
+                            let v = forceValue r
+
+                            if asResult then
+                                VUnion("Ok", Some v)
+                            else
+                                VUnion("Some", Some v)
+                        with
+                        | ExitRequest _ -> reraise ()
+                        | :? System.OperationCanceledException -> reraise ()
+                        | Failure m when m.StartsWith "unreachable:" -> reraise ()
+                        | ex ->
+                            if asResult then
+                                VUnion("Error", Some(VStr ex.Message))
+                            else
+                                VUnion("None", None)
+                    | TEOrFail(body, msg, site) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let r = awaitFrame flow (evalAsync flow env body)
+                        orFailValue env msg site r
+                    | TEAlways(body, cleanup) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let hooked = Session.registerAlways ()
+
+                        let claimAndRun () =
+                            Session.runningCleanup (fun () ->
+                                if Session.deregisterAlways hooked then
+                                    eval env cleanup |> ignore)
+
+                        let frame = Session.pushFrame claimAndRun
+                        let mutable outcome = Ok VUnit
+
+                        try
+                            let r = awaitFrame flow (evalAsync flow env body)
+                            outcome <- Ok r
+                        with e ->
+                            outcome <- Error e
+
+                        if not (isNull frame) then
+                            alwaysExit frame claimAndRun outcome
+                        else
+                            match outcome with
+                            | Ok v ->
+                                if Session.deregisterAlways hooked then
+                                    let scope = Session.cleanupScope ()
+
+                                    try
+                                        let _ = awaitFrame flow (evalAsync flow env cleanup)
+                                        ()
+                                    finally
+                                        scope.Dispose()
+
+                                v
+                            | Error original ->
+                                (match original with
+                                 | :? ExitRequest -> ()
+                                 | _ ->
+                                     let b = blameFor original
+
+                                     if isNull b.Node then
+                                         b.Node <- RunPos.Current
+                                         b.Exact <- RunPos.Exact)
+
+                                try
+                                    if Session.deregisterAlways hooked then
+                                        let scope = Session.cleanupScope ()
+
+                                        try
+                                            let _ = awaitFrame flow (evalAsync flow env cleanup)
+                                            ()
+                                        finally
+                                            scope.Dispose()
+                                with
+                                | :? ExitRequest -> ()
+                                | ce ->
+                                    eprintfn
+                                        "within/always: the cleanup ALSO failed — %s (the original error wins)"
+                                        (sanitizeIfTty System.Console.IsErrorRedirected ce.Message)
+
+                                raise original
+                    | TEHold body when not (PlanMode.active ()) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let v = awaitFrame flow (evalAsync flow env body)
+                        let scope = Session.stopAwareScope ()
+
+                        try
+                            while not (Session.stopRequested ()) do
+                                let _ =
+                                    awaitLeaf (
+                                        Session.waitOrCancelSuspended
+                                            System.Threading.Timeout.InfiniteTimeSpan
+                                            (Session.stopToken ())
+                                    )
+
+                                ()
+                        finally
+                            scope.Dispose()
+
+                        v
+                    | TERetry(LoopRepeat, optsE, _, body, until) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let ctl = repeatCtl env optsE until
+                        let scope = Session.stopAwareScope ()
+
+                        try
+                            let mutable n = 1
+                            let mutable last: Value option = None
+                            let mutable result = VUnit
+                            let mutable go = true
+
+                            while go do
+                                if Session.stopRequested () && ctl.Stoppable last then
+                                    result <- ctl.Finish last
+                                    go <- false
+                                else
+                                    let mutable v: Value option = None
+
+                                    try
+                                        let r = awaitFrame flow (evalAsync flow env body)
+                                        v <- Some r
+                                    with ex when ctl.StopCaused ex && ctl.Stoppable last ->
+                                        ()
+
+                                    match v with
+                                    | None ->
+                                        result <- ctl.Finish last
+                                        go <- false
+                                    | Some x when ctl.Predicate x ->
+                                        result <- (if until.IsSome then x else VUnit)
+                                        go <- false
+                                    | Some x when Session.stopRequested () ->
+                                        result <- ctl.Finish(Some x)
+                                        go <- false
+                                    | Some _ when ctl.PastDeadline() ->
+                                        result <- ctl.TimedOut n
+                                        go <- false
+                                    | Some x ->
+                                        let mutable ended: bool option = None
+                                        let mutable left = ctl.IntervalMs
+                                        let waiting = Waiting.start ctl.WaitLabel
+
+                                        try
+                                            while left > 0L && ended.IsNone do
+                                                let slice = ctl.Slice left
+
+                                                if slice <= 0L then
+                                                    ended <- Some false
+                                                else
+                                                    let woke =
+                                                        awaitLeaf (
+                                                            Session.waitOrCancelSuspended
+                                                                (System.TimeSpan.FromTicks(
+                                                                    slice * System.TimeSpan.TicksPerMillisecond
+                                                                ))
+                                                                (Session.stopToken ())
+                                                        )
+
+                                                    if woke then
+                                                        ended <- Some true
+
+                                                    left <- left - slice
+                                        finally
+                                            waiting.Dispose()
+
+                                        if ended.IsNone && ctl.PastDeadline() then
+                                            ended <- Some false
+
+                                        match ended with
+                                        | Some true ->
+                                            result <- ctl.Finish(Some x)
+                                            go <- false
+                                        | Some false ->
+                                            result <- ctl.TimedOut n
+                                            go <- false
+                                        | None ->
+                                            n <- n + 1
+                                            last <- Some x
+
+                            result
+                        finally
+                            scope.Dispose()
+                    | TERetry(kind, optsE, watchE, body, until) when kind <> LoopRepeat ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let ctl = retryCtl env kind optsE watchE until
+
+                        try
+                            let mutable n = 1
+                            let mutable result = VUnit
+                            let mutable go = true
+
+                            while go do
+                                ctl.Before()
+                                let v = awaitFrame flow (evalAsync flow env body)
+                                let mutable met = false
+
+                                match until with
+                                | Some((b, _), pred) ->
+                                    let pv = awaitFrame flow (evalAsync flow (Map.add b v env) pred)
+                                    met <- ctl.Verdict pv
+                                | None -> met <- ctl.Predicate v
+
+                                if met then
+                                    result <- (if ctl.Yields then v else VUnit)
+                                    go <- false
+                                elif n >= ctl.Attempts || ctl.Expired() then
+                                    result <- ctl.Exhausted n
+                                    go <- false
+                                else
+                                    let mutable timedOut = false
+
+                                    if ctl.DelayMs > 0L then
+                                        let mutable left = ctl.DelayMs
+                                        use _ = Waiting.start ctl.WaitLabel
+
+                                        while left > 0L && not timedOut do
+                                            let slice = ctl.Slice left
+
+                                            if slice <= 0L then
+                                                timedOut <- true
+                                            else
+                                                let cut =
+                                                    awaitLeaf (
+                                                        Session.waitOrCancelSuspended
+                                                            (System.TimeSpan.FromTicks(
+                                                                slice * System.TimeSpan.TicksPerMillisecond
+                                                            ))
+                                                            ctl.Cts.Token
+                                                    )
+
+                                                timedOut <- cut
+                                                left <- left - slice
+                                    else
+                                        timedOut <- ctl.Expired()
+
+                                    if timedOut then
+                                        result <- ctl.Exhausted n
+                                        go <- false
+                                    else
+                                        n <- n + 1
+
+                            result
+                        finally
+                            ctl.Cts.Dispose()
+                    | TEWithin((WithinPure | WithinReadonly), _, _, _, body) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let r = awaitFrame flow (evalAsync flow env body)
+                        r
+                    | TEWithin(WithinServe, binder, targ, topts, body) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+
+                        let struct (env', serveNode, home, frame, release) =
+                            serveScope env binder targ topts body
+
+                        let mutable v = VUnit
+
+                        try
+                            try
+                                Session.setCurrentNode serveNode
+
+                                try
+                                    let r = awaitFrame flow (evalAsync flow env' body)
+                                    v <- r
+                                finally
+                                    Session.setCurrentNode home
+                            with
+                            | :? ExitRequest -> reraise ()
+                            | _ when not (isNull serveNode.Exit) -> ()
+                        finally
+                            Session.releaseFrame frame release
+
+                        match serveNode.Exit with
+                        | null -> v
+                        | e -> raise e
+                    | TEWithin((WithinLock | WithinCd | WithinEnv | WithinProc | WithinTmp) as kind,
+                               binder,
+                               targ,
+                               topts,
+                               body) ->
+                        RunPos.Current <- box te
+                        RunPos.Exact <- false
+                        Session.evalBoundary ()
+                        let struct (env', release) = withinScope env kind binder targ topts
+                        let frame = Session.pushFrame release
+
+                        try
+                            let r = awaitFrame flow (evalAsync flow env' body)
+                            r
+                        finally
+                            Session.releaseFrame frame release
+                    | _ -> eval env te
+            with ex ->
+                pinOnThread ex
+                flow.Ec <- System.Threading.ExecutionContext.Capture()
+                reraise ()
+
+        flow.Ec <- System.Threading.ExecutionContext.Capture()
+        v
+    )
+
+and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>] applyAsync
+    (flow: Flow)
+    (fn: Value)
+    (arg: Value)
+    : System.Threading.Tasks.Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let v =
+            try
+                match fn with
+                | VClosure(param, body, closureEnv) ->
+                    if RunPos.IsCall body then
+                        let r = awaitFrame flow (inFunctionAsync flow (Map.add param arg closureEnv) body)
+                        r
+                    else
+                        let r = awaitFrame flow (evalAsync flow (Map.add param arg closureEnv) body)
+                        r
+                | VClosurePat(pat, body, closureEnv) ->
+                    let bindings = bindPattern pat arg
+                    let env' = bindings |> List.fold (fun m (n, bv) -> Map.add n bv m) closureEnv
+
+                    if RunPos.IsCall body then
+                        let r = awaitFrame flow (inFunctionAsync flow env' body)
+                        r
+                    else
+                        let r = awaitFrame flow (evalAsync flow env' body)
+                        r
+                | VBuiltin f ->
+                    Session.checkCancelled ()
+                    let e = asyncOf f
+
+                    if isNull e then
+                        f arg
+                    elif e.Arity > 1 then
+                        let r = f arg
+
+                        match r with
+                        | VBuiltin g ->
+                            asyncBuiltins.AddOrUpdate(box g, AsyncEntry(e.Arity - 1, arg :: e.Args, e.Framed, e.Run))
+                        | _ -> ()
+
+                        r
+                    elif e.Framed then
+                        flow.Ec <- System.Threading.ExecutionContext.Capture()
+                        let t = e.Run flow (List.rev (arg :: e.Args))
+
+                        if isNull t then
+                            f arg
+                        else
+                            let r = awaitFrame flow t
+                            r
+                    else
+                        let r = awaitLeaf (e.Run flow [ arg ])
+                        r
+                | other -> unreachable $"the checker rejects application of {formatValue other}"
+            with _ ->
+                flow.Ec <- System.Threading.ExecutionContext.Capture()
+                reraise ()
+
+        flow.Ec <- System.Threading.ExecutionContext.Capture()
+        v
+    )
+
+and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>] private inFunctionAsync
+    (flow: Flow)
+    (env: Env)
+    (body: TypedExpr)
+    : System.Threading.Tasks.Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let callSite = RunPos.Current
+
+        let v =
+            try
+                let r = awaitFrame flow (evalAsync flow env body)
+                r
+            with
+            | ExitRequest _ ->
+                flow.Ec <- System.Threading.ExecutionContext.Capture()
+                reraise ()
+            | ex ->
+                let b = blameFor ex
+
+                if isNull b.Node then
+                    b.Node <- RunPos.Current
+                    b.Exact <- RunPos.Exact
+
+                if not (isNull callSite) then
+                    b.Frames.Add callSite
+
+                flow.Ec <- System.Threading.ExecutionContext.Capture()
+                reraise ()
+
+        flow.Ec <- System.Threading.ExecutionContext.Capture()
+        v
+    )
 
 /// the bare-statement spec (argv, overlay) — one builder for the relay
 /// and the inheriting spawn, so the two forms cannot drift

@@ -1,0 +1,28 @@
+let rs = [1; 2] |> Seq.pmap (fun i ->
+    let exF = fun _ ->
+        retry attempts=2 delay=20ms
+            sh -c "false" | succeeds
+        i
+    let ex = exF 0 |> try result
+    let lines = sh -c "seq 1 5" | sh -c "grep -v 3" |> Seq.map (fun l -> $"<{l}>") |> Str.join ""
+    let firstTwo = sh -c "yes" | sh -c "cat -n" |> Seq.take 2 |> Seq.map Str.trim |> Str.join ";"
+    let failedF = fun _ -> sh -c "echo a; exit 3" | sh -c "cat" |> Str.join ""
+    let failed = failedF 0 |> try result
+    let c = sh -c "echo o; echo e >&2; exit 2" | sh -c "cat; echo e2 >&2" | complete
+    let ok = sh -c "exit 1" | sh -c "cat" | succeeds
+    let code = sh -c "echo relayed-chain" | sh -c "cat; exit 6" | exitCode
+    let code1 = sh -c "echo relayed-one; exit 5" | exitCode
+    let of1F = fun _ ->
+        sh -c "echo relayed-orfail; exit 7" | orFail "one failed"
+        i
+    let of1 = of1F 0 |> try result
+    let of2F = fun _ ->
+        sh -c "true" | sh -c "exit 8" | orFail "chain failed"
+        i
+    let of2 = of2F 0 |> try result
+    $"{i} {ex} {lines} {firstTwo} {failed} {c.exitCode} {c.stdout} {c.stderr} {ok} {code} {code1} {of1} {of2}")
+rs |> Seq.iter print
+[1] |> Seq.piter (fun _ ->
+    sh -c "echo s1; echo s2" | sh -c "tr a-z A-Z"
+    poll timeout=300ms interval=100ms
+        sh -c "false" | succeeds)

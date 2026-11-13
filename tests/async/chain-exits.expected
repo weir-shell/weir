@@ -1,0 +1,13 @@
+exit=0
+--stdout--
+1
+2
+A
+B
+C
+Error "command failed with exit code 3: sh -c seq 1 100000; exit 3"
+Error "command failed with exit code 3: sh -c trap '' PIPE; seq 1 100000; exit 3"
+true
+yy
+--stderr--
+seq: write error: Broken pipe

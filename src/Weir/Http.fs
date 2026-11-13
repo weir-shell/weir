@@ -697,230 +697,246 @@ let rec send (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, str
     // weir's words, before a connection is attempted [D:http-url-refused]
     match urlUnsendable req.Url with
     | Some why -> Error(why, BadUrl why)
-    | None -> sendChecked cancel req
+    | None -> (sendCheckedAsync cancel req).GetAwaiter().GetResult()
 
-and private sendChecked (cancel: Threading.CancellationToken) (req: Req) : Result<Resp, string * TransportError> =
-    // the hop in flight: a transport failure names the host that failed,
-    // never the original one a redirect left behind
-    let mutable curUrl = req.Url
+and private sendCheckedAsync
+    (cancel: Threading.CancellationToken)
+    (req: Req)
+    : Threading.Tasks.Task<Result<Resp, string * TransportError>> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        // the hop in flight: a transport failure names the host that failed,
+        // never the original one a redirect left behind
+        let mutable curUrl = req.Url
 
-    // set when this hop's certificate reached validation: a TLS failure
-    // before that is a broken handshake, never a trust verdict
-    // [D:tls-handshake-vs-trust]. The callback keeps the platform's
-    // own verdict unless insecure.
-    let certChecked = ref false
+        // set when this hop's certificate reached validation: a TLS failure
+        // before that is a broken handshake, never a trust verdict
+        // [D:tls-handshake-vs-trust]. The callback keeps the platform's
+        // own verdict unless insecure.
+        let certChecked = ref false
 
-    try
-        // insecure is honoured per request only — the default path keeps
-        // the platform's TLS verdict [D:http-s2]. Auto-redirect is
-        // off so weir controls the credential-drop on an origin change
-        // [D:secret-redirect] — the BCL would re-send secretHeaders.
-        use handler = new HttpClientHandler()
-        handler.AllowAutoRedirect <- false
-        useEnvProxy handler
+        try
+            // insecure is honoured per request only — the default path keeps
+            // the platform's TLS verdict [D:http-s2]. Auto-redirect is
+            // off so weir controls the credential-drop on an origin change
+            // [D:secret-redirect] — the BCL would re-send secretHeaders.
+            use handler = new HttpClientHandler()
+            handler.AllowAutoRedirect <- false
+            useEnvProxy handler
 
-        handler.ServerCertificateCustomValidationCallback <-
-            (fun _ _ _ errors ->
-                certChecked.Value <- true
-                req.Insecure || errors = Net.Security.SslPolicyErrors.None)
+            handler.ServerCertificateCustomValidationCallback <-
+                (fun _ _ _ errors ->
+                    certChecked.Value <- true
+                    req.Insecure || errors = Net.Security.SslPolicyErrors.None)
 
-        use client = new HttpClient(handler)
-        // the deadline rides a token, never client.Timeout's 24.8-day
-        // ceiling [D:long-waits]; cancelled when the send returns
-        client.Timeout <- Threading.Timeout.InfiniteTimeSpan
-        use deadline = new Threading.CancellationTokenSource()
+            use client = new HttpClient(handler)
+            // the deadline rides a token, never client.Timeout's 24.8-day
+            // ceiling [D:long-waits]; cancelled when the send returns
+            client.Timeout <- Threading.Timeout.InfiniteTimeSpan
+            use deadline = new Threading.CancellationTokenSource()
 
-        use _stop = {
-            new IDisposable with
-                member _.Dispose() = deadline.Cancel()
-        }
+            use _stop = {
+                new IDisposable with
+                    member _.Dispose() = deadline.Cancel()
+            }
 
-        cancelAfterSliced maxTimerMs deadline req.TimeoutMs
-        use _cut = cancel.Register(fun () -> deadline.Cancel())
+            cancelAfterSliced maxTimerMs deadline req.TimeoutMs
+            use _cut = cancel.Register(fun () -> deadline.Cancel())
 
-        // build one request message for a hop: `method`/`url`, the current
-        // header set (already credential-filtered by the caller loop), the
-        // body when the method still carries one, and the UA default.
-        let buildMessage
-            (method: string)
-            (url: string)
-            (headers: (string * string) list)
-            (body: (string * string) option)
-            =
-            let msg = new HttpRequestMessage(HttpMethod(method), url)
+            // build one request message for a hop: `method`/`url`, the current
+            // header set (already credential-filtered by the caller loop), the
+            // body when the method still carries one, and the UA default.
+            let buildMessage
+                (method: string)
+                (url: string)
+                (headers: (string * string) list)
+                (body: (string * string) option)
+                =
+                let msg = new HttpRequestMessage(HttpMethod(method), url)
 
-            let isContentType (k: string) =
-                String.Equals(k, "Content-Type", StringComparison.OrdinalIgnoreCase)
+                let isContentType (k: string) =
+                    String.Equals(k, "Content-Type", StringComparison.OrdinalIgnoreCase)
 
-            // the body is attached before headers so a content-header (e.g. a
-            // caller-set Content-Type override) can land on the content. An
-            // explicit Content-Type WINS over the body kind's default and
-            // exactly one is sent [D:http-content-type-override] — the
-            // User-Agent law; the first caller pair is the one taken
-            match body with
-            | Some(ct, b) ->
-                // bytes, not StringContent: no default text/plain to displace
-                let content = new ByteArrayContent(Text.Encoding.UTF8.GetBytes b)
+                // the body is attached before headers so a content-header (e.g. a
+                // caller-set Content-Type override) can land on the content. An
+                // explicit Content-Type WINS over the body kind's default and
+                // exactly one is sent [D:http-content-type-override] — the
+                // User-Agent law; the first caller pair is the one taken
+                match body with
+                | Some(ct, b) ->
+                    // bytes, not StringContent: no default text/plain to displace
+                    let content = new ByteArrayContent(Text.Encoding.UTF8.GetBytes b)
 
-                let declared =
-                    headers |> List.tryPick (fun (k, v) -> if isContentType k then Some v else None)
+                    let declared =
+                        headers |> List.tryPick (fun (k, v) -> if isContentType k then Some v else None)
 
-                content.Headers.TryAddWithoutValidation("Content-Type", defaultArg declared ct)
-                |> ignore
+                    content.Headers.TryAddWithoutValidation("Content-Type", defaultArg declared ct)
+                    |> ignore
 
-                msg.Content <- content
-            | None -> ()
+                    msg.Content <- content
+                | None -> ()
 
-            for (k, v) in headers do
-                // request headers first; a content header (Content-*) lands on
-                // the content instead — TryAddWithoutValidation keeps the bytes
-                // verbatim (no folding, no re-encoding). Content-Type is
-                // already placed above, once.
-                if isContentType k && msg.Content <> null then
-                    ()
-                elif not (msg.Headers.TryAddWithoutValidation(k, v)) then
-                    match msg.Content with
+                for (k, v) in headers do
+                    // request headers first; a content header (Content-*) lands on
+                    // the content instead — TryAddWithoutValidation keeps the bytes
+                    // verbatim (no folding, no re-encoding). Content-Type is
+                    // already placed above, once.
+                    if isContentType k && msg.Content <> null then
+                        ()
+                    elif not (msg.Headers.TryAddWithoutValidation(k, v)) then
+                        match msg.Content with
+                        | null -> ()
+                        | c -> c.Headers.TryAddWithoutValidation(k, v) |> ignore
+
+                // the default User-Agent [D:http-ua]: weir/<stamp>, the same
+                // string --version prints — applied at send time, never a field
+                // in Http.defaults, so the request record stays stable across
+                // releases (a pinned/shown request must not break on a version
+                // bump; the cost — show req omits a header the wire carries — is
+                // stated in the docs). A caller's User-Agent is already on the
+                // message (headers and secretHeaders both arrive merged in
+                // req.Headers) and blocks this: header names compare
+                // case-insensitively, so exactly one is ever sent. A default, not
+                // a fixed header — the explicit pair is the override spelling.
+                if not (msg.Headers.Contains "User-Agent") then
+                    msg.Headers.TryAddWithoutValidation("User-Agent", $"weir/{Weir.Version.current}")
+                    |> ignore
+
+                msg
+
+            // the explicit follow loop [D:secret-redirect]: at each hop, send;
+            // on a redirect status with a Location, rebuild for the next hop,
+            // dropping the credential headers when the origin changed.
+            let mutable curMethod = req.Method
+            let mutable curHeaders = req.Headers
+            let mutable curBody = req.Body
+            let mutable hops = 0
+            let mutable result: HttpResponseMessage = null
+
+            let mutable go = true
+
+            while go do
+                checkEnvProxy curUrl
+                let msg = buildMessage curMethod curUrl curHeaders curBody
+                certChecked.Value <- false
+
+                let resp =
+                    Runtime.CompilerServices.AsyncHelpers.Await(client.SendAsync(msg, deadline.Token))
+
+                let code = int resp.StatusCode
+
+                let location =
+                    match resp.Headers.Location with
+                    | null -> None
+                    | l -> Some l
+
+                match location with
+                | Some loc when isRedirect code && hops < maxRedirects ->
+                    resp.Dispose()
+                    hops <- hops + 1
+
+                    let fromUri = Uri curUrl
+                    // a relative Location resolves against the current URL
+                    let nextUri = if loc.IsAbsoluteUri then loc else Uri(fromUri, loc)
+
+                    // on a cross-origin hop, drop the credential headers — the
+                    // F4 fix [D:secret-redirect], the same drop the BCL does
+                    // for Authorization, now covering secretHeaders too
+                    if not (sameOrigin fromUri nextUri) && not (Set.isEmpty req.SensitiveHeaders) then
+                        curHeaders <-
+                            curHeaders
+                            |> List.filter (fun (k, _) -> not (req.SensitiveHeaders.Contains(k.ToLowerInvariant())))
+
+                    // 303, and 301/302 from a method with a body, rewrite to GET
+                    // and drop the body (the BCL/browser rule); 307/308 preserve
+                    let m = curMethod.ToUpperInvariant()
+
+                    if code = 303 || ((code = 301 || code = 302) && m <> "GET" && m <> "HEAD") then
+                        curMethod <- "GET"
+                        curBody <- None
+
+                    curUrl <- nextUri.ToString()
+                | Some _ when isRedirect code ->
+                    resp.Dispose()
+                    raise (TooManyRedirects(hops, curUrl))
+                | _ ->
+                    result <- resp
+                    go <- false
+
+            use resp = result
+
+            // one pair per received header line, the value verbatim: the
+            // parsed view splits a value into tokens (a Server header's
+            // product list) and the old "," join merged repeats into one
+            let headers =
+                [
+                    for h in resp.Headers.NonValidated do
+                        for v in h.Value -> h.Key, v
+                ]
+                @ (match resp.Content with
+                   | null -> []
+                   | c -> [
+                       for h in c.Headers.NonValidated do
+                           for v in h.Value -> h.Key, v
+                     ])
+
+            // an undecodable declared charset is its own error, never a
+            // guessed decode — the same never-silent-U+FFFD law as
+            // [D:source-utf8]
+            let body =
+                match resp.Content with
+                | null -> ""
+                | c ->
+                    match c.Headers.ContentType with
                     | null -> ()
-                    | c -> c.Headers.TryAddWithoutValidation(k, v) |> ignore
+                    | t when String.IsNullOrWhiteSpace t.CharSet -> ()
+                    | t ->
+                        let cs = t.CharSet.Trim().Trim('"')
 
-            // the default User-Agent [D:http-ua]: weir/<stamp>, the same
-            // string --version prints — applied at send time, never a field
-            // in Http.defaults, so the request record stays stable across
-            // releases (a pinned/shown request must not break on a version
-            // bump; the cost — show req omits a header the wire carries — is
-            // stated in the docs). A caller's User-Agent is already on the
-            // message (headers and secretHeaders both arrive merged in
-            // req.Headers) and blocks this: header names compare
-            // case-insensitively, so exactly one is ever sent. A default, not
-            // a fixed header — the explicit pair is the override spelling.
-            if not (msg.Headers.Contains "User-Agent") then
-                msg.Headers.TryAddWithoutValidation("User-Agent", $"weir/{Weir.Version.current}")
-                |> ignore
+                        let known =
+                            try
+                                Text.Encoding.GetEncoding cs |> ignore
+                                true
+                            with _ ->
+                                false
 
-            msg
+                        if not known then
+                            raise (CharsetUnknown(cs, int resp.StatusCode))
 
-        // the explicit follow loop [D:secret-redirect]: at each hop, send;
-        // on a redirect status with a Location, rebuild for the next hop,
-        // dropping the credential headers when the origin changed.
-        let mutable curMethod = req.Method
-        let mutable curHeaders = req.Headers
-        let mutable curBody = req.Body
-        let mutable hops = 0
-        let mutable result: HttpResponseMessage = null
+                    Runtime.CompilerServices.AsyncHelpers.Await(c.ReadAsStringAsync(deadline.Token))
 
-        let mutable go = true
-
-        while go do
-            checkEnvProxy curUrl
-            let msg = buildMessage curMethod curUrl curHeaders curBody
-            certChecked.Value <- false
-            let resp = client.SendAsync(msg, deadline.Token).Result
-            let code = int resp.StatusCode
-
-            let location =
-                match resp.Headers.Location with
-                | null -> None
-                | l -> Some l
-
-            match location with
-            | Some loc when isRedirect code && hops < maxRedirects ->
-                resp.Dispose()
-                hops <- hops + 1
-
-                let fromUri = Uri curUrl
-                // a relative Location resolves against the current URL
-                let nextUri = if loc.IsAbsoluteUri then loc else Uri(fromUri, loc)
-
-                // on a cross-origin hop, drop the credential headers — the
-                // F4 fix [D:secret-redirect], the same drop the BCL does
-                // for Authorization, now covering secretHeaders too
-                if not (sameOrigin fromUri nextUri) && not (Set.isEmpty req.SensitiveHeaders) then
-                    curHeaders <-
-                        curHeaders
-                        |> List.filter (fun (k, _) -> not (req.SensitiveHeaders.Contains(k.ToLowerInvariant())))
-
-                // 303, and 301/302 from a method with a body, rewrite to GET
-                // and drop the body (the BCL/browser rule); 307/308 preserve
-                let m = curMethod.ToUpperInvariant()
-
-                if code = 303 || ((code = 301 || code = 302) && m <> "GET" && m <> "HEAD") then
-                    curMethod <- "GET"
-                    curBody <- None
-
-                curUrl <- nextUri.ToString()
-            | Some _ when isRedirect code ->
-                resp.Dispose()
-                raise (TooManyRedirects(hops, curUrl))
+            Ok {
+                Status = int resp.StatusCode
+                Headers = headers
+                Body = body
+            }
+        with ex ->
+            // a loop is the request's own failure (its last hop is in the
+            // message); anything else names the hop that failed
+            match ex with
+            | CharsetUnknown(cs, status) ->
+                let err = UnknownCharset(cs, status)
+                Error(transportMessage (failingHost curUrl) err, err)
+            | TooManyRedirects(hops, last) ->
+                let err = RedirectLoop(hops, last)
+                Error(transportMessage (failingHost req.Url) err, err)
             | _ ->
-                result <- resp
-                go <- false
+                match transportFailure req.TimeoutMs curUrl ex with
+                // with verification off, or before any certificate was
+                // checked, nothing was distrusted: the handshake itself
+                // failed [D:tls-handshake-vs-trust]
+                | _, TlsUntrusted when req.Insecure || not certChecked.Value ->
+                    transportMessage (failingHost curUrl) TlsHandshake, TlsHandshake
+                | failure -> failure
+                |> Error
+    )
 
-        use resp = result
-
-        // one pair per received header line, the value verbatim: the
-        // parsed view splits a value into tokens (a Server header's
-        // product list) and the old "," join merged repeats into one
-        let headers =
-            [
-                for h in resp.Headers.NonValidated do
-                    for v in h.Value -> h.Key, v
-            ]
-            @ (match resp.Content with
-               | null -> []
-               | c -> [
-                   for h in c.Headers.NonValidated do
-                       for v in h.Value -> h.Key, v
-                 ])
-
-        // an undecodable declared charset is its own error, never a
-        // guessed decode — the same never-silent-U+FFFD law as
-        // [D:source-utf8]
-        let body =
-            match resp.Content with
-            | null -> ""
-            | c ->
-                match c.Headers.ContentType with
-                | null -> ()
-                | t when String.IsNullOrWhiteSpace t.CharSet -> ()
-                | t ->
-                    let cs = t.CharSet.Trim().Trim('"')
-
-                    let known =
-                        try
-                            Text.Encoding.GetEncoding cs |> ignore
-                            true
-                        with _ ->
-                            false
-
-                    if not known then
-                        raise (CharsetUnknown(cs, int resp.StatusCode))
-
-                c.ReadAsStringAsync(deadline.Token).Result
-
-        Ok {
-            Status = int resp.StatusCode
-            Headers = headers
-            Body = body
-        }
-    with ex ->
-        // a loop is the request's own failure (its last hop is in the
-        // message); anything else names the hop that failed
-        match ex with
-        | CharsetUnknown(cs, status) ->
-            let err = UnknownCharset(cs, status)
-            Error(transportMessage (failingHost curUrl) err, err)
-        | TooManyRedirects(hops, last) ->
-            let err = RedirectLoop(hops, last)
-            Error(transportMessage (failingHost req.Url) err, err)
-        | _ ->
-            match transportFailure req.TimeoutMs curUrl ex with
-            // with verification off, or before any certificate was
-            // checked, nothing was distrusted: the handshake itself
-            // failed [D:tls-handshake-vs-trust]
-            | _, TlsUntrusted when req.Insecure || not certChecked.Value ->
-                transportMessage (failingHost curUrl) TlsHandshake, TlsHandshake
-            | failure -> failure
-            |> Error
+let sendAsync
+    (cancel: Threading.CancellationToken)
+    (req: Req)
+    : Threading.Tasks.Task<Result<Resp, string * TransportError>> =
+    match urlUnsendable req.Url with
+    | Some why -> Threading.Tasks.Task.FromResult(Error(why, BadUrl why))
+    | None -> sendCheckedAsync cancel req
 
 /// Basic auth is an encoding, not a prefix: base64(user:pass) [D:http] —
 /// which is why it is a union case the runner encodes, not a header a

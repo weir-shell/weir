@@ -1,0 +1,7 @@
+exit=0
+--stdout--
+1 1 false 50000 30000 50000 false
+2 2 false 100000 60000 100000 true
+3 3 false 150000 90000 150000 false
+4 4 false 200000 120000 200000 true
+--stderr--

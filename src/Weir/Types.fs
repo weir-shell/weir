@@ -1720,17 +1720,25 @@ module Waiting =
 
     let private frames = [| "⠋"; "⠙"; "⠹"; "⠸"; "⠼"; "⠴"; "⠦"; "⠧"; "⠇"; "⠏" |]
 
-    let during (label: string) (f: unit -> 'a) : 'a =
+    let private idle = {
+        new IDisposable with
+            member _.Dispose() = ()
+    }
+
+    /// the indicator for a wait that ends when the result is disposed —
+    /// the form a suspended wait takes [D:async-flows]
+    let start (label: string) : IDisposable =
         if not (active ()) then
-            f ()
+            idle
         elif Threading.Interlocked.Increment(&depth) > 1 then
             // an indicator is already up — never stack a second line
-            try
-                f ()
-            finally
-                Threading.Interlocked.Decrement(&depth) |> ignore
+            {
+                new IDisposable with
+                    member _.Dispose() =
+                        Threading.Interlocked.Decrement(&depth) |> ignore
+            }
         else
-            use gone = new Threading.ManualResetEventSlim(false)
+            let gone = new Threading.ManualResetEventSlim(false)
             let drew = ref false
 
             let spinner =
@@ -1755,19 +1763,25 @@ module Waiting =
 
             spinner.Start()
 
-            try
-                f ()
-            finally
-                gone.Set()
-                spinner.Join()
+            {
+                new IDisposable with
+                    member _.Dispose() =
+                        gone.Set()
+                        spinner.Join()
+                        gone.Dispose()
 
-                if drew.Value then
-                    try
-                        (if isNull control then Console.Error else control).Write "\r\u001b[2K"
-                    with :? IO.IOException ->
-                        ()
+                        if drew.Value then
+                            try
+                                (if isNull control then Console.Error else control).Write "\r\u001b[2K"
+                            with :? IO.IOException ->
+                                ()
 
-                Threading.Interlocked.Decrement(&depth) |> ignore
+                        Threading.Interlocked.Decrement(&depth) |> ignore
+            }
+
+    let during (label: string) (f: unit -> 'a) : 'a =
+        use _ = start label
+        f ()
 
 // ---- Duration text [D:duration] — the boundary where decimals live.
 // Storage is integer ms; these two are the only places decimal text

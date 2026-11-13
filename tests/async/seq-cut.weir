@@ -1,0 +1,7 @@
+[1; 2; 3] |> Seq.piter (fun i ->
+    if i == 2 then
+        Duration.sleep 200ms
+        exit 7
+    else
+        $(sh -c "echo start; sleep 30; echo late") |> Seq.map Str.toUpper |> Seq.iter (fun l -> print $"{i} {l}"))
+print "unreached"

@@ -1,0 +1,14 @@
+exit=1
+--stdout--
+1 Error "retry: exhausted 2 attempt(s) over Nms" <1><2><4><5> 1	y;2	y Error "command failed with exit code 3: sh -c echo a; exit 3" 2 ["o"] ["e"; "e2"] false 6 5 Error "one failed (exit 7)" Error "chain failed (exit 8)"
+2 Error "retry: exhausted 2 attempt(s) over Nms" <1><2><4><5> 1	y;2	y Error "command failed with exit code 3: sh -c echo a; exit 3" 2 ["o"] ["e"; "e2"] false 6 5 Error "one failed (exit 7)" Error "chain failed (exit 8)"
+S1
+S2
+relayed-chain
+relayed-chain
+relayed-one
+relayed-one
+relayed-orfail
+relayed-orfail
+--stderr--
+loops-chains.weir:28:9: error: poll: timed out after Nms (3 attempt(s))

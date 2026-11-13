@@ -1,0 +1,8 @@
+[1] |> Seq.piter (fun _ ->
+    sh -c "printf 'a\\015\\012b\\015c\\n\\n\\nlast'"
+    sh -c "printf '\\357\\273\\277bom\\n\\377bad\\n'"
+    sh -c "seq 1 3000"
+    sh -c "printf ''"
+    sh -c "printf '\\n'"
+    sh -c "printf 'x\\015'; sleep 0.2; printf '\\012y\\n'"
+    print "end")

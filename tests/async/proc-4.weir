@@ -1,0 +1,10 @@
+let w = [1; 2; 3] |> Seq.pfirst (fun i ->
+    let rs = [1; 2] |> Seq.pmap (fun j ->
+        if i == 2 then
+            Duration.sleep 100ms
+        else
+            sh -c "sleep 5; echo late >&2"
+            Duration.sleep 5s
+        j)
+    $"{i} {Seq.sum rs}")
+print w

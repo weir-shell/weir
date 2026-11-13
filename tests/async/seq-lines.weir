@@ -1,0 +1,9 @@
+let rs = [1] |> Seq.pmap (fun _ ->
+    let a = $(sh -c "printf 'a\\015\\012b\\015c\\n\\n\\nlast'") |> Seq.map (fun l -> $"[{l}]") |> Str.join ""
+    let b = $(sh -c "printf '\\357\\273\\277bom\\n\\377bad\\n'") |> Seq.map (fun l -> $"[{l}]") |> Str.join ""
+    let c = $(sh -c "printf 'x\\015'; sleep 0.2; printf '\\012y\\n'") |> Seq.map (fun l -> $"[{l}]") |> Str.join ""
+    let d = $(sh -c "printf ''") |> Seq.length
+    let e = $(sh -c "printf '\\n'") |> Seq.length
+    let f = $(sh -c "head -c 200000 /dev/zero | tr '\\0' 'x'; echo; echo tail") |> Seq.map Str.length |> Seq.map (fun n -> $"{n}") |> Str.join ","
+    $"{a} {b} {c} {d} {e} {f}")
+rs |> Seq.iter print
