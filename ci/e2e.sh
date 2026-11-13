@@ -4728,12 +4728,24 @@ wait "$ptpid"
 echo "e2e ok: a 64-arm pfirst over | complete takes one thread per arm (peak $ptpeak threads)"
 # (RLIMIT_NPROC binds a non-root user only; .NET's own pool can still abort
 # when it cannot add a worker at the limit — a runtime residual, so up to
-# three tries)
+# three tries.) The arms hold their threads without a child each: a
+# suspended wait holds none [D:async-flows], and a child per arm would
+# reach the same limit as a refused spawn first
 if [ "$(id -u)" != 0 ]; then
+    cat > "$r6dir/pl.weir" <<'WEOF'
+let n = Self.args |> Seq.head |> Str.toInt
+let lockPath = Self.args |> Seq.item 1
+let arm i =
+    within lock lockPath timeout=30s
+        Duration.sleep 3s
+        $"{i}"
+let w = [1..n] |> Seq.pfirstWith n arm
+print $"won {w}"
+WEOF
     ptok=""
     for _ in 1 2 3; do
         ptn=$(ps -L -u "$(id -u)" -o lwp= | wc -l)
-        out=$( (ulimit -u $((ptn + 150)); timeout 60 "$BIN" "$r6dir/pt.weir" 256) 2>&1) || true
+        out=$( (ulimit -u $((ptn + 150)); timeout 60 "$BIN" "$r6dir/pl.weir" 256 "$r6dir/pl.lock") 2>&1) || true
         echo "$out" | grep -qF "TaskScheduler" && fail "a refused thread never shows .NET's text: $out"
         if echo "$out" | grep -qF "cannot start a thread for a pfirst arm: the process/thread limit is reached"; then
             ptok=1
@@ -4743,6 +4755,40 @@ if [ "$(id -u)" != 0 ]; then
     [ -n "$ptok" ] || fail "a thread the limit refuses is a weir error naming the limit: $out"
     echo "e2e ok: a fan-out thread the process/thread limit refuses is a weir error naming the limit"
 fi
+fi
+
+# ---- async flows [D:async-flows] [D:async-seq] ------------------------------
+# an arm or a serve handler that waits (a command, a sleep, an Http send, a
+# lazy command's lines) is suspended, not parked on a thread — and what the
+# script observes is unchanged. The fixtures are tests/async/*.weir, each
+# with its normalized transcript beside it (tests/async/run.sh)
+if [ "$IS_WINDOWS" != "1" ]; then
+    asyncdir="$(dirname "$0")/../tests/async"
+    asyncn=0
+    for exp in "$asyncdir"/*.expected; do
+        name=$(basename "$exp" .expected)
+        got=$("$asyncdir/run.sh" "$BIN" "$name")
+        [ "$got" = "$(cat "$exp")" ] || fail "async flow fixture '$name' drifted from tests/async/$name.expected:
+$(diff <(echo "$got") "$exp" | head -20)"
+        asyncn=$((asyncn + 1))
+    done
+    echo "e2e ok: $asyncn async-flow fixtures observe what the blocking evaluator did"
+fi
+if [ "$(uname -s)" = Linux ]; then
+    for mode in sleep complete lazy chain fed retry serve race; do
+        "$BIN" "$(dirname "$0")/../tests/async/threads.weir" "$mode" > "$r6dir/th.out" 2>&1 &
+        thpid=$!
+        thpeak=0
+        while kill -0 "$thpid" 2>/dev/null; do
+            t=$(awk '/^Threads:/{print $2}' "/proc/$thpid/status" 2>/dev/null) || t=""
+            [ -n "$t" ] && [ "$t" -gt "$thpeak" ] && thpeak=$t
+            sleep 0.02
+        done
+        wait "$thpid" || fail "300 suspended arms ($mode): $(cat "$r6dir/th.out")"
+        [ "$(cat "$r6dir/th.out")" = "300" ] || fail "300 suspended arms ($mode): $(cat "$r6dir/th.out")"
+        [ "$thpeak" -lt 200 ] || fail "300 suspended arms ($mode) hold a thread each (peak $thpeak threads)"
+        echo "e2e ok: 300 suspended arms ($mode) peak at $thpeak threads"
+    done
 fi
 
 # W1: after a cut nothing waits for the EOF of a pipe a descendant the kill

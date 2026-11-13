@@ -1,0 +1,7 @@
+exit=0
+--stdout--
+1 won2 Ok (["pong"]) Error "127.0.0.1:1 refused the connection — nothing is listening there" a1bc 2 [3; 4] (5, "6") 8 false Error "body failed" pong 3
+2 won2 Ok (["pong"]) Error "127.0.0.1:1 refused the connection — nothing is listening there" a1bc 2 [3; 4] (5, "6") 8 false Error "body failed" pong 3
+--stderr--
+cleanup1
+cleanup2

@@ -1,0 +1,12 @@
+let a = sh -c "yes" | sh -c "head -2" |> Str.join ""
+print a
+let cF = fun _ -> sh -c "seq 1 100000; exit 3" | sh -c "head -1" |> Str.join ""
+print $"{cF 0 |> try result}"
+let dF = fun _ -> sh -c "trap '' PIPE; seq 1 100000; exit 3" | sh -c "head -1" |> Str.join ""
+print $"{dF 0 |> try result}"
+sh -c "seq 1 100000" | sh -c "head -2"
+within tmp d
+    let gz = sh -c $"head -c 300000 /dev/urandom | tee {d}/raw.bin" | gzip | gunzip | sh -c "cksum" |> Str.join ""
+    let want = sh -c $"cksum < {d}/raw.bin" | line
+    print $"{gz == want}"
+["b"; "a"; "c"] | sort | sh -c "tr a-z A-Z"

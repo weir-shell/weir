@@ -1,0 +1,14 @@
+exit=1
+--stdout--
+1 ["y"; "y"; "y"] 2 one+two <2><4><6><8> x1,x2,x3 5050 five
+2 ["y"; "y"; "y"] 2 one+two <2><4><6><8> x1,x2,x3 5050 five
+A
+B
+Error "command failed with exit code 3: sh -c echo a; exit 3"
+ok
+--stderr--
+ran
+ran
+ran
+ran
+seq-lazy.weir:20:5: error: command failed with exit code 4: sh -c echo a; echo b; exit 4

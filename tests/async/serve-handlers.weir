@@ -1,0 +1,31 @@
+let handler = fun req ->
+    match req.path with
+    | "/cd" ->
+        let _here = cd "/tmp"
+        Duration.sleep 50ms
+        let d = sh -c "pwd" | complete
+        HttpServerResponse { status = 200; headers = []; body = Text (d.stdout |> Str.join "") }
+    | "/stmt" ->
+        sh -c "echo from-handler"
+        HttpServerResponse { status = 200; headers = []; body = Stream ["a"; "b"] }
+    | "/hang" ->
+        Duration.sleep 30s
+        print "unreached"
+        HttpServerResponse { status = 200; headers = []; body = Text "late" }
+    | "/exit" ->
+        Duration.sleep 100ms
+        exit 9
+    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
+
+within serve srv maxConcurrent=8 handler=handler
+    let base = $"http://127.0.0.1:{Server.port srv}"
+    let a = Http.send (Http.get $"{base}/cd")
+    let b = Http.send (Http.get $"{base}/stmt")
+    print $"{a.status} {a.body} {b.status} {b.body}"
+    let h = [1; 2] |> Seq.pmap (fun i ->
+        let r = Http.send { Http.get $"{base}/hang" with timeout = 300ms } |> try result
+        $"{i} {r}")
+    h |> Seq.iter print
+    let e = Http.send (Http.get $"{base}/exit") |> try result
+    print $"after exit {e}"
+print "unreached"

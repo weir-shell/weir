@@ -131,7 +131,9 @@ let private startedAfterStop =
 // law, cwd, the not-found mapping, and the race-group registration
 // every child owes [D:seq-pfirst]. Redirection is the caller's — the
 // only axis the two starters differ on, so everything else lives here.
-let private spawn
+let private spawnWith
+    (inH: Microsoft.Win32.SafeHandles.SafeFileHandle)
+    (outH: Microsoft.Win32.SafeHandles.SafeFileHandle)
     (redirectOut: bool)
     (redirectErr: bool)
     (redirectIn: bool)
@@ -274,13 +276,19 @@ let private spawn
          | None -> Session.Cwd())
 
     psi.UseShellExecute <- false
-    psi.RedirectStandardOutput <- redirectOut
+    psi.RedirectStandardOutput <- redirectOut && isNull outH
     psi.RedirectStandardError <- redirectErr
-    psi.RedirectStandardInput <- redirectIn
+    psi.RedirectStandardInput <- redirectIn && isNull inH
+
+    if not (isNull inH) then
+        psi.StandardInputHandle <- inH
+
+    if not (isNull outH) then
+        psi.StandardOutputHandle <- outH
 
     // a child reading weir's stdin starts after any line weir began
     // [D:prompt-cut-whole-line]
-    if not redirectIn then
+    if not redirectIn && isNull inH then
         Session.Stdin.finishForChild ()
 
     // start through registration inside the spawn gate: the teardown kill
@@ -335,6 +343,18 @@ let private spawn
 
         p)
 
+let private spawn
+    (redirectOut: bool)
+    (redirectErr: bool)
+    (redirectIn: bool)
+    (cwdO: string option)
+    (ambientO: (string * string) list option)
+    (prog: string)
+    (args: string list)
+    (env: (string * string) list)
+    : Process =
+    spawnWith null null redirectOut redirectErr redirectIn cwdO ambientO prog args env
+
 // a pipe's reader or writer on its own thread, never the pool's: blocked
 // on a child that never writes (a race's loser), it holds no pool thread
 // a winner's reader waits for [D:pipe-threads]. The thread joins the
@@ -367,13 +387,81 @@ let private offPool (what: string) (f: unit -> 'a) : System.Threading.Tasks.Task
 // once the child has exited: the fault is recorded before stdin closes,
 // so the child's EOF orders after it, and nothing waits on a producer
 // that is still blocked.
-let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process * (unit -> unit) =
+// the stdin feed on a flow: PIPE_BUF-sized writes, each after the poller
+// says the pipe has room, so no write waits
+let private feedSuspended
+    (p: Process)
+    (fd: int)
+    (lines: seq<string>)
+    (fault: exn ref)
+    : System.Threading.Tasks.Task<bool> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        try
+            try
+                let dst = p.StandardInput.BaseStream
+                let enc = p.StandardInput.Encoding
+                let chunk = if System.OperatingSystem.IsLinux() then 4096 else 512
+                use e = lines.GetEnumerator()
+                let mutable go = true
+
+                while go do
+                    let more =
+                        try
+                            e.MoveNext()
+                        with ex ->
+                            System.Threading.Volatile.Write(&fault.contents, ex)
+                            false
+
+                    if more then
+                        try
+                            // a child's stdin is data: LF on every platform
+                            // [D:lf-output]
+                            let bytes = enc.GetBytes(e.Current + "\n")
+                            let mutable off = 0
+
+                            while off < bytes.Length do
+                                System.Runtime.CompilerServices.AsyncHelpers.Await(Session.pipeWritable fd)
+                                let k = min chunk (bytes.Length - off)
+                                dst.Write(bytes, off, k)
+                                off <- off + k
+                        with _ ->
+                            go <- false
+                    else
+                        go <- false
+            with _ ->
+                ()
+        finally
+            try
+                p.StandardInput.Close()
+            with _ ->
+                ()
+
+        true
+    )
+
+let private startWith
+    (outH: Microsoft.Win32.SafeHandles.SafeFileHandle)
+    (redirectOut: bool)
+    (redirectErr: bool)
+    (s: Spec)
+    : Process * (unit -> unit) =
     let p =
-        spawn redirectOut redirectErr s.Input.IsSome s.Cwd s.Ambient s.Prog s.Args s.Env
+        spawnWith null outH redirectOut redirectErr s.Input.IsSome s.Cwd s.Ambient s.Prog s.Args s.Env
 
     let fault = ref (null: exn)
 
+    let fd =
+        if
+            obj.ReferenceEquals(System.Threading.Tasks.TaskScheduler.Current, Session.armScheduler)
+            && s.Input.IsSome
+        then
+            Session.pipeFd p.StandardInput.BaseStream
+        else
+            -1
+
     match s.Input with
+    // on a flow the feed waits on the pipe, not on a thread [D:async-flows]
+    | Some lines when fd >= 0 -> feedSuspended p fd lines fault |> ignore
     | Some lines ->
         try
             offPool "a command's stdin feed" (fun () ->
@@ -420,6 +508,9 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process * 
         | ex -> System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw()
 
     p, rethrowFault
+
+let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process * (unit -> unit) =
+    startWith null redirectOut redirectErr s
 
 // pipe reads a cut stops [D:pfirst-join] [D:scope-tree]: the reader is
 // over the child's stream wrapped by Session.cutStream, so the cut is
@@ -623,6 +714,159 @@ let runInherited (s: Spec) : unit =
             raiseNonzero true p s p.ExitCode
     finally
         reap p
+
+// ---- the suspended consumers [D:async-flows] ----------------------------
+// each is its blocking twin above with the waits awaited: the exit through
+// Session.processExit, a pipe through the poller (Session.pipesReady) and
+// then the same cut-checked fill. Spawn, registration, the nonzero raise
+// and the reap are the shared code
+let runInheritedSuspended (s: Spec) : System.Threading.Tasks.Task<bool> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let p, producerFault = start false false s
+        use _ = p
+
+        try
+            System.Runtime.CompilerServices.AsyncHelpers.Await(Session.processExit p)
+            p.WaitForExit()
+            producerFault ()
+
+            if p.ExitCode <> 0 then
+                raiseNonzero true p s p.ExitCode
+        finally
+            reap p
+
+        true
+    )
+
+// a child's bytes as StreamReader.ReadLine's lines, fed a fill at a time —
+// a reader cannot be suspended mid-line. The same contract: the BOM switch,
+// and \n, \r and \r\n each ending a line
+type private LineFeed(fallback: System.Text.Encoding) =
+    let head = ResizeArray<byte>()
+    let seg = System.Text.StringBuilder()
+    let mutable decoder: System.Text.Decoder = null
+    let mutable chars: char[] = null
+    let mutable pendingCR = false
+
+    let split (n: int) (lines: ResizeArray<string>) =
+        let mutable i = 0
+
+        while i < n do
+            let k =
+                System.MemoryExtensions.IndexOfAny(System.ReadOnlySpan<char>(chars, i, n - i), '\r', '\n')
+
+            if k < 0 then
+                seg.Append(chars, i, n - i) |> ignore
+                pendingCR <- false
+                i <- n
+            else
+                let c = chars[i + k]
+
+                if k > 0 then
+                    pendingCR <- false
+
+                if c = '\n' && pendingCR then
+                    pendingCR <- false
+                else
+                    if seg.Length = 0 then
+                        lines.Add(System.String(chars, i, k))
+                    else
+                        seg.Append(chars, i, k) |> ignore
+                        lines.Add(seg.ToString())
+                        seg.Clear() |> ignore
+
+                    pendingCR <- (c = '\r')
+
+                i <- i + k + 1
+
+    let decode (bytes: byte[]) (off: int) (n: int) (flush: bool) (lines: ResizeArray<string>) =
+        let need = n + 16
+
+        if isNull chars || chars.Length < need then
+            chars <- Array.zeroCreate<char>(max need 4096)
+
+        split (decoder.GetChars(bytes, off, n, chars, 0, flush)) lines
+
+    let choose (lines: ResizeArray<string>) =
+        let b = head.ToArray()
+        let at (i: int) (v: byte) = b.Length > i && b[i] = v
+
+        let enc, skip =
+            if at 0 0xFEuy && at 1 0xFFuy then
+                (System.Text.UnicodeEncoding(true, true) :> System.Text.Encoding), 2
+            elif at 0 0xFFuy && at 1 0xFEuy then
+                if at 2 0uy && at 3 0uy then
+                    (System.Text.UTF32Encoding(false, true) :> System.Text.Encoding), 4
+                else
+                    (System.Text.UnicodeEncoding(false, true) :> System.Text.Encoding), 2
+            elif at 0 0xEFuy && at 1 0xBBuy && at 2 0xBFuy then
+                (System.Text.UTF8Encoding(true) :> System.Text.Encoding), 3
+            elif at 0 0uy && at 1 0uy && at 2 0xFEuy && at 3 0xFFuy then
+                (System.Text.UTF32Encoding(true, true) :> System.Text.Encoding), 4
+            else
+                fallback, 0
+
+        decoder <- enc.GetDecoder()
+        decode b skip (b.Length - skip) false lines
+
+    member _.Push(bytes: byte[], n: int, lines: ResizeArray<string>) : unit =
+        if isNull decoder then
+            for i in 0 .. n - 1 do
+                head.Add bytes[i]
+
+            if head.Count >= 4 then
+                choose lines
+        else
+            decode bytes 0 n false lines
+
+    member _.Finish(lines: ResizeArray<string>) : unit =
+        if isNull decoder then
+            choose lines
+
+        decode Array.empty 0 0 true lines
+
+        if seg.Length > 0 then
+            lines.Add(seg.ToString())
+            seg.Clear() |> ignore
+
+let statementRelaySuspended (s: Spec) (emit: seq<string> -> unit) : System.Threading.Tasks.Task<bool> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let p, producerFault = start true false s
+        use _ = p
+
+        try
+            let out = Session.cutStream p p.StandardOutput.BaseStream
+            let streams = [| out |]
+            let feed = LineFeed p.StandardOutput.CurrentEncoding
+            let buf = Array.zeroCreate<byte> 65536
+            let lines = ResizeArray<string>()
+            let mutable go = true
+
+            while go do
+                System.Runtime.CompilerServices.AsyncHelpers.Await(Session.pipesReady streams)
+                let n = readBytes out buf 0 buf.Length
+
+                if n > 0 then
+                    feed.Push(buf, n, lines)
+                else
+                    feed.Finish lines
+                    go <- false
+
+                if lines.Count > 0 then
+                    emit (lines.ToArray())
+                    lines.Clear()
+
+            System.Runtime.CompilerServices.AsyncHelpers.Await(Session.processExit p)
+            p.WaitForExit()
+            producerFault ()
+
+            if p.ExitCode <> 0 then
+                raiseNonzero true p s p.ExitCode
+        finally
+            reap p
+
+        true
+    )
 
 // process replacement [D:exec] — execvp, not spawn: the current weir
 // image is replaced by the command and keeps its pid, so as a container
@@ -1053,6 +1297,62 @@ let private completedRaw (cap: int64) (keep: bool) (s: Spec) : int * seq<string>
     producerFault ()
     Session.settleReplInterrupt p.ExitCode, linesView outBytes true, linesView errBytes false
 
+let private readAllPipesSuspended
+    (cap: int64)
+    (keep: bool)
+    (streams: System.IO.Stream[])
+    : System.Threading.Tasks.Task<Segments[]> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let builders = streams |> Array.map (fun _ -> SegmentsBuilder(cap, keep))
+        let live = Array.copy streams
+        let ready = Array.zeroCreate<bool> streams.Length
+        let mutable open' = streams.Length
+
+        while open' > 0 do
+            System.Runtime.CompilerServices.AsyncHelpers.Await(Session.pipesReady live)
+            Session.waitPipes live ready
+
+            for i in 0 .. live.Length - 1 do
+                if ready[i] && builders[i].Fill live[i] = 0 then
+                    live[i] <- null
+                    open' <- open' - 1
+
+        builders |> Array.map (fun b -> b.Done())
+    )
+
+let completedCappedSuspended
+    (cap: int64)
+    (keep: bool)
+    (s: Spec)
+    : System.Threading.Tasks.Task<int * seq<string> * seq<string>> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        try
+            let p, producerFault = start true true s
+            use _ = p
+
+            let read =
+                try
+                    let r =
+                        System.Runtime.CompilerServices.AsyncHelpers.Await(
+                            readAllPipesSuspended cap keep [|
+                                Session.cutStream p p.StandardOutput.BaseStream
+                                Session.cutStream p p.StandardError.BaseStream
+                            |]
+                        )
+
+                    r
+                with _ ->
+                    Session.killTree p
+                    reraise ()
+
+            System.Runtime.CompilerServices.AsyncHelpers.Await(Session.processExit p)
+            p.WaitForExit()
+            producerFault ()
+            Session.settleReplInterrupt p.ExitCode, linesView read[0] true, linesView read[1] false
+        with e when capReached e ->
+            failwith (captureCapMessage cap (showArgv (s.Prog :: s.Args)))
+    )
+
 let completedCapped (cap: int64) (keep: bool) (s: Spec) : int * seq<string> * seq<string> =
     capRefusal cap (showArgv (s.Prog :: s.Args)) (fun () -> completedRaw cap keep s)
 
@@ -1108,7 +1408,7 @@ let private pumpBytes
 
 // start every stage and wire the hops: the head owns the (optional) text
 // stdin feed, every downstream stage's stdin is the raw pipe from its left
-let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
+let private startChainPumped (tailOut: bool) (allErr: bool) (specs: Spec list) =
     let lastIdx = specs.Length - 1
 
     let headFault = ref ignore
@@ -1141,14 +1441,84 @@ let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
 
     procs, pumps, headFault.Value
 
+// POSIX [D:pipe-direct]: stage N's stdout IS stage N+1's stdin — a kernel
+// pipe weir holds neither end of once both are started
+let private startChainDirect (tailOut: bool) (allErr: bool) (specs: Spec list) =
+    let lastIdx = specs.Length - 1
+    let headFault = ref ignore
+    let started = ResizeArray<Spec * Process>()
+    let mutable fromLeft: Microsoft.Win32.SafeHandles.SafeFileHandle = null
+
+    try
+        specs
+        |> List.iteri (fun i sp ->
+            let mutable r: Microsoft.Win32.SafeHandles.SafeFileHandle = null
+            let mutable w: Microsoft.Win32.SafeHandles.SafeFileHandle = null
+
+            if i < lastIdx then
+                Microsoft.Win32.SafeHandles.SafeFileHandle.CreateAnonymousPipe(&r, &w)
+
+            try
+                let p =
+                    if i = 0 then
+                        let p, fault = startWith w true allErr sp
+                        headFault.Value <- fault
+                        p
+                    else
+                        spawnWith
+                            fromLeft
+                            w
+                            (i < lastIdx || tailOut)
+                            allErr
+                            true
+                            sp.Cwd
+                            sp.Ambient
+                            sp.Prog
+                            sp.Args
+                            sp.Env
+
+                started.Add((sp, p))
+            finally
+                if not (isNull w) then
+                    w.Dispose()
+
+                if not (isNull fromLeft) then
+                    fromLeft.Dispose()
+
+                fromLeft <- r)
+    with _ ->
+        if not (isNull fromLeft) then
+            fromLeft.Dispose()
+
+        for _, p in started do
+            Session.killTree p
+
+        reraise ()
+
+    List.ofSeq started, ([]: System.Threading.Tasks.Task<bool> list), headFault.Value
+
+let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
+    if Session.pipesSuspend then
+        startChainDirect tailOut allErr specs
+    else
+        startChainPumped tailOut allErr specs
+
 // the chain's failure, after every stage exited: the LEFTMOST failing
 // stage — where the fault began — except a stage told to stop: its
 // downstream quit reading first, so its exit is the pipe closing, not a
-// fault [D:pipe-early-exit]
+// fault [D:pipe-early-exit]. Over direct pipes only SIGPIPE's 141 says
+// so [D:pipe-direct]
 let private chainFailure (procs: (Spec * Process) list) (pumps: System.Threading.Tasks.Task<bool> list) =
     procs
     |> List.mapi (fun i (sp, p: Process) -> i, sp, p, p.ExitCode)
-    |> List.tryFind (fun (i, _, _, code) -> code <> 0 && not (i < pumps.Length && Session.cutJoin pumps[i]))
+    |> List.tryFind (fun (i, _, _, code) ->
+        code <> 0
+        && not (
+            if pumps.IsEmpty then
+                i < procs.Length - 1 && code = 141
+            else
+                i < pumps.Length && Session.cutJoin pumps[i]
+        ))
     |> Option.map (fun (_, sp, p, code) -> sp, p, code)
 
 let private chainLinesOfWith (statement: bool) (specs: Spec list) : seq<string> =
@@ -1182,6 +1552,160 @@ let private chainLinesOfWith (statement: bool) (specs: Spec list) : seq<string> 
                 for _, p in procs do
                     reap p
         }
+
+// a command's (or a chain's) lines for a flow [D:async-seq]: `linesOf`'s
+// lifecycle — start at the first pull, the exit law at the end, reap on
+// close or raise — with the wait on the poller. `raises = false` is the
+// code reifiers' relay
+[<AllowNullLiteral>]
+type LinesPull(statement: bool, specs: Spec list, raises: bool) =
+    let lines = ResizeArray<string>()
+    let buf = Array.zeroCreate<byte> 65536
+    let mutable procs: (Spec * Process) list = []
+    let mutable pumps: System.Threading.Tasks.Task<bool> list = []
+    let mutable producerFault: unit -> unit = ignore
+    let mutable streams: System.IO.Stream[] = null
+    let mutable feed: LineFeed = Unchecked.defaultof<LineFeed>
+    let mutable pos = 0
+    let mutable eof = false
+    let mutable ended = false
+    let mutable closed = false
+    let mutable code = 0
+    let mutable current: string = null
+
+    member _.Current = current
+    member _.Code = code
+
+    member _.TryTake() : bool =
+        if pos < lines.Count then
+            current <- lines[pos]
+            pos <- pos + 1
+            true
+        else
+            false
+
+    member this.Close() : unit =
+        if not closed then
+            closed <- true
+
+            for _, p in procs do
+                try
+                    reap p
+                finally
+                    p.Dispose()
+
+    member this.NextAsync() : System.Threading.Tasks.Task<bool> =
+        Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            try
+                if isNull streams && not closed then
+                    match specs with
+                    | [ one ] ->
+                        let started, fault = start true false one
+                        procs <- [ one, started ]
+                        producerFault <- fault
+                    | _ ->
+                        let started, hops, fault = startChain true false specs
+                        procs <- started
+                        pumps <- hops
+                        producerFault <- fault
+
+                    let _, last = List.last procs
+                    streams <- [| Session.cutStream last last.StandardOutput.BaseStream |]
+                    feed <- LineFeed last.StandardOutput.CurrentEncoding
+
+                if closed then
+                    false
+                else
+                    while pos >= lines.Count && not eof do
+                        lines.Clear()
+                        pos <- 0
+                        System.Runtime.CompilerServices.AsyncHelpers.Await(Session.pipesReady streams)
+                        let n = readBytes streams[0] buf 0 buf.Length
+
+                        if n > 0 then
+                            feed.Push(buf, n, lines)
+                        else
+                            feed.Finish lines
+                            eof <- true
+
+                    if pos < lines.Count then
+                        current <- lines[pos]
+                        pos <- pos + 1
+                        true
+                    else
+                        if not ended then
+                            ended <- true
+                            let mutable rest = procs
+
+                            while not rest.IsEmpty do
+                                let _, p = rest.Head
+                                rest <- rest.Tail
+                                System.Runtime.CompilerServices.AsyncHelpers.Await(Session.processExit p)
+                                p.WaitForExit()
+
+                            producerFault ()
+
+                            match procs with
+                            | [ one, p ] ->
+                                code <- p.ExitCode
+
+                                if raises && code <> 0 then
+                                    raiseNonzero statement p one code
+                            | _ ->
+                                match chainFailure procs pumps with
+                                | Some(sp, p, c) ->
+                                    code <- c
+
+                                    if raises then
+                                        raiseNonzero statement p sp c
+                                | None -> ()
+
+                            this.Close()
+
+                        false
+            with _ ->
+                this.Close()
+                reraise ()
+        )
+
+let streamCodeSuspended (specs: Spec list) : System.Threading.Tasks.Task<int> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let pull = LinesPull(false, specs, false)
+
+        try
+            while (let more = System.Runtime.CompilerServices.AsyncHelpers.Await(pull.NextAsync())
+                   more) do
+                System.Console.Out.WriteLine pull.Current
+        finally
+            pull.Close()
+
+        Session.settleReplInterrupt pull.Code
+    )
+
+let runChainInheritedSuspended (specs: Spec list) : System.Threading.Tasks.Task<bool> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let procs, pumps, producerFault = startChain false false specs
+
+        try
+            let mutable rest = procs
+
+            while not rest.IsEmpty do
+                let _, p = rest.Head
+                rest <- rest.Tail
+                System.Runtime.CompilerServices.AsyncHelpers.Await(Session.processExit p)
+                p.WaitForExit()
+
+            producerFault ()
+
+            match chainFailure procs pumps with
+            | Some(sp, p, code) -> raiseNonzero true p sp code
+            | None -> ()
+        finally
+            for _, p in procs do
+                reap p
+
+        true
+    )
 
 let chainLinesOf (specs: Spec list) : seq<string> = chainLinesOfWith false specs
 
@@ -1232,6 +1756,59 @@ let private chainCompletedRaw (cap: int64) (keep: bool) (specs: Spec list) : int
         finally
             for _, p in procs do
                 reap p
+
+let chainCompletedSuspended
+    (keep: bool)
+    (specs: Spec list)
+    : System.Threading.Tasks.Task<int * seq<string> * seq<string>> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        try
+            let procs, pumps, producerFault = startChain true true specs
+
+            try
+                let _, last = List.last procs
+
+                let read =
+                    System.Runtime.CompilerServices.AsyncHelpers.Await(
+                        readAllPipesSuspended
+                            captureCap
+                            keep
+                            (Array.ofList (
+                                Session.cutStream last last.StandardOutput.BaseStream
+                                :: (procs |> List.map (fun (_, p) -> Session.cutStream p p.StandardError.BaseStream))
+                            ))
+                    )
+
+                let outBytes = read[0]
+                let mutable rest = procs
+
+                while not rest.IsEmpty do
+                    let _, p = rest.Head
+                    rest <- rest.Tail
+                    System.Runtime.CompilerServices.AsyncHelpers.Await(Session.processExit p)
+                    p.WaitForExit()
+
+                producerFault ()
+
+                let errLines =
+                    read[1..]
+                    |> List.ofArray
+                    |> List.map (fun b -> linesView b false |> List.ofSeq)
+                    |> List.concat
+
+                Session.settleReplInterrupt (chainCode procs pumps), linesView outBytes true, (errLines :> seq<string>)
+            finally
+                for _, p in procs do
+                    reap p
+        with e when capReached e ->
+            failwith (
+                captureCapMessage
+                    captureCap
+                    (specs
+                     |> List.map (fun sp -> showArgv (sp.Prog :: sp.Args))
+                     |> String.concat " | ")
+            )
+    )
 
 let chainCompletedCapped (cap: int64) (keep: bool) (specs: Spec list) : int * seq<string> * seq<string> =
     let shown =
@@ -1369,6 +1946,29 @@ let completeCode
         }
 
     code
+
+let specOf (overlay: (string * string) list) (prog: string) (args: string list) : Spec = {
+    Prog = prog
+    Args = args
+    Env = overlay
+    Input = None
+    Cwd = None
+    Ambient = None
+}
+
+let completeWithSuspended
+    (overlay: (string * string) list)
+    (prog: string)
+    (args: string list)
+    : System.Threading.Tasks.Task<int * seq<string> * seq<string>> =
+    completedCappedSuspended captureCap true (specOf overlay prog args)
+
+let completeCodeSuspended
+    (overlay: (string * string) list)
+    (prog: string)
+    (args: string list)
+    : System.Threading.Tasks.Task<int * seq<string> * seq<string>> =
+    completedCappedSuspended captureCap false (specOf overlay prog args)
 
 // a scoped background child [D:scoped-procs]: both streams spill to
 // files (the parent's terminal never interleaves; Proc.tail and the

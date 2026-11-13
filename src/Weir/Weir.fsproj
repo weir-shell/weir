@@ -4,6 +4,9 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net11.0</TargetFramework>
     <PublishAot>true</PublishAot>
+    <!-- runtime async [D:runtime-async]: StateMachineHelpers.__runtimeAsyncReturn
+         and AsyncHelpers.Await are preview-gated in this compiler -->
+    <LangVersion>preview</LangVersion>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- optimize in EVERY configuration [D:debug-optimize]: the F# compiler's
          NON-optimized debug-info generator overflows on the large Builtins

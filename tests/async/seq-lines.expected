@@ -1,0 +1,4 @@
+exit=0
+--stdout--
+[a][b][c][][][last] [bom][�bad] [x][y] 0 1 200000,4
+--stderr--

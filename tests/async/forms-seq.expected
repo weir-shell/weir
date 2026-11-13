@@ -1,0 +1,5 @@
+exit=0
+--stdout--
+1 abc c,bb 5 4321 a2b1 x2y1 1234 ["a","b"] [{"n":"p"},{"n":"q"}] abc 200000 1,2 pong tick repeat: timed out af
+2 abc c,bb 5 4321 a2b1 x2y1 1234 ["a","b"] [{"n":"p"},{"n":"q"}] abc 200000 1,2 pong tick repeat: timed out af
+--stderr--

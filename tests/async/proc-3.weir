@@ -1,0 +1,5 @@
+let rs = [1; 2; 3; 4] |> Seq.pmap (fun i ->
+    let r = sh -c $"seq 1 {i * 50000}; seq 1 {i * 30000} >&2; exit {i}" | complete
+    let ok = sh -c $"exit {i % 2}" | succeeds
+    $"{i} {r.exitCode} {r.ok} {Seq.length r.stdout} {Seq.length r.stderr} {Seq.last r.stdout} {ok}")
+rs |> Seq.iter print

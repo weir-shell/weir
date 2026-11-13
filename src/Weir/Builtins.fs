@@ -162,12 +162,14 @@ type private Step =
 
 type private Stage = {
     Step: Value -> Step
+    StepAsync: Flow -> Value -> Task<Step>
     Prefix: Value list
     Finish: unit -> Value list
 }
 
 let private stage (step: Value -> Step) : Stage = {
     Step = step
+    StepAsync = Unchecked.defaultof<_>
     Prefix = []
     Finish = fun () -> []
 }
@@ -182,17 +184,41 @@ type private Work =
     | Resume of System.Collections.Generic.IEnumerator<Value> * Stage list
     | Close of Stage * Stage list
 
+// One driver for both evaluators [D:async-seq]: `advance` is the loop, and
+// it never waits — on a flow it returns a parked state for `Resume` to
+// await; MoveNext is the same loop with waits taken in place
 type private ChainEnumerator(root: Chain) =
     let pending = System.Collections.Generic.Stack<Work>()
     let mutable leaf: System.Collections.Generic.IEnumerator<Value> = null
+    let mutable leafPull: ISuspPull = null
     let mutable fns: Stage list = []
     let mutable current = VUnit
+    // the suspendable drive [D:async-seq]: `susp` while a flow drives it;
+    // a pull or a stage that must wait parks its state here and the
+    // advance returns -1 (the leaf) or -2 (the stage) for the driver to
+    // await, then resume
+    let mutable susp = false
+    let mutable leafReady = false
+    let mutable leafMore = false
+    let mutable parkedStage = Unchecked.defaultof<Stage>
+    let mutable parkedValue = VUnit
+    let mutable parkedRest: Stage list = []
+    let mutable parkedStop: Stage option = None
     do pending.Push(Node(root, []))
 
     let dropLeaf () =
         if not (isNull leaf) then
             leaf.Dispose()
             leaf <- null
+            leafPull <- null
+
+    let takeLeaf (e: System.Collections.Generic.IEnumerator<Value>) =
+        leaf <- e
+
+        leafPull <-
+            (match e with
+             | :? ISuspPull as sp -> sp
+             | _ -> null)
 
     // abandon a stopped stage's subtree: everything above its Close marker
     let abandon (st: Stage) =
@@ -205,6 +231,161 @@ type private ChainEnumerator(root: Chain) =
             | Resume(e, _) -> e.Dispose()
             | _ -> ()
 
+    // one element through its stages: 1 = it is `current`, 2 = it was
+    // consumed, -2 = a stage's call must be awaited (parked). `taken` is
+    // the parked stage's answer on resume
+    let stages (v0: Value) (rest0: Stage list) (stop0: Stage option) (taken: Step voption) : int =
+        let mutable v = v0
+        let mutable rest = rest0
+        let mutable dropped = false
+        let mutable stopAt = stop0
+        let mutable splice = None
+        let mutable parked = false
+        let mutable first = taken
+
+        while not dropped && not parked && (first.IsSome || not rest.IsEmpty) do
+            let mutable st = parkedStage
+            let mutable step = Skip
+
+            if first.IsSome then
+                step <- first.Value
+                first <- ValueNone
+            else
+                st <- rest.Head
+                rest <- rest.Tail
+
+                if susp && not (obj.ReferenceEquals(st.StepAsync, null)) then
+                    parkedStage <- st
+                    parkedValue <- v
+                    parkedRest <- rest
+                    parkedStop <- stopAt
+                    parked <- true
+                else
+                    step <- st.Step v
+
+            if not parked then
+                match step with
+                | Skip -> dropped <- true
+                | Emit w -> v <- w
+                | EmitStop w ->
+                    v <- w
+                    stopAt <- Some st
+                | Stop ->
+                    stopAt <- Some st
+                    dropped <- true
+                | Splice s ->
+                    splice <- Some(s, rest)
+                    dropped <- true
+
+        if parked then
+            -2
+        else
+            // the outermost stop covers any inner one
+            match stopAt with
+            | Some st -> abandon st
+            | None -> ()
+
+            match splice with
+            | Some(s, outer) ->
+                if not (isNull leaf) then
+                    pending.Push(Resume(leaf, fns))
+                    leaf <- null
+                    leafPull <- null
+
+                let inner =
+                    match s with
+                    | :? ChainSeq as c -> c.Root
+                    | s -> Leaf s
+
+                pending.Push(Node(inner, outer))
+            | None -> ()
+
+            if dropped then
+                2
+            else
+                current <- v
+                1
+
+    // 1 = an element is `current`, 0 = the end, -1 = the leaf's pull must
+    // be awaited, -2 = a stage's call must be awaited
+    let advance () : int =
+        let mutable r = 2
+
+        while r = 2 do
+            if not (isNull leaf) then
+                let mutable more = false
+
+                if leafReady then
+                    leafReady <- false
+                    more <- leafMore
+                elif susp && not (isNull leafPull) then
+                    if leafPull.TryNext() then more <- true else r <- -1
+                else
+                    more <- leaf.MoveNext()
+
+                if r <> -1 then
+                    if more then
+                        r <- stages leaf.Current fns None ValueNone
+                    else
+                        dropLeaf ()
+            elif pending.Count = 0 then
+                r <- 0
+            else
+                match pending.Pop() with
+                | Node(Leaf s, fs) ->
+                    takeLeaf (s.GetEnumerator())
+                    fns <- fs
+                | Node(Append(l, r), fs) ->
+                    pending.Push(Node(r, fs))
+                    pending.Push(Node(l, fs))
+                | Node(Staged(mk, inner), fs) ->
+                    let st = mk ()
+                    pending.Push(Close(st, fs))
+                    pending.Push(Node(inner, st :: fs))
+
+                    if not st.Prefix.IsEmpty then
+                        pending.Push(Node(Leaf st.Prefix, fs))
+                | Resume(e, fs) ->
+                    takeLeaf e
+                    fns <- fs
+                | Close(st, fs) ->
+                    match st.Finish() with
+                    | [] -> ()
+                    | tail -> pending.Push(Node(Leaf tail, fs))
+
+        r
+
+    member _.Current = current
+
+    /// advance for a flow without waiting: 1 or 0 as `advance`, negative
+    /// when `Resume` must finish the step
+    member _.TryAdvance() : int =
+        susp <- true
+        advance ()
+
+    /// finish a step `TryAdvance` left waiting at `state`
+    member _.Resume(flow: Flow, state: int) : Task<bool> =
+        Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let mutable r = state
+
+            while r < 0 || r = 2 do
+                if r = -1 then
+                    let m = awaitLeaf (leafPull.NextAsync flow)
+                    leafMore <- m
+                    leafReady <- true
+                    susp <- true
+                    r <- advance ()
+                elif r = -2 then
+                    let step = awaitFrame flow (parkedStage.StepAsync flow parkedValue)
+                    susp <- true
+                    r <- stages parkedValue parkedRest parkedStop (ValueSome step)
+                else
+                    susp <- true
+                    r <- advance ()
+
+            r = 1
+        )
+
     interface System.Collections.Generic.IEnumerator<Value> with
         member _.Current = current
 
@@ -212,84 +393,8 @@ type private ChainEnumerator(root: Chain) =
         member _.Current = box current
 
         member _.MoveNext() =
-            let mutable result = None
-
-            while result.IsNone do
-                if not (isNull leaf) then
-                    if leaf.MoveNext() then
-                        let mutable v = leaf.Current
-                        let mutable rest = fns
-                        let mutable dropped = false
-                        let mutable stopAt = None
-                        let mutable splice = None
-
-                        while not dropped && not rest.IsEmpty do
-                            let st = rest.Head
-                            rest <- rest.Tail
-
-                            match st.Step v with
-                            | Skip -> dropped <- true
-                            | Emit w -> v <- w
-                            | EmitStop w ->
-                                v <- w
-                                stopAt <- Some st
-                            | Stop ->
-                                stopAt <- Some st
-                                dropped <- true
-                            | Splice s ->
-                                splice <- Some(s, rest)
-                                dropped <- true
-
-                        // the outermost stop covers any inner one
-                        match stopAt with
-                        | Some st -> abandon st
-                        | None -> ()
-
-                        match splice with
-                        | Some(s, outer) ->
-                            if not (isNull leaf) then
-                                pending.Push(Resume(leaf, fns))
-                                leaf <- null
-
-                            let inner =
-                                match s with
-                                | :? ChainSeq as c -> c.Root
-                                | s -> Leaf s
-
-                            pending.Push(Node(inner, outer))
-                        | None -> ()
-
-                        if not dropped then
-                            current <- v
-                            result <- Some true
-                    else
-                        dropLeaf ()
-                elif pending.Count = 0 then
-                    result <- Some false
-                else
-                    match pending.Pop() with
-                    | Node(Leaf s, fs) ->
-                        leaf <- s.GetEnumerator()
-                        fns <- fs
-                    | Node(Append(l, r), fs) ->
-                        pending.Push(Node(r, fs))
-                        pending.Push(Node(l, fs))
-                    | Node(Staged(mk, inner), fs) ->
-                        let st = mk ()
-                        pending.Push(Close(st, fs))
-                        pending.Push(Node(inner, st :: fs))
-
-                        if not st.Prefix.IsEmpty then
-                            pending.Push(Node(Leaf st.Prefix, fs))
-                    | Resume(e, fs) ->
-                        leaf <- e
-                        fns <- fs
-                    | Close(st, fs) ->
-                        match st.Finish() with
-                        | [] -> ()
-                        | tail -> pending.Push(Node(Leaf tail, fs))
-
-            result.Value
+            susp <- false
+            advance () = 1
 
         member _.Reset() = raise (System.NotSupportedException())
 
@@ -302,8 +407,9 @@ type private ChainEnumerator(root: Chain) =
                 | Resume(e, _) -> e.Dispose()
                 | _ -> ()
 
-and private ChainSeq(root: Chain) =
+and private ChainSeq(root: Chain, susp: bool) =
     member _.Root = root
+    member _.Susp = susp
 
     interface System.Collections.Generic.IEnumerable<Value> with
         member _.GetEnumerator() = new ChainEnumerator(root)
@@ -316,13 +422,123 @@ let private chainOf (s: seq<Value>) : Chain =
     | :? ChainSeq as c -> c.Root
     | s -> Leaf s
 
-let private staged (items: seq<Value>) (mk: unit -> Stage) : Value =
-    VSeq(ChainSeq(Staged(mk, chainOf items)))
+let private seqSusp (s: seq<Value>) : bool =
+    match s with
+    | :? ChainSeq as c -> c.Susp
+    | :? ISuspSeq -> true
+    | _ -> false
+
+// a flow's pull: no await while elements are at hand
+let inline private pullNext (flow: Flow) (e: ChainEnumerator) : bool =
+    let r = e.TryAdvance()
+
+    if r >= 0 then
+        r = 1
+    else
+        awaitFrame flow (e.Resume(flow, r))
+
+let private drainSuspended (flow: Flow) (items: seq<Value>) : Task<Value[]> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let e = new ChainEnumerator(chainOf items)
+        let all = ResizeArray<Value>()
+
+        try
+            while pullNext flow e do
+                all.Add e.Current
+        finally
+            (e :> System.IDisposable).Dispose()
+
+        all.ToArray()
+    )
+
+// a seq that reads its source whole on the first pull (a sort, a
+// grouping): a flow drains a suspendable source without holding a thread
+// [D:async-seq]
+type private DrainedEnum(items: seq<Value>, finish: seq<Value> -> seq<Value>) =
+    let mutable inner: System.Collections.Generic.IEnumerator<Value> = null
+
+    interface ISuspPull with
+        member _.TryNext() : bool = not (isNull inner) && inner.MoveNext()
+
+        member _.NextAsync(flow: Flow) : Task<bool> =
+            Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+                if isNull inner then
+                    let all = awaitFrame flow (drainSuspended flow items)
+                    inner <- (finish (all :> seq<Value>)).GetEnumerator()
+
+                inner.MoveNext()
+            )
+
+    interface System.Collections.Generic.IEnumerator<Value> with
+        member _.Current = inner.Current
+
+    interface System.Collections.IEnumerator with
+        member _.Current = box inner.Current
+
+        member _.MoveNext() =
+            if isNull inner then
+                inner <- (finish items).GetEnumerator()
+
+            inner.MoveNext()
+
+        member _.Reset() = raise (System.NotSupportedException())
+
+    interface System.IDisposable with
+        member _.Dispose() =
+            if not (isNull inner) then
+                inner.Dispose()
+
+type private DrainedSeq(items: seq<Value>, finish: seq<Value> -> seq<Value>) =
+    interface ISuspSeq
+
+    interface System.Collections.Generic.IEnumerable<Value> with
+        member _.GetEnumerator() : System.Collections.Generic.IEnumerator<Value> = new DrainedEnum(items, finish)
+
+    interface System.Collections.IEnumerable with
+        member _.GetEnumerator() : System.Collections.IEnumerator = new DrainedEnum(items, finish)
+
+let private delayedSeq (items: seq<Value>) (finish: seq<Value> -> seq<Value>) : seq<Value> =
+    if seqSusp items then
+        DrainedSeq(items, finish) :> seq<Value>
+    else
+        Seq.delay (fun () -> finish items)
+
+let private stagedWith (susp: bool) (items: seq<Value>) (mk: unit -> Stage) : Value =
+    VSeq(ChainSeq(Staged(mk, chainOf items), susp || seqSusp items))
+
+let private staged (items: seq<Value>) (mk: unit -> Stage) : Value = stagedWith false items mk
+
+let private stageSuspending (step: Value -> Step) (stepAsync: Flow -> Value -> Task<Step>) : Stage = {
+    Step = step
+    StepAsync = stepAsync
+    Prefix = []
+    Finish = fun () -> []
+}
+
+// a stage that calls weir code which may wait [D:async-seq]: the call is
+// awaited on a flow, and `k` decides the step from its answer either way
+let private callStep (fnOf: unit -> Value) (k: Value -> Value -> Step) (flow: Flow) (x: Value) : Task<Step> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let r = awaitFrame flow (applyAsync flow (fnOf ()) x)
+        k x r
+    )
+
+let private stageCalling (fnOf: unit -> Value) (k: Value -> Value -> Step) : Stage =
+    stageSuspending (fun x -> k x (apply (fnOf ()) x)) (callStep fnOf k)
+
+let private stagedCalling (f: Value) (items: seq<Value>) (k: Value -> Value -> Step) : Value =
+    stagedWith true items (fun () -> stageCalling (fun () -> f) k)
 
 let private whereImpl: Value =
     VBuiltin(fun pred ->
         VBuiltin(fun s ->
             match s with
+            | VSeq items when maySuspend pred ->
+                stagedCalling pred items (fun item r ->
+                    match r with
+                    | VBool true -> Emit item
+                    | VBool false -> Skip
+                    | v -> unreachable $"the checker rejects a non-bool predicate result: {formatValue v}")
             | VSeq items ->
                 staged items (fun () ->
                     stage (fun item ->
@@ -356,6 +572,7 @@ let private mapImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
+            | VSeq items when maySuspend f -> stagedCalling f items (fun _ r -> Emit r)
             | VSeq items -> staged items (fun () -> stage (fun x -> Emit(apply f x)))
             | v -> unreachable $"the checker rejects 'map' on {formatValue v}"))
 
@@ -364,6 +581,12 @@ let private chooseImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
+            | VSeq items when maySuspend f ->
+                stagedCalling f items (fun _ r ->
+                    match r with
+                    | VUnion("Some", Some v) -> Emit v
+                    | VUnion("None", None) -> Skip
+                    | v -> unreachable $"the checker guarantees an Option chooser, got {formatValue v}")
             | VSeq items ->
                 staged items (fun () ->
                     stage (fun x ->
@@ -377,7 +600,7 @@ let private appendImpl: Value =
     VBuiltin(fun a ->
         VBuiltin(fun b ->
             match a, b with
-            | VSeq xs, VSeq ys -> VSeq(ChainSeq(Append(chainOf xs, chainOf ys)))
+            | VSeq xs, VSeq ys -> VSeq(ChainSeq(Append(chainOf xs, chainOf ys), seqSusp xs || seqSusp ys))
             | v, _ -> unreachable $"the checker rejects 'append' on {formatValue v}"))
 
 let private sumImpl: Value =
@@ -556,19 +779,45 @@ let completedOf (code: int) (stdout: seq<string>) (stderr: seq<string>) : Value 
 
 // completedWith is the shared body; completed is the empty overlay and
 // completedEnv the env-sigil desugar target — the cmd/cmdEnv pattern.
+let private completedSuspended
+    (overlay: (string * string) list)
+    (prog: string)
+    (argsV: Value)
+    : System.Threading.Tasks.Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        match argsV with
+        | VSeq args ->
+            let argv = argStrings args
+
+            let code, stdout, stderr =
+                System.Runtime.CompilerServices.AsyncHelpers.Await(
+                    Proc.completeWithSuspended overlay (Proc.specProg prog) argv
+                )
+
+            completedOf code stdout stderr
+        | _ -> unreachable "the checker rejects 'completed' on these arguments"
+    )
+
 let private completedWith (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
-        VBuiltin(fun argsV ->
-            match progV, argsV with
-            | VStr prog, VSeq args ->
-                let argv = argStrings args
+        let sync =
+            VBuiltin(fun argsV ->
+                match progV, argsV with
+                | VStr prog, VSeq args ->
+                    let argv = argStrings args
 
-                let code, stdout, stderr = Proc.completeWith overlay (Proc.specProg prog) argv None
+                    let code, stdout, stderr = Proc.completeWith overlay (Proc.specProg prog) argv None
 
-                // lazy views over the capture buffer [D:capture-buffer]
-                // — decode per pull, stable on re-enumeration
-                completedOf code stdout stderr
-            | _ -> unreachable "the checker rejects 'completed' on these arguments"))
+                    // lazy views over the capture buffer [D:capture-buffer]
+                    // — decode per pull, stable on re-enumeration
+                    completedOf code stdout stderr
+                | _ -> unreachable "the checker rejects 'completed' on these arguments")
+
+        match progV with
+        | VStr prog when Session.pipesSuspend -> registerAsync sync (completedSuspended overlay prog)
+        | _ -> ()
+
+        sync)
 
 let private completedImpl: Value = completedWith []
 
@@ -578,17 +827,74 @@ let private completedImpl: Value = completedWith []
 // exitCode stream (their output is for the human — the result travels
 // separately): orFail raises `msg (exit N)` on nonzero, exitCode
 // yields the code as int and never raises.
+let private succeededSuspended
+    (overlay: (string * string) list)
+    (prog: string)
+    (argsV: Value)
+    : System.Threading.Tasks.Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        match argsV with
+        | VSeq args ->
+            let argv = argStrings args
+
+            let code, _, _ =
+                System.Runtime.CompilerServices.AsyncHelpers.Await(
+                    Proc.completeCodeSuspended overlay (Proc.specProg prog) argv
+                )
+
+            VBool(code = 0)
+        | _ -> unreachable "the checker rejects 'succeeded' on these arguments"
+    )
+
 let private succeededWith (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
-        VBuiltin(fun argsV ->
-            match progV, argsV with
-            | VStr prog, VSeq args ->
-                let argv = argStrings args
-                VBool(Proc.completeCode overlay (Proc.specProg prog) argv None = 0)
-            | _ -> unreachable "the checker rejects 'succeeded' on these arguments"))
+        let sync =
+            VBuiltin(fun argsV ->
+                match progV, argsV with
+                | VStr prog, VSeq args ->
+                    let argv = argStrings args
+                    VBool(Proc.completeCode overlay (Proc.specProg prog) argv None = 0)
+                | _ -> unreachable "the checker rejects 'succeeded' on these arguments")
+
+        match progV with
+        | VStr prog when Session.pipesSuspend -> registerAsync sync (succeededSuspended overlay prog)
+        | _ -> ()
+
+        sync)
+
+let private streamCodeSuspended
+    (overlay: (string * string) list)
+    (progV: Value)
+    (argsV: Value)
+    (finish: int -> Value)
+    : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        match progV, argsV with
+        | VStr prog, VSeq args ->
+            let code =
+                awaitLeaf (Proc.streamCodeSuspended [ Proc.specOf overlay (Proc.specProg prog) (argStrings args) ])
+
+            finish code
+        | _ -> unreachable "the checker rejects a code reifier on these arguments"
+    )
+
+let private suspendingN (arity: int) (run: Flow -> Value list -> Task<Value>) (b: Value) : Value =
+    if Session.pipesSuspend then
+        registerAsyncN b arity run
+
+    b
 
 let private orFailedWith (overlay: (string * string) list) : Value =
-    VBuiltin(fun msgV ->
+    suspendingN 3 (fun _ args ->
+        match args with
+        | [ VStr msg; progV; argsV ] ->
+            streamCodeSuspended overlay progV argsV (fun code ->
+                if code <> 0 then
+                    failwith $"{msg} (exit {code})"
+
+                VUnit)
+        | _ -> null)
+    <| VBuiltin(fun msgV ->
         VBuiltin(fun progV ->
             VBuiltin(fun argsV ->
                 match msgV, progV, argsV with
@@ -603,7 +909,11 @@ let private orFailedWith (overlay: (string * string) list) : Value =
                 | _ -> unreachable "the checker rejects 'orFailed' on these arguments")))
 
 let private exitCodedWith (overlay: (string * string) list) : Value =
-    VBuiltin(fun progV ->
+    suspendingN 2 (fun _ args ->
+        match args with
+        | [ progV; argsV ] -> streamCodeSuspended overlay progV argsV (fun code -> VInt(int64 code))
+        | _ -> null)
+    <| VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
             match progV, argsV with
             | VStr prog, VSeq args ->
@@ -1399,7 +1709,7 @@ let private sortByImpl: Value =
             match s with
             | VSeq items ->
                 VSeq(
-                    Seq.delay (fun () ->
+                    delayedSeq items (fun items ->
                         items
                         |> Seq.map (fun item -> apply keyf item, item)
                         |> Seq.sortWith (fun (k1, _) (k2, _) -> orderCompare "sortBy" k1 k2)
@@ -1415,7 +1725,7 @@ let private sortByDescImpl: Value =
             match s with
             | VSeq items ->
                 VSeq(
-                    Seq.delay (fun () ->
+                    delayedSeq items (fun items ->
                         items
                         |> Seq.map (fun item -> apply keyf item, item)
                         |> Seq.sortWith (fun (k1, _) (k2, _) -> orderCompare "sortByDescending" k2 k1)
@@ -1727,7 +2037,7 @@ let private groupByImpl: Value =
                 VSeq(
                     // any Eq key, by Value's structural equality — countBy's
                     // key [D:groupby-eq-keys]
-                    Seq.delay (fun () ->
+                    delayedSeq items (fun items ->
                         items
                         |> Seq.groupBy (apply keyf)
                         |> Seq.map (fun (key, group) -> VTuple [ key; VSeq(List.ofSeq group :> seq<Value>) ]))
@@ -1744,6 +2054,148 @@ let private iterImpl: Value =
 
                 VUnit
             | v -> unreachable $"the checker rejects 'iter' on {formatValue v}"))
+
+// ---- terminals on a flow [D:async-seq] ----------------------------------
+// each registers a suspending form that returns null unless the seq (or
+// the function it calls) can suspend. Three shapes besides the loops:
+// drain then run the blocking form (it reads to the end anyway), take a
+// prefix (head, item), and probe — await the predicate per element, then
+// replay its answers to the blocking form
+let private iterSuspended (flow: Flow) (f: Value) (items: seq<Value>) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let e = new ChainEnumerator(chainOf items)
+
+        try
+            let mutable go = true
+
+            while go do
+                let more = pullNext flow e
+
+                if more then
+                    let _ = awaitFrame flow (applyAsync flow f e.Current)
+                    ()
+                else
+                    go <- false
+        finally
+            (e :> System.IDisposable).Dispose()
+
+        VUnit
+    )
+
+let private foldSuspended (flow: Flow) (folder: Value) (init: Value) (items: seq<Value>) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let e = new ChainEnumerator(chainOf items)
+        let mutable acc = init
+
+        try
+            let mutable go = true
+
+            while go do
+                let more = pullNext flow e
+
+                if more then
+                    let g = awaitFrame flow (applyAsync flow folder acc)
+                    let r = awaitFrame flow (applyAsync flow g e.Current)
+                    acc <- r
+                else
+                    go <- false
+        finally
+            (e :> System.IDisposable).Dispose()
+
+        acc
+    )
+
+let private drainedSuspended (flow: Flow) (items: seq<Value>) (finish: Value -> Value) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let e = new ChainEnumerator(chainOf items)
+        let all = ResizeArray<Value>()
+
+        try
+            let mutable go = true
+
+            while go do
+                let more = pullNext flow e
+
+                if more then all.Add e.Current else go <- false
+        finally
+            (e :> System.IDisposable).Dispose()
+
+        finish (VSeq(all.ToArray() :> seq<Value>))
+    )
+
+let private eachSuspended (flow: Flow) (items: seq<Value>) (each: Value -> unit) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let e = new ChainEnumerator(chainOf items)
+
+        try
+            let mutable go = true
+
+            while go do
+                let more = pullNext flow e
+
+                if more then each e.Current else go <- false
+        finally
+            (e :> System.IDisposable).Dispose()
+
+        VUnit
+    )
+
+let private lengthSuspended (flow: Flow) (items: seq<Value>) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let e = new ChainEnumerator(chainOf items)
+        let mutable n = 0L
+
+        try
+            let mutable go = true
+
+            while go do
+                let more = pullNext flow e
+
+                if more then n <- n + 1L else go <- false
+        finally
+            (e :> System.IDisposable).Dispose()
+
+        VInt n
+    )
+
+let private drainValue (flow: Flow) (items: seq<Value>) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let all = awaitFrame flow (drainSuspended flow items)
+        VSeq(all :> seq<Value>)
+    )
+
+do
+    suspDrain <-
+        (fun flow v ->
+            match v with
+            | VSeq items when seqSusp items -> drainValue flow items
+            | _ -> null)
+
+    registerAsyncN iterImpl 2 (fun flow args ->
+        match args with
+        | [ f; VSeq items ] when seqSusp items || maySuspend f -> iterSuspended flow f items
+        | _ -> null)
+
+    registerAsyncN foldImpl 3 (fun flow args ->
+        match args with
+        | [ folder; init; VSeq items ] when seqSusp items || maySuspend folder -> foldSuspended flow folder init items
+        | _ -> null)
+
+    registerAsyncN seqLengthImpl 1 (fun flow args ->
+        match args with
+        | [ VSeq items ] when seqSusp items && (knownCount items).IsNone -> lengthSuspended flow items
+        | _ -> null)
+
+    registerAsyncN toListImpl 1 (fun flow args ->
+        match args with
+        | [ VSeq items ] when seqSusp items -> drainedSuspended flow items id
+        | _ -> null)
+
+    registerAsyncN joinImpl 2 (fun flow args ->
+        match args with
+        | [ sep; VSeq items ] when seqSusp items ->
+            drainedSuspended flow items (fun all -> apply (apply joinImpl sep) all)
+        | _ -> null)
 
 let private rangeImpl: Value =
     VBuiltin(fun a ->
@@ -1885,6 +2337,45 @@ let private startWorkers (what: string) (n: int) (worker: int -> unit -> unit) (
 
     started.ToArray()
 
+let private startArmWorkers (what: string) (n: int) (worker: int -> Task<int>) (stop: exn -> unit) : Task[] =
+    let started = ResizeArray<Task>(n)
+    Session.ArmScheduler.Strict <- true
+
+    try
+        try
+            for w in 0 .. n - 1 do
+                // the arm's end is signalled on the thread that ends it, so
+                // the join never waits on the runtime's pool — which may
+                // have no thread to give at the process/thread limit
+                // [D:pipe-threads]
+                let ended = TaskCompletionSource<bool>()
+
+                Task.Factory.StartNew(
+                    (fun () ->
+                        (worker w)
+                            .ContinueWith(
+                                (fun (t: Task<int>) ->
+                                    if t.IsFaulted then
+                                        ended.TrySetException t.Exception.InnerExceptions |> ignore
+                                    else
+                                        ended.TrySetResult true |> ignore),
+                                TaskContinuationOptions.ExecuteSynchronously
+                            )
+                        |> ignore),
+                    System.Threading.CancellationToken.None,
+                    TaskCreationOptions.None,
+                    Session.armScheduler
+                )
+                |> ignore
+
+                started.Add ended.Task
+        with :? TaskSchedulerException ->
+            stop (Session.threadLimitError what)
+    finally
+        Session.ArmScheduler.Strict <- false
+
+    started.ToArray()
+
 let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value array =
     if degree < 1 then
         failwith $"parallel degree must be at least 1, got {degree}"
@@ -1920,57 +2411,61 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
             // the in-flight arms' children die with the cut [D:fanout-exit]
             Session.cutNode fanNode 1 Session.CutReason.FanExit true
 
-    let work (w: int) =
-        // a teardown stops new arms [D:teardown-stops-arms] and cuts the
-        // in-flight ones at their next boundary [D:teardown-joins-arms]; a
-        // REPL ^C stops them too [D:repl-interrupt-fanout]
-        let take () =
-            if
-                Session.stopTakingArms ()
-                || Session.interruptRequested ()
-                || not (isNull (System.Threading.Volatile.Read &exited))
-                || Session.isCut fanNode
-            then
-                arr.Length
-            else
-                System.Threading.Interlocked.Increment &next
+    let work (w: int) : Task<int> =
+        Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            // a teardown stops new arms [D:teardown-stops-arms] and cuts the
+            // in-flight ones at their next boundary [D:teardown-joins-arms]; a
+            // REPL ^C stops them too [D:repl-interrupt-fanout]
+            let take () =
+                if
+                    Session.stopTakingArms ()
+                    || Session.interruptRequested ()
+                    || not (isNull (System.Threading.Volatile.Read &exited))
+                    || Session.isCut fanNode
+                then
+                    arr.Length
+                else
+                    System.Threading.Interlocked.Increment &next
 
-        // one node per worker [D:scope-tree]: a fan-out's arms are only
-        // ever cut together (the fan-out's own cut, or one reaching it), so
-        // the worker's items share it — no node per item. An exit landing
-        // as the worker starts opens it cut, its children killed as they
-        // register
-        let home = Session.currentNode ()
-        let armNode = Session.openNode fanNode Session.NodeKind.Arm
-        Session.setCurrentNode armNode
+            // one node per worker [D:scope-tree]: a fan-out's arms are only
+            // ever cut together (the fan-out's own cut, or one reaching it), so
+            // the worker's items share it — no node per item. An exit landing
+            // as the worker starts opens it cut, its children killed as they
+            // register
+            let home = Session.currentNode ()
+            let armNode = Session.openNode fanNode Session.NodeKind.Arm
+            Session.setCurrentNode armNode
+            let flow = Flow()
 
-        try
-            let mutable i = take ()
+            try
+                let mutable i = take ()
 
-            while i < arr.Length do
-                Session.enterWorker parentCwd
-                RunPos.Current <- callNode
+                while i < arr.Length do
+                    Session.enterWorker parentCwd
+                    RunPos.Current <- callNode
 
-                try
                     try
-                        out[i] <- apply f arr[i]
-                    with
-                    | :? ExitRequest as e -> stop e
-                    | e ->
-                        pinOnThread e
-                        // every arm still runs (data parallelism does not
-                        // half-finish); the first error by input order
-                        // rethrows after the join
-                        errors[i] <- e
-                finally
-                    Session.exitWorker ()
+                        try
+                            let r = awaitFrame flow (applyAsync flow f arr[i])
+                            out[i] <- r
+                        with
+                        | :? ExitRequest as e -> stop e
+                        | e ->
+                            pinOnThread e
+                            // every arm still runs (data parallelism does not
+                            // half-finish); the first error by input order
+                            // rethrows after the join
+                            errors[i] <- e
+                    finally
+                        Session.exitWorker ()
 
-                i <- take ()
-        finally
-            Session.setCurrentNode home
-            Session.closeNode armNode
+                    i <- take ()
+            finally
+                Session.setCurrentNode home
+                Session.closeNode armNode
 
-    let worker (w: int) () = work w
+            0
+        )
 
     // arms are one level deeper [D:parallel-ladder]: set before
     // StartNew so the workers capture depth+1, restored after the join
@@ -1978,7 +2473,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     Session.setParallelDepth (depth + 1)
 
     try
-        let tasks = startWorkers "a pmap arm" workers worker (fun e -> stop e)
+        use _ =
+            Session.armScheduler.WatchRefusals(fun () -> stop (Session.threadLimitError "a pmap arm"))
+
+        let tasks = startArmWorkers "a pmap arm" workers work (fun e -> stop e)
 
         Session.waitTask (Task.WhenAll(tasks: Task[]))
     finally
@@ -2053,50 +2551,53 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
             set ()
 
-    let work () =
-        let home = Session.currentNode ()
-        let mutable i = System.Threading.Interlocked.Increment &next
+    let work (_: int) : Task<int> =
+        Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let home = Session.currentNode ()
+            let flow = Flow()
+            let mutable i = System.Threading.Interlocked.Increment &next
 
-        while i < arr.Length
-              && System.Threading.Volatile.Read &won = 0
-              && not (Session.isCut raceNode)
-              && not (Session.stopTakingArms ())
-              && not (Session.interruptRequested ()) do
-            Session.enterWorker parentCwd
-            // null once the race was won meanwhile: the arm never starts
-            let armNode = Session.tryOpenArm raceNode
-
-            if not (isNull armNode) then
-                Session.setCurrentNode armNode
-                RunPos.Current <- callNode
-
-            try
-                try
-                    if not (isNull armNode) then
-                        let v = apply f arr[i]
-                        settle armNode (fun () -> outcome.TrySetResult v |> ignore)
-                with
-                | :? Session.Cancelled -> ()
-                | e when (e :? ExitRequest) || (e :? Session.Interrupted) ->
-                    let ex = e
-                    settle armNode (fun () -> outcome.TrySetException ex |> ignore)
-                | e ->
-                    pinOnThread e
-                    errors[i] <- e
-
-                    if System.Threading.Interlocked.Increment &failedCount = arr.Length then
-                        outcome.TrySetException errors[Seq.min errors.Keys] |> ignore
-            finally
-                Session.setCurrentNode home
+            while i < arr.Length
+                  && System.Threading.Volatile.Read &won = 0
+                  && not (Session.isCut raceNode)
+                  && not (Session.stopTakingArms ())
+                  && not (Session.interruptRequested ()) do
+                Session.enterWorker parentCwd
+                // null once the race was won meanwhile: the arm never starts
+                let armNode = Session.tryOpenArm raceNode
 
                 if not (isNull armNode) then
-                    Session.closeNode armNode
+                    Session.setCurrentNode armNode
+                    RunPos.Current <- callNode
 
-                Session.exitWorker ()
+                try
+                    try
+                        if not (isNull armNode) then
+                            let v = awaitFrame flow (applyAsync flow f arr[i])
+                            settle armNode (fun () -> outcome.TrySetResult v |> ignore)
+                    with
+                    | :? Session.Cancelled -> ()
+                    | e when (e :? ExitRequest) || (e :? Session.Interrupted) ->
+                        let ex = e
+                        settle armNode (fun () -> outcome.TrySetException ex |> ignore)
+                    | e ->
+                        pinOnThread e
+                        errors[i] <- e
 
-            i <- System.Threading.Interlocked.Increment &next
+                        if System.Threading.Interlocked.Increment &failedCount = arr.Length then
+                            outcome.TrySetException errors[Seq.min errors.Keys] |> ignore
+                finally
+                    Session.setCurrentNode home
 
-    let worker () = work ()
+                    if not (isNull armNode) then
+                        Session.closeNode armNode
+
+                    Session.exitWorker ()
+
+                i <- System.Threading.Interlocked.Increment &next
+
+            0
+        )
 
     try
         (fun () ->
@@ -2104,9 +2605,13 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
             let depth = Session.parallelDepthNow ()
             Session.setParallelDepth (depth + 1)
 
+            use _ =
+                Session.armScheduler.WatchRefusals(fun () ->
+                    settle null (fun () -> outcome.TrySetException(Session.threadLimitError "a pfirst arm") |> ignore))
+
             let tasks =
                 try
-                    startWorkers "a pfirst arm" workers (fun _ -> worker) (fun e ->
+                    startArmWorkers "a pfirst arm" workers work (fun e ->
                         settle null (fun () -> outcome.TrySetException e |> ignore))
                 finally
                     Session.setParallelDepth depth
@@ -2345,6 +2850,7 @@ let private skipImpl: Value =
                                 let keep = seen.Value >= i
                                 seen.Value <- seen.Value + 1L
                                 if keep then Emit x else Skip
+                        StepAsync = Unchecked.defaultof<_>
                         Prefix = []
                         Finish =
                             fun () ->
@@ -2363,6 +2869,11 @@ let private collectImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
+            | VSeq items when maySuspend f ->
+                stagedCalling f items (fun _ r ->
+                    match r with
+                    | VSeq inner -> Splice inner
+                    | v -> unreachable $"the checker guarantees a seq-yielding mapper, got {formatValue v}")
             | VSeq items ->
                 staged items (fun () ->
                     stage (fun x ->
@@ -2409,7 +2920,7 @@ let private indexedImpl: Value =
 let private revImpl: Value =
     VBuiltin(fun s ->
         match s with
-        | VSeq items -> VSeq(Seq.delay (fun () -> items |> List.ofSeq |> List.rev :> seq<Value>))
+        | VSeq items -> VSeq(delayedSeq items (fun items -> items |> List.ofSeq |> List.rev :> seq<Value>))
         | v -> unreachable $"the checker rejects 'rev' on {formatValue v}")
 
 let private chunkImpl: Value =
@@ -2438,6 +2949,7 @@ let private chunkImpl: Value =
                                         Emit chunk
                                     else
                                         Skip
+                            StepAsync = Unchecked.defaultof<_>
                             Prefix = []
                             Finish =
                                 fun () ->
@@ -2452,6 +2964,8 @@ let private takeWhileImpl: Value =
     VBuiltin(fun pred ->
         VBuiltin(fun s ->
             match s with
+            | VSeq items when maySuspend pred ->
+                stagedCalling pred items (fun x r -> if r = VBool true then Emit x else Stop)
             | VSeq items ->
                 staged items (fun () -> stage (fun x -> if apply pred x = VBool true then Emit x else Stop))
             | v -> unreachable $"the checker rejects 'takeWhile' on {formatValue v}"))
@@ -2479,7 +2993,7 @@ let private countByImpl: Value =
             match s with
             | VSeq items ->
                 VSeq(
-                    Seq.delay (fun () ->
+                    delayedSeq items (fun items ->
                         items
                         |> Seq.countBy (apply keyf)
                         |> Seq.map (fun (k, n) -> VTuple [ k; VInt(int64 n) ]))
@@ -2490,6 +3004,10 @@ let private distinctByImpl: Value =
     VBuiltin(fun keyf ->
         VBuiltin(fun s ->
             match s with
+            | VSeq items when maySuspend keyf ->
+                stagedWith true items (fun () ->
+                    let seen = System.Collections.Generic.HashSet<Value>(HashIdentity.Structural)
+                    stageCalling (fun () -> keyf) (fun x r -> if seen.Add r then Emit x else Skip))
             | VSeq items ->
                 staged items (fun () ->
                     let seen = System.Collections.Generic.HashSet<Value>(HashIdentity.Structural)
@@ -2543,6 +3061,16 @@ let private scanImpl: Value =
         VBuiltin(fun init ->
             VBuiltin(fun s ->
                 match s with
+                | VSeq items when maySuspend folder ->
+                    stagedWith true items (fun () ->
+                        let acc = ref init
+
+                        {
+                            stageCalling (fun () -> apply folder acc.Value) (fun _ r ->
+                                acc.Value <- r
+                                Emit r) with
+                                Prefix = [ init ]
+                        })
                 | VSeq items ->
                     staged items (fun () ->
                         let acc = ref init
@@ -2552,6 +3080,7 @@ let private scanImpl: Value =
                                 fun x ->
                                     acc.Value <- apply (apply folder acc.Value) x
                                     Emit acc.Value
+                            StepAsync = Unchecked.defaultof<_>
                             Prefix = [ init ]
                             Finish = fun () -> []
                         })
@@ -2666,7 +3195,7 @@ let private sortPlainImpl (name: string) (flip: bool) : Value =
         match s with
         | VSeq items ->
             VSeq(
-                Seq.delay (fun () ->
+                delayedSeq items (fun items ->
                     items
                     |> Seq.sortWith (fun a b ->
                         if flip then
@@ -2742,6 +3271,129 @@ let private typedAverageImpl (name: string) (get: Value -> int64) (mk: int64 -> 
                 mk (total / count)
         | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
 
+let private prefixSuspended (flow: Flow) (items: seq<Value>) (n: int) (finish: Value -> Value) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let e = new ChainEnumerator(chainOf items)
+        let got = ResizeArray<Value>()
+
+        try
+            while got.Count < n
+                  && (let more = pullNext flow e
+                      more) do
+                got.Add e.Current
+        finally
+            (e :> System.IDisposable).Dispose()
+
+        finish (VSeq(got.ToArray() :> seq<Value>))
+    )
+
+let private probeSuspended
+    (flow: Flow)
+    (f: Value)
+    (items: seq<Value>)
+    (stop: Value -> bool)
+    (finish: Value -> Value -> Value)
+    : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let e = new ChainEnumerator(chainOf items)
+        let got = ResizeArray<Value>()
+        let answers = System.Collections.Generic.Queue<Value>()
+
+        try
+            let mutable go = true
+
+            while go do
+                let more = pullNext flow e
+
+                if more then
+                    let x = e.Current
+                    let r = awaitFrame flow (applyAsync flow f x)
+                    got.Add x
+                    answers.Enqueue r
+
+                    if stop r then
+                        go <- false
+                else
+                    go <- false
+        finally
+            (e :> System.IDisposable).Dispose()
+
+        finish (VBuiltin(fun _ -> answers.Dequeue())) (VSeq(got.ToArray() :> seq<Value>))
+    )
+
+let private drains (impl: Value) : Value =
+    registerAsyncN impl 1 (fun flow args ->
+        match args with
+        | [ VSeq items ] when seqSusp items -> drainedSuspended flow items (fun all -> apply impl all)
+        | _ -> null)
+
+    impl
+
+let private drainsAfter (impl: Value) : Value =
+    registerAsyncN impl 2 (fun flow args ->
+        match args with
+        | [ f; VSeq items ] when seqSusp items -> drainedSuspended flow items (fun all -> apply (apply impl f) all)
+        | _ -> null)
+
+    impl
+
+let private takesPrefix (n: int) (impl: Value) : unit =
+    registerAsyncN impl 1 (fun flow args ->
+        match args with
+        | [ VSeq items ] when seqSusp items -> prefixSuspended flow items n (fun got -> apply impl got)
+        | _ -> null)
+
+let private probes (stop: Value -> bool) (impl: Value) : unit =
+    registerAsyncN impl 2 (fun flow args ->
+        match args with
+        | [ f; VSeq items ] when seqSusp items || maySuspend f ->
+            probeSuspended flow f items stop (fun replay got -> apply (apply impl replay) got)
+        | _ -> null)
+
+do
+    for impl in [ sumImpl; lastImpl; tryLastImpl; averageImpl ] do
+        drains impl |> ignore
+
+    for impl in [ reduceImpl; tryReduceImpl ] do
+        drainsAfter impl |> ignore
+
+    for impl in [ headImpl; tryHeadImpl; isEmptyImpl ] do
+        takesPrefix 1 impl
+
+    for impl in [ exactlyOneImpl; tryExactlyOneImpl ] do
+        takesPrefix 2 impl
+
+    for impl in [ itemImpl; tryItemImpl ] do
+        registerAsyncN impl 2 (fun flow args ->
+            match args with
+            | [ VInt i; VSeq items ] when seqSusp items && i >= 0L && i < 1_000_000L ->
+                prefixSuspended flow items (toIntArg "item" Position i + 1) (fun got ->
+                    apply (apply impl (VInt i)) got)
+            | _ -> null)
+
+    let isTrue (v: Value) = (v = VBool true)
+    let isFalse (v: Value) = (v = VBool false)
+
+    let isSome (v: Value) =
+        match v with
+        | VUnion("Some", _) -> true
+        | _ -> false
+
+    for impl in [ tryFindImpl; findImpl; existsImpl ] do
+        probes isTrue impl
+
+    probes isFalse forallImpl
+
+    for impl in [ tryPickImpl; pickImpl ] do
+        probes isSome impl
+
+    registerAsyncN containsImpl 2 (fun flow args ->
+        match args with
+        | [ needle; VSeq items ] when seqSusp items ->
+            probeSuspended flow (VBuiltin(fun v -> VBool(v = needle))) items isTrue (fun _ got ->
+                apply (apply containsImpl needle) got)
+        | _ -> null)
+
 let private seqMembers: (string * Ty * Value) list = [
     "map", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tB)), mapImpl
     "where", TFun(TFun(tA, TBool), TFun(TSeq tA, TSeq tA)), whereImpl
@@ -2805,10 +3457,10 @@ let private seqMembers: (string * Ty * Value) list = [
     "except", TFun(TSeq tA, TFun(TSeq tA, TSeq tA)), exceptImpl
     "replicate", TFun(TInt, TFun(tA, TSeq tA)), replicateImpl
     "initInfinite", TFun(TFun(TInt, tA), TSeq tA), initInfiniteImpl
-    "max", TFun(TSeq tA, tA), extremumImpl "max" (fun c -> c > 0)
-    "min", TFun(TSeq tA, tA), extremumImpl "min" (fun c -> c < 0)
-    "maxBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "maxBy" (fun c -> c > 0)
-    "minBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "minBy" (fun c -> c < 0)
+    "max", TFun(TSeq tA, tA), drains (extremumImpl "max" (fun c -> c > 0))
+    "min", TFun(TSeq tA, tA), drains (extremumImpl "min" (fun c -> c < 0))
+    "maxBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), drainsAfter (extremumByImpl "maxBy" (fun c -> c > 0))
+    "minBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), drainsAfter (extremumByImpl "minBy" (fun c -> c < 0))
     "sort", TFun(TSeq tA, TSeq tA), sortPlainImpl "sort" false
     "sortDescending", TFun(TSeq tA, TSeq tA), sortPlainImpl "sortDescending" true
     "average", TFun(seqInt, TFloat), averageImpl
@@ -4542,7 +5194,8 @@ let private fileMembers: (string * Ty * Value) list = [
         | v -> unreachable $"the checker rejects 'File.readSecret' on {formatValue v}")
     "write",
     TFun(TStr, TFun(TSeq TStr, TUnit)),
-    VBuiltin(fun pathV ->
+    drainsAfter
+    <| VBuiltin(fun pathV ->
         VBuiltin(fun linesV ->
             match pathV, linesV with
             | VStr path, VSeq lines ->
@@ -4585,7 +5238,8 @@ let private fileMembers: (string * Ty * Value) list = [
             | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
     "writeAtomic",
     TFun(TStr, TFun(TSeq TStr, TUnit)),
-    VBuiltin(fun pathV ->
+    drainsAfter
+    <| VBuiltin(fun pathV ->
         VBuiltin(fun linesV ->
             match pathV, linesV with
             | VStr path, VSeq lines ->
@@ -4604,7 +5258,8 @@ let private fileMembers: (string * Ty * Value) list = [
             | _ -> unreachable "the checker rejects 'File.writeAtomic' on these arguments"))
     "append",
     TFun(TStr, TFun(TSeq TStr, TUnit)),
-    VBuiltin(fun pathV ->
+    drainsAfter
+    <| VBuiltin(fun pathV ->
         VBuiltin(fun linesV ->
             match pathV, linesV with
             | VStr path, VSeq lines ->
@@ -5317,6 +5972,34 @@ let private durCtor (name: string) (mult: int64) : Value =
                 failwith $"Duration.{name}: {n} overflows a Duration"
         | v -> unreachable $"the checker rejects 'Duration.{name}' on {formatValue v}")
 
+let private sleepSuspended (v: Value) : System.Threading.Tasks.Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        match v with
+        | VDur n ->
+            if n < 0L then
+                failwith $"Duration.sleep: negative duration ({formatDuration n})"
+
+            let mutable left = n
+            use _ = Waiting.start $"sleeping {formatDuration n}"
+
+            while left > 0L do
+                let slice = min left (int64 System.Int32.MaxValue - 1L)
+
+                let _ =
+                    System.Runtime.CompilerServices.AsyncHelpers.Await(
+                        Session.sleepSuspended (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
+                    )
+
+                left <- left - slice
+
+            VUnit
+        | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}"
+    )
+
+let private suspending (f: Value -> System.Threading.Tasks.Task<Value>) (b: Value) : Value =
+    registerAsync b f
+    b
+
 let private durationMembers: (string * Ty * Value) list = [
     "ms", TFun(TInt, TDur), durCtor "ms" 1L
     "s", TFun(TInt, TDur), durCtor "s" 1000L
@@ -5361,7 +6044,8 @@ let private durationMembers: (string * Ty * Value) list = [
     // would flip `sleep 5`'s meaning)
     "sleep",
     TFun(TDur, TUnit),
-    VBuiltin(fun v ->
+    suspending sleepSuspended
+    <| VBuiltin(fun v ->
         match v with
         | VDur n ->
             // a negative duration rejects, located — the deadline
@@ -5679,7 +6363,7 @@ let private httpDefaults: Value =
 
 // translate the request record to Http.Req, send, raise on transport
 // failure (status is data — the caller decides) [D:http]
-let private runRequest (reqV: Value) : Http.Resp =
+let private prepareRequest (reqV: Value) : Http.Req * string =
     match reqV with
     | VRecord("HttpRequest", f) ->
         let get k = recGet k f
@@ -5782,20 +6466,27 @@ let private runRequest (reqV: Value) : Http.Resp =
                 // error's own fallback
                 quoteData (Http.redactUrl req.Url)
 
-        // the send is a boundary and a wait [D:pfirst-join] [D:repl-interrupt]
-        Session.checkCancels ()
-
-        let sent =
-            Waiting.during $"{req.Method} {host}" (fun () -> Session.withWaitToken (fun t -> Http.send t req))
-
-        Session.checkCancels ()
-
-        match sent with
-        | Ok resp -> resp
-        // the TLS case names its per-request repair [D:http-s2]
-        | Error(msg, Http.TlsUntrusted) -> failwith $"{msg} (a self-signed endpoint can opt out: insecure = true)"
-        | Error(msg, _) -> failwith msg
+        req, host
     | v -> unreachable $"the checker rejects a request on {formatValue v}"
+
+let private sentResponse (sent: Result<Http.Resp, string * Http.TransportError>) : Http.Resp =
+    match sent with
+    | Ok resp -> resp
+    // the TLS case names its per-request repair [D:http-s2]
+    | Error(msg, Http.TlsUntrusted) -> failwith $"{msg} (a self-signed endpoint can opt out: insecure = true)"
+    | Error(msg, _) -> failwith msg
+
+let private runRequest (reqV: Value) : Http.Resp =
+    let req, host = prepareRequest reqV
+
+    // the send is a boundary and a wait [D:pfirst-join] [D:repl-interrupt]
+    Session.checkCancels ()
+
+    let sent =
+        Waiting.during $"{req.Method} {host}" (fun () -> Session.withWaitToken (fun t -> Http.send t req))
+
+    Session.checkCancels ()
+    sentResponse sent
 
 // the response body under weir's one line law [D:http-body-lines]: a
 // raw `.Split('\n')` kept a trailing-newline body's final "" (so a
@@ -5827,26 +6518,61 @@ let private respBodyLines (resp: Http.Resp) : seq<Value> =
 let private plannedResponse: Value =
     VRecord("HttpResponse", [ "status", VInt 0L; "headers", VSeq Seq.empty; "body", VSeq Seq.empty ])
 
+let private responseValue (resp: Http.Resp) : Value =
+    VRecord(
+        "HttpResponse",
+        [
+            "status", VInt(int64 resp.Status)
+            "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
+            "body", VSeq(respBodyLines resp)
+        ]
+    )
+
+[<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private runRequestSuspended (reqV: Value) =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let req, host = prepareRequest reqV
+        Session.checkCancels ()
+        let token = Session.withWaitToken id
+        let waiting = Waiting.start $"{req.Method} {host}"
+
+        let sent =
+            try
+                System.Runtime.CompilerServices.AsyncHelpers.Await(Http.sendAsync token req)
+            finally
+                waiting.Dispose()
+
+        Session.checkCancels ()
+        sentResponse sent
+    )
+
+let private runRequestAsync (reqV: Value) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let resp = awaitLeaf (runRequestSuspended reqV)
+        responseValue resp
+    )
+
 let private httpSendImpl: Value =
-    VBuiltin(fun reqV ->
-        // reads (GET/HEAD/OPTIONS/QUERY) run even inside a plan — they
-        // inform it; only a mutating method is captured as an Op
-        // [D:plan-apply] (the per-method class resolves from the
-        // request value)
+    let sync =
+        VBuiltin(fun reqV ->
+            // reads (GET/HEAD/OPTIONS/QUERY) run even inside a plan — they
+            // inform it; only a mutating method is captured as an Op
+            // [D:plan-apply] (the per-method class resolves from the
+            // request value)
+            if PlanMode.active () && httpRequestClass reqV = Weir.Effects.Mutation then
+                PlanMode.capture (VUnion("HttpSend", Some reqV)) []
+                plannedResponse
+            else
+                responseValue (runRequest reqV))
+
+    registerAsync sync (fun reqV ->
         if PlanMode.active () && httpRequestClass reqV = Weir.Effects.Mutation then
             PlanMode.capture (VUnion("HttpSend", Some reqV)) []
-            plannedResponse
+            Task.FromResult plannedResponse
         else
-            let resp = runRequest reqV
+            runRequestAsync reqV)
 
-            VRecord(
-                "HttpResponse",
-                [
-                    "status", VInt(int64 resp.Status)
-                    "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
-                    "body", VSeq(respBodyLines resp)
-                ]
-            ))
+    sync
 
 // a constructor [D:http-s2]: `Http.get u` = `{ Http.defaults with
 // method = Get; url = u }` byte-identically (pinned) — a record
@@ -5866,8 +6592,43 @@ let private httpCtor (methodCase: string) : Value =
 // headers, a method. The raise names method, redacted url, status and a
 // capped body snippet (a minified structured error usually fits whole);
 // when the error body is data to inspect, Http.send binds it instead.
+let private expectedBody (f: (string * Value) list) (resp: Http.Resp) : Value =
+    if resp.Status < 200 || resp.Status >= 300 then
+        let url =
+            match recGet "url" f with
+            | VStr s -> s
+            | v -> unreachable $"url {formatValue v}"
+
+        let snippet =
+            let flat = resp.Body.Replace("\r", " ").Replace("\n", " ").Trim()
+
+            if CodePoints.length flat > 200 then
+                quoteData (CodePoints.head flat 200) + "…"
+            else
+                quoteData flat
+
+        let detail = if snippet = "" then "" else $": {snippet}"
+        let methodName = httpMethodName (recGet "method" f)
+
+        failwith $"{methodName} {quoteData (Http.redactUrl url)} answered {resp.Status}{detail}"
+    else
+        VSeq(respBodyLines resp)
+
+let private expectSuspended (reqV: Value) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        match reqV with
+        | VRecord("HttpRequest", f) ->
+            let resp = awaitLeaf (runRequestSuspended reqV)
+            expectedBody f resp
+        | v -> unreachable $"the checker rejects 'Http.expect' on {formatValue v}"
+    )
+
 let private httpExpectImpl: Value =
-    VBuiltin(fun reqV ->
+    suspendingN 1 (fun _ args ->
+        match args with
+        | [ reqV ] when not (PlanMode.active ()) -> expectSuspended reqV
+        | _ -> null)
+    <| VBuiltin(fun reqV ->
         match reqV with
         | VRecord("HttpRequest", f) ->
             // a mutating read inside a plan has no response to return —
@@ -5877,28 +6638,7 @@ let private httpExpectImpl: Value =
                 failwith
                     "inside a plan a mutating request is a pending Op with no response, and Http.expect needs one — Http.send captures it as the Op"
             else
-                let resp = runRequest reqV
-
-                if resp.Status < 200 || resp.Status >= 300 then
-                    let url =
-                        match recGet "url" f with
-                        | VStr s -> s
-                        | v -> unreachable $"url {formatValue v}"
-
-                    let snippet =
-                        let flat = resp.Body.Replace("\r", " ").Replace("\n", " ").Trim()
-
-                        if CodePoints.length flat > 200 then
-                            quoteData (CodePoints.head flat 200) + "…"
-                        else
-                            quoteData flat
-
-                    let detail = if snippet = "" then "" else $": {snippet}"
-                    let methodName = httpMethodName (recGet "method" f)
-
-                    failwith $"{methodName} {quoteData (Http.redactUrl url)} answered {resp.Status}{detail}"
-                else
-                    VSeq(respBodyLines resp)
+                expectedBody f (runRequest reqV)
         | v -> unreachable $"the checker rejects 'Http.expect' on {formatValue v}")
 
 // the query-string builder [D:http-s2] — named withQuery so it does not
@@ -9251,19 +9991,60 @@ let private chainShown (specs: Proc.Spec list) =
 let private chainBuiltin (k: Proc.Spec list -> Value) : Value =
     VBuiltin(fun stagesV -> VBuiltin(fun stdinV -> k (chainSpecs stagesV stdinV)))
 
+let private chainSuspended (k: Proc.Spec list -> Task<Value>) (flow: Flow) (args: Value list) : Task<Value> =
+    match args with
+    | [ stagesV; stdinV ] ->
+        match chainSpecs stagesV stdinV with
+        | []
+        | [ _ ] -> null
+        | specs -> k specs
+    | _ -> null
+
+let private chainCompletedSuspended
+    (keep: bool)
+    (finish: int * seq<string> * seq<string> -> Value)
+    (specs: Proc.Spec list)
+    : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let r = awaitLeaf (Proc.chainCompletedSuspended keep specs)
+        finish r
+    )
+
+let private chainCodeSuspended (finish: int -> Value) (specs: Proc.Spec list) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let code = awaitLeaf (Proc.streamCodeSuspended specs)
+        finish code
+    )
+
 let private chainCompletedImpl =
-    chainBuiltin (fun specs ->
+    suspendingN
+        2
+        (chainSuspended (chainCompletedSuspended true (fun (code, stdout, stderr) -> completedOf code stdout stderr)))
+    <| chainBuiltin (fun specs ->
         let code, stdout, stderr = Proc.chainCompletedOf specs
         completedOf code stdout stderr)
 
 let private chainSucceededImpl =
-    chainBuiltin (fun specs -> VBool(Proc.chainCompletedCode specs = 0))
+    suspendingN 2 (chainSuspended (chainCompletedSuspended false (fun (code, _, _) -> VBool(code = 0))))
+    <| chainBuiltin (fun specs -> VBool(Proc.chainCompletedCode specs = 0))
 
 let private chainExitCodedImpl =
-    chainBuiltin (fun specs -> VInt(int64 (Proc.chainStreamCodeOf specs)))
+    suspendingN 2 (chainSuspended (chainCodeSuspended (fun code -> VInt(int64 code))))
+    <| chainBuiltin (fun specs -> VInt(int64 (Proc.chainStreamCodeOf specs)))
 
 let private chainOrFailedImpl =
-    VBuiltin(fun msgV ->
+    suspendingN 3 (fun flow args ->
+        match args with
+        | msgV :: rest ->
+            chainSuspended
+                (chainCodeSuspended (fun code ->
+                    match msgV with
+                    | VStr msg when code <> 0 -> failwith $"{msg} (exit {code})"
+                    | _ -> VUnit))
+                flow
+                rest
+        | _ -> null)
+    <| VBuiltin(fun msgV ->
         chainBuiltin (fun specs ->
             let code = Proc.chainStreamCodeOf specs
 
@@ -9397,6 +10178,12 @@ let private printImpl: Value =
         // desugar's command may be unit (| orFail)
         | VUnit -> VUnit
         | v -> unreachable $"the checker rejects 'print' on {formatValue v}")
+
+do
+    registerAsyncN printImpl 1 (fun flow args ->
+        match args with
+        | [ VSeq items ] when seqSusp items -> eachSuspended flow items (fun item -> writeLines [| item |])
+        | _ -> null)
 
 let commandCallable: Set<string> = Set [ "cd" ]
 

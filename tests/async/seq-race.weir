@@ -1,0 +1,6 @@
+let w = [1; 2; 3] |> Seq.pfirst (fun i ->
+    let rs = [1; 2] |> Seq.pmap (fun j ->
+        if i == 2 then $(sh -c "sleep 0.1; echo quick") |> Str.join ""
+        else $(sh -c "sleep 30; echo slow") |> Seq.map Str.toUpper |> Str.join "")
+    $"{i} {rs}")
+print w

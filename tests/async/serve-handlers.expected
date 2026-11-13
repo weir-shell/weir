@@ -1,0 +1,7 @@
+exit=9
+--stdout--
+1 Error "timed out after Nms reaching 127.0.0.1"
+2 Error "timed out after Nms reaching 127.0.0.1"
+200 ["/tmp"] 200 ["data: a"; ""; "data: b"; ""]
+from-handler
+--stderr--

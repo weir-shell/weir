@@ -3144,12 +3144,12 @@ module private ProbeSpawn =
                                 live
                                 |> List.iteri (fun k i ->
                                     Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
-                                        Span(pfds, 8 * k, 4),
+                                        System.Span<byte>(pfds, 8 * k, 4),
                                         fds[i]
                                     )
 
                                     Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(
-                                        Span(pfds, 8 * k + 4, 2),
+                                        System.Span<byte>(pfds, 8 * k + 4, 2),
                                         POLLIN
                                     ))
 

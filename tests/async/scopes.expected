@@ -1,0 +1,10 @@
+exit=1
+--stdout--
+1 Error "command failed with exit code 3: sh -c sleep 0.05; exit 3" None Ok 5 Error "after cd" /tmp 4 Error "was none" Error "command failed with exit code 9: sh -c echo a; exit 9" f true /tmp/weir-tmp-X Error "in /usr" /tmp/weir-tmp-X Error "body failed"
+2 Error "command failed with exit code 3: sh -c sleep 0.05; exit 3" None Ok 5 Error "after cd" /tmp 4 Error "was none" Error "command failed with exit code 9: sh -c echo a; exit 9" f true /tmp/weir-tmp-X Error "in /usr" /tmp/weir-tmp-X Error "body failed"
+cleanup 1
+cleanup 2
+cleanup-cmd
+true
+--stderr--
+scopes.weir:37:77: error: located raise

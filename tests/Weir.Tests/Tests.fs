@@ -39195,6 +39195,92 @@ let tildeLiteralTests =
         }
     ]
 
+// an arm's waits suspend [D:async-flows] [D:async-seq]: what the arm
+// computes is what the blocking evaluator computed — real processes, POSIX.
+// The transcript fixtures (tests/async) carry the breadth; these pin each
+// path's entry
+let asyncFlowTests =
+    let arm (body: string) =
+        runReal $"[1] |> Seq.pmap (fun _ -> {body}) |> Seq.head"
+
+    testList "async flows [D:async-flows] [D:async-seq]" [
+        test "a lazy command's lines flow through stages and a terminal" {
+            skipOnWindows ()
+
+            Expect.equal
+                (arm "$(sh -c \"echo a; echo b\") |> Seq.map Str.toUpper |> Str.join \"\"")
+                (VStr "AB")
+                "map then join"
+
+            Expect.equal (arm "$(sh -c \"seq 1 100\") |> Seq.length") (VInt 100L) "length"
+        }
+        test "an early stop ends the command; the lines are still lazy" {
+            skipOnWindows ()
+            let sw = System.Diagnostics.Stopwatch.StartNew()
+
+            Expect.equal
+                (arm "$(sh -c \"yes\") |> Seq.take 2 |> Str.join \"\"")
+                (VStr "yy")
+                "two lines of an endless command"
+
+            Expect.equal (arm "$(sh -c \"yes\") |> Seq.head") (VStr "y") "head"
+            Expect.isLessThan sw.ElapsedMilliseconds 20000L "no hang"
+        }
+        test "a command's failure still raises where its lines are forced" {
+            skipOnWindows ()
+            Expect.throws (fun () -> arm "$(sh -c \"echo a; exit 3\") |> Str.join \"\"" |> ignore) "the nonzero exit"
+
+            Expect.equal
+                (arm "$(sh -c \"echo a; exit 3\") |> Seq.head")
+                (VStr "a")
+                "a consumer that stops first never sees it"
+        }
+        test "a stage's lambda may wait" {
+            skipOnWindows ()
+
+            Expect.equal
+                (arm
+                    "[1; 2] |> Seq.map (fun x -> (Duration.sleep 2ms; x + ($(sh -c \"echo l\") |> Seq.length))) |> Seq.sum")
+                (VInt 5L)
+                "a sleep and a command inside map"
+        }
+        test "waits inside operators, interpolation, tuples and try" {
+            skipOnWindows ()
+
+            Expect.equal
+                (arm "$\"a{(Duration.sleep 1ms; 1) + ($(sh -c \"echo x\") |> Seq.length)}\"")
+                (VStr "a2")
+                "an operator inside a hole"
+
+            Expect.equal
+                (arm "((Duration.sleep 1ms; 5), ($(sh -c \"echo 6\") |> Str.join \"\"))")
+                (VTuple [ VInt 5L; VStr "6" ])
+                "a tuple"
+
+            Expect.equal
+                (arm "($(sh -c \"exit 4\") |> Seq.length) |> try")
+                (VUnion("None", None))
+                "try catches a suspended command's failure"
+        }
+        test "a chain's lines and a sort over a command" {
+            skipOnWindows ()
+            Expect.equal (arm "sh -c \"echo b; echo a\" | sh -c \"sort\" |> Str.join \"\"") (VStr "ab") "a chain"
+            Expect.equal (arm "$(sh -c \"printf 'b\\na\\n'\") |> Seq.sort |> Str.join \"\"") (VStr "ab") "a sort"
+        }
+        test "pfirst's winner returns while a loser waits on a command" {
+            skipOnWindows ()
+            let sw = System.Diagnostics.Stopwatch.StartNew()
+
+            Expect.equal
+                (runReal
+                    "[1; 2] |> Seq.pfirst (fun i -> if i == 2 then (Duration.sleep 20ms; \"w\") else ($(sh -c \"sleep 20; echo l\") |> Str.join \"\"))")
+                (VStr "w")
+                "the winner"
+
+            Expect.isLessThan sw.ElapsedMilliseconds 10000L "the loser is cut, not waited out"
+        }
+    ]
+
 let pipeChainTests =
     // the early-exit pump [D:pipe-early-exit] and reifiers after a chain
     // [D:chain-reifiers] — real processes, POSIX
@@ -39215,6 +39301,24 @@ let pipeChainTests =
                 "told to stop is success"
 
             Expect.isLessThan sw.ElapsedMilliseconds 20000L "no hang"
+        }
+        test "over direct pipes only SIGPIPE excuses an upstream stage [D:pipe-direct]" {
+            skipOnWindows ()
+
+            Expect.equal
+                (runReal "sh -c \"trap '' PIPE; seq 1 100000; exit 3\" | sh -c \"head -1\" | succeeds")
+                (VBool false)
+                "a stage that survives the broken pipe and exits nonzero fails the chain"
+
+            Expect.equal
+                (runReal "sh -c \"seq 1 100000; exit 3\" | sh -c \"head -1\" | exitCode")
+                (VInt 3L)
+                "its own code, not the pipe's"
+
+            Expect.equal
+                (runReal "sh -c \"yes\" | sh -c \"head -1\" | exitCode")
+                (VInt 0L)
+                "SIGPIPE's death is the pipe closing"
         }
         test "a stage that fails while its downstream still reads raises" {
             skipOnWindows ()
@@ -47036,6 +47140,7 @@ let allTests =
         orPatternTests
         lambdaLetTests
         fieldSpliceTests
+        asyncFlowTests
         pipeChainTests
         armBlockTests
         holeGenericTests
