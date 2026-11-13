@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.89
+## v0.0.90
 
 ### Changed
 
@@ -19,6 +19,11 @@
   exits nonzero now fails the chain, as under `bash -o pipefail`:
   `python3 gen.py | head -1` raises if the Python script exits 120.
   Windows is unchanged.
+
+## v0.0.89
+
+### Changed
+
 - **`Json (x |> to json)` is no longer a check error.** `Json` and
   `Reply.json` render whatever they're given, rendered lines included,
   so this sends an array of strings. For a document that's already
