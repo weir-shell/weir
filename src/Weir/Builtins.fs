@@ -2322,21 +2322,6 @@ let private refuseParallelInPlan (combinator: string) =
         failwith
             $"'{combinator}' is refused inside 'plan' — its per-worker callbacks run on threads that do not inherit the plan's capture frame, so their effects cannot be captured; run parallel/race combinators outside the plan"
 
-// a fan-out's workers, each on a thread of its own (LongRunning). A thread
-// the OS refuses (the process/thread limit) stops the fan-out as an arm's
-// raise would — `stop` cuts the started arms, which then join — with an
-// error naming the limit [D:pipe-threads]
-let private startWorkers (what: string) (n: int) (worker: int -> unit -> unit) (stop: exn -> unit) : Task[] =
-    let started = ResizeArray<Task>(n)
-
-    try
-        for w in 0 .. n - 1 do
-            started.Add(Task.Factory.StartNew(worker w, TaskCreationOptions.LongRunning))
-    with :? TaskSchedulerException ->
-        stop (Session.threadLimitError what)
-
-    started.ToArray()
-
 let private startArmWorkers (what: string) (n: int) (worker: int -> Task<int>) (stop: exn -> unit) : Task[] =
     let started = ResizeArray<Task>(n)
     Session.ArmScheduler.Strict <- true
@@ -3296,8 +3281,12 @@ let private probeSuspended
     : Task<Value> =
     Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
         let e = new ChainEnumerator(chainOf items)
-        let got = ResizeArray<Value>()
-        let answers = System.Collections.Generic.Queue<Value>()
+        // constant memory, as the blocking form: only the element the
+        // probe stopped at and its answer are kept, and the blocking
+        // form, handed that one element (or none), answers as it would
+        // over the whole prefix
+        let mutable prefix: Value[] = Array.empty
+        let mutable answer = VUnit
 
         try
             let mutable go = true
@@ -3308,27 +3297,90 @@ let private probeSuspended
                 if more then
                     let x = e.Current
                     let r = awaitFrame flow (applyAsync flow f x)
-                    got.Add x
-                    answers.Enqueue r
 
                     if stop r then
+                        prefix <- [| x |]
+                        answer <- r
                         go <- false
                 else
                     go <- false
         finally
             (e :> System.IDisposable).Dispose()
 
-        finish (VBuiltin(fun _ -> answers.Dequeue())) (VSeq(got.ToArray() :> seq<Value>))
+        finish (VBuiltin(fun _ -> answer)) (VSeq(prefix :> seq<Value>))
     )
 
-let private drains (impl: Value) : Value =
+// a terminal that reads to the end but holds one value (sum, last, max,
+// reduce) keeps the blocking form's constant memory on a flow: the source
+// is folded a bounded chunk at a time through that form, the value so far
+// leading the next chunk. `carry` takes that value out of a result (an
+// Option-returning terminal carries its payload)
+let private chunkedSuspended
+    (flow: Flow)
+    (items: seq<Value>)
+    (fold: Value -> Value)
+    (carry: Value -> Value voption)
+    : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let e = new ChainEnumerator(chainOf items)
+        let chunk = ResizeArray<Value>()
+        let mutable result = VUnit
+        let mutable folded = false
+
+        try
+            let mutable go = true
+
+            while go do
+                let more = pullNext flow e
+
+                if more then
+                    chunk.Add e.Current
+
+                if chunk.Count >= 4096 || (not more && (chunk.Count > 0 || not folded)) then
+                    result <- fold (VSeq(chunk.ToArray() :> seq<Value>))
+                    folded <- true
+                    chunk.Clear()
+
+                    match carry result with
+                    | ValueSome v -> chunk.Add v
+                    | ValueNone -> ()
+
+                    if not more then
+                        chunk.Clear()
+
+                if not more then
+                    go <- false
+        finally
+            (e :> System.IDisposable).Dispose()
+
+        result
+    )
+
+let private carryWhole (r: Value) : Value voption = ValueSome r
+
+let private carrySome (r: Value) : Value voption =
+    match r with
+    | VUnion("Some", Some v) -> ValueSome v
+    | _ -> ValueNone
+
+let private folds (carry: Value -> Value voption) (impl: Value) : Value =
     registerAsyncN impl 1 (fun flow args ->
         match args with
-        | [ VSeq items ] when seqSusp items -> drainedSuspended flow items (fun all -> apply impl all)
+        | [ VSeq items ] when seqSusp items -> chunkedSuspended flow items (fun c -> apply impl c) carry
         | _ -> null)
 
     impl
 
+let private foldsAfter (carry: Value -> Value voption) (impl: Value) : Value =
+    registerAsyncN impl 2 (fun flow args ->
+        match args with
+        | [ f; VSeq items ] when seqSusp items -> chunkedSuspended flow items (fun c -> apply (apply impl f) c) carry
+        | _ -> null)
+
+    impl
+
+// a consumer that holds its whole input in the blocking form too (a file's
+// content is assembled before it is written) drains it on the flow
 let private drainsAfter (impl: Value) : Value =
     registerAsyncN impl 2 (fun flow args ->
         match args with
@@ -3351,11 +3403,12 @@ let private probes (stop: Value -> bool) (impl: Value) : unit =
         | _ -> null)
 
 do
-    for impl in [ sumImpl; lastImpl; tryLastImpl; averageImpl ] do
-        drains impl |> ignore
+    for impl in [ sumImpl; lastImpl ] do
+        folds carryWhole impl |> ignore
 
-    for impl in [ reduceImpl; tryReduceImpl ] do
-        drainsAfter impl |> ignore
+    folds carrySome tryLastImpl |> ignore
+    foldsAfter carryWhole reduceImpl |> ignore
+    foldsAfter carrySome tryReduceImpl |> ignore
 
     for impl in [ headImpl; tryHeadImpl; isEmptyImpl ] do
         takesPrefix 1 impl
@@ -3457,10 +3510,10 @@ let private seqMembers: (string * Ty * Value) list = [
     "except", TFun(TSeq tA, TFun(TSeq tA, TSeq tA)), exceptImpl
     "replicate", TFun(TInt, TFun(tA, TSeq tA)), replicateImpl
     "initInfinite", TFun(TFun(TInt, tA), TSeq tA), initInfiniteImpl
-    "max", TFun(TSeq tA, tA), drains (extremumImpl "max" (fun c -> c > 0))
-    "min", TFun(TSeq tA, tA), drains (extremumImpl "min" (fun c -> c < 0))
-    "maxBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), drainsAfter (extremumByImpl "maxBy" (fun c -> c > 0))
-    "minBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), drainsAfter (extremumByImpl "minBy" (fun c -> c < 0))
+    "max", TFun(TSeq tA, tA), folds carryWhole (extremumImpl "max" (fun c -> c > 0))
+    "min", TFun(TSeq tA, tA), folds carryWhole (extremumImpl "min" (fun c -> c < 0))
+    "maxBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "maxBy" (fun c -> c > 0)
+    "minBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "minBy" (fun c -> c < 0)
     "sort", TFun(TSeq tA, TSeq tA), sortPlainImpl "sort" false
     "sortDescending", TFun(TSeq tA, TSeq tA), sortPlainImpl "sortDescending" true
     "average", TFun(seqInt, TFloat), averageImpl

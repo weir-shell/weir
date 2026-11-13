@@ -783,7 +783,7 @@ type private LineFeed(fallback: System.Text.Encoding) =
         let need = n + 16
 
         if isNull chars || chars.Length < need then
-            chars <- Array.zeroCreate<char>(max need 4096)
+            chars <- Array.zeroCreate<char> need
 
         split (decoder.GetChars(bytes, off, n, chars, 0, flush)) lines
 
@@ -833,12 +833,13 @@ let statementRelaySuspended (s: Spec) (emit: seq<string> -> unit) : System.Threa
     Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
         let p, producerFault = start true false s
         use _ = p
+        // pooled: a buffer per command is the arm's whole allocation rate
+        let buf = System.Buffers.ArrayPool<byte>.Shared.Rent 65536
 
         try
             let out = Session.cutStream p p.StandardOutput.BaseStream
             let streams = [| out |]
             let feed = LineFeed p.StandardOutput.CurrentEncoding
-            let buf = Array.zeroCreate<byte> 65536
             let lines = ResizeArray<string>()
             let mutable go = true
 
@@ -863,6 +864,7 @@ let statementRelaySuspended (s: Spec) (emit: seq<string> -> unit) : System.Threa
             if p.ExitCode <> 0 then
                 raiseNonzero true p s p.ExitCode
         finally
+            System.Buffers.ArrayPool<byte>.Shared.Return buf
             reap p
 
         true
@@ -1560,7 +1562,7 @@ let private chainLinesOfWith (statement: bool) (specs: Spec list) : seq<string> 
 [<AllowNullLiteral>]
 type LinesPull(statement: bool, specs: Spec list, raises: bool) =
     let lines = ResizeArray<string>()
-    let buf = Array.zeroCreate<byte> 65536
+    let mutable buf: byte[] = System.Buffers.ArrayPool<byte>.Shared.Rent 65536
     let mutable procs: (Spec * Process) list = []
     let mutable pumps: System.Threading.Tasks.Task<bool> list = []
     let mutable producerFault: unit -> unit = ignore
@@ -1587,6 +1589,10 @@ type LinesPull(statement: bool, specs: Spec list, raises: bool) =
     member this.Close() : unit =
         if not closed then
             closed <- true
+
+            if not (isNull buf) then
+                System.Buffers.ArrayPool<byte>.Shared.Return buf
+                buf <- null
 
             for _, p in procs do
                 try

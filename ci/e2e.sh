@@ -4761,8 +4761,9 @@ fi
 # an arm or a serve handler that waits (a command, a sleep, an Http send, a
 # lazy command's lines) is suspended, not parked on a thread — and what the
 # script observes is unchanged. The fixtures are tests/async/*.weir, each
-# with its normalized transcript beside it (tests/async/run.sh)
-if [ "$IS_WINDOWS" != "1" ]; then
+# with its normalized transcript beside it (tests/async/run.sh). Linux: a
+# transcript carries the commands' own words (GNU seq's "write error")
+if [ "$(uname -s)" = Linux ]; then
     asyncdir="$(dirname "$0")/../tests/async"
     asyncn=0
     for exp in "$asyncdir"/*.expected; do

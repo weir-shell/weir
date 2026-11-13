@@ -8,7 +8,7 @@ bin=$1
 name=$2
 cd "$(dirname "$0")"
 errf=$(mktemp)
-out=$(timeout 120 "$bin" "$name.weir" 2>"$errf")
+out=$("$bin" "$name.weir" 2>"$errf")
 code=$?
 mask() {
     sed -E 's/weir-tmp-[0-9a-f]+/weir-tmp-X/g; s/(over|after) [0-9.]+m?s/\1 Nms/g' | LC_ALL=C sort

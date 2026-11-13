@@ -39267,6 +39267,22 @@ let asyncFlowTests =
             Expect.equal (arm "sh -c \"echo b; echo a\" | sh -c \"sort\" |> Str.join \"\"") (VStr "ab") "a chain"
             Expect.equal (arm "$(sh -c \"printf 'b\\na\\n'\") |> Seq.sort |> Str.join \"\"") (VStr "ab") "a sort"
         }
+        test "a fold or a probe over a long command keeps one value, as the blocking form does" {
+            skipOnWindows ()
+            let n = "$(sh -c \"seq 1 20000\") |> Seq.map Str.toInt"
+            Expect.equal (arm $"{n} |> Seq.sum") (VInt 200010000L) "sum across chunks"
+            Expect.equal (arm $"{n} |> Seq.last") (VInt 20000L) "last"
+            Expect.equal (arm $"{n} |> Seq.tryLast") (VUnion("Some", Some(VInt 20000L))) "tryLast"
+            Expect.equal (arm $"{n} |> Seq.max") (VInt 20000L) "max"
+            Expect.equal (arm $"{n} |> Seq.min") (VInt 1L) "min"
+            Expect.equal (arm $"{n} |> Seq.reduce (fun a b -> if b > a then b else a)") (VInt 20000L) "reduce"
+            Expect.equal (arm "$(sh -c \"true\") |> Seq.tryLast") (VUnion("None", None)) "an empty source"
+            Expect.throws (fun () -> arm "$(sh -c \"true\") |> Seq.map Str.toInt |> Seq.max" |> ignore) "max of none"
+            Expect.equal (arm $"{n} |> Seq.exists (fun x -> x < 0)") (VBool false) "a probe that never matches"
+            Expect.equal (arm $"{n} |> Seq.forall (fun x -> x > 0)") (VBool true) "forall to the end"
+            Expect.equal (arm $"{n} |> Seq.find (fun x -> x == 15000)") (VInt 15000L) "find"
+            Expect.equal (arm $"{n} |> Seq.contains 19999") (VBool true) "contains"
+        }
         test "pfirst's winner returns while a loser waits on a command" {
             skipOnWindows ()
             let sw = System.Diagnostics.Stopwatch.StartNew()

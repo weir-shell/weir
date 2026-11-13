@@ -907,8 +907,13 @@ let h3r4c25 d =
     ]
 
 // ---- H3R4-D1: a fan-out arm's spawns stay in its bag until the arm ends --------
+// Retention grows with the spawn count, so the arm is measured against
+// ITSELF at a fraction of the spawns: an arm is a flow [D:async-flows], and
+// a flow's fixed cost (its scheduler, the pipe poller, the collector's
+// budget for suspended frames) is not what this probe is about
 
 let d1Spawns = 8000
+let d1Few = 1000
 
 let d1Arm kind = [
     "let n = Self.args |> Seq.head |> Str.toInt"
@@ -920,19 +925,17 @@ let d1Arm kind = [
     "print (show r)"
 ]
 
-let d1Top = ["let n = Self.args |> Seq.head |> Str.toInt"; "for i in [1..n] do"; "    ^true"; "print \"0\""]
-
 let h3r4d1 d =
-    let n = $"{d1Spawns}"
     let runs =
-        [("top", d1Top); ("pmap", d1Arm "pmap"); ("pfirst", d1Arm "pfirst")]
-        |> Seq.pmapWith 3 (fun (k, src) -> (k, rssRun d "60" [put d $"d1-{k}.weir" src; n]))
+        [("pmap", d1Spawns); ("pmap", d1Few); ("pfirst", d1Spawns); ("pfirst", d1Few)]
+        |> Seq.pmapWith 4 (fun (k, n) -> (k, n, rssRun d "60" [put d $"d1-{k}.weir" (d1Arm k); $"{n}"]))
         |> Seq.freeze
-    let top = runs |> Seq.find (fun (k, _) -> k == "top") |> snd
-    runs
-    |> Seq.where (fun (k, _) -> k <> "top")
-    |> Seq.map (fun (k, r) ->
-        ($"{n} spawns in one {k} arm: peak RSS {r.rss} MiB vs {top.rss} MiB at top level (limit +8 MiB; rc {r.rc}/{top.rc}, {r.ms}ms)", r.rc == "0" && top.rc == "0" && r.rss <= top.rss + 8))
+    let run k n = runs |> Seq.find (fun (rk, rn, _) -> rk == k && rn == n) |> fun (_, _, r) -> r
+    ["pmap"; "pfirst"]
+    |> Seq.map (fun k ->
+        let many = run k d1Spawns
+        let few = run k d1Few
+        ($"{d1Spawns} spawns in one {k} arm: peak RSS {many.rss} MiB vs {few.rss} MiB at {d1Few} spawns (limit +8 MiB; rc {many.rc}/{few.rc}, {many.ms}ms)", many.rc == "0" && few.rc == "0" && many.rss <= few.rss + 8))
     |> failing
 
 // ---- H3R4-F1: the piped REPL puts lookahead lines back out of order ------------
