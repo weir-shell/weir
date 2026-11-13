@@ -66,7 +66,7 @@ hashing; this is one of the few places bash is more convenient.
 `set -e` is always on and has no name. A nonzero exit raises (once the
 command's output has been read to the end) and stops the script at the
 failing line. To inspect a failure instead, make it data:
-`cmd | complete` gives `{ ok; exitCode; stdout; stderr }`, where `ok` is
+`cmd | complete` gives `{ ok; exitCode; stdout; stderr; elapsed }`, where `ok` is
 `exitCode == 0`. That record is also where stderr lives, where bash
 would use `2>&1`.
 

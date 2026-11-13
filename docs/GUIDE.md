@@ -1055,7 +1055,7 @@ Each one decides where the command's output goes:
 | form | output | result |
 |---|---|---|
 | `cmd \| succeeds` | silent | `bool` (`exitCode == 0`, exactly) |
-| `cmd \| complete` | captured | `{ ok; exitCode; stdout; stderr }` — `ok` is `exitCode == 0` |
+| `cmd \| complete` | captured | `{ ok; exitCode; stdout; stderr; elapsed }` — `ok` is `exitCode == 0`, `elapsed` the time the run took |
 | `cmd \| orFail "msg"` | streams | unit; raises `msg (exit N)` on nonzero |
 | `cmd \| exitCode` | streams | the code as `int`; never raises |
 | `cmd \| line` | captured | the one trimmed stdout line, a `string`; raises on nonzero or 0-or-2+ lines |
@@ -1395,6 +1395,23 @@ ratio: `Duration.toMillis a / Duration.toMillis b`.
 
 `Duration.sleep 500ms` pauses the script. It has the module name in
 front so that plain `sleep 5` still runs the coreutils `sleep`.
+
+`Duration.measure` runs a function and returns its result together
+with the time it took. For one command, `| complete` already carries
+the time as `elapsed`:
+
+```weir
+let (out, took) = Duration.measure (fun () -> sh -c "echo built" | text)
+print $"{out} measured={took >= 0ms}"
+let r = sh -c "exit 3" | complete
+print $"exit {r.exitCode} timed={r.elapsed >= 0ms}"
+```
+
+Both read a monotonic clock in whole milliseconds, so a change to the
+system clock doesn't skew them, where `Instant.now () - start` is wall
+time. `measure` times what the function does. A command capture is
+lazy, so `fun () -> $(make)` returns at once with nothing run: end it
+with `| text`, `| complete` or `|> Seq.freeze`.
 
 In a command line, `30s` is just text: `timeout 30s cmd` passes it
 through unchanged. Splicing a `Duration` value into a command is an

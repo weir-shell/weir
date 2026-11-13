@@ -722,6 +722,21 @@ within tmp d
   convert via `Duration.toMillis` into an int field. Interpolation holes
   render Durations directly (`$"took {elapsed}"`); command arguments
   do NOT — pass `Duration.toMillis d` or `show d` deliberately.
+  TIMING [D:measure]: `Duration.measure : (unit -> 'a) -> 'a * Duration`
+  runs the function and returns its result with the time it took — whole
+  ms on a MONOTONIC clock, where `Instant.now () - t` is wall time and a
+  clock step skews it. It times what the function DOES: a command capture
+  is lazy, so `fun () -> $(make)` returns at once with nothing run — end
+  it with `| text`, `| complete` or `|> Seq.freeze`. One command needs no
+  wrapper: `| complete` carries `elapsed`. `pure` refuses `measure` (it
+  reads the clock).
+
+```weir
+let (out, took) = Duration.measure (fun () -> sh -c "echo built" | text)
+print $"{out} measured={took >= 0ms}"
+let r = sh -c "exit 3" | complete
+print $"exit {r.exitCode} timed={r.elapsed >= 0ms}"
+```
 - Absolute time is `Instant` [D:instant] — a POINT on the UTC
   timeline, the boring subset: no local zones, no calendar arithmetic
   (`t + 1d`-style "next day same wall time" does not exist; a shift is
@@ -2116,9 +2131,11 @@ within tmp d
     sh -c "echo replaced" | exec
 ```
   Full inspection: `cmd | complete` gives a `Completed` record, `{ ok; exitCode;
-  stdout; stderr }` — `ok` is `exitCode == 0` (the `succeeds` law), so `if
+  stdout; stderr; elapsed }` — `ok` is `exitCode == 0` (the `succeeds` law), so `if
   r.ok then …` reads; a tool whose nonzero codes mean something (grep's 1)
-  reads the code. RECEIPTS ARE READ-ONLY [D:receipts-read-only]:
+  reads the code. `elapsed` is the run's `Duration` (start to exit with the
+  output captured, monotonic clock [D:measure]); `to json`/`to yaml` write it
+  as integer milliseconds. RECEIPTS ARE READ-ONLY [D:receipts-read-only]:
   `Completed`, `FileRow` (`ls`/`Dir.stat`/`File.stat`) and `HttpResponse`
   (`Http.send`) are minted by the runtime only — a record literal (bare or
   `Completed { … }`) or a `{ r with … }` is a check error naming where the
@@ -3474,7 +3491,7 @@ not the teaching.
 
 - `Args`: `flag` `load` `value`
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
-- `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
+- `Duration`: `average` `h` `m` `measure` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `getOr` `load` `need` `ofPairs` `pair` `vars`
 - `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readFrom` `readSecret` `sha1` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity], and refuses a FIFO (use `write`) [D:fifo-ops-polled] — the temp file is born with that mode, so a 0600 file's new content is never readable wider [D:private-temp]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
@@ -3514,7 +3531,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 
 - bare builtins: `cd` `exit` `fail` `fst` `id` `ls` `not` `print` `printerr` `pwd` `show` `snd`
 - type `Auth`: `NoAuth` `Bearer` `Basic`
-- type `Completed`: { `ok` `exitCode` `stdout` `stderr` }
+- type `Completed`: { `ok` `exitCode` `stdout` `stderr` `elapsed` }
 - type `EnvVar`: { `name` `value` }
 - type `FileKind`: `Regular` `Directory` `Symlink`
 - type `FileChunk`: { `lines` `next` }

@@ -609,7 +609,7 @@ out=$(cd "$okdir" && $BIN ok.weir 2>&1) || fail "Completed.ok fixture must run: 
 3:false:true
 130:false:true" ] || fail "Completed.ok is exitCode == 0 over 0/1/3/130: $out"
 out=$($BIN -e 'sh -c "exit 3" | complete |> to json')
-expect "to json of a Completed carries ok" '["{\"ok\":false,\"exitCode\":3,\"stdout\":[],\"stderr\":[]}"] : seq<string>' "$out"
+expect "to json of a Completed carries ok" '["{\"ok\":false,\"exitCode\":3,\"stdout\":[],\"stderr\":[],\"elapsed\":' "$out"
 rm -rf "$okdir"
 echo "e2e ok: Completed.ok == (exitCode == 0) over 0/1/3/130; to json carries it"
 
@@ -12641,6 +12641,23 @@ out=$($BIN -e 'Duration.toSeconds 2500ms')
 out=$($BIN -e 'Float.near (Float.parse (show 1.5e-3)) 1.5e-3 0.0')
 [ "$out" = "true : bool" ] || fail "show/parse round-trip: $out"
 echo "e2e ok: floats (finite-only raises, teachings name spellings, toSeconds lossless, round-trip)"
+
+# [D:measure]: Duration.measure and Completed.elapsed, on the main
+# thread and in a suspended arm
+if [ "$IS_WINDOWS" != "1" ]; then
+    out=$($BIN -e 'let (v, took) = Duration.measure (fun () -> sh -c "sleep 0.2; echo hi" | text)
+(v, took >= 200ms && took < 30s)')
+    [ "$out" = '("hi", true) : string * bool' ] || fail "Duration.measure pairs the result with the time: $out"
+    out=$($BIN -e 'let r = sh -c "sleep 0.2; echo a" | cat | complete
+r.elapsed >= 200ms && r.elapsed < 30s')
+    [ "$out" = "true : bool" ] || fail "a chain's Completed carries elapsed: $out"
+    out=$($BIN -e '[1; 2] |> Seq.pmap (fun _ -> Duration.measure (fun () -> sh -c "sleep 0.2" | complete)) |> Seq.map (fun (r, d) -> r.elapsed >= 200ms && d >= r.elapsed) |> Seq.freeze')
+    [ "$out" = "[true; true] : seq<bool>" ] || fail "measure and elapsed in a suspended arm: $out"
+    out=$($BIN -e 'let (xs, took) = Duration.measure (fun () -> $(sh -c "sleep 2"))
+(Seq.length xs, took < 1s)')
+    [ "$out" = "(0, true) : int * bool" ] || fail "measure does not force a lazy capture: $out"
+    echo "e2e ok: Duration.measure and Completed.elapsed (main thread, chain, suspended arm, lazy capture not forced)"
+fi
 
 # ---- trailing comments [D:trailing-comments] -------------------------------
 tcdir=$(mkweirtmp)

@@ -262,6 +262,13 @@
           "pointer": null
         },
         {
+          "name": "measure",
+          "signature": "Duration.measure (f: unit -\u003E \u0027a) : \u0027a * Duration",
+          "summary": "Run the function and return its result with the time it took, in whole milliseconds on a monotonic clock (a wall-clock step does not skew it).",
+          "example": "Duration.measure (fun () -\u003E Duration.sleep 20ms)",
+          "pointer": "It times what the function does. A command capture is lazy, so \u0060fun () -\u003E $(make)\u0060 returns at once with the command not yet run: end it with \u0060| text\u0060, \u0060| complete\u0060 or \u0060|\u003E Seq.freeze\u0060 to time the run."
+        },
+        {
           "name": "ms",
           "signature": "Duration.ms (n: int) : Duration",
           "summary": "A duration of n milliseconds. The function form of a literal like 500ms.",
@@ -2664,7 +2671,7 @@
     },
     {
       "name": "Completed",
-      "summary": "A finished command: ok, exitCode, stdout, stderr. ok is exitCode == 0; a tool whose nonzero codes mean something (grep\u0027s 1) reads the code. You get one from \u0060| complete\u0060, and only from there: it is a receipt of a run, so a literal or \u0060{ r with \u2026 }\u0060 is refused.",
+      "summary": "A finished command: ok, exitCode, stdout, stderr, elapsed. ok is exitCode == 0; elapsed is the time from starting the command to its exit with the output captured, in whole milliseconds on a monotonic clock; a tool whose nonzero codes mean something (grep\u0027s 1) reads the code. You get one from \u0060| complete\u0060, and only from there: it is a receipt of a run, so a literal or \u0060{ r with \u2026 }\u0060 is refused.",
       "example": null,
       "pointer": null,
       "kind": "record",
@@ -2684,6 +2691,10 @@
         {
           "name": "stderr",
           "type": "seq\u003Cstring\u003E"
+        },
+        {
+          "name": "elapsed",
+          "type": "Duration"
         }
       ]
     },

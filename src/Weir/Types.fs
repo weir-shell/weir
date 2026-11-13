@@ -30,7 +30,7 @@ let receipts: Map<string, Receipt> =
         "Completed",
         {
             Article = "a"
-            Derived = [ "ok" ]
+            Derived = [ "ok"; "elapsed" ]
             Source = "a Completed is what '| complete' returns — run a command to get one (sh -c \"exit 3\" | complete)"
             Reports = "a run that happened (ok follows exitCode)"
             Anon = "{| exitCode = 3 |}"

@@ -11229,6 +11229,8 @@ let pureRegionTests =
                 [ "let x ="; "    pure"; "        File.write \"f\" [\"y\"]" ], "'File.write' writes the filesystem"
                 [ "let x ="; "    pure"; "        Env.get \"HOME\"" ], "'Env.get' reads the environment"
                 [ "let t ="; "    pure"; "        Instant.now ()" ], "'Instant.now' reads the clock"
+                [ "let t ="; "    pure"; "        Duration.measure (fun () -> 1)" ],
+                "'Duration.measure' reads the clock"
                 [ "let d ="; "    pure"; "        within tmp t"; "            t" ], "'within tmp' scopes a resource"
                 [ "let x ="; "    pure"; "        within proc p = sleep 5"; "            1" ],
                 "'within proc' scopes a resource"
@@ -31525,6 +31527,37 @@ let floatTests =
             let ex = Expect.throwsC (fun () -> run "Float.parse \"NaN\"" |> ignore) id
             Expect.stringContains ex.Message "not a finite float" "boundaries reject non-finite too"
         }
+        test "Duration.measure and Completed.elapsed time a run on the monotonic clock [D:measure]" {
+            skipOnWindows ()
+
+            Expect.equal
+                (runReal
+                    "let (v, took) = Duration.measure (fun () -> $(sh -c \"sleep 0.2; echo hi\" | text)) in (v, took >= 200ms && took < 30s)")
+                (VTuple [ VStr "hi"; VBool true ])
+                "the result rides with the time"
+
+            Expect.equal
+                (runReal
+                    "let r = $(sh -c \"sleep 0.2; exit 3\" | complete) in (r.exitCode, r.elapsed >= 200ms && r.elapsed < 30s)")
+                (VTuple [ VInt 3L; VBool true ])
+                "a command's own time"
+
+            Expect.equal
+                (runReal "let r = $(sh -c \"sleep 0.2; echo a\" | cat | complete) in r.elapsed >= 200ms")
+                (VBool true)
+                "a chain's time is the whole chain's"
+
+            Expect.equal
+                (runReal
+                    "let (xs, took) = Duration.measure (fun () -> $(sh -c \"sleep 2\")) in (Seq.length xs, took < 1s)")
+                (VTuple [ VInt 0L; VBool true ])
+                "a lazy capture is not forced: the time is the function's"
+
+            Expect.equal
+                (runReal "$(sh -c \"exit 0\" | complete) |> to json |> Seq.head |> Str.contains \"\\\"elapsed\\\":\"")
+                (VBool true)
+                "elapsed crosses json as integer milliseconds"
+        }
         test "Duration.toSeconds is lossless; Duration internals stay integer" {
             Expect.equal (run "Duration.toSeconds 2500ms") (VFloat 2.5) "the defect that prompted the session"
             Expect.equal (run "Duration.toSeconds 1ms") (VFloat 0.001) ""
@@ -46666,15 +46699,18 @@ let receiptTests =
         test "ok leads the record: show and to json carry it (the REPL echo is pinned in e2e)" {
             skipOnWindows ()
 
-            Expect.equal
-                (runReal "show $(sh -c \"exit 3\" | complete)")
-                (VStr "{ ok = false; exitCode = 3; stdout = []; stderr = [] }")
-                "show"
+            match runReal "show $(sh -c \"exit 3\" | complete)" with
+            | VStr shown ->
+                Expect.stringStarts shown "{ ok = false; exitCode = 3; stdout = []; stderr = []; elapsed = " "show"
+            | v -> failtestf "show gives a string: %A" v
 
-            Expect.equal
-                (runReal "sh -c \"exit 3\" | complete |> to json" |> forceSeq)
-                [ VStr "{\"ok\":false,\"exitCode\":3,\"stdout\":[],\"stderr\":[]}" ]
-                "to json"
+            match runReal "sh -c \"exit 3\" | complete |> to json" |> forceSeq with
+            | [ VStr json ] ->
+                Expect.stringStarts
+                    json
+                    "{\"ok\":false,\"exitCode\":3,\"stdout\":[],\"stderr\":[],\"elapsed\":"
+                    "to json"
+            | v -> failtestf "to json gives one line: %A" v
         }
         test "every receipt is a registered prelude record" {
             let strict, _ =
