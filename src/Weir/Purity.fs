@@ -173,6 +173,7 @@ let rec private effectPhrase (n: string) : string =
         | "Uuid.v7At" -> $"'{n}' draws randomness"
         | "Uuid.v7" -> "'Uuid.v7' reads the clock and draws randomness"
         | "Duration.sleep" -> "'Duration.sleep' waits on the clock"
+        | "Duration.measure" -> "'Duration.measure' reads the clock"
         | "Self.stdin" -> "'Self.stdin' reads the process's input stream"
         | "Self.prompt" -> "'Self.prompt' reads a line from stdin and writes to stderr"
         | "Term.title" -> "'Term.title' writes to the terminal"

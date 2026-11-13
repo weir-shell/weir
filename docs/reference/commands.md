@@ -219,7 +219,7 @@ get the exit status, and is discarded by `succeeds`:
 | form | output | result |
 |---|---|---|
 | `cmd \| succeeds` | silent | `bool` — `exitCode == 0`, exactly |
-| `cmd \| complete` | captured | `{ ok; exitCode; stdout; stderr }` — `ok` is `exitCode == 0`, exactly |
+| `cmd \| complete` | captured | `{ ok; exitCode; stdout; stderr; elapsed }` — `ok` is `exitCode == 0`, exactly; `elapsed` is the run's `Duration` |
 | `cmd \| orFail "msg"` | streams | unit; raises `msg (exit N)` on nonzero |
 | `cmd \| exitCode` | streams | the code as `int`; never raises |
 | `cmd \| line` | captured | the one trimmed stdout line, a `string`; raises on nonzero or 0-or-2+ lines |
@@ -231,6 +231,10 @@ let r = sh -c "echo out; exit 3" | complete
 print $"exit {r.exitCode}, said {r.stdout |> Seq.head}"
 if r.ok then print "clean" else print "a tool whose nonzero codes mean something reads the code"
 ```
+
+`elapsed` is the time from starting the command (or chain) to its exit
+with the output captured, in whole milliseconds on a monotonic clock.
+`to json` and `to yaml` write it as integer milliseconds.
 
 Only `| complete` makes a `Completed`. A record literal or `{ r with …
 }` of one is a check error naming where the value comes from. Same for

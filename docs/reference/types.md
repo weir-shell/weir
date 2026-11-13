@@ -46,6 +46,11 @@ Arithmetic works within a type where it makes sense. Across types it
 doesn't exist, and the errors name the conversion (`Duration.toMillis`,
 `Size.parse`, `Instant.epochMs`).
 
+`Duration.measure f` runs `f ()` and returns `(result, Duration)`: the
+time on a monotonic clock, in whole milliseconds. `Instant.now () - t`
+is wall time instead. It times what `f` does, and a command capture
+`$(cmd)` is lazy, so a function returning one has not run the command.
+
 ## `Uuid`
 
 A 128-bit identifier with its own type, not a string.

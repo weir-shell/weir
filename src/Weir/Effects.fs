@@ -71,6 +71,7 @@ let effectfulQualified =
         "Uuid.v7"
         "Uuid.v7At"
         "Duration.sleep"
+        "Duration.measure"
         // Self.stdin is a per-run value injected by Script (not a
         // Builtins member), so the effect walk sees a plain variable
         // — classified here or nowhere. Reading it drains the live
@@ -229,6 +230,7 @@ let effectClass (n: string) : EffectClass option =
         | "Uuid.v7"
         | "Uuid.v7At" -> Some Ambient // draws randomness (v7 also the clock)
         | "Duration.sleep" -> Some Ambient // waits on the clock — no world change
+        | "Duration.measure" -> Some Ambient // reads the clock
         | "Self.stdin" -> Some Ambient // reads the process's input stream
         // Http.send/expect: per-method, resolved at the request value (None here)
         | "Http.send"

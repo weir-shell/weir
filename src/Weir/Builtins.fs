@@ -763,18 +763,29 @@ let completedDef: RecordDef = {
     // ok leads [D:record-order], the verdict before the detail — it is
     // exitCode == 0 exactly (`| succeeds`'s law), derived at the one
     // construction funnel so no receipt can carry both [D:receipts-read-only]
-    Fields = [ "ok", TBool; "exitCode", TInt; "stdout", TSeq TStr; "stderr", TSeq TStr ]
-    Attrs = Map.empty
+    Fields = [
+        "ok", TBool
+        "exitCode", TInt
+        "stdout", TSeq TStr
+        "stderr", TSeq TStr
+        "elapsed", TDur
+    ]
+    Attrs = Map [ "elapsed", [ "Millis", None ] ]
     OrdKey = []
     Docs = Map.empty
 }
 
-let completedOf (code: int) (stdout: seq<string>) (stderr: seq<string>) : Value =
+// whole milliseconds on the monotonic clock [D:measure]
+let private elapsedSince (started: int64) : Value =
+    VDur(int64 (System.Diagnostics.Stopwatch.GetElapsedTime started).TotalMilliseconds)
+
+let completedOf (started: int64) (code: int) (stdout: seq<string>) (stderr: seq<string>) : Value =
     recordOf completedDef [
         VBool(code = 0)
         VInt(int64 code)
         VSeq(stdout |> Seq.map VStr)
         VSeq(stderr |> Seq.map VStr)
+        elapsedSince started
     ]
 
 // completedWith is the shared body; completed is the empty overlay and
@@ -788,13 +799,14 @@ let private completedSuspended
         match argsV with
         | VSeq args ->
             let argv = argStrings args
+            let started = System.Diagnostics.Stopwatch.GetTimestamp()
 
             let code, stdout, stderr =
                 System.Runtime.CompilerServices.AsyncHelpers.Await(
                     Proc.completeWithSuspended overlay (Proc.specProg prog) argv
                 )
 
-            completedOf code stdout stderr
+            completedOf started code stdout stderr
         | _ -> unreachable "the checker rejects 'completed' on these arguments"
     )
 
@@ -805,12 +817,13 @@ let private completedWith (overlay: (string * string) list) : Value =
                 match progV, argsV with
                 | VStr prog, VSeq args ->
                     let argv = argStrings args
+                    let started = System.Diagnostics.Stopwatch.GetTimestamp()
 
                     let code, stdout, stderr = Proc.completeWith overlay (Proc.specProg prog) argv None
 
                     // lazy views over the capture buffer [D:capture-buffer]
                     // — decode per pull, stable on re-enumeration
-                    completedOf code stdout stderr
+                    completedOf started code stdout stderr
                 | _ -> unreachable "the checker rejects 'completed' on these arguments")
 
         match progV with
@@ -1018,11 +1031,12 @@ let private completedWithIn (overlay: (string * string) list) : Value =
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
                     let input = stdin |> Seq.map asString |> Eval.pinnedFeed
+                    let started = System.Diagnostics.Stopwatch.GetTimestamp()
 
                     let code, out, err =
                         Proc.completeWith overlay (Proc.specProg prog) argv (Some input)
 
-                    completedOf code out err
+                    completedOf started code out err
                 | _ -> unreachable "the checker rejects 'completedIn' on these arguments")))
 
 let private succeededWithIn (overlay: (string * string) list) : Value =
@@ -6053,7 +6067,27 @@ let private suspending (f: Value -> System.Threading.Tasks.Task<Value>) (b: Valu
     registerAsync b f
     b
 
+// [D:measure]: the thunk's own work on the monotonic clock; a lazy
+// sequence it returns has not run
+let private measureSuspended (flow: Flow) (f: Value) : Task<Value> =
+    Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let started = System.Diagnostics.Stopwatch.GetTimestamp()
+        let v = awaitFrame flow (applyAsync flow f VUnit)
+        VTuple [ v; elapsedSince started ]
+    )
+
+let private measureImpl: Value =
+    suspendingN 1 (fun flow args ->
+        match args with
+        | [ f ] -> measureSuspended flow f
+        | _ -> null)
+    <| VBuiltin(fun f ->
+        let started = System.Diagnostics.Stopwatch.GetTimestamp()
+        let v = apply f VUnit
+        VTuple [ v; elapsedSince started ])
+
 let private durationMembers: (string * Ty * Value) list = [
+    "measure", TFun(TFun(TUnit, tA), TTuple [ tA; TDur ]), measureImpl
     "ms", TFun(TInt, TDur), durCtor "ms" 1L
     "s", TFun(TInt, TDur), durCtor "s" 1000L
     "m", TFun(TInt, TDur), durCtor "m" 60000L
@@ -9570,6 +9604,13 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 (Some "Duration.tryParse \"not-a-duration\"")
                 None
              |> named [ "text" ])
+            "Duration.measure",
+            (bd
+                "Run the function and return its result with the time it took, in whole milliseconds on a monotonic clock (a wall-clock step does not skew it)."
+                (Some "Duration.measure (fun () -> Duration.sleep 20ms)")
+                (Some
+                    "It times what the function does. A command capture is lazy, so `fun () -> $(make)` returns at once with the command not yet run: end it with `| text`, `| complete` or `|> Seq.freeze` to time the run.")
+             |> named [ "f" ])
             "Duration.sleep",
             (bd
                 "Pause for the duration. Zero returns immediately; a negative duration raises. The OS timer resolution (about 15ms on Windows, 1ms on Linux) means a short sleep may last longer than asked, never shorter. It is called Duration.sleep so that plain `sleep` still runs the system command."
@@ -9714,7 +9755,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
             // when you get one ----
             "Completed",
             bd
-                "A finished command: ok, exitCode, stdout, stderr. ok is exitCode == 0; a tool whose nonzero codes mean something (grep's 1) reads the code. You get one from `| complete`, and only from there: it is a receipt of a run, so a literal or `{ r with … }` is refused."
+                "A finished command: ok, exitCode, stdout, stderr, elapsed. ok is exitCode == 0; elapsed is the time from starting the command to its exit with the output captured, in whole milliseconds on a monotonic clock; a tool whose nonzero codes mean something (grep's 1) reads the code. You get one from `| complete`, and only from there: it is a receipt of a run, so a literal or `{ r with … }` is refused."
                 None
                 None
             "FileRow",
@@ -10072,10 +10113,14 @@ let private chainCodeSuspended (finish: int -> Value) (specs: Proc.Spec list) : 
 let private chainCompletedImpl =
     suspendingN
         2
-        (chainSuspended (chainCompletedSuspended true (fun (code, stdout, stderr) -> completedOf code stdout stderr)))
+        (chainSuspended (fun specs ->
+            let started = System.Diagnostics.Stopwatch.GetTimestamp()
+
+            chainCompletedSuspended true (fun (code, stdout, stderr) -> completedOf started code stdout stderr) specs))
     <| chainBuiltin (fun specs ->
+        let started = System.Diagnostics.Stopwatch.GetTimestamp()
         let code, stdout, stderr = Proc.chainCompletedOf specs
-        completedOf code stdout stderr)
+        completedOf started code stdout stderr)
 
 let private chainSucceededImpl =
     suspendingN 2 (chainSuspended (chainCompletedSuspended false (fun (code, _, _) -> VBool(code = 0))))

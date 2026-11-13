@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.91
+
+### Added
+
+- **`Duration.measure` times a function.** `Duration.measure (fun () ->
+  …)` runs it and returns `(result, Duration)`: whole milliseconds on a
+  monotonic clock, where `Instant.now () - t` is wall time. It times
+  what the function does, and a command capture is lazy, so
+  `fun () -> $(make)` measures nothing: end it with `| text`,
+  `| complete` or `|> Seq.freeze`.
+- **`Completed` carries `elapsed`.** `cmd | complete` now reports how
+  long the run took, start to exit with the output captured, as a
+  `Duration`. `show` and the REPL echo of a `Completed` gain the field,
+  and `to json`/`to yaml` write it as integer milliseconds (`elapsed`).
+
 ## v0.0.90
 
 ### Changed
