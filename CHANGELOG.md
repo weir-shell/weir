@@ -14,6 +14,12 @@
   long the run took, start to exit with the output captured, as a
   `Duration`. `show` and the REPL echo of a `Completed` gain the field,
   and `to json`/`to yaml` write it as integer milliseconds (`elapsed`).
+- **`Tree.fold` computes a value over a tree, leaves first.**
+  `Tree.fold children combine root` hands `combine` each node with the
+  results of its children, in order, and returns the root's result. It
+  is the recursive function weir doesn't have: rendering a recursive
+  union, totalling a directory, rolling up a dependency. Linear, and
+  depth costs no stack; an endless tree raises after 100000 nodes.
 
 ## v0.0.90
 

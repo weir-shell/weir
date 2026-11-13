@@ -2229,6 +2229,13 @@
       "name": "Tree",
       "members": [
         {
+          "name": "fold",
+          "signature": "Tree.fold (children: \u0027a -\u003E seq\u003C\u0027a\u003E) (combine: \u0027a -\u003E seq\u003C\u0027b\u003E -\u003E \u0027b) (root: \u0027a) : \u0027b",
+          "summary": "Fold a tree from the leaves up. children gives a node\u0027s children; combine receives a node and the results of its children, in order, and returns the node\u0027s result. The answer is the root\u0027s result. Each node is combined once, a node with no children gets an empty seq, and depth is not limited by the stack.",
+          "example": "Tree.fold (fun n -\u003E if n \u003C 4 then [n * 2; n * 2 \u002B 1] else []) (fun n rs -\u003E n \u002B Seq.sum rs) 1",
+          "pointer": "Nodes are not de-duplicated, so a shared subtree is folded once per parent; for a structure with cycles use Graph.reach or Frontier.fold. After 100000 nodes it raises instead of running forever."
+        },
+        {
           "name": "walk",
           "signature": "Tree.walk (step: \u0027a -\u003E seq\u003C\u0027a\u003E) (root: \u0027a) : unit",
           "summary": "Walk a tree for its side effects, parents before children. The step function does the work for a node and returns its children, so which children exist can depend on what the parent did. Nodes are not de-duplicated; for structures with cycles use Graph.reach or Frontier.fold. The 100000-step limit still applies.",

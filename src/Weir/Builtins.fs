@@ -7536,6 +7536,55 @@ let private treeWalkImpl: Value =
 
             VUnit))
 
+// [D:tree-fold]: children before their parent, on a heap stack of
+// frames, so depth costs no host stack
+let private treeFoldImpl: Value =
+    VBuiltin(fun children ->
+        VBuiltin(fun combine ->
+            VBuiltin(fun root ->
+                let stack =
+                    System.Collections.Generic.Stack<
+                        struct (Value * System.Collections.Generic.IEnumerator<Value> * ResizeArray<Value>)
+                     >()
+
+                let mutable steps = 0
+                let mutable result = VUnit
+
+                let enter (n: Value) =
+                    if steps >= frontierBudget then
+                        failwith
+                            $"Tree.fold: exceeded {frontierBudget} nodes — does every branch end in a node with no children?"
+
+                    steps <- steps + 1
+
+                    match apply children n with
+                    | VSeq cs -> stack.Push(struct (n, cs.GetEnumerator(), ResizeArray<Value>()))
+                    | v -> unreachable $"the checker rejects non-seq children: {formatValue v}"
+
+                try
+                    enter root
+
+                    while stack.Count > 0 do
+                        let struct (n, e, results) = stack.Peek()
+
+                        if e.MoveNext() then
+                            enter e.Current
+                        else
+                            stack.Pop() |> ignore
+                            e.Dispose()
+                            let r = apply (apply combine n) (VSeq(results.ToArray() :> seq<Value>))
+
+                            if stack.Count > 0 then
+                                let struct (_, _, parent) = stack.Peek()
+                                parent.Add r
+                            else
+                                result <- r
+                finally
+                    for struct (_, e, _) in stack do
+                        e.Dispose()
+
+                result)))
+
 let private frontierMembers: (string * Ty * Value) list = [
     "fold",
     TFun(TFun(tA, TStr), TFun(tB, TFun(TFun(tB, TFun(tA, TTuple [ tB; TSeq tA ])), TFun(TSeq tA, tB)))),
@@ -7546,7 +7595,10 @@ let private graphMembers: (string * Ty * Value) list = [
     "reach", TFun(TFun(tA, TStr), TFun(TFun(tA, TSeq tA), TFun(tA, TSeq tA))), graphReachImpl
 ]
 
-let private treeMembers: (string * Ty * Value) list = [ "walk", TFun(TFun(tA, TSeq tA), TFun(tA, TUnit)), treeWalkImpl ]
+let private treeMembers: (string * Ty * Value) list = [
+    "walk", TFun(TFun(tA, TSeq tA), TFun(tA, TUnit)), treeWalkImpl
+    "fold", TFun(TFun(tA, TSeq tA), TFun(TFun(tA, TFun(TSeq tB, tB)), TFun(tA, tB))), treeFoldImpl
+]
 
 // ---- the typeless yaml boundary [D:yaml-nodes] ----------------------------
 // Yaml.parse reads one document into the public Yaml union (structure
@@ -8654,6 +8706,13 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 (Some "1 |> Tree.walk (fun n -> if n < 3 then [n + 1] else [])")
                 None
              |> named [ "step"; "root" ])
+            "Tree.fold",
+            (bd
+                "Fold a tree from the leaves up. children gives a node's children; combine receives a node and the results of its children, in order, and returns the node's result. The answer is the root's result. Each node is combined once, a node with no children gets an empty seq, and depth is not limited by the stack."
+                (Some "Tree.fold (fun n -> if n < 4 then [n * 2; n * 2 + 1] else []) (fun n rs -> n + Seq.sum rs) 1")
+                (Some
+                    "Nodes are not de-duplicated, so a shared subtree is folded once per parent; for a structure with cycles use Graph.reach or Frontier.fold. After 100000 nodes it raises instead of running forever.")
+             |> named [ "children"; "combine"; "root" ])
             "Option.defaultValue",
             bd "The Some value, or a fallback when None." (Some "Option.defaultValue 0 (Some 5)") None
             |> named [ "fallback"; "opt" ]
