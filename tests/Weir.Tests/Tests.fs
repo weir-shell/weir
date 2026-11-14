@@ -47097,6 +47097,42 @@ let hunt4Tests =
 
             Expect.stringContains out "sets K for children (env sigil)" "the overlay is reported"
         }
+        test "a nullary case takes a guard" {
+            Expect.equal
+                (runFile [
+                    "type L = Debug | Info | Warn"
+                    "let f l n = match l with | Debug | Info when n > 0 -> 1 | Warn when n > 0 -> 2 | _ -> 3"
+                    "let g = function | None when 1 == 1 -> 1 | _ -> 2"
+                    "if f Info 1 <> 1 then exit 3"
+                    "if f Warn 1 <> 2 then exit 4"
+                    "if f Warn 0 <> 3 then exit 5"
+                    "if g None <> 1 then exit 6"
+                ])
+                0
+                "| None when …, | A | B when …, in match and function"
+        }
+        test "a name starting with a declaration keyword heads a statement" {
+            Expect.equal
+                (runFile [
+                    "let modules = [\"a\"]"
+                    "modules |> Seq.iter (fun m ->"
+                    "    let y = <<<"
+                    "        x"
+                    "    if (y |> Seq.head) + m <> \"xa\" then exit 3)"
+                    "let typed = 1"
+                    "let imports = [typed]"
+                    "imports |> Seq.iter (fun i -> if i <> 1 then exit 4)"
+                ])
+                0
+                "modules / typed / imports are ordinary names"
+
+            for head in [ "type-check"; "module-assistant"; "import-im6"; "try-x"; "return-code" ] do
+                let ds = diagsIn "pin.weir" [ $"{head} --flag" ]
+
+                Expect.isTrue
+                    (ds |> List.forall (fun d -> d.Severity <> "error"))
+                    $"{head} is a command word: {ds |> List.map _.Message}"
+        }
     ]
 
 [<Tests>]

@@ -508,6 +508,12 @@ let private attrsRejectHere: Parser<unit, unit> =
 let private keyword s =
     attempt (pstring s .>> notFollowedBy (satisfy isIdentCont)) .>> ws
 
+// a declaration keyword at a statement's head: glued to a dash it is a
+// command word (`type-check`, `module-assistant`), never the keyword
+let private declKeyword s =
+    attempt (pstring s .>> notFollowedBy (satisfy (fun c -> isIdentCont c || c = '-')))
+    .>> ws
+
 // internal backtrack labels [D:label-leaks]: bookkeeping for the
 // combinators, never a user-facing repair — the marker lets the dump
 // cleaner drop them from FParsec's 'Other error messages' pile, closing
@@ -1695,7 +1701,7 @@ let private dotFloatTeaching =
 // it is misplaced — teach the form [D:try-form]
 let private tryAtomTeaching: Parser<Expr, unit> =
     onHead 't' (pstring "try")
-    <| attempt (getPosition .>> pstring "try" .>> notFollowedBy (satisfy isIdentCont))
+    <| attempt (getPosition .>> pstring "try" .>> notFollowedBy (satisfy (fun c -> isIdentCont c || c = '-')))
     >>= fun at ->
         failFatallyAt
             at
@@ -2344,6 +2350,16 @@ let private segOpp = mkOpp false
 
 let private pat, private patRef = createParserForwardedToRef<Pattern, unit>()
 
+let private keywordWordAhead: Parser<unit, unit> =
+    attempt (
+        rawWord
+        >>= fun w ->
+            if keywords.Contains w && w <> "true" && w <> "false" then
+                preturn ()
+            else
+                fail "not a keyword"
+    )
+
 let private patWord =
     // the keyword check dominates [D:anchor-before-read], outside the
     // word's own attempt: a keyword is never a valid pattern, so where the
@@ -2513,7 +2529,9 @@ let private patCore =
                 // a qualified case `A.Case` names the import whose union
                 // declares it [D:qualified-case-patterns]; the checker
                 // resolves the qualifier
-                opt qualifiedCaseWord .>>. opt patAtom
+                // a keyword ends the case (`| None when …`, `| A | B when …`):
+                // it is never the payload
+                opt qualifiedCaseWord .>>. opt (notFollowedBy keywordWordAhead >>. patAtom)
                 |>> fun (q, arg) ->
                     let ctor, qual, headEnd =
                         match q with
@@ -4489,7 +4507,14 @@ let private foreignKeywordGuard () : Parser<'a, unit> =
         |> List.map (fun (w, teach) ->
             let shape = if w = "def" then defStatementShape else preturn ()
 
-            attempt (getPosition .>> shape .>> pstring w .>> notFollowedBy (satisfy isIdentCont))
+            // glued to a dash the word is a command name (`try-x`), as the
+            // declaration keywords are
+            attempt (
+                getPosition
+                .>> shape
+                .>> pstring w
+                .>> notFollowedBy (satisfy (fun c -> isIdentCont c || c = '-'))
+            )
             >>= fun at -> failFatallyAt at teach)
     )
 
@@ -5760,7 +5785,7 @@ let private typeDecl =
     >>= fun (p, attrs) ->
         let core =
             pipe4
-                (keyword "type" >>. ident .>>. typeParams .>> str_ws "=")
+                (declKeyword "type" >>. ident .>>. typeParams .>> str_ws "=")
                 (recordBody <|> unionBody)
                 (opt validateClause)
                 getPosition
@@ -5953,14 +5978,15 @@ let private upperName (role: string) : Parser<string * Span, unit> =
 // `module` (name derived from the filename) or `module Name`
 let private moduleDecl: Parser<Stmt, unit> =
     pipe2
-        (spanned (pstring "module" .>> notFollowedBy (satisfy isIdentCont)) .>> ws)
+        (attempt (spanned (pstring "module" .>> notFollowedBy (satisfy (fun c -> isIdentCont c || c = '-'))))
+         .>> ws)
         (opt (upperName "a module name") .>> eof)
         (fun (_, kwSpan) nameOpt -> SModule(Option.map fst nameOpt, kwSpan))
 
 // `import "path"` / `import "path" as Name` — the path is a literal string
 // (resolution is check-time); anything else gets the teaching error
 let private importDecl: Parser<Stmt, unit> =
-    keyword "import"
+    declKeyword "import"
     >>. (spanned (between (pchar '"') (pchar '"') (manyStrings stringChar)) .>> ws
          <|> failFatally "import takes a literal string path, e.g. import \"./lib/paths.weir\"")
     .>>. (opt (keyword "as" >>. upperName "an import alias") .>> eof)

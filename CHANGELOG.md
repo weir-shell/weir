@@ -32,6 +32,16 @@
   inside a literal path started a new line of the report, where it
   could pass for a line of its own. It is shown as `\x0a`, as error
   messages show it.
+- **A case with no payload takes a `when` guard.** `| None when ok ->`
+  and `| Debug | Info when verbose ->` were parse errors ("'when' is a
+  keyword"). They now parse as written.
+- **A name that starts with `module` heads a statement.** `modules |>
+  Seq.iter (fun m -> …)` with a `<<<` or `yaml` block in the lambda
+  failed with an empty parse error.
+- **A command whose name starts with a keyword and a dash runs.**
+  `type-check`, `module-assistant`, `import-im6`, `try-x` and
+  `return-code` were read as the keyword. Glued to a dash the word is
+  a command name, as `let-go` and `if-up` already were.
 ## v0.0.91
 
 ### Added
