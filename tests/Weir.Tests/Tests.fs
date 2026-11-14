@@ -46995,6 +46995,110 @@ let childWalkTests =
         }
     ]
 
+let hunt4Tests =
+    let runFile (lines: string list) : int =
+        let path = tempPath "weir-hunt4" + ".weir"
+        File.WriteAllLines(path, lines)
+
+        try
+            Weir.Script.run path []
+        finally
+            File.Delete path
+
+    let caps (lines: string list) : string =
+        let _, pairs, _, _, _ = Weir.Script.analyzeLines "hunt4.weir" lines
+
+        Weir.Can.collect "hunt4.weir" (Weir.Can.ofChecked pairs)
+        |> Weir.Can.renderHuman "hunt4.weir"
+
+    testSequenced
+    <| testList "hunt 4 findings" [
+        test "readonly refuses File.writeBytes [D:pure-stage2]" {
+            mustSayIn
+                "pin.weir"
+                [
+                    "let x ="
+                    "    readonly"
+                    "        File.writeBytes \"out.bin\" (Str.toUtf8 \"x\")"
+                    "        1"
+                    "print (show x)"
+                ]
+                "'File.writeBytes' writes the filesystem"
+                "a byte write is a filesystem write"
+        }
+        test "every File/Dir member has a side in the partition [D:can-report]" {
+            // a new member must be placed: a write joins Effects.fsWriteMembers,
+            // a read this list — the report and `readonly` both read the result
+            let reads =
+                Set [
+                    "File.exists"
+                    "File.isExecutable"
+                    "File.mode"
+                    "File.read"
+                    "File.readBytes"
+                    "File.readFrom"
+                    "File.readSecret"
+                    "File.sha1"
+                    "File.sha256"
+                    "File.size"
+                    "File.stat"
+                    "Dir.exists"
+                    "Dir.list"
+                    "Dir.stat"
+                ]
+
+            let members =
+                [ "File"; "Dir" ]
+                |> List.collect (fun m ->
+                    Weir.Builtins.typeEnv.Modules
+                    |> Map.tryFind m
+                    |> Option.map (fun ms -> ms |> Map.toList |> List.map (fun (n, _) -> $"{m}.{n}"))
+                    |> Option.defaultValue [])
+
+            Expect.isNonEmpty members "the File/Dir members are in the type environment"
+
+            for m in members do
+                let isWrite = Weir.Effects.effectClass m = Some Weir.Effects.Mutation
+                Expect.isTrue (isWrite <> reads.Contains m) $"{m}: a write xor a listed read (write={isWrite})"
+        }
+        test "--can reports deletes, moves, byte writes and cd [D:can-report]" {
+            let out =
+                caps [
+                    "File.delete \"/x/a\""
+                    "File.move \"/x/b\" \"/x/c\""
+                    "File.writeBytes \"/x/d\" (Str.toUtf8 \"x\")"
+                    "cd \"/var\""
+                    "let n = File.readBytes \"/x/e\" |> Bytes.length"
+                    "print $\"{n} {ls |> Seq.length}\""
+                ]
+
+            for needle in
+                [
+                    "File.delete /x/a"
+                    "File.move /x/b"
+                    "File.writeBytes /x/d"
+                    "changes the working directory (cd)"
+                    "File.readBytes /x/e"
+                    "ls (the working directory)"
+                ] do
+                Expect.stringContains out needle "the capability is reported"
+        }
+        test "--can renders a literal's control characters visibly [D:error-data-escape]" {
+            let out = caps [ "File.write \"/tmp/ok\\n  nothing else\" [\"x\"]" ]
+            Expect.stringContains out "/tmp/ok\\x0a  nothing else" "the newline is shown, not written"
+        }
+        test "--can reports a reified command's env overlay [D:can-report]" {
+            let out =
+                caps [
+                    "let e = Env.ofPairs [(\"K\", \"v\")]"
+                    "let z = $e(sh -c \"true\" | complete)"
+                    "print (show z.ok)"
+                ]
+
+            Expect.stringContains out "sets K for children (env sigil)" "the overlay is reported"
+        }
+    ]
+
 [<Tests>]
 let allTests =
     testList "Weir" [
@@ -47256,4 +47360,5 @@ let allTests =
         parallelTests
         fileTests
         portOverlayTests
+        hunt4Tests
     ]

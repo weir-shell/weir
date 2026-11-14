@@ -166,6 +166,7 @@ let fsWriteMembers =
     Set [
         "write"
         "writeAtomic"
+        "writeBytes"
         "append"
         "copy"
         "create"

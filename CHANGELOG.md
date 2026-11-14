@@ -15,7 +15,23 @@
   knows was tinted as a command head when it led the line or followed
   `=`. A constructor now takes the constructor colour wherever it
   stands; bold stays for functions, commands and module qualifiers.
-
+- **`readonly` refuses `File.writeBytes`.** A `readonly` block that
+  wrote a file with `File.writeBytes` passed the check and wrote it.
+  It is now the check error every other file write gets.
+- **`weir check --can` reports every file member, `cd` and `ls`.** A
+  script that called `File.delete`, `File.move`, `File.writeBytes` or
+  `cd` was reported as able to do "nothing". Those, `Path.newTempDir`,
+  `File.readBytes`, `File.sha256`, `File.stat`, `File.exists`,
+  `Dir.stat`, `Path.which`, `Env.fromFile`, a `File.readSecret` of a
+  computed path and a bare `ls` are now listed, each as a read or a
+  write.
+- **`weir check --can` reports the variables a captured command
+  sets.** `$e(cmd | complete)` and `K=v cmd | line` ran with the
+  variables but the report left out "sets K for children".
+- **`weir check --can` shows control characters in a path.** A newline
+  inside a literal path started a new line of the report, where it
+  could pass for a line of its own. It is shown as `\x0a`, as error
+  messages show it.
 ## v0.0.91
 
 ### Added
