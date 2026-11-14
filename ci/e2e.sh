@@ -1819,26 +1819,24 @@ echo "$svout" | grep -qF "#save: no such directory: $svdir/nope" || fail "#save 
 echo "$svout" | grep -qF "Access to the path" && fail "#save leaked .NET text: $svout" || true
 echo "e2e ok: #save keeps shadowing chains; its path unquotes; write refusals in weir's words"
 
-# --- #infer drafted-type diagnostic (recast 2026-09-17) [D:infer-diagnostic]/[D:infer-wire-sanitize] --
-# when a drafted type fails to check for any reason, the diagnostic must
-# name the line:col within the drafted text and show the offending line
-# with a caret — the drafted text is weir's own synthesis, so the user
-# must see which generated part is bad. Keyword keys sanitize now
-# ([<Wire "in">] inField — the old {"in": 2} fixture checks and is the
-# positive below), so the remaining un-checkable class is a duplicate
-# key: legal JSON, both occurrences draft the same clean field, and a
-# record refuses a duplicate field. That class drives the diagnostic.
-# The directive prints to stdout, so the piped REPL surfaces it — no
-# pty needed.
-idout=$(printf '%s\n%s\n%s\n' \
-  'let js = ["{\"a\": 1, \"a\": 2}"]' \
+# --- #infer over a repeated key [D:infer-diagnostic]/[D:infer-wire-sanitize] --
+# a duplicate key is legal JSON; it used to draft the field twice, the
+# one class whose draft failed to check (and so drove the drafted-type
+# diagnostic's pin). It now drafts ONE field, the last value's type as
+# `from json` reads it, so the draft checks and reads the sample. No
+# sample is known to draft a non-checking type any more; the diagnostic
+# (line:col in the drafted text + a caret'd snippet) stays as the guard
+# for a future one.
+idout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  'let js = ["{\"a\": 1, \"a\": \"x\"}"]' \
   '#infer js from json as PodsJson' \
+  'let v = js |> from json PodsJson' \
+  'print $"read={v.a}"' \
   '#quit' | $BIN 2>&1)
-echo "$idout" | grep -qF "a drafted type did not check at line 1, col 1: duplicate field 'a'" \
-  || fail "#infer diagnostic lost its line:col: $idout"
-echo "$idout" | grep -qF "type PodsJson = {" || fail "#infer diagnostic lost the offending-line snippet: $idout"
-echo "$idout" | grep -qF "^" || fail "#infer diagnostic lost the caret: $idout"
-echo "e2e ok: a failing #infer drafted type prints line:col + a caret'd snippet (duplicate-key class)"
+echo "$idout" | grep -qF "defined: PodsJson (1 type)" || fail "a repeated key must draft one checking field: $idout"
+echo "$idout" | grep -qF "read=x" || fail "the repeated key's field must read the last value: $idout"
+echo "$idout" | grep -qF "did not check" && fail "a repeated key must not draft a non-checking type: $idout" || true
+echo "e2e ok: #infer drafts one field for a repeated key (last wins) and reads the sample"
 
 # the positive the old fixture became [D:infer-wire-sanitize]: a keyword
 # key infers to a [<Wire>]'d field on the parser's own repair spelling
