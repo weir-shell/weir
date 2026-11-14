@@ -98,6 +98,21 @@ let private envAssignsFwd, private envAssignsFwdRef =
 let private ifCondCmd, private ifCondCmdRef =
     createParserForwardedToRef<Expr, unit>()
 
+// a block let's RHS ends at its `in` [D:value-headed-pipe]: a value-headed
+// pipe there (`let out = xs | prog`) stops its argv at the bareword, as a
+// command-headed RHS does [D:let-in-commands]
+let private letRhsIn = new System.Threading.ThreadLocal<bool>(fun () -> false)
+
+let private withLetRhsIn (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let saved = letRhsIn.Value
+        letRhsIn.Value <- true
+
+        try
+            p stream
+        finally
+            letRhsIn.Value <- saved
+
 let private withLetCmd (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
         let saved = letCmdOk.Value
@@ -2196,7 +2211,8 @@ let private letInBody =
         )
 
     choice [
-        getPosition .>>. (patForm .>>. (seqExpr >>= pipeOrHint) .>> keyword "in")
+        getPosition
+        .>>. (patForm .>>. withLetRhsIn (seqExpr >>= pipeOrHint) .>> keyword "in")
         >>= fun (p, (binder, value)) ->
             // the pattern's names are bindings in the body, as a plain
             // let's name is — a bound name heads no command
@@ -2295,7 +2311,8 @@ let private letInBody =
                 // a false "specific" diagnosis
                 (followedBy eof
                  >>. fun stream -> failFatally $"this binding has no value — give '{name}' a right-hand side" stream)
-                <|> (withParams (cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in")
+                <|> (withParams (cmdRhs <|> withLetRhsIn (seqExpr >>= pipeOrHint))
+                     .>> keyword "in")
                 >>= fun value ->
                     withAmbientName name (withExprParen false (undeepen seqExpr))
                     |>> fun body -> {
@@ -3316,7 +3333,8 @@ let private retryExprBody =
                      })
                 >>= fun optsE ->
                     opt (str_ws ";" <|> str_ws sibSepStr)
-                    >>. (withExprParen false seqExpr
+                    // the body is statement territory [D:statement-lets]
+                    >>. (withStmtLetCmd (withExprParen false seqExpr)
                          // nothing that starts a body [D:loop-body-teach]
                          <|> (getPosition
                               >>= fun at -> failFatallyAt at $"'{headWord}' needs a body — the indented lines below it"))
@@ -3327,7 +3345,9 @@ let private retryExprBody =
                             >>= fun (b, bspan) ->
                                 let pred =
                                     (opt (str_ws ";" <|> str_ws sibSepStr))
-                                    >>. (withPatNames { PKind = PVar b; PSpan = bspan } (withExprParen false seqExpr)
+                                    >>. (withPatNames
+                                             { PKind = PVar b; PSpan = bspan }
+                                             (withStmtLetCmd (withExprParen false seqExpr))
                                          <?> "the until predicate")
 
                                 // a block-less `until stopped` is a within's held
@@ -5456,6 +5476,7 @@ let private valueHeadedGate =
     )
 
 let private valueHeadedStages = pipedStages true cmdArg None ambientProxy
+let private valueHeadedStagesLetRhs = pipedStages true cmdArgLetRhs None ambientProxy
 
 valueHeadedTailImpl <-
     // deepen: the tail re-enters the command grammar [D:depth-guard]
@@ -5474,7 +5495,12 @@ valueHeadedTailImpl <-
                  )
                  >>= fun (at, name) -> failFatallyAt at (captureReifierMsg inner name)
              | _ -> ifail "not a capture head")
-            <|> (valueHeadedGate >>. valueHeadedStages
+            <|> (valueHeadedGate
+                 >>. (fun stream ->
+                     if letRhsIn.Value then
+                         valueHeadedStagesLetRhs stream
+                     else
+                         valueHeadedStages stream)
                  >>= fun stages ->
                      match foldChain lhs stages with
                      | Result.Ok e -> preturn e

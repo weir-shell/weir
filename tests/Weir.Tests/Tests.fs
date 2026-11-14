@@ -47332,6 +47332,49 @@ let hunt4Tests =
                 0
                 "lazy lines, | line and a chain's | text decode a late mark as an early one; a short line does not wait"
         }
+        test "a retry-family body takes a command let with a reifier [D:statement-lets]" {
+            skipOnWindows ()
+
+            let src = [
+                "retry attempts=3 delay=10ms"
+                "    let r = sh -c \"exit 0\" | complete"
+                "    r.ok"
+                "within tmp d"
+                "    poll timeout=1s interval=10ms"
+                "        let up = test -d $d | succeeds"
+                "        up"
+                "    if not (Dir.exists d) then exit 3"
+                "let n = repeat interval=10ms"
+                "    let t = sh -c \"echo 7\" | line"
+                "    t"
+                "until v"
+                "    let again = sh -c \"echo 7\" | line"
+                "    v == again"
+                "if n <> \"7\" then exit 4"
+            ]
+
+            cleanIn "pin.weir" src "the body and the until block are statement bodies"
+            Expect.equal (runFile src) 0 "and they run"
+        }
+        test "a block let binds a value-headed pipe [D:value-headed-pipe]" {
+            skipOnWindows ()
+
+            let src = [
+                "let count xs ="
+                "    let out = xs | cat"
+                "    out |> Seq.length"
+                "if count [\"a\"; \"b\"] <> 2 then exit 3"
+                "if 1 == 1 then"
+                "    let o = [\"x\"; \"in\"] | cat"
+                "    if (o |> Seq.length) <> 2 then exit 4"
+                "[\"q\"] |> Seq.iter (fun s ->"
+                "    let o = [s] | cat"
+                "    if (o |> Seq.head) <> \"q\" then exit 5)"
+            ]
+
+            cleanIn "pin.weir" src "function, if and lambda bodies"
+            Expect.equal (runFile src) 0 "and they run"
+        }
     ]
 
 [<Tests>]

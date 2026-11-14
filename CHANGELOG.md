@@ -106,6 +106,16 @@
   in the first line (or decoded UTF-16 as garbage), while `| complete`
   read it correctly. Every form now waits for the rest of a mark
   before choosing the decoding.
+- **A `retry`, `poll` or `repeat` body binds a command's result.**
+  `let r = cmd | complete` (or `| succeeds`, `| line`, `| text`,
+  `| exitCode`) as a line of the body was a parse error asking for
+  `$(…)`, at the top level and inside `if`, `for`, `within`, a match
+  arm or a lambda. The body and the `until` block now take command
+  lets like any other block.
+- **`let out = values | cmd` works inside a block.** In a function,
+  `if`, `for`, `within` or lambda body, a `let` binding a value piped
+  into a command, followed by another line, failed with a list of
+  expected tokens. It binds the command's lines, as at the top level.
 
 ## v0.0.91
 
