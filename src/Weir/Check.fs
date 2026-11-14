@@ -7848,6 +7848,8 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
         result {
             do! checkBinderName expr.Span param
 
+            do! if param = "()" then bind ctx env pspan dom TUnit else Ok()
+
             let typeBody e =
                 match body.Kind, resolve ctx cod with
                 // a nested lambda against a function cod pushes through

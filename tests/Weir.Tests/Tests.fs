@@ -19312,6 +19312,20 @@ let optionSweepTests =
                 "Graph.reach (fun n -> show n) (fun n -> if n == 1 then [2; 3] elif n == 2 then [4] elif n == 3 then [4] else [1]) 1"
                 (VSeq [ VInt 1L; VInt 2L; VInt 3L; VInt 4L ])
         }
+        test "a '()' lambda parameter is unit in argument position too" {
+            Expect.stringContains
+                (checkErr "[1; 2] |> Seq.map (fun () -> \"X\")").Message
+                "expected int, got unit"
+                "the pushed domain meets unit"
+
+            Expect.stringContains
+                (checkErr "[1; 2] |> Seq.fold (fun acc () -> acc) 0").Message
+                "expected int, got unit"
+                "a nested parameter too"
+
+            expectValue "[(); ()] |> Seq.map (fun () -> 1)" (VSeq [ VInt 1L; VInt 1L ])
+            expectValue "Option.defaultWith (fun () -> 3) None" (VInt 3L)
+        }
         test "Tree.walk: unit-valued, parent before children; a non-seq step rejects at check [D:structural-walk]" {
             expectValue "1 |> Tree.walk (fun n -> if n < 3 then [n + 1] else [])" VUnit
             Expect.stringContains (checkErr "1 |> Tree.walk (fun n -> n)").Message "expected seq<int>, got int" ""
