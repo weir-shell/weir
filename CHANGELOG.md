@@ -90,6 +90,16 @@
   is shown as `\n`, as a tab is shown as `\t`. And a long cell is not
   cut at 120 characters when the output is piped; it is still cut at a
   terminal.
+- **In a `Seq.pmap` arm or a `within serve` handler, a command's short
+  first line arrives when it is written.** `$(cmd) |> Seq.head` waited
+  for the command's fourth byte of output, so a first line such as
+  `ok` or `1` from a command that then went quiet was held until the
+  command printed more or exited, and never came from one that did
+  neither. Outside an arm it always arrived at once.
+- **In an arm, `values | cmd` feeds the command while its output is
+  read.** The values were all pulled before the arm read anything, so
+  a slow producer delayed the first line by its whole run and an
+  endless one hung the arm.
 
 ## v0.0.91
 

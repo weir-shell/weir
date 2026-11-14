@@ -47281,6 +47281,37 @@ let hunt4Tests =
                 0
                 "a literal's and a wire read's field order; a newline cell stays one row; no clip off a terminal"
         }
+        test "in an arm a lazy command's short first line arrives when written [D:async-seq]" {
+            skipOnWindows ()
+
+            Expect.equal
+                (runFile [
+                    "let short () = $(sh -c \"echo ok; exec sleep 3\") |> Seq.head"
+                    "let (v, took) = [1] |> Seq.pmap (fun _ -> Duration.measure short) |> Seq.head"
+                    "if v <> \"ok\" then exit 3"
+                    "if took > 2s then exit 4"
+                ])
+                0
+                "a line shorter than a byte-order mark's four bytes is not held for more input"
+        }
+        test "in an arm a value-headed pipe feeds while its consumer reads [D:value-headed-pipe]" {
+            skipOnWindows ()
+
+            Expect.equal
+                (runFile [
+                    "let ticks () = Seq.initInfinite (fun i ->"
+                    "    Duration.sleep 100ms"
+                    "    $\"tick {i}\")"
+                    "let first () ="
+                    "    let l = ticks () | cat |> Seq.head"
+                    "    l"
+                    "let (v, took) = [1] |> Seq.pmap (fun _ -> Duration.measure first) |> Seq.head"
+                    "if v <> \"tick 0\" then exit 3"
+                    "if took > 5s then exit 4"
+                ])
+                0
+                "an endless slow producer does not hold the arm that reads the command's output"
+        }
     ]
 
 [<Tests>]
