@@ -9,6 +9,12 @@
   lambda ignoring each element. It is now a type error at the `()`
   (`expected int, got unit`), as it already was for a lambda bound
   with `let` first. A script that relied on it writes `fun _ ->`.
+- **A constructor has one colour at the prompt.** In
+  `let t = Node [Leaf 1; Node []]` the first `Node` was bold and the
+  nested ones took the constructor colour, because a name the session
+  knows was tinted as a command head when it led the line or followed
+  `=`. A constructor now takes the constructor colour wherever it
+  stands; bold stays for functions, commands and module qualifiers.
 
 ## v0.0.91
 

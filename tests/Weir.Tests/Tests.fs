@@ -10278,6 +10278,14 @@ let replColorTests =
             Expect.stringContains c "\u001b[36m$x\u001b[0m" "the splice island"
             Expect.isFalse (c.Contains "\u001b[2mhead") "after | the stage is expression land"
         }
+        test "a known constructor takes the constructor tint in a head slot too" {
+            let tint = Weir.Script.colorizeRepl (fun n -> n = "Node" || n = "Leaf" || n = "Seq")
+            let c = tint "let t = Node [Leaf 1; Node []]"
+            Expect.isFalse (c.Contains "\u001b[1mNode") "the let-RHS head is not bold"
+            Expect.stringContains c "\u001b[33mNode\u001b[0m [\u001b[33mLeaf\u001b[0m" "head and nested agree"
+            Expect.stringStarts (tint "Node []") "\u001b[33mNode\u001b[0m" "the statement head too"
+            Expect.stringStarts (tint "Seq.length xs") "\u001b[1mSeq\u001b[0m" "a module qualifier keeps the known tint"
+        }
         test "an interpolation hole paints as code, not string [D:interp-hole-complete]" {
             let c =
                 colorize "for r in ls |> Seq.where (fun f -> File.exists $\"{f.path}/AGENTS.md\") do"
