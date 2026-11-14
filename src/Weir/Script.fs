@@ -3475,6 +3475,14 @@ let colorizeReplWith (isAlias: string -> bool) (isKnown: string -> bool) (line: 
                             i <- fullEnd
                             cmdMode <- true
                             Some "1;34" // PATH, by its whole name
+                        elif
+                            slot <> Complete.HeadSlot.No
+                            && Char.IsUpper word[0]
+                            && not (i < line.Length && line[i] = '.')
+                            && isKnown word
+                            && not (isAlias word)
+                        then
+                            Some "33"
                         elif slot <> Complete.HeadSlot.No && isKnown word then
                             // an alias head is a command: its words are
                             // argv [D:alias-argv-tint]
