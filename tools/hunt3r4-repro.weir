@@ -391,8 +391,9 @@ let sigRun d sig whenKind whenArg tmo mark args =
 // idle core
 let computeLine n = $"[1..{n}] |> Seq.fold (fun a x -> a + 1) 0"
 
-// computation with no boundary inside: a builtin's own loop
-let builtinComputeLine n = $"[1..{n}] |> Seq.length"
+// computation with no boundary inside: a builtin's own loop. Not a range —
+// a long range is a boundary every 4096 elements [D:repl-interrupt-compute]
+let builtinComputeLine n = $"Seq.replicate {n} 1 |> Seq.sum"
 
 // ---- H3R4-01: a teardown returns from pfirst without joining a loser ----------
 

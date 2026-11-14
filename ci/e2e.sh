@@ -1844,7 +1844,8 @@ rfout=$($BIN -e 'echo x | succeeds' 2>&1)
 [ "$rfout" = "true : bool" ] || fail "-e must echo a reified command's value: $rfout"
 rfdir=$(mkweirtmp)
 printf 'echo x | succeeds\n' > "$rfdir/rf.weir"
-$BIN check "$rfdir/rf.weir" 2>&1 | grep -qF "computes a bool and discards it" || fail "a script must still refuse a discarded reifier"
+rfchk=$($BIN check "$rfdir/rf.weir" 2>&1 || true)
+echo "$rfchk" | grep -qF "computes a bool and discards it" || fail "a script must still refuse a discarded reifier: $rfchk"
 rm -rf "$rfdir"
 echo "e2e ok: -e echoes a reified command; a script refuses the discard"
 
