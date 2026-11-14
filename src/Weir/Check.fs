@@ -2827,24 +2827,37 @@ let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, st
     | true, rx -> Ok rx
     | _ ->
         try
-            let rx =
-                System.Text.RegularExpressions.Regex(
-                    pat,
-                    System.Text.RegularExpressions.RegexOptions.None,
-                    regexTimeout
-                )
-
-            // the user's pattern validated above; the engine runs its
-            // code-point form [D:regex-code-points]
-            let rx =
+            // the engine runs the pattern's code-point form
+            // [D:regex-code-points]
+            let codePointForm () =
                 try
-                    System.Text.RegularExpressions.Regex(
-                        Types.regexCodePoints pat,
-                        System.Text.RegularExpressions.RegexOptions.None,
-                        regexTimeout
+                    Some(
+                        System.Text.RegularExpressions.Regex(
+                            Types.regexCodePoints pat,
+                            System.Text.RegularExpressions.RegexOptions.None,
+                            regexTimeout
+                        )
                     )
                 with _ ->
-                    rx
+                    None
+
+            // the user's own pattern is validated first, so an error quotes
+            // what they wrote — except where the engine misreads it: a class
+            // range ending in an emoji is two halves to it
+            let rx =
+                try
+                    let rx =
+                        System.Text.RegularExpressions.Regex(
+                            pat,
+                            System.Text.RegularExpressions.RegexOptions.None,
+                            regexTimeout
+                        )
+
+                    codePointForm () |> Option.defaultValue rx
+                with _ when pat |> Seq.exists System.Char.IsSurrogate ->
+                    match codePointForm () with
+                    | Some rx -> rx
+                    | None -> reraise ()
 
             // named groups are rejected [D:no-named-groups]: .NET
             // numbers positional groups first and named ones after —

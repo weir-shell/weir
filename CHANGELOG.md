@@ -121,6 +121,19 @@
   file and the plan came back empty. It is now a check error, like
   the parallel `Seq` members, directly or through a helper. Open the
   server outside the plan.
+- **An emoji can end a range in a regex class.** `[a-😀]` matched only
+  `a`, `-` and `😀`, its negation was wrong the same way, and a range
+  between two emoji (`[😀-😂]`) was refused as "range in reverse
+  order". A range with an astral end now covers its code points, as
+  in Python. A class subtraction with an astral member (`[😀😁-[😀]]`)
+  removes it; it used to be ignored.
+- **A class no longer matches every emoji because of a BMP range.**
+  A class holding U+FFFD (`[\uFFFD]`), a private-use range
+  (`[\uE000-\uFFFF]`) or any range running across the surrogate
+  block (`[0-\uFFFD]`) matched every astral character, and the
+  negated forms matched none. A class takes an astral character only
+  through an astral member or range, or an escape such as `\S` or
+  `\P{L}`.
 
 ## v0.0.91
 

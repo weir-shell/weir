@@ -47406,6 +47406,33 @@ let hunt4Tests =
                 "'once' cannot run inside 'plan'"
                 "through a helper too"
         }
+        test "a class range ending in an astral code point is that range [D:regex-code-points]" {
+            Expect.equal
+                (runFile [
+                    "let m pat s = Str.isMatch pat s"
+                    "if not (m @\"^[a-😀]$\" \"b\") then exit 3"
+                    "if not (m @\"^[a-😀]$\" \"😀\") then exit 4"
+                    "if m @\"^[a-😀]$\" \"😁\" then exit 5"
+                    "if m @\"^[a-😀]$\" \"-\" then exit 6"
+                    "if m @\"^[^a-😀]$\" \"b\" then exit 7"
+                    "if not (m @\"^[^a-😀]$\" \"😁\") then exit 8"
+                    "if not (m @\"^[😀-😂]$\" \"😁\") then exit 9"
+                    "if m @\"^[😀-😂]$\" \"😃\" then exit 10"
+                    "if not (m @\"^[😀-🧿x]+$\" \"x🤔😀🧿\") then exit 11"
+                    "if m @\"^[😀-🧿x]+$\" \"x🪀\" then exit 12"
+                    "if (Str.rreplace @\"[😀😁-[😀]]\" \"x\" \"😀😁\") <> \"😀x\" then exit 13"
+                    "if m @\"^[a-z😀-[aeiou]]+$\" \"ba\" then exit 14"
+                    "if (m @\"^[😂-😀]$\" \"😁\" |> try) <> None then exit 15"
+                    "if m @\"^[\\uFFFD]$\" \"😀\" then exit 16"
+                    "if m @\"^[\\uE000-\\uFFFF]$\" \"😀\" then exit 17"
+                    "if m @\"^[0-\\uFFFD]$\" \"😀\" then exit 18"
+                    "if not (m @\"^[^0-\\uFFFD]$\" \"😀\") then exit 19"
+                    "if not (m @\"^[\\S]$\" \"😀\") then exit 20"
+                    "if m @\"^[^\\S]$\" \"😀\" then exit 21"
+                ])
+                0
+                "ranges, negation and subtraction with astral members; a class of U+FFFD takes no emoji"
+        }
     ]
 
 [<Tests>]

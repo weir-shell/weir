@@ -611,7 +611,9 @@ let regexCodePoints (pat: string) : string =
 
     let takesSurrogate (atom: string) =
         try
-            System.Text.RegularExpressions.Regex(atom).IsMatch "\uD83D"
+            // built, not written: a lone surrogate in a literal is compiled
+            // as U+FFFD, and an atom matching that would read as taking pairs
+            System.Text.RegularExpressions.Regex(atom).IsMatch(System.String(char 0xD83D, 1))
         with _ ->
             false
 
@@ -658,52 +660,168 @@ let regexCodePoints (pat: string) : string =
         else
             atom
 
-    let wrapClass (cls: string) =
+    // the surrogate-pair alternatives matching every code point of an
+    // astral range, as UTF-16 sees it
+    let astralRange (lo: int) (hi: int) : string list =
+        let hs (cp: int) = 0xD800 + ((cp - 0x10000) >>> 10)
+        let ls (cp: int) = 0xDC00 + ((cp - 0x10000) &&& 0x3FF)
+        let u (c: int) = "\\u" + c.ToString "X4"
+
+        let span (a: int) (b: int) =
+            if a = b then u a else $"[{u a}-{u b}]"
+
+        let ha, la, hb, lb = hs lo, ls lo, hs hi, ls hi
+
+        if ha = hb then
+            [ u ha + span la lb ]
+        else
+            [
+                yield u ha + span la 0xDFFF
+
+                if ha + 1 <= hb - 1 then
+                    yield span (ha + 1) (hb - 1) + span 0xDC00 0xDFFF
+
+                yield u hb + span 0xDC00 lb
+            ]
+
+    let rec wrapClass (cls: string) =
         let neg = cls.Length > 2 && cls[1] = '^'
 
         let body =
             cls.Substring((if neg then 2 else 1), cls.Length - (if neg then 3 else 2))
 
+        // a subtraction `[base-[sub]]`: the base, where the nested class
+        // does not match
+        let subAt =
+            let mutable at = -1
+            let mutable k = 0
+
+            while at < 0 && k < body.Length do
+                if body[k] = '\\' then
+                    k <- k + 2
+                elif body[k] = '-' && k > 0 && k + 1 < body.Length && body[k + 1] = '[' && body.EndsWith "]" then
+                    at <- k
+                else
+                    k <- k + 1
+
+            at
+
+        if subAt > 0 && (takesSurrogate cls || (body |> Seq.exists System.Char.IsSurrogate)) then
+            let baseCls = (if neg then "[^" else "[") + body.Substring(0, subAt) + "]"
+            let sub = body.Substring(subAt + 1)
+            $"(?:(?!{wrapClass sub}){wrapClass baseCls})"
+        else
+
         let astral = ResizeArray<string>()
         let rest = System.Text.StringBuilder()
+        let escapes = System.Text.StringBuilder()
         let mutable k = 0
 
+        // a member at `i`: (its code point, its length), None for an escape
+        let memberAt (i: int) : (int * int) option =
+            let hex (at: int) (n: int) =
+                if at + n <= body.Length && body.Substring(at, n) |> Seq.forall System.Uri.IsHexDigit then
+                    Some(System.Convert.ToInt32(body.Substring(at, n), 16), n + 2)
+                else
+                    None
+
+            if i >= body.Length then None
+            elif body[i] = '\\' && i + 1 < body.Length && body[i + 1] = 'u' then hex (i + 2) 4
+            elif body[i] = '\\' && i + 1 < body.Length && body[i + 1] = 'x' then hex (i + 2) 2
+            elif body[i] = '\\' then None
+            elif isPairAt body i then Some(System.Char.ConvertToUtf32(body[i], body[i + 1]), 2)
+            else Some(int body[i], 1)
+
+        let bmp (c: int) = "\\u" + c.ToString "X4"
+
         while k < body.Length do
-            if body[k] = '\\' && k + 1 < body.Length then
-                rest.Append(body, k, 2) |> ignore
-                k <- k + 2
-            elif isPairAt body k then
-                astral.Add(body.Substring(k, 2))
-                k <- k + 2
-            else
-                rest.Append body[k] |> ignore
-                k <- k + 1
+            // a range with an astral end: its BMP part joins the BMP
+            // class (surrogates left out), the rest is pair alternatives
+            let range =
+                match memberAt k with
+                | Some(lo, n) when k + n + 1 < body.Length && body[k + n] = '-' ->
+                    (match memberAt (k + n + 1) with
+                     | Some(hi, m) when hi > 0xFFFF || lo > 0xFFFF -> Some(lo, hi, n + 1 + m)
+                     | _ -> None)
+                | _ -> None
+
+            match range with
+            | Some(lo, hi, len) ->
+                if lo > hi then
+                    failwith "[x-y] range in reverse order"
+
+                if lo <= 0xD7FF then
+                    rest.Append(bmp lo).Append('-').Append(bmp (min hi 0xD7FF)) |> ignore
+
+                if lo <= 0xFFFF && hi >= 0xE000 then
+                    rest.Append(bmp (max lo 0xE000)).Append('-').Append(bmp (min hi 0xFFFF)) |> ignore
+
+                if hi >= 0x10000 then
+                    astral.AddRange(astralRange (max lo 0x10000) hi)
+
+                k <- k + len
+            | None ->
+                if body[k] = '\\' && k + 1 < body.Length then
+                    // an escape, `\p{…}` whole: the only members that can stand
+                    // for astral code points without naming one
+                    let n =
+                        if (body[k + 1] = 'p' || body[k + 1] = 'P') && k + 2 < body.Length && body[k + 2] = '{' then
+                            match body.IndexOf('}', k + 3) with
+                            | -1 -> 2
+                            | e -> e + 1 - k
+                        else
+                            2
+
+                    rest.Append(body, k, n) |> ignore
+
+                    // a shorthand class or a category; any other escape names
+                    // one BMP character
+                    if "sSdDwWpP".Contains body[k + 1] then
+                        escapes.Append(body, k, n) |> ignore
+
+                    k <- k + n
+                elif isPairAt body k then
+                    astral.Add(body.Substring(k, 2))
+                    k <- k + 2
+                else
+                    rest.Append body[k] |> ignore
+                    k <- k + 1
 
         let rest = rest.ToString()
 
-        if astral.Count = 0 && not (takesSurrogate cls) then
+        // which astral code points the class takes is a question for its
+        // astral members and its escapes (`\S`, `\P{L}`), never for a BMP
+        // range that happens to span the surrogate block: `[0-\uFFFD]`
+        // holds no emoji, `[^0-\uFFFD]` holds them all
+        let escapes = escapes.ToString()
+
+        let escapesTake =
+            if neg then
+                escapes = "" || takesSurrogate $"[^{escapes}]"
+            else
+                escapes <> "" && takesSurrogate $"[{escapes}]"
+
+        if not neg && astral.Count = 0 && not escapesTake && not (takesSurrogate cls) then
             cls
         else
             let lits = System.String.Join("|", astral)
             let bmp = if neg then $"[^{rest}]" else $"[{rest}]"
-            let bmpTakes = rest <> "" && takesSurrogate bmp
 
             let alts = [
                 if neg then
-                    yield (if astral.Count = 0 then pair else $"(?!{lits}){pair}")
+                    if escapesTake then
+                        yield (if astral.Count = 0 then pair else $"(?!{lits}){pair}")
                 else
                     if astral.Count > 0 then
                         yield lits
 
-                    if bmpTakes then
+                    if escapesTake then
                         yield pair
                 if rest = "" then
                     if neg then
                         yield $"{notSurrogate}[\\s\\S]"
-                elif bmpTakes || neg then
-                    yield $"{notSurrogate}{bmp}"
                 else
-                    yield bmp
+                    yield $"{notSurrogate}{bmp}"
             ]
 
             "(?:" + System.String.Join("|", alts) + ")"
