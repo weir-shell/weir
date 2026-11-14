@@ -150,6 +150,31 @@
   `[1, null]` drafted `seq<int>`, which could not read the sample
   back. It drafts `seq<Option<int>>`, and `seq<Option<T>>` for
   objects.
+- **`x :: []` counts as `[x]` when a match is checked for coverage.**
+  `| [] -> … | x :: [] -> … | x :: y :: _ -> …` was refused as "not
+  exhaustive; missing: [_]", the case its second arm covers.
+- **`Str.width` no longer loses an emoji after a leading joiner.** A
+  string that starts with a zero-width joiner measured the character
+  after it as 0 columns.
+- **`[<Attr "xml:lang">]` and `[<Elem "x:item">]` are refused.**
+  `from xml` matches by local name, so a prefixed name could never
+  match: an `Option` or `seq` field silently read empty. The check
+  error shows the local name to write.
+- **`Tree.walk`, `Graph.reach` and `Frontier.fold` stop at an endless
+  child list.** A node whose children never end (or an endless
+  frontier) filled memory before the 100000-step limit was looked at.
+  The limit is now applied as nodes are found.
+- **`cmd | complete` at the prompt and under `-e` shows its value.**
+  `echo x | complete`, `| succeeds` and `| exitCode` were refused as
+  discarded values there, though the prompt is where you look at
+  them. They echo like any other value; a script still has to bind or
+  read them.
+- **A hand-edited lock file is refused in weir's words.** A NUL in an
+  entry's `path` ended `weir verify`, `restore` and `gen types` with
+  an internal error, and a fractional `schemaVersion` with .NET's
+  message.
+- **Formatting from the editor keeps CRLF line endings**, as
+  `weir fmt` does; it used to rewrite the file with LF.
 
 ## v0.0.91
 

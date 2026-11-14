@@ -648,7 +648,10 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
 
             let ver =
                 match doc.RootElement.TryGetProperty "schemaVersion" with
-                | true, v when v.ValueKind = Text.Json.JsonValueKind.Number -> v.GetInt32()
+                | true, v when v.ValueKind = Text.Json.JsonValueKind.Number ->
+                    (match v.TryGetInt32() with
+                     | true, n -> n
+                     | _ -> raise (LockShape "\"schemaVersion\" must be a whole number"))
                 | true, _ -> raise (LockShape "\"schemaVersion\" must be a number")
                 | _ -> 1 // pre-field locks are version 1
 
@@ -677,6 +680,10 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
 
                 let str (field: string) (required: bool) : string option =
                     match e.TryGetProperty field with
+                    // no field of a lock holds a NUL — a path with one would
+                    // reach the filesystem calls as it is
+                    | true, v when v.ValueKind = Text.Json.JsonValueKind.String && v.GetString().Contains '\000' ->
+                        bad $"{at}: \"{field}\" holds a NUL character"
                     | true, v when v.ValueKind = Text.Json.JsonValueKind.String -> Some(v.GetString())
                     | true, _ -> bad $"{at}: \"{field}\" must be a string"
                     | _ when required -> bad $"{at}: missing \"{field}\""

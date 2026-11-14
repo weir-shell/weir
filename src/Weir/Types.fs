@@ -463,7 +463,9 @@ module CellWidth =
                     // joined into the glyph before the ZWJ
                     prev <- 2
                 elif cp = 0x200D then
-                    prev <- -1
+                    // a joiner with no glyph before it joins nothing
+                    if prev > 0 then
+                        prev <- -1
                 elif cp = 0xFE0F then
                     // emoji presentation of a narrow glyph
                     if prev = 1 then

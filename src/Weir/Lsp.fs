@@ -5604,7 +5604,10 @@ let run (debug: bool) : int =
                                     w.WriteNumber("character", arr[lastIdx].Length)
                                     w.WriteEndObject()
                                     w.WriteEndObject()
-                                    w.WriteString("newText", String.concat "\n" formatted + "\n")
+                                    // the document's own line ending, as `weir fmt`
+                                    // keeps the file's
+                                    let nl = if text.Contains "\r\n" then "\r\n" else "\n"
+                                    w.WriteString("newText", String.concat nl formatted + nl)
                                     w.WriteEndObject()
                                     w.WriteEndArray()
                                 | _ -> w.WriteNullValue() // refusal or already canonical

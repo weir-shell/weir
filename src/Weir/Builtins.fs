@@ -7459,25 +7459,33 @@ let private frontierWalk
     (initial: Value seq)
     : unit =
     let queue = System.Collections.Generic.Queue<Value>()
-    initial |> Seq.iter queue.Enqueue
+    // the keys queued or processed: a node is queued once, so what waits
+    // in the queue is work the budget must still pay for
     let visited = System.Collections.Generic.HashSet<string>()
     let mutable steps = 0
 
-    while queue.Count > 0 do
-        let node = queue.Dequeue()
-
-        let skip =
+    // the budget is checked where a node is discovered: an endless child
+    // seq or frontier raises at its 100001st node instead of filling
+    // memory before the first step
+    let enqueue (node: Value) =
+        let fresh =
             match keyFor node with
-            | Some k -> not (visited.Add k)
-            | None -> false
+            | Some k -> visited.Add k
+            | None -> true
 
-        if not skip then
-            if steps >= frontierBudget then
+        if fresh then
+            if steps + queue.Count >= frontierBudget then
                 failwith
                     $"{who}: exceeded {frontierBudget} steps — is the graph finite, or is the key too coarse to dedup?"
 
-            steps <- steps + 1
-            onNode node |> Seq.iter queue.Enqueue
+            queue.Enqueue node
+
+    initial |> Seq.iter enqueue
+
+    while queue.Count > 0 do
+        let node = queue.Dequeue()
+        steps <- steps + 1
+        onNode node |> Seq.iter enqueue
 
 let private frontierFoldImpl: Value =
     VBuiltin(fun keyOf ->

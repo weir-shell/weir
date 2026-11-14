@@ -3928,14 +3928,16 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                 | _ when isIrrefutablePat p -> Some 0
                 | _ -> None
 
-            let fixedLens =
-                pats
-                |> List.choose (fun p ->
-                    match p.PKind with
-                    | PSeqNil -> Some 0
-                    | PSeqList ps when ps |> List.forall isIrrefutablePat -> Some ps.Length
-                    | _ -> None)
-                |> Set.ofList
+            // a chain closed by `[]` (or a fixed list) is a fixed length
+            // too: `x :: []` is `[x]`
+            let rec closedLen (p: Pattern) =
+                match p.PKind with
+                | PSeqNil -> Some 0
+                | PSeqList ps when ps |> List.forall isIrrefutablePat -> Some ps.Length
+                | PCons(h, t) when isIrrefutablePat h -> closedLen t |> Option.map ((+) 1)
+                | _ -> None
+
+            let fixedLens = pats |> List.choose closedLen |> Set.ofList
 
             let shortest =
                 pats
@@ -9733,11 +9735,19 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
             "Attr",
             ((function
              | None -> None
+             // names match by LOCAL name [D:from-xml]: a prefixed one could
+             // never match
+             | Some(AStr s) when s.Contains ':' ->
+                 Some
+                     $"takes the attribute's local name — the prefix is dropped when matching, so write [<Attr \"{s.Substring(s.LastIndexOf ':' + 1)}\">]"
              | Some(AStr s) when s <> "" -> None
              | _ -> Some "expects nothing or the attribute name, e.g. [<Attr>] or [<Attr \"Include\">]"),
              [ FieldPos ])
             "Elem",
             ((function
+             | Some(AStr s) when s.Contains ':' ->
+                 Some
+                     $"takes the element's local name — the prefix is dropped when matching, so write [<Elem \"{s.Substring(s.LastIndexOf ':' + 1)}\">]"
              | Some(AStr s) when s <> "" -> None
              | _ -> Some "expects the element name as a string, e.g. [<Elem \"ProjectReference\">] refs: seq<Ref>"),
              [ FieldPos ])

@@ -1838,6 +1838,16 @@ echo "$idout" | grep -qF "read=x" || fail "the repeated key's field must read th
 echo "$idout" | grep -qF "did not check" && fail "a repeated key must not draft a non-checking type: $idout" || true
 echo "e2e ok: #infer drafts one field for a repeated key (last wins) and reads the sample"
 
+# a reified command is a value where values are echoed [D:exit-reifiers]:
+# -e shows it, a script still refuses the discard
+rfout=$($BIN -e 'echo x | succeeds' 2>&1)
+[ "$rfout" = "true : bool" ] || fail "-e must echo a reified command's value: $rfout"
+rfdir=$(mkweirtmp)
+printf 'echo x | succeeds\n' > "$rfdir/rf.weir"
+$BIN check "$rfdir/rf.weir" 2>&1 | grep -qF "computes a bool and discards it" || fail "a script must still refuse a discarded reifier"
+rm -rf "$rfdir"
+echo "e2e ok: -e echoes a reified command; a script refuses the discard"
+
 # the positive the old fixture became [D:infer-wire-sanitize]: a keyword
 # key infers to a [<Wire>]'d field on the parser's own repair spelling
 # (in -> inField) — the draft checks and reads the sample

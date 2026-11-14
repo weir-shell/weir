@@ -47476,6 +47476,74 @@ let hunt4Tests =
             for d in [ d1; d2; d3 ] do
                 cleanIn "pin.weir" (d.Split('\n') |> List.ofArray) "the draft checks"
         }
+        test "hunt 4 lows: closed cons chains, a leading joiner, prefixed xml names, endless walks, a hand-edited lock" {
+            // `x :: []` is `[x]` to the coverage check [D:seq-patterns]
+            cleanIn
+                "pin.weir"
+                [
+                    "let f xs = match xs with | [] -> 0 | x :: [] -> x | x :: y :: _ -> x + y"
+                    "print (f [1; 2; 3])"
+                ]
+                "a chain closed by [] is a fixed length"
+
+            // a joiner with nothing before it joins nothing [D:str-width]
+            Expect.equal
+                (runFile [
+                    "if Str.width \"\\u{200D}👨\" <> 2 then exit 3"
+                    "if Str.width \"👨\\u{200D}👩\" <> 2 then exit 4"
+                ])
+                0
+                "a leading ZWJ does not swallow the emoji after it"
+
+            // [<Attr>]/[<Elem>] match by local name [D:from-xml]
+            mustSayIn
+                "pin.weir"
+                [ "type D = { [<Attr \"xml:lang\">] a: Option<string> }"; "print \"x\"" ]
+                "takes the attribute's local name"
+                "a prefixed attribute name could never match"
+
+            mustSayIn
+                "pin.weir"
+                [ "type D = { [<Elem \"x:item\">] e: seq<string> }"; "print \"x\"" ]
+                "takes the element's local name"
+                "a prefixed element name could never match"
+
+            // the walks' budget is charged at discovery [D:structural-walk]
+            Expect.equal
+                (runFile [
+                    "let endless n = Seq.initInfinite (fun i -> i + n + 1)"
+                    "let r = Graph.reach show endless 0 |> Seq.length |> try result"
+                    "match r with"
+                    "| Error m when Str.contains \"exceeded 100000 steps\" m -> ()"
+                    "| _ -> exit 3"
+                    "if (Graph.reach show (fun n -> if n < 99999 then [n + 1] else []) 0 |> Seq.length) <> 100000 then exit 4"
+                ])
+                0
+                "an endless child seq raises the budget error; 100000 nodes still walk"
+
+            // a hand-edited lock is refused in weir's words [D:lockfile-confinement]
+            withTempDir "weir-h4lock" (fun d ->
+                let w = Path.Combine(d, ".weir")
+                Directory.CreateDirectory w |> ignore
+
+                let refusal (json: string) =
+                    File.WriteAllText(Path.Combine(w, "lock.json"), json)
+
+                    match Weir.Contracts.readLock w with
+                    | Error e -> e
+                    | Ok _ -> "accepted"
+
+                Expect.stringContains
+                    (refusal "{\"schemaVersion\":1.5,\"artifacts\":[]}")
+                    "must be a whole number"
+                    "a fractional version"
+
+                Expect.stringContains
+                    (refusal
+                        "{\"schemaVersion\":1,\"artifacts\":[{\"kind\":\"schema\",\"name\":\"s\",\"url\":\"https://x/s.json\",\"sha256\":\"00\",\"path\":\"schemas/s.json\\u0000x\"}]}")
+                    "holds a NUL character"
+                    "a NUL in a path")
+        }
     ]
 
 [<Tests>]
