@@ -7526,7 +7526,28 @@ util
 3' "$out"
 werr=$($BIN -e '[1] |> Frontier.fold (fun n -> show n) 0 (fun acc n -> (acc, [n + 1]))' 2>&1) && fail "a non-finite walk must error" || true
 echo "$werr" | grep -qF "exceeded 100000 steps" || fail "the step budget teaches: $werr"
-echo "e2e ok: structural walks — Graph.reach BFS each-once, Tree.walk parent-first, budget teaches"
+# [D:tree-fold]: a recursive union rendered leaves-up, and the budget
+cat > "$wdir/fold.weir" <<'WEOF'
+type Node =
+    | Element of string * seq<Node>
+    | Text of string
+let kids n =
+    match n with
+    | Element (_, ks) -> ks
+    | Text _ -> []
+let one n rendered =
+    match n with
+    | Text t -> t
+    | Element (tag, _) -> $"<{tag}>{rendered |> Str.join ""}</{tag}>"
+print (Tree.fold kids one (Element ("ul", [Element ("li", [Text "a"]); Element ("li", [Text "b"; Element ("b", [])])])))
+print (show (Tree.fold (fun n -> if n < 50000 then [n + 1] else []) (fun _ rs -> 1 + Seq.sum rs) 1))
+WEOF
+out=$($BIN "$wdir/fold.weir")
+expect "Tree.fold: children's results reach the parent in order" '<ul><li>a</li><li>b<b></b></li></ul>
+50000' "$out"
+werr=$($BIN -e 'Tree.fold (fun n -> [n + 1]) (fun n rs -> 1) 1' 2>&1) && fail "an endless tree must error" || true
+echo "$werr" | grep -qF "Tree.fold: exceeded 100000 nodes" || fail "Tree.fold's budget teaches: $werr"
+echo "e2e ok: structural walks — Graph.reach BFS each-once, Tree.walk parent-first, Tree.fold leaves-up, budget teaches"
 rm -rf "$wdir"
 
 # yaml patch [D:yaml-nodes]: the typeless read + district-addressed merge

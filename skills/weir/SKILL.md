@@ -1496,6 +1496,28 @@ let doubled = [pfor x in [1; 2] -> x * 2]
   power tool both derive from: the step folds an accumulator AND
   discovers children (`fun acc n -> (acc', children)`); a `""` key
   opts a node out of dedup (the tree convention).
+  `Tree.fold children combine root` is the VALUE twin of `Tree.walk`,
+  LEAVES-UP [D:tree-fold]: `combine node results` receives a node and
+  its children's results in order (a leaf gets `[]`) and returns the
+  node's result; the answer is the root's. It is what a recursive
+  function over a tree would be — render a recursive union, total a
+  directory, roll up a dependency. Linear, depth costs no stack, no
+  dedup (a shared subtree folds once per parent), same 100000 budget.
+
+```weir
+type Node =
+    | Element of string * seq<Node>
+    | Text of string
+let kids n =
+    match n with
+    | Element (_, ks) -> ks
+    | Text _ -> []
+let one n rendered =
+    match n with
+    | Text t -> t
+    | Element (tag, _) -> $"<{tag}>{rendered |> Str.join ""}</{tag}>"
+print (Tree.fold kids one (Element ("p", [Text "a"; Element ("b", [Text "c"])])))
+```
 
 ```weir
 let deps = Map.ofPairs [("app", ["core"; "util"]); ("util", ["core"])]
@@ -3502,7 +3524,7 @@ not the teaching.
 - `Yaml`: `parse` `merge` `inferShape`
 - `Graph`: `reach` — `Graph.reach keyOf neighbors start`, every reachable node once, breadth-first
 - `Frontier`: `fold` — the worklist fold `Graph.reach` and `Tree.walk` derive from
-- `Tree`: `walk` — `Tree.walk step root`, parents before children, for effects
+- `Tree`: `fold` `walk` — `Tree.walk step root`, parents before children, for effects; `Tree.fold children combine root`, children before parents, for a value
 - `Http`: `defaults` `delete` `expect` `get` `head` `header` `headerAll` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`

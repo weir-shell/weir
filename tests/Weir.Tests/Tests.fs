@@ -19316,6 +19316,32 @@ let optionSweepTests =
             expectValue "1 |> Tree.walk (fun n -> if n < 3 then [n + 1] else [])" VUnit
             Expect.stringContains (checkErr "1 |> Tree.walk (fun n -> n)").Message "expected seq<int>, got int" ""
         }
+        test "Tree.fold: children before their parent, results in child order [D:tree-fold]" {
+            expectValue
+                "Tree.fold (fun n -> if n < 4 then [n * 2; n * 2 + 1] else []) (fun n rs -> n + Seq.sum rs) 1"
+                (VInt 28L)
+
+            expectValue
+                "Tree.fold (fun n -> if n < 3 then [n + 1; n + 1] else []) (fun n rs -> $\"({n}{Str.join \"\" rs})\") 1"
+                (VStr "(1(2(3)(3))(2(3)(3)))")
+
+            expectValue "Tree.fold (fun n -> []) (fun n rs -> n + Seq.length rs) 7" (VInt 7L)
+        }
+        test "Tree.fold: depth costs no host stack; an endless tree meets the budget [D:tree-fold]" {
+            expectValue
+                "Tree.fold (fun n -> if n < 50000 then [n + 1] else []) (fun n rs -> 1 + Seq.sum rs) 1"
+                (VInt 50000L)
+
+            let ex =
+                Expect.throwsC (fun () -> run "Tree.fold (fun n -> [n + 1]) (fun n rs -> 1) 1" |> ignore) id
+
+            Expect.stringContains ex.Message "Tree.fold: exceeded 100000 nodes" "bounded, never a hang"
+
+            Expect.stringContains
+                (checkErr "Tree.fold (fun n -> [n]) (fun n rs -> rs) 1").Message
+                "infinite type"
+                "combine returns one result, not the children's seq"
+        }
         test "Seq.tryFind is data-last and Option-returning" {
             expectValue "ls |> Seq.tryFind _.hidden |> Option.map _.name |> Option.defaultValue \"none\"" (VStr "b.bin")
 

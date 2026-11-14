@@ -3035,8 +3035,10 @@ and checked against the real F# compiler. In short, weir has:
 - no `while` and no recursion. `retry` and `poll` are loops with a
   limit; `repeat` runs until the program is asked to stop and then
   finishes its iteration; a `for` over `Seq.initInfinite` also runs
-  forever, but a signal cuts it mid-iteration; and `Graph.reach` and
-  `Tree.walk` walk graphs and trees safely even with cycles.
+  forever, but a signal cuts it mid-iteration; `Graph.reach` and
+  `Tree.walk` walk graphs and trees safely even with cycles; and
+  `Tree.fold` computes a value over a tree from the leaves up, which
+  is what a recursive function would do.
 - no exceptions and no try/with; `fail` raises, `|> try` and
   `| complete` turn a failure into a value, and `within … always`
   does cleanup
