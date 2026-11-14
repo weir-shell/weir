@@ -4195,7 +4195,7 @@ let log = Self.args |> Seq.head
 within
     within
         File.append log ["body"]
-        let n = [1..3000000000] |> Seq.length
+        let n = Seq.replicate 2000000000 1 |> Seq.sum
         print $"{n}"
     always
         File.append log ["inner"]
@@ -4913,7 +4913,7 @@ WEOF
     # pure computation holds the terminal ^C's join [D:teardown-joins-arms]:
     # the grace period does not exit while the arms compute — a builtin's
     # own loop, since every evaluated node is a boundary [D:scope-tree]
-    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..600000000] |> Seq.length' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
+    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = Seq.replicate 2000000000 1 |> Seq.sum' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
     t0=$(now_ms)
     tout=$(printf 'SLEEP 500\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 40 "$BIN" "$sedir/purejoin.weir")
     took=$(( $(now_ms) - t0 ))
@@ -5259,8 +5259,10 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
 
     # the sweep gate, measured [D:repl-isig]: a ^C the session outlives
     # must not run the exit-hook sweep — the sweep deletes live within-tmp
-    # dirs. The ^C lands mid-pure-computation (a child would die and
-    # unwind the scope), the block then checks its own dir. Linux is the
+    # dirs. The ^C lands mid-pure-computation — one builtin's own loop, the
+    # computation a ^C still does not cut [D:repl-interrupt-compute] (a
+    # child would die and unwind the scope) — the block then checks its
+    # own dir. Linux is the
     # mechanism's platform; the cell runs wherever the pty pins do.
     # multi-line body via Alt-Enter (\x1b\r): plain Enter submits the
     # moment the block parses complete — one body line suffices. Indented
@@ -5269,7 +5271,7 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     gatedir=$(mkweirtmp)
     cat > "$gatedir/gate.scn" <<'SCN'
 SLEEP 700
-SEND within tmp d\x1b\r    ["x"] |> File.write $"{d}/probe.txt"\x1b\r    print d\x1b\r    let n = [1..8000000] |> Seq.fold (fun a x -> a + 1) 0\x1b\r    print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\r
+SEND within tmp d\x1b\r    ["x"] |> File.write $"{d}/probe.txt"\x1b\r    print d\x1b\r    let n = Seq.replicate 600000000 1 |> Seq.sum\x1b\r    print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\r
 SLEEP 1200
 SEND \x03
 SLEEP 5000
