@@ -47256,7 +47256,8 @@ let hunt4Tests =
             Expect.equal (runFile src) 0 "run reads the subtraction"
 
             // a part nothing knows leaves the word a command
-            let ds = diagsIn "pin.weir" [ "let docker = \"docker\""; "docker-composezz up"; "print docker" ]
+            let ds =
+                diagsIn "pin.weir" [ "let docker = \"docker\""; "docker-composezz up"; "print docker" ]
 
             Expect.exists
                 ds
@@ -47440,7 +47441,9 @@ let hunt4Tests =
                     | Ok n -> n
                     | Error e -> failtest e
 
-                Weir.Infer.inferDecls Weir.Parser.keywords Set.empty "Root" node |> fst |> String.concat "\n"
+                Weir.Infer.inferDecls Weir.Parser.keywords Set.empty "Root" node
+                |> fst
+                |> String.concat "\n"
 
             // the top record keeps its name when a key capitalises to it
             let d1 = draft "{\"root\": {\"id\": 1}}"
@@ -47448,7 +47451,8 @@ let hunt4Tests =
             Expect.stringContains d1 "type RootRoot = {\n    id: int\n}" "the nested object lands elsewhere"
 
             // no name is handed out twice
-            let d2 = draft "{\"spec\": {\"a\": 1}, \"pod\": {\"spec\": {\"b\": 1}}, \"podSpec\": {\"c\": 1}}"
+            let d2 =
+                draft "{\"spec\": {\"a\": 1}, \"pod\": {\"spec\": {\"b\": 1}}, \"podSpec\": {\"c\": 1}}"
 
             let names =
                 d2.Split('\n')
@@ -47458,7 +47462,9 @@ let hunt4Tests =
             Expect.equal (Array.distinct names).Length names.Length $"distinct type names: {names}"
 
             // a null beside real elements drafts Option; a repeated key is one field
-            let d3 = draft "{\"xs\": [1, null], \"ys\": [{\"b\": 1}, null], \"a\": 1, \"a\": \"x\"}"
+            let d3 =
+                draft "{\"xs\": [1, null], \"ys\": [{\"b\": 1}, null], \"a\": 1, \"a\": \"x\"}"
+
             Expect.stringContains d3 "xs: seq<Option<int>>" "a null int element"
             Expect.stringContains d3 "ys: seq<Option<Y>>" "a null object element"
             Expect.stringContains d3 "a: string" "last wins"

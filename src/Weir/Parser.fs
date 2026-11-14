@@ -1718,7 +1718,11 @@ let private dotFloatTeaching =
 // it is misplaced — teach the form [D:try-form]
 let private tryAtomTeaching: Parser<Expr, unit> =
     onHead 't' (pstring "try")
-    <| attempt (getPosition .>> pstring "try" .>> notFollowedBy (satisfy (fun c -> isIdentCont c || c = '-')))
+    <| attempt (
+        getPosition
+        .>> pstring "try"
+        .>> notFollowedBy (satisfy (fun c -> isIdentCont c || c = '-'))
+    )
     >>= fun at ->
         failFatallyAt
             at
@@ -2311,8 +2315,7 @@ let private letInBody =
                 // a false "specific" diagnosis
                 (followedBy eof
                  >>. fun stream -> failFatally $"this binding has no value — give '{name}' a right-hand side" stream)
-                <|> (withParams (cmdRhs <|> withLetRhsIn (seqExpr >>= pipeOrHint))
-                     .>> keyword "in")
+                <|> (withParams (cmdRhs <|> withLetRhsIn (seqExpr >>= pipeOrHint)) .>> keyword "in")
                 >>= fun value ->
                     withAmbientName name (withExprParen false (undeepen seqExpr))
                     |>> fun body -> {
@@ -5476,7 +5479,9 @@ let private valueHeadedGate =
     )
 
 let private valueHeadedStages = pipedStages true cmdArg None ambientProxy
-let private valueHeadedStagesLetRhs = pipedStages true cmdArgLetRhs None ambientProxy
+
+let private valueHeadedStagesLetRhs =
+    pipedStages true cmdArgLetRhs None ambientProxy
 
 valueHeadedTailImpl <-
     // deepen: the tail re-enters the command grammar [D:depth-guard]
