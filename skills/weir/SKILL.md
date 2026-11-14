@@ -1330,7 +1330,9 @@ let x =
   weir-native mutation only), the parallel combinators inside a plan
   (`Seq.pmap/pmapWith/piter/piterWith/pfirst/pfirstWith` and `pfor` —
   their arms run on threads outside the plan's capture frame; fan out
-  outside the plan [D:plan-refuses-fanout]), `apply` inside a plan (a capture cannot
+  outside the plan [D:plan-refuses-fanout]), `within serve` inside a plan
+  (its handlers run on the server's threads, outside the capture too),
+  `apply` inside a plan (a capture cannot
   be captured — apply OUTSIDE), a known-after-apply read (any file
   read, existence check or listing at, under, or over a path an
   earlier captured mutation changes would see stale state — a write in

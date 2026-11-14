@@ -116,6 +116,11 @@
   `if`, `for`, `within` or lambda body, a `let` binding a value piped
   into a command, followed by another line, failed with a list of
   expected tokens. It binds the command's lines, as at the top level.
+- **`within serve` is refused inside `plan`.** A server opened inside
+  a plan ran its handlers for real: a handler's `File.write` wrote the
+  file and the plan came back empty. It is now a check error, like
+  the parallel `Seq` members, directly or through a helper. Open the
+  server outside the plan.
 
 ## v0.0.91
 

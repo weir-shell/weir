@@ -47375,6 +47375,37 @@ let hunt4Tests =
             cleanIn "pin.weir" src "function, if and lambda bodies"
             Expect.equal (runFile src) 0 "and they run"
         }
+        test "within serve is refused inside plan [D:plan-parallel-refusal]" {
+            mustSayIn
+                "pin.weir"
+                [
+                    "let route = fun rq ->"
+                    "    File.write \"out.txt\" [\"x\"]"
+                    "    Reply.text 200 \"ok\""
+                    "let p ="
+                    "    plan"
+                    "        within serve srv handler=route"
+                    "            print $\"{Server.port srv}\""
+                    "print $\"{Plan.isEmpty p}\""
+                ]
+                "'within serve' is refused inside 'plan'"
+                "a handler's writes would run for real"
+
+            mustSayIn
+                "pin.weir"
+                [
+                    "let route = fun rq -> Reply.text 200 \"ok\""
+                    "let once () ="
+                    "    within serve srv handler=route"
+                    "        print $\"{Server.port srv}\""
+                    "let p ="
+                    "    plan"
+                    "        once ()"
+                    "print $\"{Plan.isEmpty p}\""
+                ]
+                "'once' cannot run inside 'plan'"
+                "through a helper too"
+        }
     ]
 
 [<Tests>]

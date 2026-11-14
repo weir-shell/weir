@@ -503,6 +503,13 @@ let rec private planRefusalRoot (refused: Map<string, string>) (te: TypedExpr) :
         found
             te.Span
             "'repeat' is refused inside 'plan' — a loop that only a stop signal ends cannot be dry-run; run the loop outside the plan (a plan inside the loop's block is fine)"
+    // a listener's handlers run on the server's threads, outside the
+    // plan's capture frame — the fan-out refusal's reason
+    // [D:plan-parallel-refusal]
+    | TEWithin(WithinServe, _, _, _, _) ->
+        found
+            te.Span
+            "'within serve' is refused inside 'plan' — its handlers run on the server's own threads, where the plan cannot capture what they change; open the server outside the plan"
     // a held scope waits for a signal [D:held-scope]
     | TEHold _ ->
         found
