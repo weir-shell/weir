@@ -65,6 +65,11 @@
   match. Under `by=`, two patch items sharing a key, inserted where
   the document had no such list, now fold into one, and an item whose
   key is `$-` is no longer appended again on each application.
+- **An entry edited while browsing history keeps the edit.** Recall
+  a multi-line entry with Up, add a line to it, press Down and Up
+  again, or go up to an older entry and come back: the added text was
+  gone. Each entry you edit now stays as you left it until you submit
+  one, and so does the new entry you were typing.
 
 ## v0.0.91
 

@@ -1598,7 +1598,15 @@ let private readLineTty () : string option =
     let mutable row = 0
     let mutable col = 0
     let mutable histIdx = history.Count // one past the end = the new entry
-    let mutable draft = ""
+    // what each visited entry looks like now [D:repl-history-edits]: the
+    // new entry's text and any recalled entry edited in place, kept while
+    // this prompt is open so moving away and back loses nothing
+    let edited = System.Collections.Generic.Dictionary<int, string>()
+
+    let shownAt (i: int) =
+        match edited.TryGetValue i with
+        | true, t -> t
+        | _ -> if i = history.Count then "" else history[i]
     // display rows between the region top and the cursor at the last
     // paint — the way back up through wraps
     let mutable lastCursorDisplay = 0
@@ -2033,11 +2041,9 @@ let private readLineTty () : string option =
                 col <- snapCol col
                 redraw ()
             elif histIdx > 0 then
-                if histIdx = history.Count then
-                    draft <- bufText ()
-
+                edited[histIdx] <- bufText ()
                 histIdx <- histIdx - 1
-                setBuffer history[histIdx]
+                setBuffer (shownAt histIdx)
         | ConsoleKey.DownArrow ->
             // Down within the buffer; at the last line, forward through
             // history only while already browsing it — a fresh buffer's
@@ -2047,9 +2053,9 @@ let private readLineTty () : string option =
                 col <- snapCol col
                 redraw ()
             elif histIdx < history.Count then
+                edited[histIdx] <- bufText ()
                 histIdx <- histIdx + 1
-
-                setBuffer (if histIdx = history.Count then draft else history[histIdx])
+                setBuffer (shownAt histIdx)
         | ConsoleKey.Tab ->
             // completion operates on the current line (per-line machinery)
             let text = cur().ToString()

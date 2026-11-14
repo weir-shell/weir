@@ -163,6 +163,7 @@ replPtyProbes() {
         echo "e2e SKIP: the pty REPL harnesses — python has no pty on Windows (the REPL itself is exercised by the Windows hand-run checklist)"
     else
         replProbe repl-b repl-wordnav.py "repl word navigation" "e2e ok: repl Ctrl+Left/Right word navigation"
+        replProbe repl-b repl-history-edits.py "repl history edits" "e2e ok: repl an edited history entry keeps its edit while browsing; ^C stops a computation [D:repl-history-edits] [D:repl-interrupt-compute]"
         replProbe repl-b repl-codepoints.py "repl code-point editing" "e2e ok: repl Left/Right/Backspace/^D step over a surrogate pair whole [D:str-code-points]"
         replProbe repl-b repl-typeahead.py "repl type-ahead" "e2e ok: repl an Enter typed before the first prompt submits [D:owned-line-editor]"
         replProbe repl-b repl-color.py "repl coloring" "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
