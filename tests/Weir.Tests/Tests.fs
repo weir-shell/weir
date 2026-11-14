@@ -47263,6 +47263,24 @@ let hunt4Tests =
                 (fun d -> d.Message.Contains "command not found on PATH: docker-composezz")
                 $"docker-composezz stays a command: {ds |> List.map _.Message}"
         }
+        test "Table.render takes rows of one type whatever their field order [D:record-order]" {
+            Expect.equal
+                (runFile [
+                    "type R = { b: int; a: int }"
+                    "let t = [{ a = 2; b = 1 }; { b = 3; a = 4 }] |> Table.render |> Seq.freeze"
+                    "if (t |> Seq.length) <> 4 then exit 3"
+                    "if (t |> Seq.last |> Str.fields |> Str.join \",\") <> \"4,3\" then exit 4"
+                    "let js = [\"[{\\\"name\\\":\\\"a\\\",\\\"email\\\":\\\"a@x\\\"},{\\\"name\\\":\\\"b\\\"},{\\\"email\\\":\\\"c@x\\\",\\\"name\\\":\\\"c\\\"}]\"]"
+                    "let u = js |> from json seq<{| name: string; email: Option<string> |}> |> Table.render |> Seq.freeze"
+                    "if (u |> Seq.last |> Str.fields |> Str.join \",\") <> \"c,c@x\" then exit 5"
+                    "let v = [{| s = \"a\\nb\"; n = 1 |}; {| s = Str.replicate 500 \"x\"; n = 2 |}] |> Table.render |> Seq.freeze"
+                    "if (v |> Seq.length) <> 4 then exit 6"
+                    "if not (v[2] |> Str.contains \"a\\\\nb\") then exit 7"
+                    "if Str.length v[3] < 500 then exit 8"
+                ])
+                0
+                "a literal's and a wire read's field order; a newline cell stays one row; no clip off a terminal"
+        }
     ]
 
 [<Tests>]

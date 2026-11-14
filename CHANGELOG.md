@@ -80,6 +80,16 @@
   A word with a part nothing knows is still a command
   (`docker-compose` beside `let docker = …`), and `^count-1` runs the
   program of that name.
+- **`Table.render` takes rows whose fields are in different orders.**
+  Two records of one type written with their fields in a different
+  order, or anonymous records read from JSON whose keys came in a
+  different order or with an optional key missing, were refused with
+  "needs a seq of same-shaped records". They render, in the first
+  row's column order.
+- **A newline in a `Table.render` cell no longer breaks the row.** It
+  is shown as `\n`, as a tab is shown as `\t`. And a long cell is not
+  cut at 120 characters when the output is piped; it is still cut at a
+  terminal.
 
 ## v0.0.91
 
