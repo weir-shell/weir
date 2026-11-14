@@ -1999,7 +1999,18 @@ let rec private typeBinOp
     | (">" | "<" | ">=" | "<="), TVar _, (TNamed(n, _) as b) when ordDeclared env n ->
         retryAfter (bind ctx env l.Span b l.Ty)
     | (">" | "<" | ">=" | "<="), (TNamed(n, _) as a), (TNamed(m, _) as b) when n = m && ordDeclared env n ->
-        bind ctx env r.Span a b |> Result.map (fun () -> TBool)
+        // a generic ordered type orders only at an instance whose numbered
+        // members do — the demand Seq.sort makes
+        bind ctx env r.Span a b
+        |> Result.bind (fun () ->
+            let p = {
+                Cls = Cls.Cmp
+                Span = opSpan
+                Describe = cmpDescribe (Some op)
+            }
+
+            demand ctx env p a)
+        |> Result.map (fun () -> TBool)
     | (">" | "<" | ">=" | "<="), (TNamed(n, _) as a), b when ordDeclared env n -> mismatch r.Span a b
     // the author's own record or union without a key names the
     // repair; the prelude's (Option) and anonymous shapes keep the bare

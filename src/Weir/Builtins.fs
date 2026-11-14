@@ -7678,6 +7678,16 @@ let private keyValOf (by: string) (v: Value) : Value option =
 // append-if-absent (under `by=`, a seq-of-mappings upserts/removes by
 // the key); scalars replace; tombstones remove. Orderless, idempotent.
 let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
+    // a structured patch landing where the target has nothing merges onto
+    // the empty shape, so its own items meet the merge laws too (two patch
+    // items sharing a `by=` key fold into one, as a second application
+    // would fold them)
+    let fresh (p: Value) : Value option =
+        match p with
+        | VUnion("YMap", Some _) -> Some(yamlMerge by p (VUnion("YMap", Some(VSeq Seq.empty))))
+        | VUnion("YSeq", Some _) -> Some(yamlMerge by p (VUnion("YSeq", Some(VSeq Seq.empty))))
+        | p -> stripDrops p
+
     match patch, target with
     | VUnion("YMap", Some(VSeq ppairs)), VUnion("YMap", Some(VSeq tpairs)) ->
         let asPairs (xs: Value seq) =
@@ -7699,7 +7709,7 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
                             acc
                             |> List.map (fun (ek, ev) -> if ek = k then (ek, yamlMerge by pv ev) else (ek, ev))
                         else
-                            match stripDrops pv with
+                            match fresh pv with
                             | Some sv -> acc @ [ (k, sv) ]
                             | None -> acc)
                 (asPairs tpairs)
@@ -7722,11 +7732,16 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
                                 | Some sc -> yamlEq sc t
                                 | None -> false
 
-                        match acc |> List.tryFindIndex matches with
-                        | Some i -> acc |> List.indexed |> List.filter (fun (j, _) -> j <> i) |> List.map snd
-                        | None -> acc
+                        // every match goes: a patch applied twice is applied once
+                        acc |> List.filter (fun t -> not (matches t))
                     | _ ->
-                        match (if by = "" then None else keyValOf by pi) with
+                        // a tombstoned key is no key: the item merges structurally
+                        let keyed =
+                            match (if by = "" then None else keyValOf by pi) with
+                            | Some(VUnion("|ydrop", _)) -> None
+                            | k -> k
+
+                        match keyed with
                         | Some pkv ->
                             let hit =
                                 acc
@@ -7736,11 +7751,11 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
                             match hit with
                             | Some i -> acc |> List.mapi (fun j t -> if j = i then yamlMerge by pi t else t)
                             | None ->
-                                match stripDrops pi with
+                                match fresh pi with
                                 | Some sv -> acc @ [ sv ]
                                 | None -> acc
                         | None ->
-                            match stripDrops pi with
+                            match fresh pi with
                             | Some sv -> (if acc |> List.exists (yamlEq sv) then acc else acc @ [ sv ])
                             | None -> acc)
                 (List.ofSeq titems)
@@ -7748,7 +7763,7 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
         VUnion("YSeq", Some(VSeq(List.toSeq merged)))
     // a structured patch over a different target shape replaces it
     // fresh (the source-shape-wins law); scalars replace outright
-    | p, _ -> stripDrops p |> Option.defaultValue (VUnion("YNull", None))
+    | p, _ -> fresh p |> Option.defaultValue (VUnion("YNull", None))
 
 let private yamlParseImpl: Value =
     VBuiltin(fun v ->

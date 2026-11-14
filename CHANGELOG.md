@@ -48,6 +48,23 @@
   way out was `kill -9`. Every function call and a long range now
   check for the `^C`, so the prompt comes back with `↳ exit 130`. An
   `always` block still runs as written unless `^C` is pressed again.
+- **`<` on a generic ordered type is checked at the instance.** With
+  `type K<'a> = { [<Ord 1>] f: 'a }`, `{ f = [1] } < { f = [2] }`
+  passed the check and failed at run with "unreachable: the checker
+  rejects '<' keys of [1]". It is now the check error `Seq.sort` gives
+  for the same value.
+- **A redirected `PUT`, `DELETE` or `PATCH` keeps its method.** On a
+  301 or 302, `Http.send` re-sent every request but GET and HEAD as a
+  GET with no body, so a redirected `Http.delete` reported the status
+  of a GET. Only a POST becomes a GET there now, as in curl; a 303
+  still turns everything but GET and HEAD into a GET. A script that
+  relied on a redirected `PUT` arriving as a GET will see the `PUT`.
+- **`Yaml.merge` with a patch applied twice gives the same document
+  as once.** A `- $- x` tombstone removed only the first matching
+  item, so each application removed one more; it now removes every
+  match. Under `by=`, two patch items sharing a key, inserted where
+  the document had no such list, now fold into one, and an item whose
+  key is `$-` is no longer appended again on each application.
 
 ## v0.0.91
 

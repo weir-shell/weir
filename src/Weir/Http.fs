@@ -850,7 +850,7 @@ and private sendCheckedAsync
                     // and drop the body (the BCL/browser rule); 307/308 preserve
                     let m = curMethod.ToUpperInvariant()
 
-                    if code = 303 || ((code = 301 || code = 302) && m <> "GET" && m <> "HEAD") then
+                    if (code = 303 && m <> "GET" && m <> "HEAD") || ((code = 301 || code = 302) && m = "POST") then
                         curMethod <- "GET"
                         curBody <- None
 

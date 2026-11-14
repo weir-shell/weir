@@ -47155,6 +47155,78 @@ let hunt4Tests =
                 finally
                     Weir.Session.endReplEval ()
         }
+        test "an ordering operator on a generic ordered type demands the instance [D:derived-ord]" {
+            mustSayIn
+                "pin.weir"
+                [ "type K<'a> = { [<Ord 1>] f: 'a }"; "print ({ f = [1] } < { f = [2] })" ]
+                "operator '<' is not defined for K<seq<int>>"
+                "a seq member does not order"
+
+            mustSayIn
+                "pin.weir"
+                [
+                    "type B<'a> = | [<Ord 1>] Box of 'a | [<Ord 2>] Nil"
+                    "print (Box (1, 2) >= Box (2, 1))"
+                ]
+                "operator '>=' is not defined for B<"
+                "a tuple member does not order"
+
+            Expect.equal
+                (runFile [
+                    "type K<'a> = { [<Ord 1>] f: 'a }"
+                    "type B<'a> = | [<Ord 1>] Box of 'a | [<Ord 2>] Nil"
+                    "if not ({ f = 1 } < { f = 2 }) then exit 3"
+                    "if not (Box \"a\" < Nil) then exit 4"
+                ])
+                0
+                "an instance whose members order still compares"
+        }
+        test "a redirect rewrites only POST to GET on 301/302 [D:secret-redirect]" {
+            Expect.equal
+                (runFile [
+                    "let route = fun rq ->"
+                    "    match rq.path with"
+                    "    | \"/old\" -> Reply.redirect 302 \"/new\""
+                    "    | \"/see\" -> Reply.redirect 303 \"/new\""
+                    "    | _ -> Reply.text 200 $\"{rq.method} {rq.body}\""
+                    "within serve srv handler=route"
+                    "    let base = $\"http://127.0.0.1:{Server.port srv}\""
+                    "    let seen req = Http.send req |> _.body |> Str.join \"\""
+                    "    if seen (Http.delete $\"{base}/old\") <> \"Delete \" then exit 3"
+                    "    if seen { Http.put $\"{base}/old\" with body = Text \"p\" } <> \"Put p\" then exit 4"
+                    "    if seen { Http.patch $\"{base}/old\" with body = Text \"p\" } <> \"Patch p\" then exit 5"
+                    "    if seen { Http.post $\"{base}/old\" with body = Text \"p\" } <> \"Get \" then exit 6"
+                    "    if seen { Http.put $\"{base}/see\" with body = Text \"p\" } <> \"Get \" then exit 7"
+                ])
+                0
+                "DELETE, PUT and PATCH keep their method and body; POST and a 303 become GET"
+        }
+        test "Yaml.merge applied twice is applied once [D:yaml-nodes]" {
+            Expect.equal
+                (runFile [
+                    "let doc = [\"args:\"; \"  - -v\"; \"  - -v\"; \"  - x\"] |> Yaml.parse"
+                    "let p = yaml patch"
+                    "    args:"
+                    "        - $- -v"
+                    "let once = doc |> Yaml.merge p"
+                    "let j1 = once |> to json |> Str.join \"\""
+                    "if j1 <> \"{\\\"args\\\":[\\\"x\\\"]}\" then exit 3"
+                    "if (once |> Yaml.merge p |> to json |> Str.join \"\") <> j1 then exit 4"
+                    "let p2 = yaml patch by=name"
+                    "    images:"
+                    "        - name: app"
+                    "          tag: 1"
+                    "        - name: app"
+                    "          tag: 2"
+                    "    xs:"
+                    "        - name: $-"
+                    "let once2 = [\"a: 1\"] |> Yaml.parse |> Yaml.merge p2"
+                    "let j2 = once2 |> to json |> Str.join \"\""
+                    "if (once2 |> Yaml.merge p2 |> to json |> Str.join \"\") <> j2 then exit 5"
+                ])
+                0
+                "a tombstone takes every match; a patch's own items meet the merge laws where the target had none"
+        }
     ]
 
 [<Tests>]
