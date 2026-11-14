@@ -243,13 +243,15 @@ it returns, parks at its next claim. Rests on [D:hard-exit],
 `hardExit` (`hardExiting`, `park`), `startBackstop`, `backstopVerdict`,
 `adoptMain`.
 
-**I13. A REPL ^C cuts what the entry waits on, never pure computation.**
+**I13. A REPL ^C cuts what the entry waits on and what it computes.**
 One entry, however many statements, is one evaluation: the ^C cuts its
 node, so its flows stop and its remaining statements never run; its
 first failure stops the rest as well. Waits inside a cleanup honour only
-a second ^C. A spawn is also a ^C boundary, but a builtin call and an
-evaluated node are not. The node is checked between statements, so a ^C
-that cut no wait (in a cleanup, in pure computation, or killing a child
+a second ^C. A spawn is also a ^C boundary, and so is every call, a
+builtin's or a function's, and a long range every 4096 elements
+([D:repl-interrupt-compute]); only one builtin's own loop over data
+already in memory runs on. The node is checked between statements, so a ^C
+that cut no wait (in a cleanup, or killing a child
 whose exit is data) ends the entry after its statement, with `↳ exit 130`
 ([D:repl-entry-check]). The terminal keeps ISIG on for the whole entry,
 so a ^C between two of its statements is a signal, never a typed byte

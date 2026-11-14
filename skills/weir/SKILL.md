@@ -1918,8 +1918,9 @@ print x
   [D:repl-stop-request].
   `within`'s scopes close as on any raise; an `always` block
   runs as written unless `^C` is pressed again. At an idle prompt
-  `^C` clears the line. Pure computation is not interrupted: it runs
-  to its next wait, which then stops.
+  `^C` clears the line. Computation stops too [D:repl-interrupt-compute]:
+  every function and builtin call is a `^C` boundary, and so is a long
+  range, so `Seq.initInfinite id |> Seq.freeze` returns to the prompt.
 - A REPL foreground child hung reading stdin ends with `^D^D`: the
   first `^D` delivers the partial line (icanon's delimiter — a
   mid-line `^D` is NOT EOF), the second at the now-empty line is EOF.

@@ -42,6 +42,13 @@
   `type-check`, `module-assistant`, `import-im6`, `try-x` and
   `return-code` were read as the keyword. Glued to a dash the word is
   a command name, as `let-go` and `if-up` already were.
+- **Ctrl+C at the prompt stops a computation.** `Seq.initInfinite id
+  |> Seq.freeze`, a sum over a huge range or any loop that never waits
+  ignored `^C` and ran until the machine was out of memory; the only
+  way out was `kill -9`. Every function call and a long range now
+  check for the `^C`, so the prompt comes back with `↳ exit 130`. An
+  `always` block still runs as written unless `^C` is pressed again.
+
 ## v0.0.91
 
 ### Added

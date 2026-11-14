@@ -7253,11 +7253,15 @@ and private matchView (arms: (Weir.Ast.Pattern * TypedExpr option * TypedExpr) l
 and apply (fn: Value) (arg: Value) : Value =
     match fn with
     | VClosure(param, body, closureEnv) ->
+        // a call is a boundary for a cut and a REPL ^C [D:repl-interrupt-compute]
+        Session.checkCancels ()
+
         if RunPos.IsCall body then
             inFunction (fun () -> eval (Map.add param arg closureEnv) body)
         else
             eval (Map.add param arg closureEnv) body
     | VClosurePat(pat, body, closureEnv) ->
+        Session.checkCancels ()
         let bindings = bindPattern pat arg
         let env' = bindings |> List.fold (fun m (n, v) -> Map.add n v m) closureEnv
 
@@ -7267,7 +7271,8 @@ and apply (fn: Value) (arg: Value) : Value =
             eval env' body
     | VBuiltin f ->
         // every builtin call is a pfirst loser's boundary [D:pfirst-join]
-        Session.checkCancelled ()
+        // and a REPL ^C's [D:repl-interrupt-compute]
+        Session.checkCancels ()
         f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
 
@@ -8946,6 +8951,8 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
             try
                 match fn with
                 | VClosure(param, body, closureEnv) ->
+                    Session.checkCancels ()
+
                     if RunPos.IsCall body then
                         let r = awaitFrame flow (inFunctionAsync flow (Map.add param arg closureEnv) body)
                         r
@@ -8953,6 +8960,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         let r = awaitFrame flow (evalAsync flow (Map.add param arg closureEnv) body)
                         r
                 | VClosurePat(pat, body, closureEnv) ->
+                    Session.checkCancels ()
                     let bindings = bindPattern pat arg
                     let env' = bindings |> List.fold (fun m (n, bv) -> Map.add n bv m) closureEnv
 
@@ -8963,7 +8971,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         let r = awaitFrame flow (evalAsync flow env' body)
                         r
                 | VBuiltin f ->
-                    Session.checkCancelled ()
+                    Session.checkCancels ()
                     let e = asyncOf f
 
                     if isNull e then

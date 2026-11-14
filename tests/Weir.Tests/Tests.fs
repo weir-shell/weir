@@ -47133,6 +47133,28 @@ let hunt4Tests =
                     (ds |> List.forall (fun d -> d.Severity <> "error"))
                     $"{head} is a command word: {ds |> List.map _.Message}"
         }
+        test "a REPL ^C stops computation at a call and in a long range [D:repl-interrupt-compute]" {
+            for src in
+                [
+                    "Seq.initInfinite id |> Seq.length"
+                    "Seq.initInfinite (fun i -> i + 1) |> Seq.length"
+                    "[1..9000000000000] |> Seq.sum"
+                ] do
+                Weir.Session.beginReplEval ()
+
+                try
+                    let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                    System.Threading.Tasks.Task.Run(fun () ->
+                        System.Threading.Thread.Sleep 200
+                        Weir.Session.interruptRepl ())
+                    |> ignore
+
+                    Expect.throwsT<Weir.Session.Interrupted> (fun () -> run src |> ignore) src
+                    Expect.isLessThan sw.ElapsedMilliseconds 10000L "cut, not run to the end"
+                finally
+                    Weir.Session.endReplEval ()
+        }
     ]
 
 [<Tests>]

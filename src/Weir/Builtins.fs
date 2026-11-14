@@ -2225,7 +2225,16 @@ let private rangeImpl: Value =
                             let mutable i = start
                             let mutable go = if step > 0L then i <= stop else i >= stop
 
+                            let mutable n = 0
+
                             while go do
+                                // a long range is a boundary now and then: a
+                                // cut or a REPL ^C stops it [D:repl-interrupt-compute]
+                                n <- n + 1
+
+                                if n &&& 0xFFF = 0 then
+                                    Session.checkCancels ()
+
                                 yield VInt i
                                 let next = i + step
                                 // wrap past Int64 boundary = the range is done
