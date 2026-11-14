@@ -92,7 +92,37 @@ type Resolver = {
     // Single-hop by construction (the table stores exes, never aliases).
     // Scripts/-e supply the always-None resolver, so aliases never leak.
     AliasHead: string -> (string * string list) option
+    // a name weir itself supplies (a bare builtin, a module) — never the
+    // author's binding [D:dash-binding]
+    IsBuiltinName: string -> bool
 }
+
+/// `count-1` and `total-used` with their names bound are subtraction,
+/// never the program of that name [D:dash-binding]: the first part is the
+/// author's binding and every other part a number or a known name. A
+/// part nothing knows (`docker-compose` beside `let docker = …`) leaves
+/// the word a command; `^count-1` forces the program.
+let dashBinding (isKnown: string -> bool) (r: Resolver) (w: string) : bool =
+    w.IndexOf '-' > 0
+    && (let parts = w.Split '-'
+
+        let name (p: string) =
+            p.Length > 0
+            && (System.Char.IsLetter p[0] || p[0] = '_')
+            && p |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '\'')
+
+        let number (p: string) =
+            p.Length > 0 && p |> Seq.forall System.Char.IsDigit
+
+        let first = parts[0]
+
+        name first
+        && System.Char.IsLower first[0]
+        && isKnown first
+        && not (r.IsBuiltinName first)
+        && parts
+           |> Array.skip 1
+           |> Array.forall (fun p -> number p || (name p && isKnown p)))
 
 let isIdentStart (c: char) = System.Char.IsLetter c || c = '_'
 

@@ -256,6 +256,7 @@ let private cmdResolver: Weir.Parser.Resolver = {
     ExternalNames = (fun () -> fakeExternals)
     BareHome = (fun _ -> None)
     AliasHead = fun _ -> None
+    IsBuiltinName = fun _ -> false
 }
 
 // Windows: parse-only fixtures resolve coreutils heads (echo, sh,
@@ -303,6 +304,7 @@ let private realResolver: Weir.Parser.Resolver = {
     ExternalNames = (fun () -> Weir.Extern.names () :> seq<string>)
     BareHome = (fun n -> Map.tryFind n Weir.Builtins.bareAliasHomes)
     AliasHead = fun _ -> None
+    IsBuiltinName = fun _ -> false
 }
 
 let private parseCmd input =
@@ -10613,6 +10615,7 @@ let blockLetCmdTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             match Weir.Parser.parseLine r "let f x = let w = echo alpha \"in\" beta |> Seq.head in w" with
@@ -18583,6 +18586,7 @@ let multilineLambdaTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             match Weir.Parser.parseLine r "let out = xs |> Seq.map (fun k -> let g = echo tag in g |> Seq.length)" with
@@ -21553,6 +21557,7 @@ let depthGuardTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             let nested d =
@@ -21602,6 +21607,7 @@ let depthGuardTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             for stmt in
@@ -21626,6 +21632,7 @@ let depthGuardTests =
                 ExternalNames = fun () -> Seq.ofList (Set.toList externals)
                 BareHome = fun _ -> None
                 AliasHead = fun n -> if n = "ll" then Some("ls", [ "-l" ]) else None
+                IsBuiltinName = fun _ -> false
             }
 
             let sib = " \u001f "
@@ -24329,6 +24336,7 @@ let offsideTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             match Weir.Parser.parseLineFull r "type P = | Pulled | upToDate | Join of string" with
@@ -24433,6 +24441,7 @@ let offsideTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             let rGit = {
@@ -47226,6 +47235,33 @@ let hunt4Tests =
                 ])
                 0
                 "a tombstone takes every match; a patch's own items meet the merge laws where the target had none"
+        }
+        test "a bound name glued to a dash is subtraction in check and run [D:dash-binding]" {
+            // PATH never decides: `count-1` with `count` bound is the same
+            // expression to both, whatever is installed
+            let src = [
+                "let count = 5"
+                "let last = count-1"
+                "if last + 1 <> 5 then exit 3"
+                "if not (count-1 > 0) then exit 4"
+                "let f = fun n -> n-1"
+                "if f 3 <> 2 then exit 5"
+                "let g n m ="
+                "    let d = n-m"
+                "    d"
+                "if g 9 4 <> 5 then exit 6"
+            ]
+
+            cleanIn "pin.weir" src "check reads the subtraction"
+            Expect.equal (runFile src) 0 "run reads the subtraction"
+
+            // a part nothing knows leaves the word a command
+            let ds = diagsIn "pin.weir" [ "let docker = \"docker\""; "docker-composezz up"; "print docker" ]
+
+            Expect.exists
+                ds
+                (fun d -> d.Message.Contains "command not found on PATH: docker-composezz")
+                $"docker-composezz stays a command: {ds |> List.map _.Message}"
         }
     ]
 

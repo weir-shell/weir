@@ -70,6 +70,16 @@
   again, or go up to an older entry and come back: the added text was
   gone. Each entry you edit now stays as you left it until you submit
   one, and so does the new entry you were typing.
+- **`count-1` means the same to `weir check` and to the run.** With
+  `count` bound, `let last = count-1` ran as a subtraction but
+  `weir check` read `count-1` as a command, warned that it was not on
+  PATH and then failed the next line with a type error; with a
+  program of that name installed, the run executed it. A name you
+  bound, glued by dashes to numbers or to other known names
+  (`count-1`, `n-m`, `fun n -> n-1`), is now a subtraction to both.
+  A word with a part nothing knows is still a command
+  (`docker-compose` beside `let docker = …`), and `^count-1` runs the
+  program of that name.
 
 ## v0.0.91
 

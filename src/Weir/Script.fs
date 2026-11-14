@@ -3828,6 +3828,7 @@ let resolver (typeEnv: TypeEnv) : Parser.Resolver = {
     // scripts/fmt/CLI carry no aliases (REPL-only) — the REPL overrides
     // this field with its session alias table [D:command-head-alias]
     AliasHead = fun _ -> None
+    IsBuiltinName = fun n -> Map.containsKey n Builtins.typeEnv.Values || Map.containsKey n typeEnv.Modules
 }
 
 let private located (path: string) (lineNo: int) (msg: string) : string =

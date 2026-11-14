@@ -124,6 +124,7 @@ let weirVerdict (src: string) : Verdict =
             ExternalNames = (fun () -> Seq.empty)
             BareHome = (fun _ -> None)
             AliasHead = fun _ -> None
+            IsBuiltinName = fun _ -> false
         }
 
         // the unused-binding law rides the mirror [D:unused-bindings] — the

@@ -3088,7 +3088,9 @@ print $"{fixed} {Path.isName fixed}"
   record and number them with `[<Ord n>]`. Records remain the spelling
   for anything with NAMES. Prefix minus
   follows F#'s adjacency rule: `-n`, `2 * -3`, and `f -1` (passes -1
-  as the ARGUMENT) are prefix; `x-1` and `x - 1` are subtraction. `-x`
+  as the ARGUMENT) are prefix; `x-1` and `x - 1` are subtraction —
+  with `x` bound, `x-1` is never the program named `x-1`, to check and
+  run alike (`^x-1` forces it) [D:dash-binding]. `-x`
   negates in x's own type (float, Duration, Size too)
   [D:prefix-minus-typed]; a lambda parameter of not-yet-known type
   (`fun x -> -x`) still types as int.

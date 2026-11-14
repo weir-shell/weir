@@ -24,12 +24,14 @@ let private ambientResolver =
         Desugar.ExternalNames = (fun () -> Seq.empty)
         Desugar.BareHome = (fun _ -> None)
         Desugar.AliasHead = fun _ -> None
+        Desugar.IsBuiltinName = fun _ -> false
     })
 
 let private ambientProxy: Resolver = {
     IsKnown = fun n -> ambientResolver.Value.IsKnown n
     IsCommandCallable = fun n -> ambientResolver.Value.IsCommandCallable n
     IsExternal = fun n -> ambientResolver.Value.IsExternal n
+    IsBuiltinName = fun n -> ambientResolver.Value.IsBuiltinName n
     ExternalNames = fun () -> ambientResolver.Value.ExternalNames()
     BareHome = fun n -> ambientResolver.Value.BareHome n
     AliasHead = fun n -> ambientResolver.Value.AliasHead n
@@ -5039,6 +5041,8 @@ let private commandSegment
                 preturn (BuiltinHead, w, span)
             elif isIdentLike w && (keywords.Contains w || r.IsKnown w) then
                 ifail "known name; expression mode"
+            elif Desugar.dashBinding r.IsKnown r w then
+                ifail "a bound name minus a value; expression mode"
             elif r.IsExternal w then
                 preturn (ExternalHead, w, span)
             else
@@ -6033,6 +6037,7 @@ let private noExternals = {
     Desugar.ExternalNames = (fun () -> Seq.empty)
     Desugar.BareHome = (fun _ -> None)
     Desugar.AliasHead = fun _ -> None
+    Desugar.IsBuiltinName = fun _ -> false
 }
 
 // Structured failure: the position travels as data

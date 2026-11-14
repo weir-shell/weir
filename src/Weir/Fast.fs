@@ -351,6 +351,8 @@ let private headOf (st: St) (builtinHeads: bool) : Head =
                     HeadK.Builtin
                 elif isIdentLike w && (keywords.Contains w || isKnown st w) then
                     HeadK.NotCmd
+                elif Desugar.dashBinding (isKnown st) st.R w then
+                    HeadK.NotCmd
                 elif st.R.IsExternal w then
                     HeadK.External
                 else
