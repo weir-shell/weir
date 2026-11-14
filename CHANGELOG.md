@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.0.92
+
+### Fixed
+
+- **A `fun () ->` argument is checked against the type it receives.**
+  `[1; 2] |> Seq.map (fun () -> "X")` passed the check and ran, the
+  lambda ignoring each element. It is now a type error at the `()`
+  (`expected int, got unit`), as it already was for a lambda bound
+  with `let` first. A script that relied on it writes `fun _ ->`.
+
 ## v0.0.91
 
 ### Added
