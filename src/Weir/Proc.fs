@@ -789,15 +789,6 @@ type private LineFeed(fallback: System.Text.Encoding) =
 
         split (decoder.GetChars(bytes, off, n, chars, 0, flush)) lines
 
-    // the marks a longer read can still complete (UTF-16 BE's two bytes
-    // are whole at once; UTF-16 LE's are the head of UTF-32 LE's)
-    let boms: byte[][] = [|
-        [| 0xFEuy; 0xFFuy |]
-        [| 0xEFuy; 0xBBuy; 0xBFuy |]
-        [| 0xFFuy; 0xFEuy; 0uy; 0uy |]
-        [| 0uy; 0uy; 0xFEuy; 0xFFuy |]
-    |]
-
     let choose (lines: ResizeArray<string>) =
         let b = head.ToArray()
         let at (i: int) (v: byte) = b.Length > i && b[i] = v
@@ -828,20 +819,7 @@ type private LineFeed(fallback: System.Text.Encoding) =
             // decide as soon as the bytes cannot grow into a longer mark:
             // a short first line (`ok`) must not wait for a fourth byte
             // that an idle child never sends [D:async-seq]
-            let undecided =
-                head.Count < 4
-                && boms
-                   |> Array.exists (fun (m: byte[]) ->
-                       head.Count < m.Length
-                       && (let mutable same = true
-
-                           for i in 0 .. head.Count - 1 do
-                               if head[i] <> m[i] then
-                                   same <- false
-
-                           same))
-
-            if not undecided then
+            if not (Session.markUndecided (fun i -> head[i]) head.Count) then
                 choose lines
         else
             decode bytes 0 n false lines

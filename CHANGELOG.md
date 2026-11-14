@@ -100,6 +100,12 @@
   read.** The values were all pulled before the arm read anything, so
   a slow producer delayed the first line by its whole run and an
   endless one hung the arm.
+- **A byte-order mark that arrives in pieces is still a mark.** When a
+  command wrote its UTF-8 or UTF-16 mark over two writes, `cmd |>
+  Seq.head`, `cmd | line` and a chain's `| text` kept the mark's bytes
+  in the first line (or decoded UTF-16 as garbage), while `| complete`
+  read it correctly. Every form now waits for the rest of a mark
+  before choosing the decoding.
 
 ## v0.0.91
 

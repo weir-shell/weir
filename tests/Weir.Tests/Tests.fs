@@ -47312,6 +47312,26 @@ let hunt4Tests =
                 0
                 "an endless slow producer does not hold the arm that reads the command's output"
         }
+        test "a byte-order mark split across writes selects the decoding [D:byte-pipes]" {
+            skipOnWindows ()
+
+            Expect.equal
+                (runFile [
+                    "let hex s = s |> Str.toUtf8 |> Bytes.toHex"
+                    "let split1 = sh -c \"printf '\\\\357'; sleep 0.1; printf '\\\\273\\\\277id=7\\\\n'\" |> Seq.head"
+                    "if hex split1 <> \"69643d37\" then exit 3"
+                    "let l = sh -c \"printf '\\\\357\\\\273'; sleep 0.1; printf '\\\\277id=7\\\\n'\" | line"
+                    "if hex l <> \"69643d37\" then exit 4"
+                    "let c = sh -c \"printf '\\\\357'; sleep 0.1; printf '\\\\273\\\\277id=7\\\\n'\" | cat | text"
+                    "if hex c <> \"69643d37\" then exit 5"
+                    "let u = sh -c \"printf '\\\\377'; sleep 0.1; printf '\\\\376i\\\\000d\\\\000\\\\n\\\\000'\" |> Seq.head"
+                    "if hex u <> \"6964\" then exit 6"
+                    "let short = sh -c \"echo ok; exec sleep 3\" |> Seq.head"
+                    "if short <> \"ok\" then exit 7"
+                ])
+                0
+                "lazy lines, | line and a chain's | text decode a late mark as an early one; a short line does not wait"
+        }
     ]
 
 [<Tests>]
