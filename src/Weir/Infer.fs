@@ -43,7 +43,19 @@ type Note = string
 
 let rec private ofJsonElement (el: System.Text.Json.JsonElement) : INode =
     match el.ValueKind with
-    | System.Text.Json.JsonValueKind.Object -> IObj [ for p in el.EnumerateObject() -> p.Name, ofJsonElement p.Value ]
+    | System.Text.Json.JsonValueKind.Object ->
+        // a repeated key last-wins at its first position, as `from json`
+        // reads it
+        let last = System.Collections.Generic.Dictionary<string, INode>()
+        let keys = ResizeArray<string>()
+
+        for p in el.EnumerateObject() do
+            if not (last.ContainsKey p.Name) then
+                keys.Add p.Name
+
+            last[p.Name] <- ofJsonElement p.Value
+
+        IObj [ for k in keys -> k, last[k] ]
     | System.Text.Json.JsonValueKind.Array -> IArr [ for e in el.EnumerateArray() -> ofJsonElement e ]
     | System.Text.Json.JsonValueKind.String -> IStr
     | System.Text.Json.JsonValueKind.True
@@ -260,13 +272,21 @@ let takenTypeNames (liveNames: string seq) : Set<string> =
 // their parent references them (bottom-up), so a field's rendered
 // type already carries the child's final name.
 
-type Registry(taken: Set<string>) =
+type Registry(taken: Set<string>, topName: string) =
     // desiredName -> list of (structural signature, finalName, fields)
     let claimed =
         System.Collections.Generic.Dictionary<string, ResizeArray<string * string * (string * string) list>>()
     // emission order preserved: finalName -> fields (rendered), in insert order
     let order = ResizeArray<string * (string * string) list>()
     let notes = ResizeArray<Note>()
+    // every name handed out, whichever desired name it came from: a
+    // parent-prefixed landing (`PodSpec` for pod.spec) is taken for a
+    // later key that desires it (`podSpec`)
+    let finals = System.Collections.Generic.HashSet<string>()
+
+    /// how many records enclose the one being shaped: the top record
+    /// claims at 0 and alone may take the top name
+    member val Depth = 0 with get, set
 
     member _.Notes = List.ofSeq notes
     // a note quotes wire keys and values, so it renders them visibly
@@ -308,11 +328,15 @@ type Registry(taken: Set<string>) =
         | None ->
             // a name is unusable when a sibling claim or the
             // environment holds it — a taken landing would be shadowed
+            // the top name is the top record's: a nested object whose key
+            // capitalises to it lands elsewhere
+            let topOnly n = n = topName && this.Depth > 0
+
             let inUse n =
-                Set.contains n taken || bucket |> Seq.exists (fun (_, f, _) -> f = n)
+                Set.contains n taken || finals.Contains n || topOnly n
 
             let candidate =
-                if bucket.Count = 0 && not (Set.contains desired taken) then
+                if not (inUse desired) then
                     desired
                 else
                     // collision (same name different shape, or taken
@@ -333,15 +357,19 @@ type Registry(taken: Set<string>) =
             if Set.contains desired taken then
                 // the never-guess-silently convention [D:repl-infer]
                 this.AddNote $"'{srcKey}' would shadow the existing type '{desired}' — drafted as '{candidate}'"
+            elif topOnly desired then
+                this.AddNote $"'{srcKey}' would take the top record's name '{desired}' — drafted as '{candidate}'"
 
+            finals.Add candidate |> ignore
             bucket.Add(sign, candidate, fields)
             order.Add(candidate, fields)
             candidate
 
 let private isIdentStart c = System.Char.IsLetter c || c = '_'
 
-let private isIdentCont c =
-    System.Char.IsLetterOrDigit c || c = '_'
+// the lexer's rule (Desugar.isIdentCont): digits are ASCII's — a key with
+// another script's digit is not a field name, it rides [<Wire>]
+let private isIdentCont c = Desugar.isIdentCont c
 
 // a key with identifier shape — grammar only, so a reserved word still
 // counts (`type:` is a schema key on real wires; keywords never vote
@@ -488,7 +516,11 @@ let rec private openMaps (note: Note -> unit) (path: string) (node: INode) : INo
 let private mergeElems (note: Note -> unit) (path: string) (items: INode list) : INode option =
     match items |> List.filter ((<>) INull) with
     | [] -> None
-    | first :: rest -> Some(rest |> List.fold (mergeTwo note path) first |> openMaps note path)
+    | first :: rest ->
+        let merged = rest |> List.fold (mergeTwo note path) first |> openMaps note path
+        // a null beside real elements is an element that can be absent:
+        // the adapters read it as None only under an Option
+        Some(if items |> List.contains INull then iopt merged else merged)
 
 /// the keys a [<Wire "…">] literal can spell: weir strings escape only
 /// \" \\ \n \t, so a key holding another control character (CR, ESC,
@@ -581,11 +613,16 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
                 // its parentStem, not the field's
                 let thisStem = identStem desired
 
+                reg.Depth <- reg.Depth + 1
+
                 let rendered =
-                    spellable
-                    |> List.map (fun (k, v) ->
-                        let childDesired = capitalize (identStem k)
-                        k, shapeOf reg childDesired k thisStem v)
+                    try
+                        spellable
+                        |> List.map (fun (k, v) ->
+                            let childDesired = capitalize (identStem k)
+                            k, shapeOf reg childDesired k thisStem v)
+                    finally
+                        reg.Depth <- reg.Depth - 1
 
                 reg.Claim desired srcKey parentStem rendered
     | IArr items ->
@@ -751,7 +788,7 @@ let inferDecls (reserved: Set<string>) (taken: Set<string>) (topName: string) (n
     // the top name is the caller's choice, exempt from the guard: the
     // REPL refuses a builtin 'as'-name outright, and re-inferring under
     // a session name re-declares it (the REPL's redeclare semantics)
-    let reg = Registry(Set.remove topName taken)
+    let reg = Registry(Set.remove topName taken, topName)
 
     (match node with
      | IArr items ->
@@ -771,7 +808,7 @@ let inferDecls (reserved: Set<string>) (taken: Set<string>) (topName: string) (n
                      $"the sample's top level is an array of open mappings — nothing to name; read it as 'seq<{ty}>'"
              else
                  reg.AddNote
-                     $"the sample's top level is an array — '{topName}' names the element; read it as 'seq<{topName}>'"
+                     $"the sample's top level is an array — '{topName}' names the element; read it as 'seq<{ty}>'"
      | IObj _ ->
          let ty = shapeOf reg topName topName (identStem topName) node
 

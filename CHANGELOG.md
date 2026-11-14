@@ -134,6 +134,22 @@
   negated forms matched none. A class takes an astral character only
   through an astral member or range, or an escape such as `\S` or
   `\P{L}`.
+- **`#infer … as Name` gives the name to the top record.** With a
+  sample such as `{"user": {"id": 1}}` read `as User`, the nested
+  object took `User` and the envelope became `UserUser`, so reading
+  the sample with the name you asked for failed. The top record keeps
+  the name and the nested one is drafted as `UserUser`, with a note.
+  `Json.inferShape` and `Yaml.inferShape` keep `Root` the same way.
+- **`inferShape` drafts that check.** It could declare two types with
+  one name (`pod.spec` and `podSpec` both as `PodSpec`), and a JSON
+  object with a repeated key drafted the field twice; both failed
+  `weir check`. Names are now unique, a repeated key is one field
+  (the last value, as `from json` reads it), and a key holding a
+  non-ASCII digit is drafted behind `[<Wire "…">]`.
+- **`inferShape` drafts `Option` for an array with a `null` in it.**
+  `[1, null]` drafted `seq<int>`, which could not read the sample
+  back. It drafts `seq<Option<int>>`, and `seq<Option<T>>` for
+  objects.
 
 ## v0.0.91
 

@@ -100,7 +100,7 @@ let generate
     (topName: string)
     (doc: SchemaDoc)
     : Result<string list * Infer.Note list * string, string> =
-    let reg = Infer.Registry(Set.remove topName (Infer.takenTypeNames taken))
+    let reg = Infer.Registry(Set.remove topName (Infer.takenTypeNames taken), topName)
 
     // defName -> final rendered type text; None marks in-progress, so a
     // re-entrant resolve is a cycle — the opaque note posture

@@ -47433,6 +47433,43 @@ let hunt4Tests =
                 0
                 "ranges, negation and subtraction with astral members; a class of U+FFFD takes no emoji"
         }
+        test "inferShape drafts declarations that check and read the sample back [D:repl-infer]" {
+            let draft (sample: string) =
+                let node =
+                    match Weir.Infer.nodeOf Weir.Infer.Json [ sample ] with
+                    | Ok n -> n
+                    | Error e -> failtest e
+
+                Weir.Infer.inferDecls Weir.Parser.keywords Set.empty "Root" node |> fst |> String.concat "\n"
+
+            // the top record keeps its name when a key capitalises to it
+            let d1 = draft "{\"root\": {\"id\": 1}}"
+            Expect.stringContains d1 "type Root = {\n    root: RootRoot\n}" "the envelope is Root"
+            Expect.stringContains d1 "type RootRoot = {\n    id: int\n}" "the nested object lands elsewhere"
+
+            // no name is handed out twice
+            let d2 = draft "{\"spec\": {\"a\": 1}, \"pod\": {\"spec\": {\"b\": 1}}, \"podSpec\": {\"c\": 1}}"
+
+            let names =
+                d2.Split('\n')
+                |> Array.filter (fun l -> l.StartsWith "type ")
+                |> Array.map (fun l -> l.Split(' ')[1])
+
+            Expect.equal (Array.distinct names).Length names.Length $"distinct type names: {names}"
+
+            // a null beside real elements drafts Option; a repeated key is one field
+            let d3 = draft "{\"xs\": [1, null], \"ys\": [{\"b\": 1}, null], \"a\": 1, \"a\": \"x\"}"
+            Expect.stringContains d3 "xs: seq<Option<int>>" "a null int element"
+            Expect.stringContains d3 "ys: seq<Option<Y>>" "a null object element"
+            Expect.stringContains d3 "a: string" "last wins"
+            Expect.isFalse (d3.Contains "a: int") "one field per key"
+
+            // a key with a non-ASCII digit is not a field name
+            Expect.stringContains (draft "{\"a٣\": 2, \"b\": 1, \"c\": \"x\"}") "[<Wire \"a٣\">]" "it rides a wire key"
+
+            for d in [ d1; d2; d3 ] do
+                cleanIn "pin.weir" (d.Split('\n') |> List.ofArray) "the draft checks"
+        }
     ]
 
 [<Tests>]
