@@ -15098,7 +15098,8 @@ kill $clsrv 2>/dev/null || true
 echo "e2e ok: add module closure (add/import/run, restore, verify, re-add drops a file, three refusals + raw-URL teach + verbatim // + --path refusals + cycle, leaf unchanged, form switches, collision, unlocked dir)"
 
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
-# site/src/pages/index.astro quotes four outputs verbatim; all are pinned
+# site/src/pages/index.astro quotes three outputs verbatim and runs its
+# hero snippet [D:hero-min]; all are pinned
 # here against live runs so the homepage cannot go stale while green (the
 # docs gate asserts executability, not output). The splice refusal's
 # message text is also byte-pinned in Tests.fs. --can file:lines are
@@ -15114,12 +15115,10 @@ cat > "$herodir/tag.weir" <<'WEOF'
 type Pkg = { name: string; version: string }
 
 let pkg = File.read "package.json" |> from json Pkg
-let tag = $"v{pkg.version}"
-git tag $tag
-print $"tagged {pkg.name} v{pkg.version}"
+git tag $"v{pkg.version}"
 WEOF
 hout=$(cd "$herodir" && "$BIN" tag.weir 2>&1) || fail "the hero run failed: $hout"
-[ "$hout" = 'tagged acme-api v2.4.0' ] || fail "the hero output drifted — update index.astro: $hout"
+[ -z "$hout" ] || fail "the hero snippet prints nothing: $hout"
 ( cd "$herodir" && git tag -l ) | grep -qxF "v2.4.0" || fail "the hero's git tag was not created"
 # beat 1 [D:hero-3]: the check at three distances — a tool's flag
 # (#sig, generated from a stub then marked exhaustive: the stub's
