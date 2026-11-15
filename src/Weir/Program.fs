@@ -14,6 +14,8 @@ let private evalOnce (input: string) : int =
     let typeEnv, valueEnv =
         Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv.Value
 
+    let valueEnv = Eval.splitBase valueEnv
+
     let printHint (line: string) =
         Diagnose.hint
             (fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules)
@@ -206,7 +208,7 @@ let private evalOnce (input: string) : int =
                                                 match Script.builtinParamNames chk.Env head with
                                                 | Some r -> Some r
                                                 | None ->
-                                                    Map.tryFind head venv
+                                                    Eval.lookupValue head venv
                                                     |> Option.map (fun f -> head, Eval.closureParamNames f)
 
                                             match Script.partialApp names te with

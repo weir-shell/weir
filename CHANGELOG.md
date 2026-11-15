@@ -2,6 +2,15 @@
 
 ## v0.0.92
 
+### Changed
+
+- **Closure calls and int arithmetic are about three times faster.** A
+  call bound its parameter into a map that also held every builtin;
+  the builtin table now sits behind the environment, and two ints take
+  a direct path through the operators. `[1..3000000] |> Seq.map (fun n
+  -> n * 2) |> Seq.where (fun n -> n % 3 == 0) |> Seq.length` went from
+  1.9 s to 0.6 s.
+
 ### Fixed
 
 - **LSP completion keeps your bindings when PATH is crowded.** The list
