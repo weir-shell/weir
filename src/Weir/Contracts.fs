@@ -483,13 +483,10 @@ let writeConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, s
             else
                 Posix.writeNoFollow dest bytes
 
-/// the same confinement for a file replaced whole (temp + rename: a reader
-/// never sees it half-written): the parent resolves under root, and a leaf
-/// that is a link is refused, never replaced through
-let replaceConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, string> =
-    let parent = Path.GetDirectoryName dest
-
-    match confineRealUnder root parent with
+/// the confinement a whole-file replace asks, with nothing written: the
+/// parent resolves under root, and a leaf that is a link is refused
+let confinedLeaf (root: string) (dest: string) : Result<unit, string> =
+    match confineRealUnder root (Path.GetDirectoryName dest) with
     | Error e -> Error e
     | Ok _ ->
         match confineRealUnder root dest with
@@ -501,13 +498,21 @@ let replaceConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit,
                  false)
             ->
             Error $"'{Weir.Types.quoteData dest}' is a symbolic link — a vendored file is a regular file"
-        | Ok _ ->
-            try
-                Directory.CreateDirectory parent |> ignore
-                AtomicFile.replaceFile dest bytes
-                Ok()
-            with ex ->
-                Error $"cannot write '{Weir.Types.quoteData dest}': {Weir.Types.quoteData ex.Message}"
+        | Ok _ -> Ok()
+
+/// the same confinement for a file replaced whole (temp + rename: a reader
+/// never sees it half-written): the parent resolves under root, and a leaf
+/// that is a link is refused, never replaced through
+let replaceConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, string> =
+    match confinedLeaf root dest with
+    | Error e -> Error e
+    | Ok() ->
+        try
+            Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
+            AtomicFile.replaceFile dest bytes
+            Ok()
+        with ex ->
+            Error $"cannot write '{Weir.Types.quoteData dest}': {Weir.Types.quoteData ex.Message}"
 
 /// a vendored name safe as a file-name segment [D:lockfile-confinement]:
 /// the F14 guard at the argv crossing — no separators, no `..`, no
@@ -674,9 +679,44 @@ let private lockPath (weirDir: string) = Path.Combine(weirDir, "lock.json")
 
 let private artifactCap = 64L * 1024L * 1024L
 
+module private Seekable =
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private ``open``(string pathname, int flags, int mode)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int64 private lseek(int fd, int64 offset, int whence)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private close(int fd)
+
+    // O_RDONLY | O_NONBLOCK | O_CLOEXEC: a FIFO opens without its writer
+    let probe (path: string) : bool =
+        let fd =
+            ``open`` (path, (if OperatingSystem.IsMacOS() then 0x1000004 else 0x80800), 0)
+
+        if fd < 0 then
+            // ENXIO: a socket, or a device with nothing behind it
+            Marshal.GetLastPInvokeError() <> 6
+        else
+            let seekable = lseek (fd, 0L, 1) >= 0L
+            close fd |> ignore
+            seekable
+
+/// a FIFO or a socket where a file is expected: opening it would wait for a
+/// writer that never comes (Linux and macOS; false elsewhere) [D:artifact-not-a-pipe]
+let pipeLike (path: string) : bool =
+    (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+    && (try
+            not (Seekable.probe path)
+        with _ ->
+            false)
+
 /// a vendored file's bytes, with a ceiling: a lock, a schema or a signature
 /// that is a device (or a link to one) refuses instead of filling memory
 let readArtifact (path: string) : byte[] =
+    if pipeLike path then
+        raise (IOException "not a regular file, or larger than 64 MiB")
+
     use fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
     use ms = new MemoryStream()
     let buf = Array.zeroCreate<byte> 65536
@@ -984,7 +1024,7 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
                 | l -> Some l
 
             match location with
-            | Some loc when Http.isRedirect code && hops < 50 ->
+            | Some loc when Http.isRedirect code && hops < 10 ->
                 resp.Dispose()
                 hops <- hops + 1
                 let fromUri = Uri curUrl

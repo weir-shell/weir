@@ -990,46 +990,80 @@ let scalarTypes: Map<string, Ty> =
 let builtinTypeNames: string list =
     [ "int"; "seq"; "Map" ] @ (Map.keys scalarTypes |> List.ofSeq)
 
-let rec formatTy (ty: Ty) : string =
-    match ty with
-    | TDur -> "Duration"
-    | TInstant -> "Instant"
-    | TUuid -> "Uuid"
-    | TSize -> "Size"
-    | TBytes -> "Bytes"
-    | TSecret -> "Secret"
-    | TVar v -> $"'{v}"
-    | TRowVar(_, []) -> "{ .. }"
-    | TRowVar(_, fields) ->
-        let fs =
-            fields |> List.map (fun (f, t) -> $"{f}: {formatTy t}") |> String.concat "; "
+let formatTy (ty: Ty) : string =
+    let sb = System.Text.StringBuilder()
+    let add (s: string) = sb.Append s |> ignore
 
-        $"{{ {fs}; .. }}"
-    | TInt -> "int"
-    | TFloat -> "float"
-    | TStr -> "string"
-    | TBool -> "bool"
-    | TUnit -> "unit"
-    | TFun(domain, codomain) ->
-        let dom =
-            match domain with
-            | TFun _ -> $"({formatTy domain})"
-            | _ -> formatTy domain
+    let rec go (ty: Ty) : unit =
+        match ty with
+        | TDur -> add "Duration"
+        | TInstant -> add "Instant"
+        | TUuid -> add "Uuid"
+        | TSize -> add "Size"
+        | TBytes -> add "Bytes"
+        | TSecret -> add "Secret"
+        | TVar v ->
+            add "'"
+            add v
+        | TRowVar(_, []) -> add "{ .. }"
+        | TRowVar(_, fields) ->
+            add "{ "
 
-        $"{dom} -> {formatTy codomain}"
-    | TSeq element -> $"seq<{formatTy element}>"
-    | TTuple elements ->
-        let part (t: Ty) =
-            match t with
-            | TFun _
-            | TTuple _ -> $"({formatTy t})"
-            | _ -> formatTy t
+            for f, t in fields do
+                add f
+                add ": "
+                go t
+                add "; "
 
-        elements |> List.map part |> String.concat " * "
-    | TNamed(name, []) -> name
-    | TNamed(name, args) ->
-        let argStr = args |> List.map formatTy |> String.concat ", "
-        $"{name}<{argStr}>"
+            add ".. }"
+        | TInt -> add "int"
+        | TFloat -> add "float"
+        | TStr -> add "string"
+        | TBool -> add "bool"
+        | TUnit -> add "unit"
+        | TFun(domain, codomain) ->
+            (match domain with
+             | TFun _ ->
+                 add "("
+                 go domain
+                 add ")"
+             | _ -> go domain)
+
+            add " -> "
+            go codomain
+        | TSeq element ->
+            add "seq<"
+            go element
+            add ">"
+        | TTuple elements ->
+            elements
+            |> List.iteri (fun i t ->
+                if i > 0 then
+                    add " * "
+
+                match t with
+                | TFun _
+                | TTuple _ ->
+                    add "("
+                    go t
+                    add ")"
+                | _ -> go t)
+        | TNamed(name, []) -> add name
+        | TNamed(name, args) ->
+            add name
+            add "<"
+
+            args
+            |> List.iteri (fun i t ->
+                if i > 0 then
+                    add ", "
+
+                go t)
+
+            add ">"
+
+    go ty
+    sb.ToString()
 
 /// An anonymous record's canonical name [D:anon-records]: fields
 /// sorted by name, rendered as the type's own spelling. The name is
