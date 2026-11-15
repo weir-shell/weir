@@ -15098,12 +15098,11 @@ kill $clsrv 2>/dev/null || true
 echo "e2e ok: add module closure (add/import/run, restore, verify, re-add drops a file, three refusals + raw-URL teach + verbatim // + --path refusals + cycle, leaf unchanged, form switches, collision, unlocked dir)"
 
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
-# site/src/pages/index.astro quotes four outputs verbatim; all are pinned
-# here against live runs so the homepage cannot go stale while green (the
-# docs gate asserts executability, not output). The splice refusal's
-# message text is also byte-pinned in Tests.fs. --can file:lines are
-# included deliberately: fuzz.weir drift must move the homepage in the
-# same commit.
+# site/src/pages/index.astro quotes three outputs verbatim (the hero run
+# and the two beats [D:site-trim]); all are pinned here against live runs
+# so the homepage cannot go stale while green (the docs gate asserts
+# executability, not output). The splice refusal's framing stays pinned
+# here too; its message text is byte-pinned in Tests.fs.
 herodir=$(mkweirtmp)
 # the hero [D:hero-3]: the typed boundary ends in a real command —
 # from json parses the version, git tag consumes it. The fixture is a
@@ -15208,24 +15207,13 @@ for line in \
     "      --timeout <duration>    optional — wait this long for the health check"; do
     echo "$b2" | grep -qF "$line" || fail "beat-2 --help drifted — update index.astro; missing: $line"
 done
-# the concatenation refusal (below the fold) — the like-for-like steam
+# the concatenation refusal — the like-for-like steam
 # shape [D:argv-concat]: root from the script's own path, glued /*
 printf 'let steamroot = Self.scriptPath |> Path.dir\nrm -rf $steamroot/*\n' > "$herodir/steam.weir"
 herr=$(cd "$herodir" && "$BIN" check steam.weir 2>&1) && fail "the steam snippet must refuse"
 echo "$herr" | grep -qF "steam.weir:2:18: error [parse]: argv words do not concatenate" || fail "concat refusal framing drifted: $herr"
 echo "$herr" | grep -qF "filesystem path" || fail "concat refusal tail drifted: $herr"
-# the --can quote — relative path, as the homepage shows it
-hcan=$(cd "$ROOT" && "$BIN" check --can tools/fuzz.weir 2>&1) || fail "hero --can run failed: $hcan"
-for line in \
-    "tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):" \
-    "ci/deep-lock.sh × 2  tools/fuzz.weir:31:1, 66:5" \
-    "File.read (path not statically known)  tools/fuzz.weir:59:20" \
-    "within tmp (a temporary directory)  tools/fuzz.weir:47:1" \
-    "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:52:5" \
-    "fail  tools/fuzz.weir:62:9"; do
-    echo "$hcan" | grep -qF "$line" || fail "the homepage's --can quote drifted — update index.astro; missing: $line"
-done
-echo "e2e ok: homepage hero currency (hero tag run + tag created, beat-1 three-distance check + wrote-nothing, beat-2 --help, the splice refusal, the --can quote — all match live runs)"
+echo "e2e ok: homepage hero currency (hero tag run + tag created, beat-1 three-distance check + wrote-nothing, beat-2 --help, the splice refusal — all match live runs)"
 
 # the ported-module findings triage [D:fail-bottom] [D:continuation-siblings]:
 # a fail arm opposite a value arm, a lambda body's tuple block-let, and
