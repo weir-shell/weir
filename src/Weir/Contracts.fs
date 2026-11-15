@@ -116,6 +116,17 @@ let private resolveExistingPrefix (path: string) : Result<string, string> =
 
     walk (Path.TrimEndingDirectorySeparator path) []
 
+// the vendor root is a directory of its own: were `.weir` a link, the
+// confinement would hold inside whatever it points at (`.git`, say)
+let private linkedDir (dir: string) : bool =
+    try
+        not (isNull (DirectoryInfo(Path.TrimEndingDirectorySeparator dir).LinkTarget))
+    with _ ->
+        false
+
+let private linkedRootRefusal (dir: string) : string =
+    $"'{Weir.Types.quoteData dir}' is a symbolic link — the vendor directory is a directory of its own; this checkout was tampered with"
+
 /// the real-path confinement [D:lockfile-symlink-confinement]: `dest` is
 /// already lexically confined under `root` (confineUnder ran), but a
 /// symlink on the way — an intermediate dir or the final component — can
@@ -124,19 +135,22 @@ let private resolveExistingPrefix (path: string) : Result<string, string> =
 /// destination under the root. The final component is checked too: if it
 /// exists as a link out, realPathOf chases it and the check fails.
 let confineRealUnder (root: string) (dest: string) : Result<string, string> =
-    // resolve both sides through their existing prefixes: a not-yet-created
-    // root (the add fallback, a fresh tree) resolves to its lexical self —
-    // there is no symlink to follow when nothing exists, so confinement
-    // matches the lexical result until a real symlinked component appears.
-    match resolveExistingPrefix root, resolveExistingPrefix dest with
-    | Error e, _
-    | _, Error e -> Error e
-    | Ok realRoot, Ok realDest ->
-        if underResolved realRoot realDest then
-            Ok dest
-        else
-            Error
-                $"'{dest}' resolves through a symlink to outside .weir/ — the real object escapes the vendor directory"
+    if linkedDir root then
+        Error(linkedRootRefusal root)
+    else
+        // resolve both sides through their existing prefixes: a not-yet-created
+        // root (the add fallback, a fresh tree) resolves to its lexical self —
+        // there is no symlink to follow when nothing exists, so confinement
+        // matches the lexical result until a real symlinked component appears.
+        match resolveExistingPrefix root, resolveExistingPrefix dest with
+        | Error e, _
+        | _, Error e -> Error e
+        | Ok realRoot, Ok realDest ->
+            if underResolved realRoot realDest then
+                Ok dest
+            else
+                Error
+                    $"'{dest}' resolves through a symlink to outside .weir/ — the real object escapes the vendor directory"
 
 // ---- whole-file swap and the .weir/ writer lock [D:weir-dir-lock] ----------
 
@@ -695,7 +709,9 @@ exception private LockShape of string
 let readLock (weirDir: string) : Result<LockEntry list, string> =
     let p = lockPath weirDir
 
-    if not (File.Exists p) then
+    if linkedDir weirDir then
+        Error(linkedRootRefusal weirDir)
+    elif not (File.Exists p) then
         Ok [] // absent until the first fetch — nothing vendored yet
     else
         try
@@ -1057,6 +1073,15 @@ let private tokenHostShape =
         ||| Text.RegularExpressions.RegexOptions.CultureInvariant
     )
 
+// a token rides https only (loopback aside): cleartext would hand it to
+// the path [D:host-token-injective]
+let private secureUrl (url: string) : bool =
+    try
+        let u = Uri url
+        u.Scheme = Uri.UriSchemeHttps || u.IsLoopback
+    with _ ->
+        false
+
 let private hostToken (host: string) : string option =
     if not (tokenHostShape.IsMatch host) then
         None
@@ -1355,7 +1380,7 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                 ""
 
         let hdrs =
-            match hostToken host with
+            match (if secureUrl spec then hostToken host else None) with
             | Some t -> [ "Authorization", "token " + t ]
             | None -> []
 
@@ -1513,14 +1538,7 @@ let moduleFetchHeaders (url: string) : (string * string) list * string option =
         with _ ->
             ""
 
-    // a token rides https only (loopback aside): the url may be a lock's,
-    // and cleartext would hand the token to the path [D:host-token-injective]
-    let secure =
-        try
-            let u = Uri url
-            u.Scheme = Uri.UriSchemeHttps || u.IsLoopback
-        with _ ->
-            false
+    let secure = secureUrl url
 
     let token, tokenHost =
         match (if secure then hostToken host else None) with
@@ -2728,7 +2746,29 @@ let private restoreClosure (weirDir: string) (e: LockEntry) (c: ModuleClosure) :
                 else
                     let url = e.Url + rel
 
-                    match fetchBytesWith headers url with
+                    // the file is fetched where the entry lives: a path that
+                    // moves the url to another origin, or out from under the
+                    // entry's own, would carry the entry's token there
+                    let under =
+                        try
+                            let b = Uri e.Url
+                            let u = Uri url
+
+                            u.Scheme = b.Scheme
+                            && u.Host = b.Host
+                            && u.Port = b.Port
+                            && u.UserInfo = b.UserInfo
+                            && b.AbsolutePath.EndsWith "/"
+                            && u.AbsolutePath.StartsWith(b.AbsolutePath, StringComparison.Ordinal)
+                        with _ ->
+                            false
+
+                    match
+                        (if under then
+                             fetchBytesWith headers url
+                         else
+                             Error "the path leaves the entry's url — this lock was tampered with or hand-edited")
+                    with
                     | Error err ->
                         let err =
                             match tokenHost with

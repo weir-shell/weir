@@ -47644,7 +47644,40 @@ let hunt4Tests =
 
                     match Weir.Contracts.readLock w with
                     | Error e -> Expect.stringContains e "symbolic link" "the refusal names the link"
-                    | Ok _ -> failtest "a linked lock was read")
+                    | Ok _ -> failtest "a linked lock was read"
+
+                    // a linked .weir would move the confinement root with it
+                    let repo2 = Path.Combine(d, "repo2")
+                    Directory.CreateDirectory repo2 |> ignore
+                    let w2 = Path.Combine(repo2, ".weir")
+                    Directory.CreateSymbolicLink(w2, repo2) |> ignore
+                    File.WriteAllText(Path.Combine(repo2, "lock.json"), "{\"schemaVersion\":1,\"artifacts\":[]}")
+
+                    match Weir.Contracts.readLock w2 with
+                    | Error e -> Expect.stringContains e "vendor directory is a directory of its own" "a linked root"
+                    | Ok _ -> failtest "a lock was read through a linked .weir"
+
+                    match Weir.Contracts.confineRealUnder w2 (Path.Combine(w2, "x")) with
+                    | Error e -> Expect.stringContains e "symbolic link" "nothing is confined under a linked root"
+                    | Ok _ -> failtest "a write was confined under a linked .weir"
+
+                    // a closure file is fetched under its entry's url, or not at all
+                    let w3 = Path.Combine(d, "repo3", ".weir")
+                    Directory.CreateDirectory w3 |> ignore
+                    let z = System.String(char 48, 64)
+
+                    File.WriteAllText(
+                        Path.Combine(w3, "lock.json"),
+                        "{\"schemaVersion\":2,\"artifacts\":[{\"kind\":\"module\",\"name\":\"m\",\"url\":\"https://host.example.test\",\"sha256\":\""
+                        + z
+                        + "\",\"path\":\"modules/m\",\"entry\":\".evil.example.test/m.weir\",\"files\":[{\"path\":\".evil.example.test/m.weir\",\"sha256\":\""
+                        + z
+                        + "\"}]}]}"
+                    )
+
+                    match Weir.Contracts.restore w3 with
+                    | Error e -> Expect.stringContains e "leaves the entry's url" "the fetch never starts"
+                    | Ok lines -> failtest $"restored: {lines}")
 
             Expect.notEqual
                 (Weir.Contracts.hostTokenVar "gitlab-acme.com")

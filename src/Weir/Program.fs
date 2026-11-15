@@ -242,10 +242,10 @@ let private evalOnce (input: string) : int =
 
                     execAll valueEnv 0 checked'
 
-// `weir verify`/`restore`/`add sig` lines carry lock.json fields and
-// tool text — messages, so CR and escapes show visibly, piped too
-// [D:lock-print-sanitize]
-let private lockText (s: string) : string = Eval.sanitizeTtyEcho s
+// `weir verify`/`restore`/`add`/`gen types` lines carry lock.json fields
+// and tool text — messages, so CR, LF and escapes show visibly, piped too
+// [D:lock-print-sanitize]: one line out per line made
+let private lockText (s: string) : string = Types.quoteData s
 
 // the lock is committed: an add drops the URL's userinfo from it and
 // says so [D:lock-no-userinfo]
@@ -424,7 +424,7 @@ let main argv =
                      userinfoNote url
                      0
                  | Error e ->
-                     Console.Error.WriteLine $"weir add: {e}"
+                     Console.Error.WriteLine $"weir add: {lockText e}"
                      1)
         | [ "add"; "sig"; tool ]
         | [ "add"; "sig"; "--global"; tool ] when not (tool.StartsWith "-") ->
@@ -499,7 +499,7 @@ let main argv =
                     name
 
             if libError.IsSome then
-                Console.Error.WriteLine $"weir add module: {Option.get libError}"
+                Console.Error.WriteLine $"weir add module: {lockText (Option.get libError)}"
                 1
             elif not nameOk then
                 Console.Error.WriteLine
@@ -532,12 +532,12 @@ let main argv =
                         // the error names the source, not the temp
                         // file validation ran against
                         let e = e.Replace(tmp, quoteData (Http.redactUrl url))
-                        Console.Error.WriteLine $"weir add module: {e}; nothing was written"
+                        Console.Error.WriteLine $"weir add module: {lockText e}; nothing was written"
                         1
                     | Ok memberCount ->
                         match Contracts.vendorFile weirDir "module" name ("modules/" + name + ".weir") url bytes with
                         | Error e ->
-                            Console.Error.WriteLine $"weir add module: {e}"
+                            Console.Error.WriteLine $"weir add module: {lockText e}"
                             1
                         | Ok(hash, prior) ->
                             (match prior with
@@ -625,7 +625,7 @@ let main argv =
                         | Some h -> Contracts.hintPrivate h e
                         | None -> e
 
-                    Console.Error.WriteLine $"weir add module: {e}; nothing was written"
+                    Console.Error.WriteLine $"weir add module: {lockText e}; nothing was written"
                     1
 
                 let resolved =
@@ -643,7 +643,7 @@ let main argv =
 
                 (match resolved with
                  | Error e ->
-                     Console.Error.WriteLine $"weir add module: {e}"
+                     Console.Error.WriteLine $"weir add module: {lockText e}"
                      1
                  | Ok({ Root = None } as src) ->
                      match Contracts.fetchBytesWith src.FetchHeaders src.Url with
@@ -678,12 +678,12 @@ let main argv =
         | [ "restore" ] ->
             (match Contracts.findWeirDir "." with
              | Error e ->
-                 Console.Error.WriteLine $"weir restore: {e}"
+                 Console.Error.WriteLine $"weir restore: {lockText e}"
                  1
              | Ok weirDir ->
                  match Contracts.restore weirDir with
                  | Ok lines ->
-                     lines |> List.iter (fun l -> Console.WriteLine(Types.quoteData l))
+                     lines |> List.iter (fun l -> Console.WriteLine(lockText l))
 
                      0
                  | Error e ->
@@ -695,7 +695,7 @@ let main argv =
         | [ "verify" ] ->
             (match Contracts.findWeirDir "." with
              | Error e ->
-                 Console.Error.WriteLine $"weir verify: {e}"
+                 Console.Error.WriteLine $"weir verify: {lockText e}"
                  1
              | Ok weirDir ->
                  match Contracts.verify weirDir with
@@ -703,7 +703,7 @@ let main argv =
                      Console.Error.WriteLine $"weir verify: {lockText e}"
                      1
                  | Ok(lines, findings) ->
-                     lines |> List.iter (fun l -> Console.WriteLine(Types.quoteData l))
+                     lines |> List.iter (fun l -> Console.WriteLine(lockText l))
 
                      if List.isEmpty findings then 0 else 1)
         | "verify" :: _ ->
@@ -739,7 +739,7 @@ let main argv =
                  let name = m["--schema"]
 
                  let fail1 (msg: string) =
-                     Console.Error.WriteLine $"weir gen types: {msg}"
+                     Console.Error.WriteLine $"weir gen types: {lockText msg}"
                      1
 
                  match Contracts.findWeirDir "." with
