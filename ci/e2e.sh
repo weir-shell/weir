@@ -13542,7 +13542,9 @@ echo "$out" | grep -qF "version: subverstool (Version=1.7.0)" || fail "the secon
 grep -qF 'let version = "subverstool (Version=1.7.0)"' .weir/sigs/subverstool.weir || fail "the sig carries the rung-two identity"
 # the harvest pass [D:sig-version-probe]: weir's own usage-table help
 # has no flag rows — the last-resort --flag harvest records a surface
-out=$($BIN add sig weir 2>&1) || fail "add sig weir must succeed via the harvest: $out"
+# weir's own directory joins PATH: a probe takes the file PATH provides
+# [D:spawn-path-only], never the one beside the running binary
+out=$(PATH="$(pathEntry "$(cd "$(dirname "$BIN")" && pwd)"):$PATH" $BIN add sig weir 2>&1) || fail "add sig weir must succeed via the harvest: $out"
 echo "$out" | grep -qF "source: help-scan" || fail "the harvested surface is labeled: $out"
 grep -qF "json: bool" .weir/sigs/weir.weir || fail "the harvest found weir's own --json"
 # the subcommand walk (the jira/kubectl shape): Cobra keeps the real
