@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **`weir verify` runs no file a lock names by path.** The version arm
+  probed a lock entry's `name` as a command head, so a committed
+  `.weir/lock.json` naming `tools/setup.sh` ran that file with
+  `--version`. Only a `sig` entry with a plain name is probed now; a
+  path-form signature keeps its hash check and its line says the
+  version was not probed.
+- **A NUL in a module closure's `files[].path` is refused by the lock
+  reader**, as on every other lock field; it reached the filesystem
+  call and ended `verify`/`restore` in an internal error.
+- **`weir check --can` escapes file paths too.** A control character
+  in the script's or an imported module's path could forge a report
+  line; the message was already escaped, the path beside it was not.
 - **A `fun () ->` argument is checked against the type it receives.**
   `[1; 2] |> Seq.map (fun () -> "X")` passed the check and ran, the
   lambda ignoring each element. It is now a type error at the `()`

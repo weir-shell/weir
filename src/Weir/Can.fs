@@ -570,7 +570,7 @@ let opaqueCount (caps: Cap list) : int =
 let renderHuman (script: string) (caps: Cap list) : string =
     let sb = System.Text.StringBuilder()
 
-    sb.AppendLine $"{script} can (capability, not behaviour — an untaken branch still counts):"
+    sb.AppendLine $"{Weir.Types.quoteData script} can (capability, not behaviour — an untaken branch still counts):"
     |> ignore
 
     let opaque = opaqueCount caps
@@ -605,7 +605,13 @@ let renderHuman (script: string) (caps: Cap list) : string =
             | OpaqueArg _ -> None
             | Runs p when opaqueSites.Contains(p, c.Site) -> Some(factClass c.Fact, ("runs", $"{p} (opaque)"), c.Site)
             | _ -> Some(factClass c.Fact, factLine c, c.Site))
-        |> List.map (fun (cls, (kind, text), site) -> cls, (kind, Weir.Types.quoteData text), site)
+        |> List.map (fun (cls, (kind, text), site) ->
+            cls,
+            (kind, Weir.Types.quoteData text),
+            {
+                site with
+                    File = Weir.Types.quoteData site.File
+            })
 
     // identical messages group with a count, sites kept — repeated
     // runs of the same program carry one line of information

@@ -47542,7 +47542,72 @@ let hunt4Tests =
                     (refusal
                         "{\"schemaVersion\":1,\"artifacts\":[{\"kind\":\"schema\",\"name\":\"s\",\"url\":\"https://x/s.json\",\"sha256\":\"00\",\"path\":\"schemas/s.json\\u0000x\"}]}")
                     "holds a NUL character"
-                    "a NUL in a path")
+                    "a NUL in a path"
+
+                let z = System.String(char 48, 64)
+
+                Expect.stringContains
+                    (refusal (
+                        "{\"schemaVersion\":1,\"artifacts\":[{\"kind\":\"module\",\"name\":\"m\",\"url\":\"https://x/m.weir\",\"sha256\":\""
+                        + z
+                        + "\",\"path\":\"modules/m.weir\",\"files\":[{\"path\":\"x\\u0000y\",\"sha256\":\""
+                        + z
+                        + "\"}]}]}"
+                    ))
+                    "holds a NUL character"
+                    "a NUL in a closure file's path"
+
+                // verify spawns no file a lock names by path [D:verify-probe-path-only]
+                let sigs = Path.Combine(w, "sigs")
+                Directory.CreateDirectory sigs |> ignore
+                File.WriteAllText(Path.Combine(sigs, "t.weir"), "x")
+
+                let sha =
+                    System.Convert
+                        .ToHexString(
+                            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes "x")
+                        )
+                        .ToLowerInvariant()
+
+                File.WriteAllText(
+                    Path.Combine(w, "lock.json"),
+                    "{\"schemaVersion\":1,\"artifacts\":[{\"kind\":\"sig\",\"name\":\"tools/setup.sh\",\"url\":\"probe\",\"sha256\":\""
+                    + sha
+                    + "\",\"path\":\"sigs/t.weir\",\"version\":\"1\"}]}"
+                )
+
+                let mutable resolved = []
+
+                let out =
+                    Weir.Contracts.verify
+                        (fun p ->
+                            resolved <- p :: resolved
+                            p)
+                        w
+
+                Expect.equal resolved [] "a path-form name is never resolved for a spawn"
+
+                match out with
+                | Ok(lines, findings) ->
+                    Expect.equal (List.length findings) 0 "the hash arm still holds"
+                    Expect.stringContains (String.concat "\n" lines) "version not probed" "the line says so"
+                | Error e -> failtest e)
+
+            let forged =
+                Weir.Can.renderHuman "a\nb.weir" [
+                    {
+                        Weir.Can.Fact = Weir.Can.Runs "git"
+                        Weir.Can.Site = {
+                            Weir.Can.File = "m\n  runs  rm.weir"
+                            Weir.Can.Line = 1
+                            Weir.Can.Col = 1
+                        }
+                    }
+                ]
+
+            Expect.isFalse (forged.Contains "m\n  runs  rm.weir") "a newline in a site's file forges no line"
+
+            Expect.isFalse (forged.StartsWith "a\nb") "nor in the header"
         }
     ]
 

@@ -729,6 +729,10 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
                                          else
                                              bad $"{fat} must be an object")
                                     with
+                                    | true, v when
+                                        v.ValueKind = Text.Json.JsonValueKind.String && v.GetString().Contains '\000'
+                                        ->
+                                        bad $"{fat}: \"{field}\" holds a NUL character"
                                     | true, v when v.ValueKind = Text.Json.JsonValueKind.String && v.GetString() <> "" ->
                                         v.GetString()
                                     | _ -> bad $"{fat}: \"{field}\" must be a non-empty string"
@@ -3483,6 +3487,11 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
                             // verbatim --version against the recorded identity;
                             // exact match, no tolerance [D:command-signatures]
                             match e.Version with
+                            // a path-form name is a file the lock chose: verify
+                            // spawns only a tool PATH provides [D:verify-probe-path-only]
+                            | Some _ when e.Kind <> "sig" || e.Name.IndexOfAny [| '/'; '\\' |] >= 0 ->
+                                lines.Add
+                                    $"{e.Kind} {e.Name}: ok (hash; version not probed — verify runs no file a lock names by path)"
                             | Some recorded ->
                                 match probeToolVersion resolve e.Name with
                                 | ToolAbsent ->
