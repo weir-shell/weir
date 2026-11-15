@@ -469,6 +469,32 @@ let writeConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, s
             else
                 Posix.writeNoFollow dest bytes
 
+/// the same confinement for a file replaced whole (temp + rename: a reader
+/// never sees it half-written): the parent resolves under root, and a leaf
+/// that is a link is refused, never replaced through
+let replaceConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, string> =
+    let parent = Path.GetDirectoryName dest
+
+    match confineRealUnder root parent with
+    | Error e -> Error e
+    | Ok _ ->
+        match confineRealUnder root dest with
+        | Error e -> Error e
+        | Ok _ when
+            (try
+                not (isNull (FileInfo(dest).LinkTarget))
+             with _ ->
+                 false)
+            ->
+            Error $"'{Weir.Types.quoteData dest}' is a symbolic link — a vendored file is a regular file"
+        | Ok _ ->
+            try
+                Directory.CreateDirectory parent |> ignore
+                AtomicFile.replaceFile dest bytes
+                Ok()
+            with ex ->
+                Error $"cannot write '{Weir.Types.quoteData dest}': {Weir.Types.quoteData ex.Message}"
+
 /// a vendored name safe as a file-name segment [D:lockfile-confinement]:
 /// the F14 guard at the argv crossing — no separators, no `..`, no
 /// leading dot, no absolute shape, so `--as` can only ever name a file

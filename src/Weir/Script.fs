@@ -12250,8 +12250,9 @@ module SigGen =
 
                                         // confined like every vendored write
                                         // [D:lockfile-symlink-confinement]: a linked
-                                        // sigs/ or leaf is refused, never written through
-                                        match Contracts.writeConfined weirDir dest bytes with
+                                        // sigs/ or leaf is refused, never written
+                                        // through — and replaced whole
+                                        match Contracts.replaceConfined weirDir dest bytes with
                                         | Error e -> Error e
                                         | Ok() ->
 
