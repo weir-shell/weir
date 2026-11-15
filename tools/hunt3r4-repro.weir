@@ -1,6 +1,6 @@
 #!/usr/bin/env weir
 // Acceptance instrument for dev/plans/PLAN-hunt3r4.md stage 0: one probe per
-// code item of docs/reference/concurrency.md "Discrepancies" (#1-#6, #9-#11;
+// code item of dev/CONCURRENCY.md "Discrepancies" (#1-#6, #9-#11;
 // #7, #8 and #12 are docs-only rulings). Each probe prints `H3R4-nn OK` when
 // its item is fixed and `H3R4-nn REPRODUCES (...)` otherwise, naming every
 // sub-case still failing, so one script is both the bug report and the stage

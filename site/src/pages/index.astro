@@ -5,13 +5,13 @@
 // as exactly one word). Beat 1 shows the check at three distances
 // [D:hero-3]: a tool's flag (#sig), a manifest's key (yaml schema=),
 // and a program name (PATH) — three mistakes, none of them weir, one
-// `weir check` report. Sections are gleam-shaped [D:site-style]:
-// short prose BESIDE its example (desktop), stacked on mobile, the
-// install lines below the demo on phones (nobody pipes curl|sh
-// there). Every quoted output on this page comes from a run of the
-// shipped binary and is pinned (unit byte-pin for the splice
-// refusal; the e2e hero-currency cell for everything quoted) —
-// never the docs gate, which asserts executability, not output.
+// `weir check` report. The page stops after two beats [D:site-trim]:
+// everything else is a card that links into the docs. Sections are
+// gleam-shaped [D:site-style]: short prose BESIDE its example
+// (desktop), stacked on mobile. Every quoted output on this page
+// comes from a run of the shipped binary and is pinned by the e2e
+// hero-currency cell — never the docs gate, which asserts
+// executability, not output.
 import Base from "../layouts/Base.astro";
 import queilThemes from "../lib/queil-weir.mjs";
 import { Code } from "astro:components";
@@ -73,43 +73,6 @@ const beat2Help = `usage: ship.weir [flags]
   -d, --dry-run               print what would happen, deploy nothing
       --target <string>       required — the environment to deploy to
       --timeout <duration>    optional — wait this long for the health check`;
-
-const spliceWeir = `let steamroot = Self.scriptPath |> Path.dir
-rm -rf $steamroot/*`;
-
-// verbatim from \`weir check\` — byte-pinned in Tests.fs + e2e
-const spliceRefusal = `steam.weir:2:18: error [parse]: argv words do not concatenate — adjacent pieces would each become their OWN
-argument (\`$root/*\` would pass \`/*\` separately; \`--flag="v"\` would pass
-\`--flag=\` separately). Build one word with an interpolated arg (\`$"{root}/*"\`,
-\`$"--flag={v}"\`), quote the whole word, or use \`Path.under dir name\` for a
-filesystem path (it refuses a result that escapes dir, where \`Path.combine\`
-would follow it)`;
-
-const steamBash = `# figure out the absolute path to the script being run
-STEAMROOT="$(cd "\${0%/*}" && echo $PWD)"
-
-# Scary!
-rm -rf "$STEAMROOT/"*`;
-
-// verbatim from \`weir check --can tools/fuzz.weir\` — e2e-pinned
-const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):
-  ambient reads (inform, change nothing):
-    reads:
-      File.read (path not statically known)  tools/fuzz.weir:59:20
-    environment:
-      reads WEIR_FUZZ_STRICT_SPANS (Env.get)  tools/fuzz.weir:43:14
-  mutations:
-    runs:
-      git  tools/fuzz.weir:23:12
-      ci/deep-lock.sh × 2  tools/fuzz.weir:31:1, 66:5
-      date  tools/fuzz.weir:39:17
-      dotnet  tools/fuzz.weir:53:9
-    writes:
-      within tmp (a temporary directory)  tools/fuzz.weir:47:1
-    environment:
-      sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:52:5
-    terminates:
-      fail  tools/fuzz.weir:62:9`;
 ---
 
 <Base search={false}>
@@ -123,10 +86,9 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
       <h1>For scripts that became tools.</h1>
       <p class="what">weir is a typed shell-scripting language.</p>
       <p class="sub">
-        Commands, pipes and files, like a shell. Types, records and
-        pattern matching, like F#. The whole file is checked before
-        anything runs. One native binary for Linux, macOS and
-        Windows, with the REPL, formatter and LSP built in.
+        Commands and pipes like a shell, types like F#. The whole file
+        is checked before anything runs. One native binary with the
+        REPL, formatter and LSP built in.
       </p>
     </div>
     <div class="hero-demo">
@@ -135,11 +97,6 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
         <figcaption>$ weir tag.weir</figcaption>
         <pre class="report">{heroOut}</pre>
       </figure>
-      <p class="hero-caption">
-        Declare the shape, parse a file or a tool's output into it,
-        and hand the value to a real command. It arrives as exactly
-        one argument, never split, never glued.
-      </p>
     </div>
     <div class="hero-install">
       <p class="install-label">Quick install</p>
@@ -170,17 +127,9 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     <div class="feature-prose">
       <h2>The check reaches past your code</h2>
       <p>
-        Three mistakes here, and none of them is weir syntax: a
-        misspelled <code>bicep</code> flag, a typo in a Kubernetes
-        key, and a command that isn't installed. The flag is checked
-        against a generated signature (<code>weir add sig bicep</code>),
-        the key against a vendored schema (<code>weir add schema</code>),
-        the command against your PATH. One report, each finding on
-        its line, and nothing ran.
-      </p>
-      <p class="fine">
-        Nothing on this page is a mock-up. Every quoted output comes
-        from running the shipped binary, and CI checks it still does.
+        A misspelled <code>bicep</code> flag, a typo in a Kubernetes
+        key, and a command that isn't installed: none of them is weir
+        syntax, and all three are reported before anything runs.
       </p>
     </div>
     <div class="feature-demo">
@@ -198,9 +147,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
       <p>
         Declare a record and the flags follow. The <code>///</code>
         comments become the help text, so <code>--help</code> can't
-        drift from the code. Unknown flags, missing values and bad
-        values are reported together, in one message, before the
-        script does anything.
+        drift from the code.
       </p>
     </div>
     <div class="feature-demo">
@@ -212,130 +159,41 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     </div>
   </section>
 
-  <h2>Two bash habits, gone</h2>
-  <p>
-    Two shell mechanisms keep wrecking machines. One is an unquoted
-    variable <em>splitting</em> into words; it is still being quoted
-    away by hand, as pgpool did to an <code>rm -rf</code> in
-    <a href="https://github.com/pgpool/pgpool2/commit/58446a6">September
-    2025</a>, caught in review. The other is a path <em>glued</em>
-    from pieces that came apart. Valve shipped that in 2015, and it
-    wiped real drives:
-  </p>
-  <div class="hero-band">
-    <div class="hero-pair">
-      <div class="hero-cell">
-        <p class="hero-label">steam.sh, shipped:</p>
-        <Code code={steamBash} lang="bash" themes={queilThemes} defaultColor={false} />
-        <p class="hero-caption">
-          When the folder moved, <code>&#36;(…)</code> came back
-          <em>empty</em>, <code>"$STEAMROOT/"*</code> became
-          <code>/*</code>, and the last line deleted everything the
-          user owned, <a href="https://github.com/ValveSoftware/steam-for-linux/issues/3671">mounted
-          backup drives included</a>.
-        </p>
-      </div>
-      <div class="hero-cell">
-        <p class="hero-label">The same shape, in weir:</p>
-        <Code code={spliceWeir} lang={weirGrammar} themes={queilThemes} defaultColor={false} />
-        <figure class="term">
-          <figcaption>$ weir check steam.weir</figcaption>
-          <pre class="refusal">{spliceRefusal}</pre>
-        </figure>
-      </div>
-    </div>
+  <h2>More in the box</h2>
+  <div class="cards">
+    <a class="card" href="/docs/guide/#commands-and-processes">
+      <strong>One value, one argument</strong>
+      <span>A spliced value never splits into words, and pieces can't be glued into a path by accident.</span>
+    </a>
+    <a class="card" href="/docs/tooling/#checking">
+      <strong>See what a script can do</strong>
+      <span><code>weir check --can</code> lists what it runs, reads and writes, with a line number for each.</span>
+    </a>
+    <a class="card" href="/docs/guide/#scoped-resources-within-and-always">
+      <strong>Scopes instead of traps</strong>
+      <span>Background processes, locks and temp dirs are released however the block ends.</span>
+    </a>
+    <a class="card" href="/docs/guide/#secrets-tokens-that-cannot-leak-into-logs">
+      <strong>Secrets that can't leak</strong>
+      <span>A token cannot reach a log line or a shown record; <code>Secret.reveal</code> is the only way out.</span>
+    </a>
+    <a class="card" href="/docs/guide/#retrying-and-polling">
+      <strong>Retry, poll, parallel</strong>
+      <span>Bounded loops and <code>Seq.pmap</code>, with Ctrl+C and failures handled for you.</span>
+    </a>
+    <a class="card" href="/docs/coming-from/">
+      <strong>Coming from bash or PowerShell</strong>
+      <span>What maps to what, habit by habit.</span>
+    </a>
   </div>
-  <p>
-    weir removes both: a spliced value is always exactly one argument,
-    and gluing pieces into one word is not something you can write.
-    These aren't mistakes weir catches. They are sentences it cannot
-    say.
+
+  <p class="next">
+    <a class="cta" href="/docs/guide/">Read the guide</a>
+    <a href="/reference/">Reference</a>
+    <a href="/showcase/">Showcase</a>
+    <a href="/changelog/">Changelog</a>
+    <a href="https://queil.net/2026/10/weir/">Why another language</a>
   </p>
-
-  <section class="feature">
-    <div class="feature-prose">
-      <h2>See what a script can do before you run it</h2>
-      <p>
-        Command names are literal and nothing expands inside argv, so
-        a script's reach can be read off the source. Useful for your
-        own scripts; more useful for someone else's.
-        <code>weir check --can</code> lists it, with a line number for
-        every claim.
-      </p>
-    </div>
-    <div class="feature-demo">
-      <figure class="term">
-        <figcaption>$ weir check --can tools/fuzz.weir</figcaption>
-        <pre class="report">{canReport}</pre>
-      </figure>
-    </div>
-  </section>
-
-  <h2>Also in the box</h2>
-  <ul class="falls-out">
-    <li>
-      <a href="/docs/guide/#scoped-resources-within-and-always"><code>within proc</code></a> —
-      a background process gets a scope instead of an <code>&amp;</code>;
-      the whole tree is killed and reaped however the scope ends.
-    </li>
-    <li>
-      <a href="/docs/guide/#secrets-tokens-that-cannot-leak-into-logs"><code>Secret</code></a> —
-      a token that cannot reach a log line, a shown record, or the
-      wire. <code>Secret.reveal</code> is the only way out, so auditing
-      is grepping for it.
-    </li>
-    <li>
-      <a href="/docs/guide/#retrying-and-polling"><code>retry</code> and <code>poll</code></a> —
-      bounded loops; <code>repeat</code> is the one that runs until
-      stopped, and finishes its iteration on Ctrl+C.
-      <code>watch=</code> fails a wait the moment the child dies, with
-      its last output.
-    </li>
-    <li>
-      <a href="/docs/guide/#exit-codes-from-command-to-value">exit codes as data</a> —
-      <code>| complete</code> and <code>| succeeds</code> turn a
-      command's outcome into a value, and <code>Seq.exactlyOne</code>
-      means <em>one line</em> where <code>head -1</code> would quietly
-      take the first of two.
-    </li>
-    <li>
-      <a href="/docs/guide/#scoped-resources-within-and-always"><code>within lock</code></a> —
-      an advisory file lock the kernel releases on any death,
-      <code>kill -9</code> included.
-    </li>
-    <li>
-      <a href="/docs/tooling/#yaml-schemas">the <code>yaml</code> block</a> —
-      splices are nodes, never text, so YAML injection can't be
-      written. The same rule as argv, one format over.
-    </li>
-  </ul>
-
-  <h2>Why another one</h2>
-  <p>
-    I wanted a fast, typed, functional, cross-platform scripting
-    language for devops and daily tasks, and kept not finding it.
-    <strong>bash</strong> has no types: a misspelled command, an unset
-    variable, a value that splits in two all wait until the shell
-    reaches that line, mid-run. <strong>PowerShell</strong> is typed
-    where it's convenient and not where it counts, and its quirks
-    compound as scripts grow. <strong>F# scripts</strong> had the
-    types and the ergonomics I liked (weir's syntax comes from there),
-    but not the start-up time, and not the same behaviour on a Linux
-    CI runner and a Windows laptop. <strong>Nushell</strong> is nice,
-    but its type system is still settling. weir keeps the parts of F#
-    that work for scripting, drops the rest, and adds the shell.
-    <a href="https://queil.net/2026/10/weir/">The longer version</a>.
-  </p>
-
-  <h2>Learn more</h2>
-  <ul>
-    <li><a href="/docs/guide/">The guide</a> — start here; every example runs in CI.</li>
-    <li><a href="/reference/">The reference</a> — the language and every module.</li>
-    <li><a href="/showcase/">The showcase</a> — one script touring the whole language, CI-run.</li>
-    <li><a href="/docs/coming-from/">Coming from bash, PowerShell, Python…</a></li>
-    <li><a href="/docs/method/">How it was built</a> — and how to check it yourself: <code>git clone</code>, then <code>./ci/local.sh</code>.</li>
-    <li><a href="/changelog/">Changelog</a></li>
-  </ul>
 </Base>
 
 <style is:global>
@@ -345,6 +203,13 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     margin: var(--space-3) 0 0;
     font-size: clamp(2.1rem, 4.5vw, 2.6rem);
     letter-spacing: -0.015em;
+  }
+  /* the headline takes the mark's hues, left to right */
+  .hero-intro h1 {
+    background: linear-gradient(90deg, var(--b1), var(--b2) 55%, var(--b3));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
   h1::after {
     content: "";
@@ -371,9 +236,9 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   .install-lines {
     margin: 0 0 var(--space-5);
     padding: var(--space-3);
-    background: var(--code-bg);
+    background: linear-gradient(135deg, color-mix(in srgb, var(--b1) 6%, var(--code-bg)), var(--code-bg) 55%, color-mix(in srgb, var(--b3) 6%, var(--code-bg)));
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 10px;
     box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
     display: flex;
     flex-direction: column;
@@ -423,7 +288,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     padding: var(--space-3) 0 var(--space-3);
   }
   .hero-demo { margin: var(--space-4) 0; }
-  .hero-demo .astro-code { font-size: 0.8rem; }
+  .hero-demo .astro-code { font-size: var(--text-code); }
   .refusal.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
   /* feature sections [D:hero-2]: short prose BESIDE its example —
      the gleam shape; stacked on narrow screens */
@@ -440,29 +305,53 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   @media (min-width: 50rem) {
     .feature { grid-template-columns: minmax(0, 24rem) 1fr; }
   }
-  .feature .fine { font-size: var(--text-sm); color: var(--muted); }
   /* min-width: 0 lets a wide code line SCROLL (pre's overflow-x) instead
      of expanding the grid track past the viewport — a grid child
      defaults to min-width: auto, which clipped snippets on phones */
   .feature-demo { margin-top: var(--space-3); min-width: 0; }
   .feature-prose { min-width: 0; }
   .feature-prose h2 { margin-top: var(--space-4); }
-  .feature-demo .astro-code { font-size: 0.85rem; }
-  .hero-band {
+  .feature-demo .astro-code { font-size: var(--text-code); }
+  /* the rest of the pitch is a strip of links [D:site-trim] */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: var(--space-3);
     width: min(72rem, calc(100vw - 2.5rem));
     margin-left: 50%;
     transform: translateX(-50%);
   }
-  .hero-pair {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
-    gap: 1.25rem;
-    align-items: start;
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: linear-gradient(160deg, color-mix(in srgb, var(--b2) 5%, var(--bg)), var(--bg) 60%);
+    color: var(--fg);
+    text-decoration: none;
+    transition: border-color 0.15s, transform 0.15s;
   }
-  .hero-cell pre { margin-top: 0.35rem; }
-  .hero-label { margin-bottom: 0; color: var(--muted); font-size: 0.9rem; }
-  .hero-caption { font-size: 0.9rem; color: var(--muted); }
-  .falls-out li { margin-bottom: 0.55rem; }
+  .card:hover { border-color: var(--b2); color: var(--fg); transform: translateY(-1px); }
+  .card strong { color: var(--accent); }
+  .card span { font-size: var(--text-sm); color: var(--muted); line-height: 1.5; }
+  .next {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3) var(--space-4);
+    margin: var(--space-5) 0 var(--space-4);
+  }
+  .next .cta {
+    padding: 0.55rem 1.1rem;
+    border-radius: 8px;
+    background: linear-gradient(90deg, var(--b1), var(--b3));
+    color: var(--bg);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .next .cta:hover { color: var(--bg); filter: brightness(1.08); }
   /* terminal chrome [D:site-style]: the caption is the COMMAND that
      produced the quoted output — provenance made visible, never
      decoration (the outputs stay e2e-pinned bytes) */
@@ -473,9 +362,9 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     overflow: hidden;
   }
   .term figcaption {
-    font: 0.78rem/1 "Iosevka Term Ext", ui-monospace, monospace;
+    font: 0.85rem/1 var(--font-code);
     color: var(--muted);
-    background: var(--code-bg);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--b1) 8%, var(--code-bg)), var(--code-bg) 70%);
     padding: 0.55rem 0.9rem;
     border-bottom: 1px solid var(--border);
   }
@@ -491,7 +380,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     border: 1px solid var(--border);
     border-left: 3px solid var(--danger);
     color: var(--fg);
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     line-height: 1.5;
     padding: 0.7rem 0.9rem;
     border-radius: 6px;
