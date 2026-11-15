@@ -14252,16 +14252,7 @@ let run (path: string) (scriptArgs: string list) : int =
             // unresolved (the bash-$0 behavior)
             let absScriptPath = IO.Path.GetFullPath path
 
-            let typeEnv0, selfEnv = baseEnvs scriptArgs absScriptPath
-
-            // the env starts with the Self facts the script's text names and
-            // no others, so a call's bind walks a shorter tree; an import
-            // still takes the process facts from selfEnv
-            let valueEnv0 =
-                selfEnv
-                |> Map.filter (fun k _ ->
-                    not (k.StartsWith "Self.")
-                    || body |> List.exists (fun (l: string) -> l.Contains(k.Substring 5)))
+            let typeEnv0, valueEnv0 = baseEnvs scriptArgs absScriptPath
 
             Extern.refresh ()
 
@@ -14747,7 +14738,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 // the entry; the module keeps its own scriptPath
                                 let procFacts =
                                     [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
-                                    |> List.choose (fun k -> Map.tryFind k selfEnv |> Option.map (fun v -> k, v))
+                                    |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
 
                                 let moduleVenv = replayModule procFacts lm
 

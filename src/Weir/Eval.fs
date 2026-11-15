@@ -219,8 +219,8 @@ type Value =
     // the wire boundaries still take string keys only [D:map-string]
     | VMap of entries: Map<Value, Value>
     | VTuple of items: Value list
-    | VClosure of param: string * body: TypedExpr * env: Env
-    | VClosurePat of binder: Pattern * body: TypedExpr * env: Env
+    | VClosure of param: string * body: TypedExpr * env: Scope
+    | VClosurePat of binder: Pattern * body: TypedExpr * env: Scope
     | VBuiltin of (Value -> Value)
     | VProc of handle: ProcHandle
     // a scoped listener handle [D:http-serve]: the live socket;
@@ -480,6 +480,34 @@ type Value =
                 result
 
 and Env = Map<string, Value>
+
+/// the bindings an expression sees: the top level's map, and over it one
+/// cell per name a function body, a `let` or a pattern binds — a bind is
+/// one cell, a read walks the cells before it asks the map
+and [<Sealed; AllowNullLiteral>] Scope private (name: string, value: Value, next: Scope, top: Env) =
+    static member Root(top: Env) : Scope =
+        Scope(null, Unchecked.defaultof<Value>, null, top)
+
+    member this.Add(n: string, v: Value) : Scope =
+        Scope(n, v, this, Unchecked.defaultof<Env>)
+
+    member private _.Name = name
+    member private _.Value = value
+    member private _.Next = next
+    member private _.Top = top
+
+    member this.TryGet(n: string, v: byref<Value>) : bool =
+        let mutable c = this
+        let mutable found = false
+
+        while not found && not (isNull c.Name) do
+            if System.String.Equals(c.Name, n) then
+                v <- c.Value
+                found <- true
+            else
+                c <- c.Next
+
+        found || c.Top.TryGetValue(n, &v)
 
 /// the parameter names a function value still takes [D:partial-echo] —
 /// the closure's own binder, then its body's lambda chain; a builtin or
@@ -6024,10 +6052,10 @@ let lookupValue (name: string) (env: Env) : Value option =
             | _ -> None
 
 // the same read for the evaluator's variable arm: null for a miss, no option
-let private lookupOrNull (name: string) (env: Env) : Value =
+let private lookupOrNull (name: string) (env: Scope) : Value =
     let mutable v = Unchecked.defaultof<Value>
 
-    if env.TryGetValue(name, &v) then
+    if env.TryGet(name, &v) then
         v
     else
         match baseValues with
@@ -6252,16 +6280,15 @@ let private suspendScans =
 
 let rec private bodyMaySuspend
     (seen: System.Collections.Generic.HashSet<TypedExpr>)
-    (env: Map<string, Value>)
+    (env: Scope)
     (te: TypedExpr)
     : bool =
     match te.Kind with
     | TECmd _ -> true
     | TEVar v ->
         (Ast.reifierOfVar v).IsSome
-        || (match lookupValue v env with
-            | Some fv -> valueMaySuspend seen fv
-            | None -> false)
+        || (let fv = lookupOrNull v env
+            not (obj.ReferenceEquals(fv, null)) && valueMaySuspend seen fv)
     | _ -> Check.existsChild (bodyMaySuspend seen env) te
 
 and private valueMaySuspend (seen: System.Collections.Generic.HashSet<TypedExpr>) (v: Value) : bool =
@@ -6283,7 +6310,7 @@ and private valueMaySuspend (seen: System.Collections.Generic.HashSet<TypedExpr>
 /// whether evaluating `te` under `env` can reach a wait a flow suspends
 /// on [D:async-flows] — decided once per node, by the bindings its
 /// first evaluation sees; a miss only blocks, as the sync evaluator does
-let nodeMaySuspend (env: Map<string, Value>) (te: TypedExpr) : bool =
+let nodeMaySuspend (env: Scope) (te: TypedExpr) : bool =
     match suspendScans.TryGetValue te with
     | true, r -> unbox<bool> r
     | _ ->
@@ -6372,11 +6399,11 @@ let inline awaitFrame (flow: Flow) (t: System.Threading.Tasks.Task<'a>) : 'a =
 
         reraise ()
 
-let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * string) list =
+let rec private overlayOf (env: Scope) (cenvO: TypedExpr option) : (string * string) list =
     match cenvO with
     | None -> []
     | Some ce ->
-        envPairsOf "the env capture" (eval env ce)
+        envPairsOf "the env capture" (evalIn env ce)
         |> List.map (fun (k, v) -> k, noNul $"the env value for '{k}'" v)
 
 // a NUL cannot cross the spawn hand-off [D:encoding-law]: argv and env
@@ -6395,28 +6422,30 @@ and private noNul (what: string) (s: string) : string =
 // spawn-argv assembly [D:argv-splat]: a splat enumerates once at
 // spawn (argv is finite, so the splat forces by necessity), order
 // preserved, each element one word
-and argvOf (env: Env) (args: Check.TypedExpr list) : string list =
+and argvOf (env: Scope) (args: Check.TypedExpr list) : string list =
     args
     |> List.collect (fun a ->
         match a.Kind with
         | Check.TESplat inner ->
-            match eval env inner with
+            match evalIn env inner with
             | VSeq items ->
                 items
                 |> Seq.map (scalarString "splat element" >> noNul "a splat element")
                 |> List.ofSeq
             | v -> unreachable $"the checker rejects '$@' on {formatValue v}"
-        | _ -> [ eval env a |> scalarString "command argument" |> noNul "a command argument" ])
+        | _ -> [
+            evalIn env a |> scalarString "command argument" |> noNul "a command argument"
+          ])
 
 // a dynamic head resolves at run time [D:dynamic-head] — like
 // `^literal`, on the runtime string: no glob, no word-split, no
 // re-lex. Not-found raises a located error naming the value.
-and private progOf (env: Env) (h: Check.TCmdHead) (pairs: (string * string) list) : string =
+and private progOf (env: Scope) (h: Check.TCmdHead) (pairs: (string * string) list) : string =
     match h with
     | Check.THeadLit p -> p
     | Check.THeadDyn(display, he) ->
         let s =
-            match eval env he with
+            match evalIn env he with
             | VStr s -> s
             | v -> unreachable $"the checker guarantees a string head; got {formatValue v}"
 
@@ -6435,7 +6464,7 @@ and private progOf (env: Env) (h: Check.TCmdHead) (pairs: (string * string) list
         else
             s
 
-and eval (env: Env) (te: TypedExpr) : Value =
+and evalIn (env: Scope) (te: TypedExpr) : Value =
     // a literal and a plain variable read neither raise nor wait: no
     // position to record, no boundary to cross
     match te.Kind with
@@ -6455,7 +6484,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             v
     | _ -> evalNode env te
 
-and private evalNode (env: Env) (te: TypedExpr) : Value =
+and private evalNode (env: Scope) (te: TypedExpr) : Value =
     RunPos.Current <- box te
     RunPos.Exact <- false
     // a signal or closed stdout unwinds here, before the node runs
@@ -6468,7 +6497,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
     // after `try` returned. exit and weir's own internal errors pass through
     | TETry(body, asResult) ->
         try
-            let v = forceValue (eval env body)
+            let v = forceValue (evalIn env body)
 
             if asResult then
                 VUnion("Ok", Some v)
@@ -6485,7 +6514,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
                 VUnion("None", None)
     // the inverse of try [D:orfail-form]: the raise points at the form;
     // an Error's text is data spliced into the message [D:error-data-escape]
-    | TEOrFail(body, msg, site) -> orFailValue env msg site (eval env body)
+    | TEOrFail(body, msg, site) -> orFailValue env msg site (evalIn env body)
     | TEInt n -> VInt(int64 n)
     | TEDur n -> VDur n
     | TESize b -> VSize b
@@ -6500,7 +6529,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
                 // raises propagate [D:retry-poll]: retry retries on the
                 // predicate, never on exceptions — command failure becomes
                 // data through the reifier family
-                let v = eval env body
+                let v = evalIn env body
 
                 if ctl.Predicate v then
                     if ctl.Yields then v else VUnit
@@ -6527,7 +6556,14 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
     // recovery is tooling-only [D:block-recovery]: no hole reaches eval
     | TEHole _ -> failwith "unreachable: a recovered tree is never evaluated"
     | TEVar name ->
-        match lookupValue name env with
+        let found = lookupOrNull name env
+
+        match
+            (if obj.ReferenceEquals(found, null) then
+                 None
+             else
+                 Some found)
+        with
         | Some v ->
             // an ambient bare value rebinds to eval-time cwd capture, but
             // only while the name still holds the builtin's own object — a
@@ -6551,10 +6587,10 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
                     RunPos.Exact <- true
                     failwith msg)
         | None -> unreachable $"the checker rejects unbound variable '{name}'"
-    | TELet(name, _, value, body) -> eval (Map.add name (eval env value) env) body
+    | TELet(name, _, value, body) -> evalIn (env.Add(name, (evalIn env value))) body
     | TELetPat(pat, value, body) ->
-        let bindings = bindPattern pat (eval env value)
-        eval (bindings |> List.fold (fun m (n, v) -> Map.add n v m) env) body
+        let bindings = bindPattern pat (evalIn env value)
+        evalIn (bindings |> List.fold (fun (m: Scope) (n, v) -> m.Add(n, v)) env) body
     | TELambdaPat(pat, body) -> VClosurePat(pat, body, env)
     | TELambda(param, _, body) -> VClosure(param, body, env)
     | TEApp(fn, arg) -> callAt env fn arg
@@ -6601,17 +6637,17 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
     // a statement command with its output redirected relays its lines,
     // which are never a value [D:cleanup-group-signal]
     | TEPipe({ Kind = TECmd(head, args, cenvO) } as c, ({ Kind = TEVar "|print" } as fn)) ->
-        let f = eval env fn
+        let f = evalIn env fn
         callAtWith fn f (commandLines true env c head args cenvO)
     | TEPipe({
                  Kind = TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) })
              },
              ({ Kind = TEVar "|print" } as fn)) ->
-        let f = eval env fn
+        let f = evalIn env fn
         let specs = chainSpecs env arg chead cargs cenvO
         callAtWith fn f (chainSeq true specs)
     | TEPipe(arg, fn) -> callAt env fn arg
-    | TEField(target, field) -> fieldOf field (eval env target)
+    | TEField(target, field) -> fieldOf field (evalIn env target)
     | TESlice(target, lo, hi, on, loFromEnd, hiFromEnd) ->
         // inclusive, clamping [D:range-slicing]: an absent bound is an open
         // end (lo -> 0, hi -> last), out-of-range and reversed yield the
@@ -6625,7 +6661,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
             match o with
             | None -> None
             | Some e ->
-                match eval env e with
+                match evalIn env e with
                 | VInt n -> Some(max -(1L <<< 40) (min (1L <<< 40) n))
                 | v -> unreachable $"the checker guarantees an int slice bound; got {formatValue v}"
 
@@ -6647,7 +6683,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
 
         match on with
         | Check.SliceStr ->
-            match eval env target with
+            match evalIn env target with
             | VStr s ->
                 // code-point positions [D:str-code-points]
                 let n = CodePoints.length s
@@ -6660,7 +6696,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
                     VStr(CodePoints.sub s (int a) (int (b - a + 1L)))
             | v -> unreachable $"the checker guarantees a string slice target; got {formatValue v}"
         | Check.SliceBytes ->
-            match eval env target with
+            match evalIn env target with
             | VBytes arr ->
                 let a = max 0L (absLo arr.Length)
                 let b = absHi arr.Length
@@ -6671,7 +6707,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
                     VBytes(Array.sub arr (int a) (int (b - a + 1L)))
             | v -> unreachable $"the checker guarantees a Bytes slice target; got {formatValue v}"
         | Check.SliceSeq ->
-            match eval env target with
+            match evalIn env target with
             | VSeq items ->
                 if loFromEnd || hiFromEnd then
                     // a from-end bound needs the length — force the seq,
@@ -6713,26 +6749,26 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
                         )
             | v -> unreachable $"the checker guarantees a sequence slice target; got {formatValue v}"
     | TEBinOp("&&", l, r) ->
-        (match eval env l with
+        (match evalIn env l with
          | VBool false -> VBool false
-         | VBool true -> eval env r
+         | VBool true -> evalIn env r
          | v -> unreachable $"the checker rejects '&&' on {formatValue v}")
     | TEBinOp("||", l, r) ->
-        (match eval env l with
+        (match evalIn env l with
          | VBool true -> VBool true
-         | VBool false -> eval env r
+         | VBool false -> evalIn env r
          | v -> unreachable $"the checker rejects '||' on {formatValue v}")
     // composition sits here, not in binOp: it needs `apply` (the
     // eval/apply knot) [D:composition-operators]
     | TEBinOp(">>", l, r) ->
-        let f = eval env l
-        let g = eval env r
+        let f = evalIn env l
+        let g = evalIn env r
         VBuiltin(fun x -> apply g (apply f x))
-    | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
-    | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv))
+    | TEBinOp(op, l, r) -> binOp op (evalIn env l) (evalIn env r)
+    | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, evalIn env fv))
     | TEUpdate(src, updates) ->
         // source evaluated once [D:record-update]; nested paths overlay
-        let source = eval env src
+        let source = evalIn env src
 
         updates
         |> List.fold
@@ -6745,14 +6781,14 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
                     | VRecord(n, _), _ when isReceipt n -> failwith (receiptUpdateMsg n)
                     // recSet replaces in place [D:record-order]: an
                     // updated field keeps its position, never moves
-                    | VRecord(n, fs), [ f ] -> VRecord(n, recSet f (eval env tval) fs)
+                    | VRecord(n, fs), [ f ] -> VRecord(n, recSet f (evalIn env tval) fs)
                     | VRecord(n, fs), f :: rest -> VRecord(n, recSet f (go (recGet f fs) rest) fs)
                     | v, _ -> unreachable $"the checker rejects update on {formatValue v}"
 
                 go acc path)
             source
-    | TEList items -> VSeq(items |> List.map (eval env))
-    | TETuple items -> VTuple(items |> List.map (eval env))
+    | TEList items -> VSeq(items |> List.map (evalIn env))
+    | TETuple items -> VTuple(items |> List.map (evalIn env))
     | TECmd(head, args, cenvO) -> commandLines false env te head args cenvO
     | TEInterp parts ->
         let sb = System.Text.StringBuilder()
@@ -6760,7 +6796,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
         for p in parts do
             match p with
             | IStr s -> interpAppend sb s
-            | IExpr e -> interpAppend sb (interpPiece (eval env e))
+            | IExpr e -> interpAppend sb (interpPiece (evalIn env e))
 
         VStr(sb.ToString())
     | TEFrom(fmt, top, defs, udefs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf top defs udefs
@@ -6790,7 +6826,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
         // cannot stream)
         drainsWhole (VBuiltin(fun v -> VSeq [ VStr(jsonLine renames unions (encodeTree fmt codecs v)) ]))
     | TEMatch(scrutinee, arms) ->
-        let v = matchView arms (eval env scrutinee)
+        let v = matchView arms (evalIn env scrutinee)
 
         let rec tryArms arms =
             match arms with
@@ -6798,17 +6834,17 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
             | (pat, guard, body) :: rest ->
                 match tryBind pat v with
                 | Some bindings ->
-                    let armEnv = bindings |> List.fold (fun e (n, bv) -> Map.add n bv e) env
+                    let armEnv = bindings |> List.fold (fun (e: Scope) (n, bv) -> e.Add(n, bv)) env
 
                     let guardPasses =
                         match guard with
                         | None -> true
                         | Some g ->
-                            match eval armEnv g with
+                            match evalIn armEnv g with
                             | VBool b -> b
                             | gv -> unreachable $"the checker rejects a non-bool guard: {formatValue gv}"
 
-                    if guardPasses then eval armEnv body else tryArms rest
+                    if guardPasses then evalIn armEnv body else tryArms rest
                 | None -> tryArms rest
 
         tryArms arms
@@ -6898,8 +6934,8 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
 
         VRecord(def.Name, fields)
     | TESeq(a, b) ->
-        eval env a |> ignore
-        eval env b
+        evalIn env a |> ignore
+        evalIn env b
     | TEAlways(body, cleanup) ->
         // the bare scope [D:within-always]; raise handling:
         //  1. normal exit + cleanup raises -> the scope raises (always
@@ -6919,7 +6955,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
         let claimAndRun () =
             Session.runningCleanup (fun () ->
                 if Session.deregisterAlways hooked then
-                    eval env cleanup |> ignore)
+                    evalIn env cleanup |> ignore)
 
         // the main flow's pending cleanup, which the signal backstop runs
         // if it adopts a stuck main flow [D:scope-tree]
@@ -6929,7 +6965,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
             frame
             claimAndRun
             (try
-                Ok(eval env body)
+                Ok(evalIn env body)
              with e ->
                  Error e)
     | TEHold body ->
@@ -6940,7 +6976,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
             failwith
                 "'until stopped' is refused inside 'plan' — a plan's dry run cannot wait for a signal; hold the scope outside the plan"
 
-        let v = eval env body
+        let v = evalIn env body
 
         Session.stopAware (fun () ->
             while not (Session.stopRequested ()) do
@@ -6974,7 +7010,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
             // ceiling (∅ for pure, ambient-input for readonly) — the
             // region is transparent at runtime, so ambient reads still
             // run
-            eval env body
+            evalIn env body
         | WithinPlan ->
             // the plan capture [D:plan-apply]: run the body while a
             // fresh capture frame is on top — the mutation builtins
@@ -6983,7 +7019,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
             // capture). The region yields a Plan (a VRecord carrying
             // the captured Ops in order, all data per ruling 6 —
             // content thunks forced at capture).
-            let ops = PlanMode.capturing (fun () -> eval env body |> ignore)
+            let ops = PlanMode.capturing (fun () -> evalIn env body |> ignore)
             VRecord("Plan", [ "ops", VSeq ops ])
         | WithinServe ->
             let struct (env', serveNode, home, frame, release) =
@@ -6995,7 +7031,7 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
                         Session.setCurrentNode serveNode
 
                         try
-                            eval env' body
+                            evalIn env' body
                         finally
                             Session.setCurrentNode home
                     with
@@ -7017,13 +7053,13 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
             let frame = Session.pushFrame release
 
             try
-                eval env' body
+                evalIn env' body
             finally
                 Session.releaseFrame frame release
     | TEIf(cond, thn, els) ->
-        match eval env cond, els with
-        | VBool true, _ -> eval env thn
-        | VBool false, Some e -> eval env e
+        match evalIn env cond, els with
+        | VBool true, _ -> evalIn env thn
+        | VBool false, Some e -> evalIn env e
         | VBool false, None -> VUnit
         | v, _ -> unreachable $"the checker rejects a non-bool condition: {formatValue v}"
     // TESplat [D:argv-splat] lives only in TECmd argv, expanded by
@@ -7046,13 +7082,13 @@ and private evalNode (env: Env) (te: TypedExpr) : Value =
 // request caused ends the loop as the stop [D:stop-caused-failure]. With
 // `until` the form yields a value, so the stop is observed once an
 // iteration has produced one
-and private repeatCtl (env: Env) (optsE: TypedExpr) (until: ((string * Span) * TypedExpr) option) : RepeatCtl =
+and private repeatCtl (env: Scope) (optsE: TypedExpr) (until: ((string * Span) * TypedExpr) option) : RepeatCtl =
     if PlanMode.active () then
         failwith
             "'repeat' is refused inside 'plan' — a loop that only a stop signal ends cannot be dry-run; run the loop outside the plan"
 
     let fields =
-        match eval env optsE with
+        match evalIn env optsE with
         | VRecord(_, fs) -> fs
         | v -> unreachable $"the checker rejects 'repeat' options of {formatValue v}"
 
@@ -7121,7 +7157,7 @@ and private repeatCtl (env: Env) (optsE: TypedExpr) (until: ((string * Span) * T
     let predicate (v: Value) =
         match until with
         | Some((b, _), pred) ->
-            match eval (Map.add b v env) pred with
+            match evalIn (env.Add(b, v)) pred with
             | VBool ok -> ok
             | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}"
         | None ->
@@ -7164,7 +7200,7 @@ and private repeatCtl (env: Env) (optsE: TypedExpr) (until: ((string * Span) * T
     }
 
 and private evalRepeat
-    (env: Env)
+    (env: Scope)
     (optsE: TypedExpr)
     (body: TypedExpr)
     (until: ((string * Span) * TypedExpr) option)
@@ -7178,7 +7214,7 @@ and private evalRepeat
             else
                 let v =
                     try
-                        Some(eval env body)
+                        Some(evalIn env body)
                     with ex when ctl.StopCaused ex && ctl.Stoppable last ->
                         None
 
@@ -7229,14 +7265,14 @@ and private liftYaml (v: Value) : Value option =
         failwith
             $"yaml splice: got {formatValue v}; splices take string/int/float/bool, a Yaml node, Option of one, or a seq of those"
 
-and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
+and private evalYamlTpl (env: Scope) (tpl: Check.TypedYamlTpl) : Value =
     match tpl with
     // block scalar content never self-types: it is always a string
     // [D:block-scalars]
     | Check.TYtBlock(text, _) -> VUnion("YStr", Some(VStr text))
     | Check.TYtScalar(raw, quoted, _) -> yamlScalarValue raw quoted
     | Check.TYtDrop _ -> VUnion("|ydrop", None)
-    | Check.TYtSplice te -> liftYaml (eval env te) |> Option.defaultValue (VUnion("YNull", None))
+    | Check.TYtSplice te -> liftYaml (evalIn env te) |> Option.defaultValue (VUnion("YNull", None))
     | Check.TYtSeq(items, _) -> VUnion("YSeq", Some(VSeq(evalYamlItems env items |> List.toSeq)))
     | Check.TYtMap(entries, _) ->
         let pairs = evalYamlEntries env entries
@@ -7248,7 +7284,7 @@ and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
 
         VUnion("YMap", Some(VSeq(pairs |> List.map (fun (k, v) -> VTuple [ VStr k; v ]) |> List.toSeq)))
 
-and private evalYamlEntries (env: Env) (entries: Check.TypedYamlTplEntry list) : (string * Value) list =
+and private evalYamlEntries (env: Scope) (entries: Check.TypedYamlTplEntry list) : (string * Value) list =
     entries
     |> List.collect (fun entry ->
         match entry with
@@ -7257,7 +7293,7 @@ and private evalYamlEntries (env: Env) (entries: Check.TypedYamlTplEntry list) :
                 match key with
                 | Check.TYtKeyLit(s, _) -> s
                 | Check.TYtKeySplice te ->
-                    match eval env te with
+                    match evalIn env te with
                     | VStr s -> s
                     | v -> unreachable $"the checker rejects a non-string key splice: {formatValue v}"
 
@@ -7265,28 +7301,28 @@ and private evalYamlEntries (env: Env) (entries: Check.TypedYamlTplEntry list) :
             // (the json-option omit, in template form)
             match value with
             | Check.TYtSplice te ->
-                match liftYaml (eval env te) with
+                match liftYaml (evalIn env te) with
                 | None -> []
                 | Some node -> [ k, node ]
             | _ -> [ k, evalYamlTpl env value ]
         | Check.TYtForEntries(binder, source, body) ->
-            match eval env source with
+            match evalIn env source with
             | VSeq items ->
                 items
                 |> Seq.collect (fun item ->
                     let bs = bindPattern binder item
-                    let env' = bs |> List.fold (fun m (n, v) -> Map.add n v m) env
+                    let env' = bs |> List.fold (fun (m: Scope) (n, v) -> m.Add(n, v)) env
                     evalYamlEntries env' body)
                 |> List.ofSeq
             | v -> unreachable $"the checker rejects a non-seq for source: {formatValue v}")
 
-and private evalYamlItems (env: Env) (items: Check.TypedYamlTplItem list) : Value list =
+and private evalYamlItems (env: Scope) (items: Check.TypedYamlTplItem list) : Value list =
     items
     |> List.collect (fun item ->
         match item with
         | Check.TYtItem(Check.TYtSplice te) ->
             // a None splice omits its item; a seq splice flattens as items
-            match eval env te with
+            match evalIn env te with
             | VUnion("None", None) -> []
             | VSeq inner ->
                 inner
@@ -7296,12 +7332,12 @@ and private evalYamlItems (env: Env) (items: Check.TypedYamlTplItem list) : Valu
         | Check.TYtItem t -> [ evalYamlTpl env t ]
         | Check.TYtDropItem(t, _) -> [ VUnion("|ydropitem", Some(evalYamlTpl env t)) ]
         | Check.TYtForItems(binder, source, body) ->
-            match eval env source with
+            match evalIn env source with
             | VSeq elems ->
                 elems
                 |> Seq.collect (fun item ->
                     let bs = bindPattern binder item
-                    let env' = bs |> List.fold (fun m (n, v) -> Map.add n v m) env
+                    let env' = bs |> List.fold (fun (m: Scope) (n, v) -> m.Add(n, v)) env
                     evalYamlItems env' body)
                 |> List.ofSeq
             | v -> unreachable $"the checker rejects a non-seq for source: {formatValue v}")
@@ -7354,7 +7390,7 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
         match valueHead with
         | None -> None
         | Some he ->
-            match eval env he with
+            match evalIn env he with
             | VSeq items ->
                 items
                 |> Seq.map (fun v ->
@@ -7424,18 +7460,18 @@ and apply (fn: Value) (arg: Value) : Value =
         Session.checkCancels ()
 
         if RunPos.IsCall body then
-            inFunction (fun () -> eval (Map.add param arg closureEnv) body)
+            inFunction (fun () -> evalIn (closureEnv.Add(param, arg)) body)
         else
-            eval (Map.add param arg closureEnv) body
+            evalIn (closureEnv.Add(param, arg)) body
     | VClosurePat(pat, body, closureEnv) ->
         Session.checkCancels ()
         let bindings = bindPattern pat arg
-        let env' = bindings |> List.fold (fun m (n, v) -> Map.add n v m) closureEnv
+        let env' = bindings |> List.fold (fun (m: Scope) (n, v) -> m.Add(n, v)) closureEnv
 
         if RunPos.IsCall body then
-            inFunction (fun () -> eval env' body)
+            inFunction (fun () -> evalIn env' body)
         else
-            eval env' body
+            evalIn env' body
     | VBuiltin f ->
         // every builtin call is a pfirst loser's boundary [D:pfirst-join]
         // and a REPL ^C's [D:repl-interrupt-compute]
@@ -7447,9 +7483,9 @@ and apply (fn: Value) (arg: Value) : Value =
 // the callee as the current node, so a raise from the call itself (`fail`,
 // a builtin) is reported at the callee's column, not the line's first
 // [D:runtime-position-call]
-and private callAt (env: Env) (fn: TypedExpr) (arg: TypedExpr) : Value =
-    let f = eval env fn
-    callAtWith fn f (eval env arg)
+and private callAt (env: Scope) (fn: TypedExpr) (arg: TypedExpr) : Value =
+    let f = evalIn env fn
+    callAtWith fn f (evalIn env arg)
 
 // a command's lazy lines; `statement`: armed as a statement, output unused
 and private forceValue (v: Value) : Value =
@@ -7465,11 +7501,11 @@ and private forceValue (v: Value) : Value =
     | VMap m -> VMap(Map.map (fun _ x -> forceValue x) m)
     | v -> v
 
-and private orFailValue (env: Env) (msg: TypedExpr option) (site: TypedExpr) (v: Value) : Value =
+and private orFailValue (env: Scope) (msg: TypedExpr option) (site: TypedExpr) (v: Value) : Value =
     let label =
         msg
         |> Option.map (fun m ->
-            match eval env m with
+            match evalIn env m with
             | VStr s -> s
             | other -> unreachable $"the checker types orFail's message as a string, got {formatValue other}")
 
@@ -7520,12 +7556,12 @@ and private alwaysExit (frame: Session.Frame) (claimAndRun: unit -> unit) (outco
         raise original
 
 and private withinScope
-    (env: Env)
+    (env: Scope)
     (kind: WithinKindId)
     (binder: (string * Span) option)
     (targ: TypedExpr option)
     (topts: TypedExpr option)
-    : struct (Env * (unit -> unit)) =
+    : struct (Scope * (unit -> unit)) =
     let argOf (what: string) =
         match targ with
         | Some a -> a
@@ -7547,7 +7583,7 @@ and private withinScope
         // survives the hard-exit carve-out. Advisory only: a
         // non-cooperating process ignores it.
         let path =
-            match eval env (argOf "lock") with
+            match evalIn env (argOf "lock") with
             | VStr s -> s
             | v -> unreachable $"the checker rejects a lock path of {formatValue v}"
 
@@ -7563,7 +7599,7 @@ and private withinScope
         let timeoutMs =
             topts
             |> Option.map (fun o ->
-                match eval env o with
+                match evalIn env o with
                 | VDur ms when ms < 0L ->
                     failwith $"within lock: timeout must not be negative, got {formatDuration ms}"
                 | VDur ms -> ms
@@ -7618,7 +7654,7 @@ and private withinScope
         // verified before the block runs, restored on every
         // managed exit
         let path =
-            match eval env (argOf "cd") with
+            match evalIn env (argOf "cd") with
             | VStr s -> s
             | v -> unreachable $"the checker rejects a cd path of {formatValue v}"
 
@@ -7639,7 +7675,7 @@ and private withinScope
     | WithinEnv ->
         // env pushes an ambient overlay that child spawns see;
         // weir's own Env.load is untouched [D:within-scopes]
-        Session.pushEnvOverlay (envPairsOf "within env" (eval env (argOf "env")))
+        Session.pushEnvOverlay (envPairsOf "within env" (evalIn env (argOf "env")))
         struct (env, Session.popEnvOverlay)
     | WithinProc ->
         // the scoped process [D:scoped-procs]: spawn with both
@@ -7708,7 +7744,7 @@ and private withinScope
 
             Session.deregisterTmpDir spill
 
-        struct (Map.add binderName (VProc handle) env, release)
+        struct (env.Add(binderName, (VProc handle)), release)
     | WithinTmp ->
         // kind tmp [D:within-scopes]: a fresh unique directory,
         // bound as the binder for the block; removed on every
@@ -7736,11 +7772,11 @@ and private withinScope
 
             Session.deregisterTmpDir dir
 
-        struct (Map.add binderName (VStr dir) env, release)
+        struct (env.Add(binderName, (VStr dir)), release)
     | _ -> unreachable "withinScope takes the lock, cd, env, proc and tmp kinds"
 
 and private retryCtl
-    (env: Env)
+    (env: Scope)
     (kind: LoopKind)
     (optsE: TypedExpr)
     (watchE: TypedExpr option)
@@ -7752,7 +7788,7 @@ and private retryCtl
     let watched =
         watchE
         |> Option.map (fun w ->
-            match eval env w with
+            match evalIn env w with
             | VProc h -> h
             | v -> unreachable $"the checker rejects a watch of {formatValue v}")
 
@@ -7777,7 +7813,7 @@ and private retryCtl
         | _ -> ()
 
     let fields =
-        match eval env optsE with
+        match evalIn env optsE with
         | VRecord(_, fs) -> fs
         | v -> unreachable $"the checker rejects '{head}' options of {formatValue v}"
 
@@ -7867,7 +7903,7 @@ and private retryCtl
     let predicate (v: Value) =
         match until with
         | Some((b, _), pred) ->
-            match eval (Map.add b v env) pred with
+            match evalIn (env.Add(b, v)) pred with
             | VBool ok -> ok
             | pv -> unreachable $"the checker rejects a predicate of {formatValue pv}"
         | None ->
@@ -7955,12 +7991,12 @@ and private interpPiece (v: Value) : string =
     | v -> formatValue v
 
 and private serveScope
-    (env: Env)
+    (env: Scope)
     (binder: (string * Span) option)
     (targ: TypedExpr option)
     (topts: TypedExpr option)
     (body: TypedExpr)
-    : struct (Env * Session.Node * Session.Node * Session.Frame * (unit -> unit)) =
+    : struct (Scope * Session.Node * Session.Node * Session.Frame * (unit -> unit)) =
     let argOf (what: string) =
         match targ with
         | Some a -> a
@@ -7981,7 +8017,7 @@ and private serveScope
     let binderName = binderOf "serve"
 
     let cfg =
-        match eval env (argOf "serve") with
+        match evalIn env (argOf "serve") with
         | VRecord(_, f) -> f
         | v -> unreachable $"the checker rejects a serve config of {formatValue v}"
 
@@ -8424,9 +8460,14 @@ and private serveScope
     if heldWithNoBlock body then
         System.Console.Error.WriteLine $"serving on http://localhost:{handle.Port} — Ctrl+C to stop"
 
-    struct (Map.add binderName (VServer handle) env, serveNode, home, frame, release)
+    struct (env.Add(binderName, (VServer handle)), serveNode, home, frame, release)
 
-and private commandSpec (env: Env) (head: Check.TCmdHead) (args: TypedExpr list) (cenvO: TypedExpr option) : Proc.Spec =
+and private commandSpec
+    (env: Scope)
+    (head: Check.TCmdHead)
+    (args: TypedExpr list)
+    (cenvO: TypedExpr option)
+    : Proc.Spec =
     let argv = argvOf env args
 
     // only the enclosing `within` scopes are captured
@@ -8445,7 +8486,7 @@ and private commandSpec (env: Env) (head: Check.TCmdHead) (args: TypedExpr list)
 
 and private commandLines
     (statement: bool)
-    (env: Env)
+    (env: Scope)
     (te: TypedExpr)
     (head: Check.TCmdHead)
     (args: TypedExpr list)
@@ -8512,7 +8553,7 @@ and private inFunction (f: unit -> Value) : Value =
 // the `let r = await …` bindings are compiler workarounds [D:runtime-async]
 and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>] evalAsync
     (flow: Flow)
-    (env: Env)
+    (env: Scope)
     (te: TypedExpr)
     : System.Threading.Tasks.Task<Value> =
     Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
@@ -8522,7 +8563,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                     not (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
                     || not (nodeMaySuspend env te)
                 then
-                    eval env te
+                    evalIn env te
                 else
                     match te.Kind with
                     | TELet(name, _, value, body) ->
@@ -8530,7 +8571,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         RunPos.Exact <- false
                         Session.evalBoundary ()
                         let x = awaitFrame flow (evalAsync flow env value)
-                        let r = awaitFrame flow (evalAsync flow (Map.add name x env) body)
+                        let r = awaitFrame flow (evalAsync flow (env.Add(name, x)) body)
                         r
                     | TELetPat(pat, value, body) ->
                         RunPos.Current <- box te
@@ -8538,7 +8579,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         Session.evalBoundary ()
                         let x = awaitFrame flow (evalAsync flow env value)
                         let bindings = bindPattern pat x
-                        let env' = bindings |> List.fold (fun m (n, bv) -> Map.add n bv m) env
+                        let env' = bindings |> List.fold (fun (m: Scope) (n, bv) -> m.Add(n, bv)) env
                         let r = awaitFrame flow (evalAsync flow env' body)
                         r
                     | TEApp(fn, arg) ->
@@ -8579,7 +8620,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         RunPos.Current <- box te
                         RunPos.Exact <- false
                         Session.evalBoundary ()
-                        let f = eval env fn
+                        let f = evalIn env fn
                         let spec = commandSpec env head args cenvO
                         RunPos.Current <- box c
                         RunPos.Exact <- true
@@ -8613,7 +8654,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                             VUnit
                         else
-                            let f = eval env fn
+                            let f = evalIn env fn
                             let specs = chainSpecs env arg chead cargs cenvO
                             callPos fn
                             let r = awaitFrame flow (applyAsync flow f (chainSeq true specs))
@@ -8681,7 +8722,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                                 match tryBind pat v with
                                 | Some bindings ->
-                                    let armEnv = bindings |> List.fold (fun e (n, bv) -> Map.add n bv e) env
+                                    let armEnv = bindings |> List.fold (fun (e: Scope) (n, bv) -> e.Add(n, bv)) env
                                     let mutable passes = true
 
                                     match guard with
@@ -8826,7 +8867,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         let claimAndRun () =
                             Session.runningCleanup (fun () ->
                                 if Session.deregisterAlways hooked then
-                                    eval env cleanup |> ignore)
+                                    evalIn env cleanup |> ignore)
 
                         let frame = Session.pushFrame claimAndRun
                         let mutable outcome = Ok VUnit
@@ -9002,7 +9043,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                                 match until with
                                 | Some((b, _), pred) ->
-                                    let pv = awaitFrame flow (evalAsync flow (Map.add b v env) pred)
+                                    let pv = awaitFrame flow (evalAsync flow (env.Add(b, v)) pred)
                                     met <- ctl.Verdict pv
                                 | None -> met <- ctl.Predicate v
 
@@ -9098,7 +9139,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                             r
                         finally
                             Session.releaseFrame frame release
-                    | _ -> eval env te
+                    | _ -> evalIn env te
             with ex ->
                 pinOnThread ex
                 flow.Ec <- System.Threading.ExecutionContext.Capture()
@@ -9121,15 +9162,15 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                     Session.checkCancels ()
 
                     if RunPos.IsCall body then
-                        let r = awaitFrame flow (inFunctionAsync flow (Map.add param arg closureEnv) body)
+                        let r = awaitFrame flow (inFunctionAsync flow (closureEnv.Add(param, arg)) body)
                         r
                     else
-                        let r = awaitFrame flow (evalAsync flow (Map.add param arg closureEnv) body)
+                        let r = awaitFrame flow (evalAsync flow (closureEnv.Add(param, arg)) body)
                         r
                 | VClosurePat(pat, body, closureEnv) ->
                     Session.checkCancels ()
                     let bindings = bindPattern pat arg
-                    let env' = bindings |> List.fold (fun m (n, bv) -> Map.add n bv m) closureEnv
+                    let env' = bindings |> List.fold (fun (m: Scope) (n, bv) -> m.Add(n, bv)) closureEnv
 
                     if RunPos.IsCall body then
                         let r = awaitFrame flow (inFunctionAsync flow env' body)
@@ -9175,7 +9216,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
 and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>] private inFunctionAsync
     (flow: Flow)
-    (env: Env)
+    (env: Scope)
     (body: TypedExpr)
     : System.Threading.Tasks.Task<Value> =
     Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
@@ -9208,7 +9249,12 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
 /// the bare-statement spec (argv, overlay) — one builder for the relay
 /// and the inheriting spawn, so the two forms cannot drift
-let private commandStatementSpec (env: Env) (te: Check.TypedExpr) : Proc.Spec =
+/// an expression at the top level: its scope is the env's own map
+let eval (env: Env) (te: TypedExpr) : Value = evalIn (Scope.Root env) te
+
+let private commandStatementSpec (top: Env) (te: Check.TypedExpr) : Proc.Spec =
+    let env = Scope.Root top
+
     match te.Kind with
     | Check.TECmd(head, args, cenvO) ->
         let overlay = overlayOf env cenvO
@@ -9251,7 +9297,7 @@ let inheritCommandStatement (env: Env) (te: Check.TypedExpr) : unit =
     | Check.TEPipe(arg,
                    {
                        Kind = Check.TECmd(chead, cargs, cenvO)
-                   }) -> Proc.runChainInherited (chainSpecs env arg chead cargs cenvO)
+                   }) -> Proc.runChainInherited (chainSpecs (Scope.Root env) arg chead cargs cenvO)
     | _ -> Proc.runInherited (commandStatementSpec env te)
 
 let constructorValues (cases: (string * Ty option * AttrSpec list) list) : (string * Value) list =

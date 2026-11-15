@@ -36831,6 +36831,46 @@ let selfFactTests =
         }
     ]
 
+let scopeCellTests =
+    testList "a name reads the nearest bind, in a function body and in a parallel arm" [
+        test "a parameter, a let, a pattern and a match arm shadow the top level and leave it as it was" {
+            withTempDir "weir-scope" (fun td ->
+                let path = System.IO.Path.Combine(td, "scope.weir")
+
+                System.IO.File.WriteAllLines(
+                    path,
+                    [
+                        "type P = P of int * int"
+                        "let k = 10"
+                        "let add a b = a + b + k"
+                        "let shadow k = k + 1"
+                        "let viaLet n ="
+                        "    let k = n * 2"
+                        "    let g = fun x -> x + k"
+                        "    let k = 100"
+                        "    g 1 + k"
+                        "let pat (P (a, b)) = a - b"
+                        "let pick o ="
+                        "    match o with"
+                        "    | Some k -> k"
+                        "    | None -> k"
+                        "let viaAsync n ="
+                        "    let k = n * 2"
+                        "    let out = $(sh -c \"echo 5\") |> Seq.length"
+                        "    match Some (k + out) with"
+                        "    | Some k -> k + n"
+                        "    | None -> k"
+                        "let row n = $\"{add n 1}|{shadow n}|{viaLet n}|{pat (P (n, 1))}|{pick (Some n)}|{pick None}|{viaAsync n}|{k}\""
+                        "if row 3 <> \"14|4|107|2|3|10|10|10\" then fail (row 3)"
+                        "let par = [3; 3] |> Seq.pmap row |> Str.join \",\""
+                        "if par <> \"14|4|107|2|3|10|10|10,14|4|107|2|3|10|10|10\" then fail par"
+                    ]
+                )
+
+                Expect.equal (Weir.Script.run path []) 0 "every read saw its own bind")
+        }
+    ]
+
 // validated types [D:validated-types]: a single-case union's `validate`
 // block is the type's one gate — `T.create` builds, the case only reads,
 // and every wire boundary runs the block
@@ -47975,6 +48015,7 @@ let allTests =
         qualifiedTypeNameTests
         qualifiedCasePatternTests
         selfFactTests
+        scopeCellTests
         validatedTypeTests
         scriptTests
         multilineTests

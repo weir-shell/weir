@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.0.93
+
+### Changed
+
+- **A call into a named function is about a third faster.** A bind
+  inside a function body, a `let`, a pattern or a match arm is one
+  cell over the top level's names instead of a new copy of the
+  environment's tree; a fold through functions that build and match a
+  union went from 1.8 s to 1.1 s for two million elements.
+
 ## v0.0.92
 
 ### Changed
