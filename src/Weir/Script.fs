@@ -6171,18 +6171,20 @@ type internal ImportRead =
     | IBadUtf8 of line: int * col: int
 
 let internal readImportSource (absPath: string) : ImportRead =
-    match importSourceOverride.Value with
-    | Some f ->
-        match f absPath with
-        | Some lines -> ISource lines
-        | None -> IAbsent
-    | None ->
-        // present but unreadable — permission denied, a directory, a
-        // device, an IO fault; name the path and the reason, located
-        if Contracts.pipeLike absPath then
-            IUnreadable "not a regular file — a module is a text file"
-        else
+    // before the buffer override too: the editor's read of a file that is
+    // not open falls to the disk [D:artifact-not-a-pipe]
+    if Contracts.pipeLike absPath then
+        IUnreadable "not a regular file — a module is a text file"
+    else
 
+        match importSourceOverride.Value with
+        | Some f ->
+            match f absPath with
+            | Some lines -> ISource lines
+            | None -> IAbsent
+        | None ->
+            // present but unreadable — permission denied, a directory, a
+            // device, an IO fault; name the path and the reason, located
             match readSourceFile absPath with
             | Ok lines -> ISource lines
             | Error NotFound -> IAbsent

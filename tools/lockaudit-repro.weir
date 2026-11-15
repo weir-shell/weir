@@ -207,6 +207,10 @@ let arrows = <<<
     { printf 'module T\nlet f : int'; yes ' -> int' | head -20000 | tr -d '\n'; printf '\nlet f = 1\n'; } > m.weir
     timeout 4 "$W" check m.weir >/dev/null 2>&1
     [ $? -eq 1 ] || fail 3 "check took over 4 s on a 20000-arrow signature"
+    { printf 'module T\nlet f : int'; yes ' -> int' | head -1000000 | tr -d '\n'; printf '\nlet f = 1\n'; } > deep.weir
+    timeout 20 "$W" check deep.weir > deep.out 2>&1
+    [ $? -eq 1 ] || fail 4 "check did not refuse a million-arrow signature"
+    grep -q "bound is 256" deep.out || fail 5 "the refusal does not name the bound"
 
 let tmpName = <<<
     let route = fun rq -> Reply.text 200 "module M\nlet x : int\nlet x = 1\n"

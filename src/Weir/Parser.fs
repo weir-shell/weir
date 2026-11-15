@@ -5599,7 +5599,16 @@ tySynRef.Value <-
                     | [ one ] -> one
                     | many -> TTuple many
 
-            chainr1 tuple (str_ws "->" >>% (fun a b -> TFun(a, b)))
+            // bounded [D:arrow-chain-bound]: every walk of a type recurses
+            // once per arrow
+            getPosition .>>. sepBy1 tuple (str_ws "->")
+            >>= fun (at, parts) ->
+                if parts.Length > maxTypeArrows + 1 then
+                    failFatallyAt
+                        at
+                        $"a function type of {parts.Length - 1} arrows — weir's bound is {maxTypeArrows}; pass a record instead of that many arguments"
+                else
+                    preturn (List.reduceBack (fun a b -> TFun(a, b)) parts)
     )
 
 // literal-only attribute arguments [D:attributes]

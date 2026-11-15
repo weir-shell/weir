@@ -745,11 +745,16 @@ let rec private tySyn (st: St) : Ty =
     else
         let first = tyTuple st
         let mutable items = [ first ]
+        let mutable arrows = 0
 
         while st.Ok && strWs st "->" do
             let t = tyTuple st
+            arrows <- arrows + 1
 
-            if st.Ok then
+            // past the bound the full parser words the refusal [D:arrow-chain-bound]
+            if arrows > maxTypeArrows then
+                refuse st |> ignore
+            elif st.Ok then
                 items <- t :: items
 
         st.Depth <- st.Depth - 1

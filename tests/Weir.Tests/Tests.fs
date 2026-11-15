@@ -47770,6 +47770,18 @@ let hunt4Tests =
                 ))
                 "(int -> string) -> seq<int> * Map<string, { a: int; .. }>"
                 "the spelling is unchanged"
+
+            // a function type takes 256 arrows and no more [D:arrow-chain-bound]
+            let signed (arrows: int) =
+                Weir.Parser.parseLine cmdResolver ("let f : int" + String.replicate arrows " -> int")
+
+            match signed 257 with
+            | Error msg -> Expect.stringContains msg "bound is 256" "the refusal names the bound"
+            | Ok _ -> failtest "257 arrows parsed"
+
+            match signed 256 with
+            | Error msg -> failtest msg
+            | Ok _ -> ()
         }
 
         test "lock audit: spawns take PATH's file, a token keeps to its host, the lock is a file of its own" {

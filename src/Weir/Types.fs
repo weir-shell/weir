@@ -990,6 +990,9 @@ let scalarTypes: Map<string, Ty> =
 let builtinTypeNames: string list =
     [ "int"; "seq"; "Map" ] @ (Map.keys scalarTypes |> List.ofSeq)
 
+/// the most arrows one function type takes [D:arrow-chain-bound]
+let maxTypeArrows = 256
+
 let formatTy (ty: Ty) : string =
     let sb = System.Text.StringBuilder()
     let add (s: string) = sb.Append s |> ignore

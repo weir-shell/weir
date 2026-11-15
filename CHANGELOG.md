@@ -29,6 +29,12 @@
   16,000 arrows that its implementation did not match took 7 s in
   `weir check` (each arrow copied the rest of the text); it takes
   under 0.1 s.
+- **A function type takes at most 256 arrows.** A signature of a
+  million arrows ended `weir check` in a stack overflow with no
+  message; it is now a parse error naming the count.
+- **The language server refuses a FIFO where a module or a signature
+  is expected.** The refusal sat behind the editor's buffer lookup, so
+  `weir lsp` still opened the path and waited.
 
 ## v0.0.92
 
