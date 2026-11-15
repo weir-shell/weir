@@ -5868,7 +5868,19 @@ let run (debug: bool) : int =
                                 // [wordStart, cursor) with the suggestion — bare
                                 // labels double-insert after dots and get
                                 // prefix-filtered inside parens [D:completion-textedit]
-                                for label in items |> List.distinct |> List.truncate 200 do
+                                // past the cap PATH yields first: a binding is
+                                // never cut for a command's sake
+                                let items =
+                                    let items = List.distinct items
+
+                                    if items.Length > 200 then
+                                        let ext = Extern.names ()
+                                        let cmds, names = items |> List.partition ext.Contains
+                                        names @ cmds
+                                    else
+                                        items
+
+                                for label in items |> List.truncate 200 do
                                     w.WriteStartObject()
                                     w.WriteString("label", label)
 

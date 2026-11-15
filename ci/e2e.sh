@@ -16957,10 +16957,14 @@ for tag in CHECK CAN CANH; do
 done
 $BIN check --json "$svdir/$jname" > "$svdir/j1.out" 2>/dev/null || true
 $BIN check --can --json "$svdir/c$jname" > "$svdir/j2.out" 2>/dev/null || true
-$BIN check --can "$svdir/c$jname" >> "$svdir/j2.out" 2>/dev/null || true
 python3 -c "import sys; a=open('$svdir/j1.out','rb').read(); b=open('$svdir/j2.out','rb').read(); n=b'r\xe2\x80\xaeq\xc2\x9b.weir'; sys.exit(0 if (n in a and n in b and b'\\\\u' not in a + b and b'\\\\x9b' not in a + b) else 1)" \
-    || fail "tty-bidi: redirected check --json / --can (json and human) must stay byte-faithful (raw RLO/C1 in the path)"
-echo "e2e ok: tty-bidi check --json and --can (json and human) sanitized at a tty, byte-faithful when redirected"
+    || fail "tty-bidi: redirected check --json / --can --json must stay byte-faithful (raw RLO/C1 in the path)"
+# the human --can report is a message [D:error-data-escape]: the path it
+# quotes renders visibly, redirected too
+$BIN check --can "$svdir/c$jname" > "$svdir/j3.out" 2>/dev/null || true
+python3 -c "import sys; b=open('$svdir/j3.out','rb').read(); sys.exit(0 if (b'r\\\\u202Eq\\\\x9b.weir' in b and b'\xe2\x80\xae' not in b and b'\xc2\x9b' not in b) else 1)" \
+    || fail "tty-bidi: a redirected human check --can must escape the path it quotes"
+echo "e2e ok: tty-bidi check --json and --can sanitized at a tty; redirected, the json is byte-faithful and the human report escapes the path"
 # every console sink rides the tty sanitizer [D:tty-sink-sanitize]:
 # printerr, Log.*, the Self.prompt message and the -e echo neutralize an
 # OSC at a tty (the pty harness reprs a raw ESC as \x1b, a defanged one

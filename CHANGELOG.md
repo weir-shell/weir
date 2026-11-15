@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- **LSP completion keeps your bindings when PATH is crowded.** The list
+  was sorted and cut at 200, so on a machine with many commands
+  sharing the typed prefix a declared name fell off the end. Bindings
+  now come before PATH commands at the cap.
 - **`weir verify` runs no file a lock names by path.** The version arm
   probed a lock entry's `name` as a command head, so a committed
   `.weir/lock.json` naming `tools/setup.sh` ran that file with
