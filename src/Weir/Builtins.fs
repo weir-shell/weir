@@ -2225,7 +2225,16 @@ let private rangeImpl: Value =
                             let mutable i = start
                             let mutable go = if step > 0L then i <= stop else i >= stop
 
+                            let mutable n = 0
+
                             while go do
+                                // a long range is a boundary now and then: a
+                                // cut or a REPL ^C stops it [D:repl-interrupt-compute]
+                                n <- n + 1
+
+                                if n &&& 0xFFF = 0 then
+                                    Session.checkCancels ()
+
                                 yield VInt i
                                 let next = i + step
                                 // wrap past Int64 boundary = the range is done
@@ -7450,25 +7459,33 @@ let private frontierWalk
     (initial: Value seq)
     : unit =
     let queue = System.Collections.Generic.Queue<Value>()
-    initial |> Seq.iter queue.Enqueue
+    // the keys queued or processed: a node is queued once, so what waits
+    // in the queue is work the budget must still pay for
     let visited = System.Collections.Generic.HashSet<string>()
     let mutable steps = 0
 
-    while queue.Count > 0 do
-        let node = queue.Dequeue()
-
-        let skip =
+    // the budget is checked where a node is discovered: an endless child
+    // seq or frontier raises at its 100001st node instead of filling
+    // memory before the first step
+    let enqueue (node: Value) =
+        let fresh =
             match keyFor node with
-            | Some k -> not (visited.Add k)
-            | None -> false
+            | Some k -> visited.Add k
+            | None -> true
 
-        if not skip then
-            if steps >= frontierBudget then
+        if fresh then
+            if steps + queue.Count >= frontierBudget then
                 failwith
                     $"{who}: exceeded {frontierBudget} steps — is the graph finite, or is the key too coarse to dedup?"
 
-            steps <- steps + 1
-            onNode node |> Seq.iter queue.Enqueue
+            queue.Enqueue node
+
+    initial |> Seq.iter enqueue
+
+    while queue.Count > 0 do
+        let node = queue.Dequeue()
+        steps <- steps + 1
+        onNode node |> Seq.iter enqueue
 
 let private frontierFoldImpl: Value =
     VBuiltin(fun keyOf ->
@@ -7669,6 +7686,16 @@ let private keyValOf (by: string) (v: Value) : Value option =
 // append-if-absent (under `by=`, a seq-of-mappings upserts/removes by
 // the key); scalars replace; tombstones remove. Orderless, idempotent.
 let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
+    // a structured patch landing where the target has nothing merges onto
+    // the empty shape, so its own items meet the merge laws too (two patch
+    // items sharing a `by=` key fold into one, as a second application
+    // would fold them)
+    let fresh (p: Value) : Value option =
+        match p with
+        | VUnion("YMap", Some _) -> Some(yamlMerge by p (VUnion("YMap", Some(VSeq Seq.empty))))
+        | VUnion("YSeq", Some _) -> Some(yamlMerge by p (VUnion("YSeq", Some(VSeq Seq.empty))))
+        | p -> stripDrops p
+
     match patch, target with
     | VUnion("YMap", Some(VSeq ppairs)), VUnion("YMap", Some(VSeq tpairs)) ->
         let asPairs (xs: Value seq) =
@@ -7690,7 +7717,7 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
                             acc
                             |> List.map (fun (ek, ev) -> if ek = k then (ek, yamlMerge by pv ev) else (ek, ev))
                         else
-                            match stripDrops pv with
+                            match fresh pv with
                             | Some sv -> acc @ [ (k, sv) ]
                             | None -> acc)
                 (asPairs tpairs)
@@ -7713,11 +7740,16 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
                                 | Some sc -> yamlEq sc t
                                 | None -> false
 
-                        match acc |> List.tryFindIndex matches with
-                        | Some i -> acc |> List.indexed |> List.filter (fun (j, _) -> j <> i) |> List.map snd
-                        | None -> acc
+                        // every match goes: a patch applied twice is applied once
+                        acc |> List.filter (fun t -> not (matches t))
                     | _ ->
-                        match (if by = "" then None else keyValOf by pi) with
+                        // a tombstoned key is no key: the item merges structurally
+                        let keyed =
+                            match (if by = "" then None else keyValOf by pi) with
+                            | Some(VUnion("|ydrop", _)) -> None
+                            | k -> k
+
+                        match keyed with
                         | Some pkv ->
                             let hit =
                                 acc
@@ -7727,11 +7759,11 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
                             match hit with
                             | Some i -> acc |> List.mapi (fun j t -> if j = i then yamlMerge by pi t else t)
                             | None ->
-                                match stripDrops pi with
+                                match fresh pi with
                                 | Some sv -> acc @ [ sv ]
                                 | None -> acc
                         | None ->
-                            match stripDrops pi with
+                            match fresh pi with
                             | Some sv -> (if acc |> List.exists (yamlEq sv) then acc else acc @ [ sv ])
                             | None -> acc)
                 (List.ofSeq titems)
@@ -7739,7 +7771,7 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
         VUnion("YSeq", Some(VSeq(List.toSeq merged)))
     // a structured patch over a different target shape replaces it
     // fresh (the source-shape-wins law); scalars replace outright
-    | p, _ -> stripDrops p |> Option.defaultValue (VUnion("YNull", None))
+    | p, _ -> fresh p |> Option.defaultValue (VUnion("YNull", None))
 
 let private yamlParseImpl: Value =
     VBuiltin(fun v ->

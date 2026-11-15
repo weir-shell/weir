@@ -256,6 +256,7 @@ let private cmdResolver: Weir.Parser.Resolver = {
     ExternalNames = (fun () -> fakeExternals)
     BareHome = (fun _ -> None)
     AliasHead = fun _ -> None
+    IsBuiltinName = fun _ -> false
 }
 
 // Windows: parse-only fixtures resolve coreutils heads (echo, sh,
@@ -303,6 +304,7 @@ let private realResolver: Weir.Parser.Resolver = {
     ExternalNames = (fun () -> Weir.Extern.names () :> seq<string>)
     BareHome = (fun n -> Map.tryFind n Weir.Builtins.bareAliasHomes)
     AliasHead = fun _ -> None
+    IsBuiltinName = fun _ -> false
 }
 
 let private parseCmd input =
@@ -10613,6 +10615,7 @@ let blockLetCmdTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             match Weir.Parser.parseLine r "let f x = let w = echo alpha \"in\" beta |> Seq.head in w" with
@@ -18583,6 +18586,7 @@ let multilineLambdaTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             match Weir.Parser.parseLine r "let out = xs |> Seq.map (fun k -> let g = echo tag in g |> Seq.length)" with
@@ -21553,6 +21557,7 @@ let depthGuardTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             let nested d =
@@ -21602,6 +21607,7 @@ let depthGuardTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             for stmt in
@@ -21626,6 +21632,7 @@ let depthGuardTests =
                 ExternalNames = fun () -> Seq.ofList (Set.toList externals)
                 BareHome = fun _ -> None
                 AliasHead = fun n -> if n = "ll" then Some("ls", [ "-l" ]) else None
+                IsBuiltinName = fun _ -> false
             }
 
             let sib = " \u001f "
@@ -24329,6 +24336,7 @@ let offsideTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             match Weir.Parser.parseLineFull r "type P = | Pulled | upToDate | Join of string" with
@@ -24433,6 +24441,7 @@ let offsideTests =
                 ExternalNames = (fun () -> Seq.empty)
                 BareHome = (fun _ -> None)
                 AliasHead = fun _ -> None
+                IsBuiltinName = fun _ -> false
             }
 
             let rGit = {
@@ -46995,6 +47004,613 @@ let childWalkTests =
         }
     ]
 
+let hunt4Tests =
+    let runFile (lines: string list) : int =
+        let path = tempPath "weir-hunt4" + ".weir"
+        File.WriteAllLines(path, lines)
+
+        try
+            Weir.Script.run path []
+        finally
+            File.Delete path
+
+    let caps (lines: string list) : string =
+        let _, pairs, _, _, _ = Weir.Script.analyzeLines "hunt4.weir" lines
+
+        Weir.Can.collect "hunt4.weir" (Weir.Can.ofChecked pairs)
+        |> Weir.Can.renderHuman "hunt4.weir"
+
+    testSequenced
+    <| testList "hunt 4 findings" [
+        test "readonly refuses File.writeBytes [D:pure-stage2]" {
+            mustSayIn
+                "pin.weir"
+                [
+                    "let x ="
+                    "    readonly"
+                    "        File.writeBytes \"out.bin\" (Str.toUtf8 \"x\")"
+                    "        1"
+                    "print (show x)"
+                ]
+                "'File.writeBytes' writes the filesystem"
+                "a byte write is a filesystem write"
+        }
+        test "every File/Dir member has a side in the partition [D:can-report]" {
+            // a new member must be placed: a write joins Effects.fsWriteMembers,
+            // a read this list — the report and `readonly` both read the result
+            let reads =
+                Set [
+                    "File.exists"
+                    "File.isExecutable"
+                    "File.mode"
+                    "File.read"
+                    "File.readBytes"
+                    "File.readFrom"
+                    "File.readSecret"
+                    "File.sha1"
+                    "File.sha256"
+                    "File.size"
+                    "File.stat"
+                    "Dir.exists"
+                    "Dir.list"
+                    "Dir.stat"
+                ]
+
+            let members =
+                [ "File"; "Dir" ]
+                |> List.collect (fun m ->
+                    Weir.Builtins.typeEnv.Modules
+                    |> Map.tryFind m
+                    |> Option.map (fun ms -> ms |> Map.toList |> List.map (fun (n, _) -> $"{m}.{n}"))
+                    |> Option.defaultValue [])
+
+            Expect.isNonEmpty members "the File/Dir members are in the type environment"
+
+            for m in members do
+                let isWrite = Weir.Effects.effectClass m = Some Weir.Effects.Mutation
+                Expect.isTrue (isWrite <> reads.Contains m) $"{m}: a write xor a listed read (write={isWrite})"
+        }
+        test "--can reports deletes, moves, byte writes and cd [D:can-report]" {
+            let out =
+                caps [
+                    "File.delete \"/x/a\""
+                    "File.move \"/x/b\" \"/x/c\""
+                    "File.writeBytes \"/x/d\" (Str.toUtf8 \"x\")"
+                    "cd \"/var\""
+                    "let n = File.readBytes \"/x/e\" |> Bytes.length"
+                    "print $\"{n} {ls |> Seq.length}\""
+                ]
+
+            for needle in
+                [
+                    "File.delete /x/a"
+                    "File.move /x/b"
+                    "File.writeBytes /x/d"
+                    "changes the working directory (cd)"
+                    "File.readBytes /x/e"
+                    "ls (the working directory)"
+                ] do
+                Expect.stringContains out needle "the capability is reported"
+        }
+        test "--can renders a literal's control characters visibly [D:error-data-escape]" {
+            let out = caps [ "File.write \"/tmp/ok\\n  nothing else\" [\"x\"]" ]
+            Expect.stringContains out "/tmp/ok\\x0a  nothing else" "the newline is shown, not written"
+        }
+        test "--can reports a reified command's env overlay [D:can-report]" {
+            let out =
+                caps [
+                    "let e = Env.ofPairs [(\"K\", \"v\")]"
+                    "let z = $e(sh -c \"true\" | complete)"
+                    "print (show z.ok)"
+                ]
+
+            Expect.stringContains out "sets K for children (env sigil)" "the overlay is reported"
+        }
+        test "a nullary case takes a guard" {
+            Expect.equal
+                (runFile [
+                    "type L = Debug | Info | Warn"
+                    "let f l n = match l with | Debug | Info when n > 0 -> 1 | Warn when n > 0 -> 2 | _ -> 3"
+                    "let g = function | None when 1 == 1 -> 1 | _ -> 2"
+                    "if f Info 1 <> 1 then exit 3"
+                    "if f Warn 1 <> 2 then exit 4"
+                    "if f Warn 0 <> 3 then exit 5"
+                    "if g None <> 1 then exit 6"
+                ])
+                0
+                "| None when …, | A | B when …, in match and function"
+        }
+        test "a name starting with a declaration keyword heads a statement" {
+            Expect.equal
+                (runFile [
+                    "let modules = [\"a\"]"
+                    "modules |> Seq.iter (fun m ->"
+                    "    let y = <<<"
+                    "        x"
+                    "    if (y |> Seq.head) + m <> \"xa\" then exit 3)"
+                    "let typed = 1"
+                    "let imports = [typed]"
+                    "imports |> Seq.iter (fun i -> if i <> 1 then exit 4)"
+                ])
+                0
+                "modules / typed / imports are ordinary names"
+
+            for head in [ "type-check"; "module-assistant"; "import-im6"; "try-x"; "return-code" ] do
+                let ds = diagsIn "pin.weir" [ $"{head} --flag" ]
+
+                Expect.isTrue
+                    (ds |> List.forall (fun d -> d.Severity <> "error"))
+                    $"{head} is a command word: {ds |> List.map _.Message}"
+        }
+        test "a REPL ^C stops computation at a call and in a long range [D:repl-interrupt-compute]" {
+            for src in
+                [
+                    "Seq.initInfinite id |> Seq.length"
+                    "Seq.initInfinite (fun i -> i + 1) |> Seq.length"
+                    "[1..9000000000000] |> Seq.sum"
+                ] do
+                Weir.Session.beginReplEval ()
+
+                try
+                    let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                    System.Threading.Tasks.Task.Run(fun () ->
+                        System.Threading.Thread.Sleep 200
+                        Weir.Session.interruptRepl ())
+                    |> ignore
+
+                    Expect.throwsT<Weir.Session.Interrupted> (fun () -> run src |> ignore) src
+                    Expect.isLessThan sw.ElapsedMilliseconds 10000L "cut, not run to the end"
+                finally
+                    Weir.Session.endReplEval ()
+        }
+        test "an ordering operator on a generic ordered type demands the instance [D:derived-ord]" {
+            mustSayIn
+                "pin.weir"
+                [ "type K<'a> = { [<Ord 1>] f: 'a }"; "print ({ f = [1] } < { f = [2] })" ]
+                "operator '<' is not defined for K<seq<int>>"
+                "a seq member does not order"
+
+            mustSayIn
+                "pin.weir"
+                [
+                    "type B<'a> = | [<Ord 1>] Box of 'a | [<Ord 2>] Nil"
+                    "print (Box (1, 2) >= Box (2, 1))"
+                ]
+                "operator '>=' is not defined for B<"
+                "a tuple member does not order"
+
+            Expect.equal
+                (runFile [
+                    "type K<'a> = { [<Ord 1>] f: 'a }"
+                    "type B<'a> = | [<Ord 1>] Box of 'a | [<Ord 2>] Nil"
+                    "if not ({ f = 1 } < { f = 2 }) then exit 3"
+                    "if not (Box \"a\" < Nil) then exit 4"
+                ])
+                0
+                "an instance whose members order still compares"
+        }
+        test "a redirect rewrites only POST to GET on 301/302 [D:secret-redirect]" {
+            Expect.equal
+                (runFile [
+                    "let route = fun rq ->"
+                    "    match rq.path with"
+                    "    | \"/old\" -> Reply.redirect 302 \"/new\""
+                    "    | \"/see\" -> Reply.redirect 303 \"/new\""
+                    "    | _ -> Reply.text 200 $\"{rq.method} {rq.body}\""
+                    "within serve srv handler=route"
+                    "    let base = $\"http://127.0.0.1:{Server.port srv}\""
+                    "    let seen req = Http.send req |> _.body |> Str.join \"\""
+                    "    if seen (Http.delete $\"{base}/old\") <> \"Delete \" then exit 3"
+                    "    if seen { Http.put $\"{base}/old\" with body = Text \"p\" } <> \"Put p\" then exit 4"
+                    "    if seen { Http.patch $\"{base}/old\" with body = Text \"p\" } <> \"Patch p\" then exit 5"
+                    "    if seen { Http.post $\"{base}/old\" with body = Text \"p\" } <> \"Get \" then exit 6"
+                    "    if seen { Http.put $\"{base}/see\" with body = Text \"p\" } <> \"Get \" then exit 7"
+                ])
+                0
+                "DELETE, PUT and PATCH keep their method and body; POST and a 303 become GET"
+        }
+        test "Yaml.merge applied twice is applied once [D:yaml-nodes]" {
+            Expect.equal
+                (runFile [
+                    "let doc = [\"args:\"; \"  - -v\"; \"  - -v\"; \"  - x\"] |> Yaml.parse"
+                    "let p = yaml patch"
+                    "    args:"
+                    "        - $- -v"
+                    "let once = doc |> Yaml.merge p"
+                    "let j1 = once |> to json |> Str.join \"\""
+                    "if j1 <> \"{\\\"args\\\":[\\\"x\\\"]}\" then exit 3"
+                    "if (once |> Yaml.merge p |> to json |> Str.join \"\") <> j1 then exit 4"
+                    "let p2 = yaml patch by=name"
+                    "    images:"
+                    "        - name: app"
+                    "          tag: 1"
+                    "        - name: app"
+                    "          tag: 2"
+                    "    xs:"
+                    "        - name: $-"
+                    "let once2 = [\"a: 1\"] |> Yaml.parse |> Yaml.merge p2"
+                    "let j2 = once2 |> to json |> Str.join \"\""
+                    "if (once2 |> Yaml.merge p2 |> to json |> Str.join \"\") <> j2 then exit 5"
+                ])
+                0
+                "a tombstone takes every match; a patch's own items meet the merge laws where the target had none"
+        }
+        test "a bound name glued to a dash is subtraction in check and run [D:dash-binding]" {
+            // PATH never decides: `count-1` with `count` bound is the same
+            // expression to both, whatever is installed
+            let src = [
+                "let count = 5"
+                "let last = count-1"
+                "if last + 1 <> 5 then exit 3"
+                "if not (count-1 > 0) then exit 4"
+                "let f = fun n -> n-1"
+                "if f 3 <> 2 then exit 5"
+                "let g n m ="
+                "    let d = n-m"
+                "    d"
+                "if g 9 4 <> 5 then exit 6"
+            ]
+
+            cleanIn "pin.weir" src "check reads the subtraction"
+            Expect.equal (runFile src) 0 "run reads the subtraction"
+
+            // a part nothing knows leaves the word a command
+            let ds =
+                diagsIn "pin.weir" [ "let docker = \"docker\""; "docker-composezz up"; "print docker" ]
+
+            Expect.exists
+                ds
+                (fun d -> d.Message.Contains "command not found on PATH: docker-composezz")
+                $"docker-composezz stays a command: {ds |> List.map _.Message}"
+        }
+        test "Table.render takes rows of one type whatever their field order [D:record-order]" {
+            Expect.equal
+                (runFile [
+                    "type R = { b: int; a: int }"
+                    "let t = [{ a = 2; b = 1 }; { b = 3; a = 4 }] |> Table.render |> Seq.freeze"
+                    "if (t |> Seq.length) <> 4 then exit 3"
+                    "if (t |> Seq.last |> Str.fields |> Str.join \",\") <> \"4,3\" then exit 4"
+                    "let js = [\"[{\\\"name\\\":\\\"a\\\",\\\"email\\\":\\\"a@x\\\"},{\\\"name\\\":\\\"b\\\"},{\\\"email\\\":\\\"c@x\\\",\\\"name\\\":\\\"c\\\"}]\"]"
+                    "let u = js |> from json seq<{| name: string; email: Option<string> |}> |> Table.render |> Seq.freeze"
+                    "if (u |> Seq.last |> Str.fields |> Str.join \",\") <> \"c,c@x\" then exit 5"
+                    "let v = [{| s = \"a\\nb\"; n = 1 |}; {| s = Str.replicate 500 \"x\"; n = 2 |}] |> Table.render |> Seq.freeze"
+                    "if (v |> Seq.length) <> 4 then exit 6"
+                    "if not (v[2] |> Str.contains \"a\\\\nb\") then exit 7"
+                    "if Str.length v[3] < 500 then exit 8"
+                ])
+                0
+                "a literal's and a wire read's field order; a newline cell stays one row; no clip off a terminal"
+        }
+        test "in an arm a lazy command's short first line arrives when written [D:async-seq]" {
+            skipOnWindows ()
+
+            Expect.equal
+                (runFile [
+                    "let short () = $(sh -c \"echo ok; exec sleep 3\") |> Seq.head"
+                    "let (v, took) = [1] |> Seq.pmap (fun _ -> Duration.measure short) |> Seq.head"
+                    "if v <> \"ok\" then exit 3"
+                    "if took > 2s then exit 4"
+                ])
+                0
+                "a line shorter than a byte-order mark's four bytes is not held for more input"
+        }
+        test "in an arm a value-headed pipe feeds while its consumer reads [D:value-headed-pipe]" {
+            skipOnWindows ()
+
+            Expect.equal
+                (runFile [
+                    "let ticks () = Seq.initInfinite (fun i ->"
+                    "    Duration.sleep 100ms"
+                    "    $\"tick {i}\")"
+                    "let first () ="
+                    "    let l = ticks () | cat |> Seq.head"
+                    "    l"
+                    "let (v, took) = [1] |> Seq.pmap (fun _ -> Duration.measure first) |> Seq.head"
+                    "if v <> \"tick 0\" then exit 3"
+                    "if took > 5s then exit 4"
+                ])
+                0
+                "an endless slow producer does not hold the arm that reads the command's output"
+        }
+        test "a byte-order mark split across writes selects the decoding [D:byte-pipes]" {
+            skipOnWindows ()
+
+            Expect.equal
+                (runFile [
+                    "let hex s = s |> Str.toUtf8 |> Bytes.toHex"
+                    "let split1 = sh -c \"printf '\\\\357'; sleep 0.1; printf '\\\\273\\\\277id=7\\\\n'\" |> Seq.head"
+                    "if hex split1 <> \"69643d37\" then exit 3"
+                    "let l = sh -c \"printf '\\\\357\\\\273'; sleep 0.1; printf '\\\\277id=7\\\\n'\" | line"
+                    "if hex l <> \"69643d37\" then exit 4"
+                    "let c = sh -c \"printf '\\\\357'; sleep 0.1; printf '\\\\273\\\\277id=7\\\\n'\" | cat | text"
+                    "if hex c <> \"69643d37\" then exit 5"
+                    "let u = sh -c \"printf '\\\\377'; sleep 0.1; printf '\\\\376i\\\\000d\\\\000\\\\n\\\\000'\" |> Seq.head"
+                    "if hex u <> \"6964\" then exit 6"
+                    "let short = sh -c \"echo ok; exec sleep 3\" |> Seq.head"
+                    "if short <> \"ok\" then exit 7"
+                ])
+                0
+                "lazy lines, | line and a chain's | text decode a late mark as an early one; a short line does not wait"
+        }
+        test "a retry-family body takes a command let with a reifier [D:statement-lets]" {
+            skipOnWindows ()
+
+            let src = [
+                "retry attempts=3 delay=10ms"
+                "    let r = sh -c \"exit 0\" | complete"
+                "    r.ok"
+                "within tmp d"
+                "    poll timeout=1s interval=10ms"
+                "        let up = test -d $d | succeeds"
+                "        up"
+                "    if not (Dir.exists d) then exit 3"
+                "let n = repeat interval=10ms"
+                "    let t = sh -c \"echo 7\" | line"
+                "    t"
+                "until v"
+                "    let again = sh -c \"echo 7\" | line"
+                "    v == again"
+                "if n <> \"7\" then exit 4"
+            ]
+
+            cleanIn "pin.weir" src "the body and the until block are statement bodies"
+            Expect.equal (runFile src) 0 "and they run"
+        }
+        test "a block let binds a value-headed pipe [D:value-headed-pipe]" {
+            skipOnWindows ()
+
+            let src = [
+                "let count xs ="
+                "    let out = xs | cat"
+                "    out |> Seq.length"
+                "if count [\"a\"; \"b\"] <> 2 then exit 3"
+                "if 1 == 1 then"
+                "    let o = [\"x\"; \"in\"] | cat"
+                "    if (o |> Seq.length) <> 2 then exit 4"
+                "[\"q\"] |> Seq.iter (fun s ->"
+                "    let o = [s] | cat"
+                "    if (o |> Seq.head) <> \"q\" then exit 5)"
+            ]
+
+            cleanIn "pin.weir" src "function, if and lambda bodies"
+            Expect.equal (runFile src) 0 "and they run"
+        }
+        test "within serve is refused inside plan [D:plan-parallel-refusal]" {
+            mustSayIn
+                "pin.weir"
+                [
+                    "let route = fun rq ->"
+                    "    File.write \"out.txt\" [\"x\"]"
+                    "    Reply.text 200 \"ok\""
+                    "let p ="
+                    "    plan"
+                    "        within serve srv handler=route"
+                    "            print $\"{Server.port srv}\""
+                    "print $\"{Plan.isEmpty p}\""
+                ]
+                "'within serve' is refused inside 'plan'"
+                "a handler's writes would run for real"
+
+            mustSayIn
+                "pin.weir"
+                [
+                    "let route = fun rq -> Reply.text 200 \"ok\""
+                    "let once () ="
+                    "    within serve srv handler=route"
+                    "        print $\"{Server.port srv}\""
+                    "let p ="
+                    "    plan"
+                    "        once ()"
+                    "print $\"{Plan.isEmpty p}\""
+                ]
+                "'once' cannot run inside 'plan'"
+                "through a helper too"
+        }
+        test "a class range ending in an astral code point is that range [D:regex-code-points]" {
+            Expect.equal
+                (runFile [
+                    "let m pat s = Str.isMatch pat s"
+                    "if not (m @\"^[a-😀]$\" \"b\") then exit 3"
+                    "if not (m @\"^[a-😀]$\" \"😀\") then exit 4"
+                    "if m @\"^[a-😀]$\" \"😁\" then exit 5"
+                    "if m @\"^[a-😀]$\" \"-\" then exit 6"
+                    "if m @\"^[^a-😀]$\" \"b\" then exit 7"
+                    "if not (m @\"^[^a-😀]$\" \"😁\") then exit 8"
+                    "if not (m @\"^[😀-😂]$\" \"😁\") then exit 9"
+                    "if m @\"^[😀-😂]$\" \"😃\" then exit 10"
+                    "if not (m @\"^[😀-🧿x]+$\" \"x🤔😀🧿\") then exit 11"
+                    "if m @\"^[😀-🧿x]+$\" \"x🪀\" then exit 12"
+                    "if (Str.rreplace @\"[😀😁-[😀]]\" \"x\" \"😀😁\") <> \"😀x\" then exit 13"
+                    "if m @\"^[a-z😀-[aeiou]]+$\" \"ba\" then exit 14"
+                    "if (m @\"^[😂-😀]$\" \"😁\" |> try) <> None then exit 15"
+                    "if m @\"^[\\uFFFD]$\" \"😀\" then exit 16"
+                    "if m @\"^[\\uE000-\\uFFFF]$\" \"😀\" then exit 17"
+                    "if m @\"^[0-\\uFFFD]$\" \"😀\" then exit 18"
+                    "if not (m @\"^[^0-\\uFFFD]$\" \"😀\") then exit 19"
+                    "if not (m @\"^[\\S]$\" \"😀\") then exit 20"
+                    "if m @\"^[^\\S]$\" \"😀\" then exit 21"
+                ])
+                0
+                "ranges, negation and subtraction with astral members; a class of U+FFFD takes no emoji"
+        }
+        test "inferShape drafts declarations that check and read the sample back [D:repl-infer]" {
+            let draft (sample: string) =
+                let node =
+                    match Weir.Infer.nodeOf Weir.Infer.Json [ sample ] with
+                    | Ok n -> n
+                    | Error e -> failtest e
+
+                Weir.Infer.inferDecls Weir.Parser.keywords Set.empty "Root" node
+                |> fst
+                |> String.concat "\n"
+
+            // the top record keeps its name when a key capitalises to it
+            let d1 = draft "{\"root\": {\"id\": 1}}"
+            Expect.stringContains d1 "type Root = {\n    root: RootRoot\n}" "the envelope is Root"
+            Expect.stringContains d1 "type RootRoot = {\n    id: int\n}" "the nested object lands elsewhere"
+
+            // no name is handed out twice
+            let d2 =
+                draft "{\"spec\": {\"a\": 1}, \"pod\": {\"spec\": {\"b\": 1}}, \"podSpec\": {\"c\": 1}}"
+
+            let names =
+                d2.Split('\n')
+                |> Array.filter (fun l -> l.StartsWith "type ")
+                |> Array.map (fun l -> l.Split(' ')[1])
+
+            Expect.equal (Array.distinct names).Length names.Length $"distinct type names: {names}"
+
+            // a null beside real elements drafts Option; a repeated key is one field
+            let d3 =
+                draft "{\"xs\": [1, null], \"ys\": [{\"b\": 1}, null], \"a\": 1, \"a\": \"x\"}"
+
+            Expect.stringContains d3 "xs: seq<Option<int>>" "a null int element"
+            Expect.stringContains d3 "ys: seq<Option<Y>>" "a null object element"
+            Expect.stringContains d3 "a: string" "last wins"
+            Expect.isFalse (d3.Contains "a: int") "one field per key"
+
+            // a key with a non-ASCII digit is not a field name
+            Expect.stringContains (draft "{\"a٣\": 2, \"b\": 1, \"c\": \"x\"}") "[<Wire \"a٣\">]" "it rides a wire key"
+
+            for d in [ d1; d2; d3 ] do
+                cleanIn "pin.weir" (d.Split('\n') |> List.ofArray) "the draft checks"
+        }
+        test "hunt 4 lows: closed cons chains, a leading joiner, prefixed xml names, endless walks, a hand-edited lock" {
+            // `x :: []` is `[x]` to the coverage check [D:seq-patterns]
+            cleanIn
+                "pin.weir"
+                [
+                    "let f xs = match xs with | [] -> 0 | x :: [] -> x | x :: y :: _ -> x + y"
+                    "print (f [1; 2; 3])"
+                ]
+                "a chain closed by [] is a fixed length"
+
+            // a joiner with nothing before it joins nothing [D:str-width]
+            Expect.equal
+                (runFile [
+                    "if Str.width \"\\u{200D}👨\" <> 2 then exit 3"
+                    "if Str.width \"👨\\u{200D}👩\" <> 2 then exit 4"
+                ])
+                0
+                "a leading ZWJ does not swallow the emoji after it"
+
+            // [<Attr>]/[<Elem>] match by local name [D:from-xml]
+            mustSayIn
+                "pin.weir"
+                [ "type D = { [<Attr \"xml:lang\">] a: Option<string> }"; "print \"x\"" ]
+                "takes the attribute's local name"
+                "a prefixed attribute name could never match"
+
+            mustSayIn
+                "pin.weir"
+                [ "type D = { [<Elem \"x:item\">] e: seq<string> }"; "print \"x\"" ]
+                "takes the element's local name"
+                "a prefixed element name could never match"
+
+            // the walks' budget is charged at discovery [D:structural-walk]
+            Expect.equal
+                (runFile [
+                    "let endless n = Seq.initInfinite (fun i -> i + n + 1)"
+                    "let r = Graph.reach show endless 0 |> Seq.length |> try result"
+                    "match r with"
+                    "| Error m when Str.contains \"exceeded 100000 steps\" m -> ()"
+                    "| _ -> exit 3"
+                    "if (Graph.reach show (fun n -> if n < 99999 then [n + 1] else []) 0 |> Seq.length) <> 100000 then exit 4"
+                ])
+                0
+                "an endless child seq raises the budget error; 100000 nodes still walk"
+
+            // a hand-edited lock is refused in weir's words [D:lockfile-confinement]
+            withTempDir "weir-h4lock" (fun d ->
+                let w = Path.Combine(d, ".weir")
+                Directory.CreateDirectory w |> ignore
+
+                let refusal (json: string) =
+                    File.WriteAllText(Path.Combine(w, "lock.json"), json)
+
+                    match Weir.Contracts.readLock w with
+                    | Error e -> e
+                    | Ok _ -> "accepted"
+
+                Expect.stringContains
+                    (refusal "{\"schemaVersion\":1.5,\"artifacts\":[]}")
+                    "must be a whole number"
+                    "a fractional version"
+
+                Expect.stringContains
+                    (refusal
+                        "{\"schemaVersion\":1,\"artifacts\":[{\"kind\":\"schema\",\"name\":\"s\",\"url\":\"https://x/s.json\",\"sha256\":\"00\",\"path\":\"schemas/s.json\\u0000x\"}]}")
+                    "holds a NUL character"
+                    "a NUL in a path"
+
+                let z = System.String(char 48, 64)
+
+                Expect.stringContains
+                    (refusal (
+                        "{\"schemaVersion\":1,\"artifacts\":[{\"kind\":\"module\",\"name\":\"m\",\"url\":\"https://x/m.weir\",\"sha256\":\""
+                        + z
+                        + "\",\"path\":\"modules/m.weir\",\"files\":[{\"path\":\"x\\u0000y\",\"sha256\":\""
+                        + z
+                        + "\"}]}]}"
+                    ))
+                    "holds a NUL character"
+                    "a NUL in a closure file's path"
+
+                // verify spawns no file a lock names by path [D:verify-probe-path-only]
+                let sigs = Path.Combine(w, "sigs")
+                Directory.CreateDirectory sigs |> ignore
+                File.WriteAllText(Path.Combine(sigs, "t.weir"), "x")
+
+                let sha =
+                    System.Convert
+                        .ToHexString(
+                            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes "x")
+                        )
+                        .ToLowerInvariant()
+
+                File.WriteAllText(
+                    Path.Combine(w, "lock.json"),
+                    "{\"schemaVersion\":1,\"artifacts\":[{\"kind\":\"sig\",\"name\":\"tools/setup.sh\",\"url\":\"probe\",\"sha256\":\""
+                    + sha
+                    + "\",\"path\":\"sigs/t.weir\",\"version\":\"1\"}]}"
+                )
+
+                let mutable resolved = []
+
+                let out =
+                    Weir.Contracts.verify
+                        (fun p ->
+                            resolved <- p :: resolved
+                            p)
+                        w
+
+                Expect.equal resolved [] "a path-form name is never resolved for a spawn"
+
+                match out with
+                | Ok(lines, findings) ->
+                    Expect.equal (List.length findings) 0 "the hash arm still holds"
+                    Expect.stringContains (String.concat "\n" lines) "version not probed" "the line says so"
+                | Error e -> failtest e)
+
+            let forged =
+                Weir.Can.renderHuman "a\nb.weir" [
+                    {
+                        Weir.Can.Fact = Weir.Can.Runs "git"
+                        Weir.Can.Site = {
+                            Weir.Can.File = "m\n  runs  rm.weir"
+                            Weir.Can.Line = 1
+                            Weir.Can.Col = 1
+                        }
+                    }
+                ]
+
+            Expect.isFalse (forged.Contains "m\n  runs  rm.weir") "a newline in a site's file forges no line"
+
+            Expect.isFalse (forged.StartsWith "a\nb") "nor in the header"
+        }
+    ]
+
 [<Tests>]
 let allTests =
     testList "Weir" [
@@ -47256,4 +47872,5 @@ let allTests =
         parallelTests
         fileTests
         portOverlayTests
+        hunt4Tests
     ]

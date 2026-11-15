@@ -351,6 +351,8 @@ let private headOf (st: St) (builtinHeads: bool) : Head =
                     HeadK.Builtin
                 elif isIdentLike w && (keywords.Contains w || isKnown st w) then
                     HeadK.NotCmd
+                elif Desugar.dashBinding (isKnown st) st.R w then
+                    HeadK.NotCmd
                 elif st.R.IsExternal w then
                     HeadK.External
                 else
@@ -3944,7 +3946,7 @@ and private retryForm (st: St) : Expr =
                 (strWs st ";" || strWs st sibSepStr) |> ignore
                 let savedParen = st.ExprParen
                 st.ExprParen <- false
-                let body = seqExpr st
+                let body = withStmtLetCmd st seqExpr
                 st.ExprParen <- savedParen
 
                 if not st.Ok then
@@ -3966,7 +3968,7 @@ and private retryForm (st: St) : Expr =
                                     withLocals st [ b ] (fun st ->
                                         let savedParen = st.ExprParen
                                         st.ExprParen <- false
-                                        let e = seqExpr st
+                                        let e = withStmtLetCmd st seqExpr
                                         st.ExprParen <- savedParen
                                         e)
 

@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **LSP completion keeps your bindings when PATH is crowded.** The list
+  was sorted and cut at 200, so on a machine with many commands
+  sharing the typed prefix a declared name fell off the end. Bindings
+  now come before PATH commands at the cap.
+- **`weir verify` runs no file a lock names by path.** The version arm
+  probed a lock entry's `name` as a command head, so a committed
+  `.weir/lock.json` naming `tools/setup.sh` ran that file with
+  `--version`. Only a `sig` entry with a plain name is probed now; a
+  path-form signature keeps its hash check and its line says the
+  version was not probed.
+- **A NUL in a module closure's `files[].path` is refused by the lock
+  reader**, as on every other lock field; it reached the filesystem
+  call and ended `verify`/`restore` in an internal error.
+- **`weir check --can` escapes file paths too.** A control character
+  in the script's or an imported module's path could forge a report
+  line; the message was already escaped, the path beside it was not.
 - **A `fun () ->` argument is checked against the type it receives.**
   `[1; 2] |> Seq.map (fun () -> "X")` passed the check and ran, the
   lambda ignoring each element. It is now a type error at the `()`
@@ -15,6 +31,166 @@
   knows was tinted as a command head when it led the line or followed
   `=`. A constructor now takes the constructor colour wherever it
   stands; bold stays for functions, commands and module qualifiers.
+- **`readonly` refuses `File.writeBytes`.** A `readonly` block that
+  wrote a file with `File.writeBytes` passed the check and wrote it.
+  It is now the check error every other file write gets.
+- **`weir check --can` reports every file member, `cd` and `ls`.** A
+  script that called `File.delete`, `File.move`, `File.writeBytes` or
+  `cd` was reported as able to do "nothing". Those, `Path.newTempDir`,
+  `File.readBytes`, `File.sha256`, `File.stat`, `File.exists`,
+  `Dir.stat`, `Path.which`, `Env.fromFile`, a `File.readSecret` of a
+  computed path and a bare `ls` are now listed, each as a read or a
+  write.
+- **`weir check --can` reports the variables a captured command
+  sets.** `$e(cmd | complete)` and `K=v cmd | line` ran with the
+  variables but the report left out "sets K for children".
+- **`weir check --can` shows control characters in a path.** A newline
+  inside a literal path started a new line of the report, where it
+  could pass for a line of its own. It is shown as `\x0a`, as error
+  messages show it.
+- **A case with no payload takes a `when` guard.** `| None when ok ->`
+  and `| Debug | Info when verbose ->` were parse errors ("'when' is a
+  keyword"). They now parse as written.
+- **A name that starts with `module` heads a statement.** `modules |>
+  Seq.iter (fun m -> …)` with a `<<<` or `yaml` block in the lambda
+  failed with an empty parse error.
+- **A command whose name starts with a keyword and a dash runs.**
+  `type-check`, `module-assistant`, `import-im6`, `try-x` and
+  `return-code` were read as the keyword. Glued to a dash the word is
+  a command name, as `let-go` and `if-up` already were.
+- **Ctrl+C at the prompt stops a computation.** `Seq.initInfinite id
+  |> Seq.freeze`, a sum over a huge range or any loop that never waits
+  ignored `^C` and ran until the machine was out of memory; the only
+  way out was `kill -9`. Every function call and a long range now
+  check for the `^C`, so the prompt comes back with `↳ exit 130`. An
+  `always` block still runs as written unless `^C` is pressed again.
+- **`<` on a generic ordered type is checked at the instance.** With
+  `type K<'a> = { [<Ord 1>] f: 'a }`, `{ f = [1] } < { f = [2] }`
+  passed the check and failed at run with "unreachable: the checker
+  rejects '<' keys of [1]". It is now the check error `Seq.sort` gives
+  for the same value.
+- **A redirected `PUT`, `DELETE` or `PATCH` keeps its method.** On a
+  301 or 302, `Http.send` re-sent every request but GET and HEAD as a
+  GET with no body, so a redirected `Http.delete` reported the status
+  of a GET. Only a POST becomes a GET there now, as in curl; a 303
+  still turns everything but GET and HEAD into a GET. A script that
+  relied on a redirected `PUT` arriving as a GET will see the `PUT`.
+- **`Yaml.merge` with a patch applied twice gives the same document
+  as once.** A `- $- x` tombstone removed only the first matching
+  item, so each application removed one more; it now removes every
+  match. Under `by=`, two patch items sharing a key, inserted where
+  the document had no such list, now fold into one, and an item whose
+  key is `$-` is no longer appended again on each application.
+- **An entry edited while browsing history keeps the edit.** Recall
+  a multi-line entry with Up, add a line to it, press Down and Up
+  again, or go up to an older entry and come back: the added text was
+  gone. Each entry you edit now stays as you left it until you submit
+  one, and so does the new entry you were typing.
+- **`count-1` means the same to `weir check` and to the run.** With
+  `count` bound, `let last = count-1` ran as a subtraction but
+  `weir check` read `count-1` as a command, warned that it was not on
+  PATH and then failed the next line with a type error; with a
+  program of that name installed, the run executed it. A name you
+  bound, glued by dashes to numbers or to other known names
+  (`count-1`, `n-m`, `fun n -> n-1`), is now a subtraction to both.
+  A word with a part nothing knows is still a command
+  (`docker-compose` beside `let docker = …`), and `^count-1` runs the
+  program of that name.
+- **`Table.render` takes rows whose fields are in different orders.**
+  Two records of one type written with their fields in a different
+  order, or anonymous records read from JSON whose keys came in a
+  different order or with an optional key missing, were refused with
+  "needs a seq of same-shaped records". They render, in the first
+  row's column order.
+- **A newline in a `Table.render` cell no longer breaks the row.** It
+  is shown as `\n`, as a tab is shown as `\t`. And a long cell is not
+  cut at 120 characters when the output is piped; it is still cut at a
+  terminal.
+- **In a `Seq.pmap` arm or a `within serve` handler, a command's short
+  first line arrives when it is written.** `$(cmd) |> Seq.head` waited
+  for the command's fourth byte of output, so a first line such as
+  `ok` or `1` from a command that then went quiet was held until the
+  command printed more or exited, and never came from one that did
+  neither. Outside an arm it always arrived at once.
+- **In an arm, `values | cmd` feeds the command while its output is
+  read.** The values were all pulled before the arm read anything, so
+  a slow producer delayed the first line by its whole run and an
+  endless one hung the arm.
+- **A byte-order mark that arrives in pieces is still a mark.** When a
+  command wrote its UTF-8 or UTF-16 mark over two writes, `cmd |>
+  Seq.head`, `cmd | line` and a chain's `| text` kept the mark's bytes
+  in the first line (or decoded UTF-16 as garbage), while `| complete`
+  read it correctly. Every form now waits for the rest of a mark
+  before choosing the decoding.
+- **A `retry`, `poll` or `repeat` body binds a command's result.**
+  `let r = cmd | complete` (or `| succeeds`, `| line`, `| text`,
+  `| exitCode`) as a line of the body was a parse error asking for
+  `$(…)`, at the top level and inside `if`, `for`, `within`, a match
+  arm or a lambda. The body and the `until` block now take command
+  lets like any other block.
+- **`let out = values | cmd` works inside a block.** In a function,
+  `if`, `for`, `within` or lambda body, a `let` binding a value piped
+  into a command, followed by another line, failed with a list of
+  expected tokens. It binds the command's lines, as at the top level.
+- **`within serve` is refused inside `plan`.** A server opened inside
+  a plan ran its handlers for real: a handler's `File.write` wrote the
+  file and the plan came back empty. It is now a check error, like
+  the parallel `Seq` members, directly or through a helper. Open the
+  server outside the plan.
+- **An emoji can end a range in a regex class.** `[a-😀]` matched only
+  `a`, `-` and `😀`, its negation was wrong the same way, and a range
+  between two emoji (`[😀-😂]`) was refused as "range in reverse
+  order". A range with an astral end now covers its code points, as
+  in Python. A class subtraction with an astral member (`[😀😁-[😀]]`)
+  removes it; it used to be ignored.
+- **A class no longer matches every emoji because of a BMP range.**
+  A class holding U+FFFD (`[\uFFFD]`), a private-use range
+  (`[\uE000-\uFFFF]`) or any range running across the surrogate
+  block (`[0-\uFFFD]`) matched every astral character, and the
+  negated forms matched none. A class takes an astral character only
+  through an astral member or range, or an escape such as `\S` or
+  `\P{L}`.
+- **`#infer … as Name` gives the name to the top record.** With a
+  sample such as `{"user": {"id": 1}}` read `as User`, the nested
+  object took `User` and the envelope became `UserUser`, so reading
+  the sample with the name you asked for failed. The top record keeps
+  the name and the nested one is drafted as `UserUser`, with a note.
+  `Json.inferShape` and `Yaml.inferShape` keep `Root` the same way.
+- **`inferShape` drafts that check.** It could declare two types with
+  one name (`pod.spec` and `podSpec` both as `PodSpec`), and a JSON
+  object with a repeated key drafted the field twice; both failed
+  `weir check`. Names are now unique, a repeated key is one field
+  (the last value, as `from json` reads it), and a key holding a
+  non-ASCII digit is drafted behind `[<Wire "…">]`.
+- **`inferShape` drafts `Option` for an array with a `null` in it.**
+  `[1, null]` drafted `seq<int>`, which could not read the sample
+  back. It drafts `seq<Option<int>>`, and `seq<Option<T>>` for
+  objects.
+- **`x :: []` counts as `[x]` when a match is checked for coverage.**
+  `| [] -> … | x :: [] -> … | x :: y :: _ -> …` was refused as "not
+  exhaustive; missing: [_]", the case its second arm covers.
+- **`Str.width` no longer loses an emoji after a leading joiner.** A
+  string that starts with a zero-width joiner measured the character
+  after it as 0 columns.
+- **`[<Attr "xml:lang">]` and `[<Elem "x:item">]` are refused.**
+  `from xml` matches by local name, so a prefixed name could never
+  match: an `Option` or `seq` field silently read empty. The check
+  error shows the local name to write.
+- **`Tree.walk`, `Graph.reach` and `Frontier.fold` stop at an endless
+  child list.** A node whose children never end (or an endless
+  frontier) filled memory before the 100000-step limit was looked at.
+  The limit is now applied as nodes are found.
+- **`cmd | complete` at the prompt and under `-e` shows its value.**
+  `echo x | complete`, `| succeeds` and `| exitCode` were refused as
+  discarded values there, though the prompt is where you look at
+  them. They echo like any other value; a script still has to bind or
+  read them.
+- **A hand-edited lock file is refused in weir's words.** A NUL in an
+  entry's `path` ended `weir verify`, `restore` and `gen types` with
+  an internal error, and a fractional `schemaVersion` with .NET's
+  message.
+- **Formatting from the editor keeps CRLF line endings**, as
+  `weir fmt` does; it used to rewrite the file with LF.
 
 ## v0.0.91
 

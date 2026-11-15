@@ -24,12 +24,14 @@ let private ambientResolver =
         Desugar.ExternalNames = (fun () -> Seq.empty)
         Desugar.BareHome = (fun _ -> None)
         Desugar.AliasHead = fun _ -> None
+        Desugar.IsBuiltinName = fun _ -> false
     })
 
 let private ambientProxy: Resolver = {
     IsKnown = fun n -> ambientResolver.Value.IsKnown n
     IsCommandCallable = fun n -> ambientResolver.Value.IsCommandCallable n
     IsExternal = fun n -> ambientResolver.Value.IsExternal n
+    IsBuiltinName = fun n -> ambientResolver.Value.IsBuiltinName n
     ExternalNames = fun () -> ambientResolver.Value.ExternalNames()
     BareHome = fun n -> ambientResolver.Value.BareHome n
     AliasHead = fun n -> ambientResolver.Value.AliasHead n
@@ -95,6 +97,21 @@ let private envAssignsFwd, private envAssignsFwdRef =
 // forwarded: the if/elif condition position sits above it too [D:if-succeeds]
 let private ifCondCmd, private ifCondCmdRef =
     createParserForwardedToRef<Expr, unit>()
+
+// a block let's RHS ends at its `in` [D:value-headed-pipe]: a value-headed
+// pipe there (`let out = xs | prog`) stops its argv at the bareword, as a
+// command-headed RHS does [D:let-in-commands]
+let private letRhsIn = new System.Threading.ThreadLocal<bool>(fun () -> false)
+
+let private withLetRhsIn (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let saved = letRhsIn.Value
+        letRhsIn.Value <- true
+
+        try
+            p stream
+        finally
+            letRhsIn.Value <- saved
 
 let private withLetCmd (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
@@ -507,6 +524,12 @@ let private attrsRejectHere: Parser<unit, unit> =
 
 let private keyword s =
     attempt (pstring s .>> notFollowedBy (satisfy isIdentCont)) .>> ws
+
+// a declaration keyword at a statement's head: glued to a dash it is a
+// command word (`type-check`, `module-assistant`), never the keyword
+let private declKeyword s =
+    attempt (pstring s .>> notFollowedBy (satisfy (fun c -> isIdentCont c || c = '-')))
+    .>> ws
 
 // internal backtrack labels [D:label-leaks]: bookkeeping for the
 // combinators, never a user-facing repair — the marker lets the dump
@@ -1695,7 +1718,11 @@ let private dotFloatTeaching =
 // it is misplaced — teach the form [D:try-form]
 let private tryAtomTeaching: Parser<Expr, unit> =
     onHead 't' (pstring "try")
-    <| attempt (getPosition .>> pstring "try" .>> notFollowedBy (satisfy isIdentCont))
+    <| attempt (
+        getPosition
+        .>> pstring "try"
+        .>> notFollowedBy (satisfy (fun c -> isIdentCont c || c = '-'))
+    )
     >>= fun at ->
         failFatallyAt
             at
@@ -2188,7 +2215,8 @@ let private letInBody =
         )
 
     choice [
-        getPosition .>>. (patForm .>>. (seqExpr >>= pipeOrHint) .>> keyword "in")
+        getPosition
+        .>>. (patForm .>>. withLetRhsIn (seqExpr >>= pipeOrHint) .>> keyword "in")
         >>= fun (p, (binder, value)) ->
             // the pattern's names are bindings in the body, as a plain
             // let's name is — a bound name heads no command
@@ -2287,7 +2315,7 @@ let private letInBody =
                 // a false "specific" diagnosis
                 (followedBy eof
                  >>. fun stream -> failFatally $"this binding has no value — give '{name}' a right-hand side" stream)
-                <|> (withParams (cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in")
+                <|> (withParams (cmdRhs <|> withLetRhsIn (seqExpr >>= pipeOrHint)) .>> keyword "in")
                 >>= fun value ->
                     withAmbientName name (withExprParen false (undeepen seqExpr))
                     |>> fun body -> {
@@ -2343,6 +2371,16 @@ let private opp = mkOpp true
 let private segOpp = mkOpp false
 
 let private pat, private patRef = createParserForwardedToRef<Pattern, unit>()
+
+let private keywordWordAhead: Parser<unit, unit> =
+    attempt (
+        rawWord
+        >>= fun w ->
+            if keywords.Contains w && w <> "true" && w <> "false" then
+                preturn ()
+            else
+                fail "not a keyword"
+    )
 
 let private patWord =
     // the keyword check dominates [D:anchor-before-read], outside the
@@ -2513,7 +2551,9 @@ let private patCore =
                 // a qualified case `A.Case` names the import whose union
                 // declares it [D:qualified-case-patterns]; the checker
                 // resolves the qualifier
-                opt qualifiedCaseWord .>>. opt patAtom
+                // a keyword ends the case (`| None when …`, `| A | B when …`):
+                // it is never the payload
+                opt qualifiedCaseWord .>>. opt (notFollowedBy keywordWordAhead >>. patAtom)
                 |>> fun (q, arg) ->
                     let ctor, qual, headEnd =
                         match q with
@@ -3296,7 +3336,8 @@ let private retryExprBody =
                      })
                 >>= fun optsE ->
                     opt (str_ws ";" <|> str_ws sibSepStr)
-                    >>. (withExprParen false seqExpr
+                    // the body is statement territory [D:statement-lets]
+                    >>. (withStmtLetCmd (withExprParen false seqExpr)
                          // nothing that starts a body [D:loop-body-teach]
                          <|> (getPosition
                               >>= fun at -> failFatallyAt at $"'{headWord}' needs a body — the indented lines below it"))
@@ -3307,7 +3348,9 @@ let private retryExprBody =
                             >>= fun (b, bspan) ->
                                 let pred =
                                     (opt (str_ws ";" <|> str_ws sibSepStr))
-                                    >>. (withPatNames { PKind = PVar b; PSpan = bspan } (withExprParen false seqExpr)
+                                    >>. (withPatNames
+                                             { PKind = PVar b; PSpan = bspan }
+                                             (withStmtLetCmd (withExprParen false seqExpr))
                                          <?> "the until predicate")
 
                                 // a block-less `until stopped` is a within's held
@@ -4489,7 +4532,14 @@ let private foreignKeywordGuard () : Parser<'a, unit> =
         |> List.map (fun (w, teach) ->
             let shape = if w = "def" then defStatementShape else preturn ()
 
-            attempt (getPosition .>> shape .>> pstring w .>> notFollowedBy (satisfy isIdentCont))
+            // glued to a dash the word is a command name (`try-x`), as the
+            // declaration keywords are
+            attempt (
+                getPosition
+                .>> shape
+                .>> pstring w
+                .>> notFollowedBy (satisfy (fun c -> isIdentCont c || c = '-'))
+            )
             >>= fun at -> failFatallyAt at teach)
     )
 
@@ -5014,6 +5064,8 @@ let private commandSegment
                 preturn (BuiltinHead, w, span)
             elif isIdentLike w && (keywords.Contains w || r.IsKnown w) then
                 ifail "known name; expression mode"
+            elif Desugar.dashBinding r.IsKnown r w then
+                ifail "a bound name minus a value; expression mode"
             elif r.IsExternal w then
                 preturn (ExternalHead, w, span)
             else
@@ -5428,6 +5480,9 @@ let private valueHeadedGate =
 
 let private valueHeadedStages = pipedStages true cmdArg None ambientProxy
 
+let private valueHeadedStagesLetRhs =
+    pipedStages true cmdArgLetRhs None ambientProxy
+
 valueHeadedTailImpl <-
     // deepen: the tail re-enters the command grammar [D:depth-guard]
     fun lhs ->
@@ -5445,7 +5500,12 @@ valueHeadedTailImpl <-
                  )
                  >>= fun (at, name) -> failFatallyAt at (captureReifierMsg inner name)
              | _ -> ifail "not a capture head")
-            <|> (valueHeadedGate >>. valueHeadedStages
+            <|> (valueHeadedGate
+                 >>. (fun stream ->
+                     if letRhsIn.Value then
+                         valueHeadedStagesLetRhs stream
+                     else
+                         valueHeadedStages stream)
                  >>= fun stages ->
                      match foldChain lhs stages with
                      | Result.Ok e -> preturn e
@@ -5760,7 +5820,7 @@ let private typeDecl =
     >>= fun (p, attrs) ->
         let core =
             pipe4
-                (keyword "type" >>. ident .>>. typeParams .>> str_ws "=")
+                (declKeyword "type" >>. ident .>>. typeParams .>> str_ws "=")
                 (recordBody <|> unionBody)
                 (opt validateClause)
                 getPosition
@@ -5953,14 +6013,15 @@ let private upperName (role: string) : Parser<string * Span, unit> =
 // `module` (name derived from the filename) or `module Name`
 let private moduleDecl: Parser<Stmt, unit> =
     pipe2
-        (spanned (pstring "module" .>> notFollowedBy (satisfy isIdentCont)) .>> ws)
+        (attempt (spanned (pstring "module" .>> notFollowedBy (satisfy (fun c -> isIdentCont c || c = '-'))))
+         .>> ws)
         (opt (upperName "a module name") .>> eof)
         (fun (_, kwSpan) nameOpt -> SModule(Option.map fst nameOpt, kwSpan))
 
 // `import "path"` / `import "path" as Name` — the path is a literal string
 // (resolution is check-time); anything else gets the teaching error
 let private importDecl: Parser<Stmt, unit> =
-    keyword "import"
+    declKeyword "import"
     >>. (spanned (between (pchar '"') (pchar '"') (manyStrings stringChar)) .>> ws
          <|> failFatally "import takes a literal string path, e.g. import \"./lib/paths.weir\"")
     .>>. (opt (keyword "as" >>. upperName "an import alias") .>> eof)
@@ -6007,6 +6068,7 @@ let private noExternals = {
     Desugar.ExternalNames = (fun () -> Seq.empty)
     Desugar.BareHome = (fun _ -> None)
     Desugar.AliasHead = fun _ -> None
+    Desugar.IsBuiltinName = fun _ -> false
 }
 
 // Structured failure: the position travels as data

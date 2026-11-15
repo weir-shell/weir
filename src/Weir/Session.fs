@@ -1134,8 +1134,9 @@ let checkInterrupted () : unit =
 
 /// raise whichever cancel stopped this flow (the race's, then ^C's)
 let checkCancels () : unit =
-    checkCancelled ()
-    checkInterrupted ()
+    if System.Threading.Volatile.Read &cutsPending <> 0 then
+        checkCancelled ()
+        checkInterrupted ()
 
 // a node's token, made at the first wait that needs one; cancelled by the
 // node's cut. `hard`: the one a wait on a child holds — a soft teardown
@@ -2205,8 +2206,39 @@ let cutBlocking (f: unit -> 'a) : 'a =
 // terminal's ^C, which reached the child too) leaves the read be while the
 // child lives; once the child is gone (an orphan holds the pipe) it cuts
 // too [D:sigint-terminal-group]. Windows waits beside the token per fill
+// the byte-order marks a longer read can still complete (UTF-16 BE's two
+// bytes are whole at once; UTF-16 LE's are the head of UTF-32 LE's)
+let private byteOrderMarks: byte[][] = [|
+    [| 0xFEuy; 0xFFuy |]
+    [| 0xEFuy; 0xBBuy; 0xBFuy |]
+    [| 0xFFuy; 0xFEuy; 0uy; 0uy |]
+    [| 0uy; 0uy; 0xFEuy; 0xFFuy |]
+|]
+
+/// can the first `n` bytes of an output still grow into a longer mark?
+/// While they can, the decoding is not chosen: a mark that arrives over
+/// several reads selects it as one read's does
+let markUndecided (at: int -> byte) (n: int) : bool =
+    n < 4
+    && byteOrderMarks
+       |> Array.exists (fun m ->
+           n < m.Length
+           && (let mutable same = true
+
+               for i in 0 .. n - 1 do
+                   if at i <> m[i] then
+                       same <- false
+
+               same))
+
 type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Process) =
     inherit System.IO.Stream()
+
+    // a text reader's first fill holds the whole mark (`GatherMark`): the
+    // reader picks its decoding from that fill alone
+    let mutable head: byte[] = null
+    let mutable headLen = 0
+    let mutable headAt = -1
 
     let fd =
         match inner with
@@ -2242,21 +2274,10 @@ type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Proces
     /// raise when a cut this read honours is made
     member _.CutCheck() = cutNow ()
 
-    override _.CanRead = true
-    override _.CanSeek = false
-    override _.CanWrite = false
-    override _.Length = raise (System.NotSupportedException())
+    /// make the first fill wait for a byte-order mark's remaining bytes
+    member _.GatherMark() = head <- Array.zeroCreate<byte> 4
 
-    override _.Position
-        with get () = raise (System.NotSupportedException())
-        and set (_: int64) = raise (System.NotSupportedException())
-
-    override _.Flush() = ()
-    override _.Seek(_: int64, _: System.IO.SeekOrigin) : int64 = raise (System.NotSupportedException())
-    override _.SetLength(_: int64) = raise (System.NotSupportedException())
-    override _.Write(_: byte[], _: int, _: int) = raise (System.NotSupportedException())
-
-    override _.Read(buffer: byte[], offset: int, count: int) : int =
+    member private _.Fill(buffer: byte[], offset: int, count: int) : int =
         if count = 0 then
             0
         elif fd >= 0 then
@@ -2272,6 +2293,47 @@ type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Proces
             // its token, so the fill waits beside the token instead
             cutRead (fun () -> inner.Read(buffer, offset, count)) (fun t ->
                 inner.ReadAsync(System.Memory<byte>(buffer, offset, count), t))
+
+    override _.CanRead = true
+    override _.CanSeek = false
+    override _.CanWrite = false
+    override _.Length = raise (System.NotSupportedException())
+
+    override _.Position
+        with get () = raise (System.NotSupportedException())
+        and set (_: int64) = raise (System.NotSupportedException())
+
+    override _.Flush() = ()
+    override _.Seek(_: int64, _: System.IO.SeekOrigin) : int64 = raise (System.NotSupportedException())
+    override _.SetLength(_: int64) = raise (System.NotSupportedException())
+    override _.Write(_: byte[], _: int, _: int) = raise (System.NotSupportedException())
+
+    override this.Read(buffer: byte[], offset: int, count: int) : int =
+        if isNull head || count = 0 then
+            this.Fill(buffer, offset, count)
+        else
+            if headAt < 0 then
+                let mutable go = true
+
+                while go do
+                    let n = this.Fill(head, headLen, 4 - headLen)
+
+                    if n <= 0 then
+                        go <- false
+                    else
+                        headLen <- headLen + n
+                        go <- markUndecided (fun i -> head[i]) headLen
+
+                headAt <- 0
+
+            let k = min count (headLen - headAt)
+            System.Array.Copy(head, headAt, buffer, offset, k)
+            headAt <- headAt + k
+
+            if headAt >= headLen then
+                head <- null
+
+            k
 
     // the child's pipe is the Process's to close
     override _.Dispose(_: bool) = ()
@@ -2621,7 +2683,9 @@ let sleepSuspended (span: System.TimeSpan) : System.Threading.Tasks.Task<bool> =
 /// a reader over a child's output, cut as the flow is: the encoding the
 /// Process gave it, a larger buffer
 let cutReader (child: System.Diagnostics.Process) (r: System.IO.StreamReader) : System.IO.StreamReader =
-    new System.IO.StreamReader(cutStream child r.BaseStream, r.CurrentEncoding, true, 65536)
+    let s = new CutStream(r.BaseStream, child)
+    s.GatherMark()
+    new System.IO.StreamReader(s, r.CurrentEncoding, true, 65536)
 
 /// join a task; a teardown request raises on the main thread once the
 /// task's arms, cut at their next boundary, have joined

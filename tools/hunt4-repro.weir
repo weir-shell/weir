@@ -1,0 +1,347 @@
+#!/usr/bin/env weir
+// Acceptance instrument for dev/plans/PLAN-hunt4-fixes.md: one probe per
+// high or medium finding of hunt 4 (H4-*). Each probe prints `<id> OK` when
+// its item is fixed and `<id> REPRODUCES (...)` otherwise, naming every
+// sub-case still failing, so one script is both the bug report and the gate.
+//
+//     weir tools/hunt4-repro.weir --bin ./path/to/weir [--only H4-S3]
+//
+// A probe is a fixture script the binary under test checks or runs. A run
+// fixture exits 0 when the behaviour is the fixed one and a small number
+// naming the failing step otherwise, so a probe that fails to run counts as
+// reproducing, never as a pass. Not here: the two prompt items (U1 a ^C
+// stops a computation, U2 an edited history entry keeps its edit) need a
+// terminal — tests/repl/repl-history-edits.py is their probe, run by e2e.
+//
+// Controls (`control-*`) pin the neighbouring behaviour each fix must keep;
+// a failed control counts toward the exit code, as a SKIP does.
+
+type Cli = {
+    /// the weir binary under test
+    [<Default "weir">]
+    bin: string
+    /// run only the probes and controls whose label starts with this text
+    only: Option<string>
+}
+
+let cli = Args.load Cli
+
+let toolsReady = sh -c "command -v timeout && command -v sh && command -v cat" | succeeds
+
+// ---- runners ---------------------------------------------------------------
+
+let put dir name lines =
+    let p = $"{dir}/{name}"
+    lines |> File.write p
+    p
+
+let weirIn dir args =
+    within cd dir
+        let r = timeout -k 2 90 $cli.bin $@args | complete
+        r
+
+let textOf { stdout = so; stderr = se } = (so |> Str.join "\n") + "\n" + (se |> Str.join "\n")
+let firstErr { stderr = se } = se |> Seq.tryHead |> Option.defaultValue ""
+
+// the fixture exits 0 when fixed
+let runs0 dir name lines =
+    let r = weirIn dir [put dir name lines]
+    if r.exitCode == 0 then [] else [$"{name}: exit {r.exitCode} {firstErr r}"]
+
+// `weir check` refuses, saying `needle`
+let checkSays dir name needle lines =
+    let r = weirIn dir ["check"; put dir name lines]
+    if r.exitCode <> 0 && (textOf r |> Str.contains needle) then [] else [$"{name}: check exit {r.exitCode}, no '{needle}'"]
+
+// `weir check` mentions `needle`, whatever its exit
+let checkMentions dir name needle lines =
+    let r = weirIn dir ["check"; put dir name lines]
+    if textOf r |> Str.contains needle then [] else [$"{name}: check does not mention '{needle}'"]
+
+// `weir check` reports no error
+let checkClean dir name lines =
+    let r = weirIn dir ["check"; put dir name lines]
+    if r.exitCode == 0 && not (textOf r |> Str.contains "error") then [] else [$"{name}: check exit {r.exitCode} {r.stdout |> Seq.tryHead |> Option.defaultValue ""}"]
+
+// `weir check --can` lists every needle
+let canSays dir name needles lines =
+    let r = weirIn dir ["check"; "--can"; put dir name lines]
+    let out = textOf r
+    needles |> Seq.where (fun n -> not (out |> Str.contains n)) |> Seq.map (fun n -> $"{name}: the report lacks '{n}'") |> Seq.freeze
+
+// ---- fixtures ---------------------------------------------------------------
+
+let s1Readonly = <<<
+    let x =
+        readonly
+            File.writeBytes "out.bin" (Str.toUtf8 "x")
+            1
+    print (show x)
+
+let s2Can = <<<
+    File.delete "/x/a"
+    File.move "/x/b" "/x/c"
+    File.writeBytes "/x/d" (Str.toUtf8 "x")
+    cd "/var"
+    let e = Env.ofPairs [("K", "v")]
+    let z = $e(sh -c "true" | complete)
+    print $"{z.ok} {ls |> Seq.length}"
+
+let s3Dash = <<<
+    let count = 5
+    let last = count-1
+    if last + 1 <> 5 then exit 3
+    if not (count-1 > 0) then exit 4
+    let f = fun n -> n-1
+    if f 3 <> 2 then exit 5
+    let g n m =
+        let d = n-m
+        d
+    if g 9 4 <> 5 then exit 6
+
+let s4Guard = <<<
+    type L = Debug | Info | Warn
+    let f l n = match l with | Debug | Info when n > 0 -> 1 | Warn when n > 0 -> 2 | _ -> 3
+    let g = function | None when 1 == 1 -> 1 | _ -> 2
+    if f Info 1 <> 1 then exit 3
+    if f Warn 1 <> 2 then exit 4
+    if f Warn 0 <> 3 then exit 5
+    if g None <> 1 then exit 6
+
+let s5ArmLine = <<<
+    let short () = $(sh -c "echo ok; exec sleep 3") |> Seq.head
+    let (v, took) = [1] |> Seq.pmap (fun _ -> Duration.measure short) |> Seq.head
+    if v <> "ok" then exit 3
+    if took > 2s then exit 4
+
+let s6RetryLet = <<<
+    retry attempts=3 delay=10ms
+        let r = sh -c "exit 0" | complete
+        r.ok
+    within tmp d
+        poll timeout=1s interval=10ms
+            let up = test -d $d | succeeds
+            up
+        if not (Dir.exists d) then exit 3
+
+let s7ArmFeed = <<<
+    let ticks () = Seq.initInfinite (fun i ->
+        Duration.sleep 100ms
+        $"tick {i}")
+    let first () =
+        let l = ticks () | cat |> Seq.head
+        l
+    let (v, took) = [1] |> Seq.pmap (fun _ -> Duration.measure first) |> Seq.head
+    if v <> "tick 0" then exit 3
+    if took > 5s then exit 4
+
+let m1Ord = <<<
+    type K<'a> = { [<Ord 1>] f: 'a }
+    print ({ f = [1] } < { f = [2] })
+
+let m2Heads = [
+    "let modules = [\"a\"]"
+    "modules |> Seq.iter (fun m ->"
+    "    let y = <<<"
+    "        x"
+    "    if (y |> Seq.head) + m <> \"xa\" then exit 3)"
+    "let typed = 1"
+    "let imports = [typed]"
+    "imports |> Seq.iter (fun i -> if i <> 1 then exit 4)"
+]
+
+let m3ServePlan = <<<
+    let route = fun rq ->
+        File.write "out.txt" ["x"]
+        Reply.text 200 "ok"
+    let p =
+        plan
+            within serve srv handler=route
+                print $"{Server.port srv}"
+    print $"{Plan.isEmpty p}"
+
+let m4BlockPipe = <<<
+    let count xs =
+        let out = xs | cat
+        out |> Seq.length
+    if count ["a"; "b"] <> 2 then exit 3
+    if 1 == 1 then
+        let o = ["x"; "in"] | cat
+        if (o |> Seq.length) <> 2 then exit 4
+
+let m5Table = <<<
+    type R = { b: int; a: int }
+    let t = [{ a = 2; b = 1 }; { b = 3; a = 4 }] |> Table.render |> Seq.freeze
+    if (t |> Seq.last |> Str.fields |> Str.join ",") <> "4,3" then exit 3
+    let js = ["[{\"name\":\"a\",\"email\":\"a@x\"},{\"name\":\"b\"},{\"email\":\"c@x\",\"name\":\"c\"}]"]
+    let u = js |> from json seq<{| name: string; email: Option<string> |}> |> Table.render |> Seq.freeze
+    if (u |> Seq.last |> Str.fields |> Str.join ",") <> "c,c@x" then exit 4
+    let v = [{| s = "a\nb"; n = 1 |}; {| s = Str.replicate 500 "x"; n = 2 |}] |> Table.render |> Seq.freeze
+    if (v |> Seq.length) <> 4 then exit 5
+    if Str.length v[3] < 500 then exit 6
+
+let m6Regex = <<<
+    let m pat s = Str.isMatch pat s
+    if not (m @"^[a-😀]$" "b") then exit 3
+    if m @"^[a-😀]$" "😁" then exit 4
+    if m @"^[a-😀]$" "-" then exit 5
+    if not (m @"^[^a-😀]$" "😁") then exit 6
+    if not (m @"^[😀-😂]$" "😁") then exit 7
+    if (Str.rreplace @"[😀😁-[😀]]" "x" "😀😁") <> "😀x" then exit 8
+    if m @"^[�]$" "😀" then exit 9
+    if not (m @"^[^0-�]$" "😀") then exit 10
+
+let m7Infer = <<<
+    let d1 = Json.inferShape ["{\"root\": {\"id\": 1}}"]
+    if not (d1 |> Str.contains "type RootRoot = {\n    id: int") then exit 3
+    if not (d1 |> Str.contains "type Root = {\n    root: RootRoot") then exit 4
+    let d2 = Json.inferShape ["{\"spec\": {\"a\": 1}, \"pod\": {\"spec\": {\"b\": 1}}, \"podSpec\": {\"c\": 1}}"]
+    let names = d2 |> Str.split "\n" |> Seq.where (Str.startsWith "type ") |> Seq.freeze
+    if (names |> Seq.distinct |> Seq.length) <> (names |> Seq.length) then exit 5
+    let d3 = Json.inferShape ["{\"xs\": [1, null], \"a\": 1, \"a\": \"x\"}"]
+    if not (d3 |> Str.contains "xs: seq<Option<int>>") then exit 6
+    if d3 |> Str.contains "a: int" then exit 7
+
+let m8Merge = <<<
+    let doc = ["args:"; "  - -v"; "  - -v"; "  - x"] |> Yaml.parse
+    let p = yaml patch
+        args:
+            - $- -v
+    let once = doc |> Yaml.merge p
+    let j1 = once |> to json |> Str.join ""
+    if j1 <> "{\"args\":[\"x\"]}" then exit 3
+    if (once |> Yaml.merge p |> to json |> Str.join "") <> j1 then exit 4
+
+let m9CanEscape = <<<
+    File.write "/tmp/ok\n  nothing else" ["x"]
+
+let m10Redirect = <<<
+    let route = fun rq ->
+        match rq.path with
+        | "/old" -> Reply.redirect 302 "/new"
+        | "/see" -> Reply.redirect 303 "/new"
+        | _ -> Reply.text 200 $"{rq.method} {rq.body}"
+    within serve srv handler=route
+        let base = $"http://127.0.0.1:{Server.port srv}"
+        let seen req = Http.send req |> _.body |> Str.join ""
+        if seen (Http.delete $"{base}/old") <> "Delete " then exit 3
+        if seen { Http.put $"{base}/old" with body = Text "p" } <> "Put p" then exit 4
+        if seen { Http.post $"{base}/old" with body = Text "p" } <> "Get " then exit 5
+        if seen { Http.put $"{base}/see" with body = Text "p" } <> "Get " then exit 6
+
+let m11Bom = <<<
+    let hex s = s |> Str.toUtf8 |> Bytes.toHex
+    let split1 = sh -c "printf '\\357'; sleep 0.1; printf '\\273\\277id=7\\n'" |> Seq.head
+    if hex split1 <> "69643d37" then exit 3
+    let l = sh -c "printf '\\357\\273'; sleep 0.1; printf '\\277id=7\\n'" | line
+    if hex l <> "69643d37" then exit 4
+    let u = sh -c "printf '\\377'; sleep 0.1; printf '\\376i\\000d\\000\\n\\000'" |> Seq.head
+    if hex u <> "6964" then exit 5
+
+// ---- controls ---------------------------------------------------------------
+
+let ctlReadonlyReads = <<<
+    let n =
+        readonly
+            File.exists "/nonexistent-zz"
+    print $"{n}"
+
+let ctlDashCommand = <<<
+    let docker = "docker"
+    docker-composezz up
+    print docker
+
+let ctlPlanCaptures = <<<
+    let p =
+        plan
+            File.write "captured.txt" ["x"]
+    if Plan.isEmpty p then exit 3
+    if File.exists "captured.txt" then exit 4
+
+// ---- the table ---------------------------------------------------------------
+
+type Item = { id: string; what: string; run: string -> seq<string> }
+
+let controls = [
+    { id = "control-readonly-reads"; what = "readonly still admits a filesystem read (H4-S1)"; run = fun d -> checkClean d "c1.weir" ctlReadonlyReads }
+    {
+        id = "control-dash-command"
+        what = "a dashed word with an unknown part stays a command (H4-S3)"
+        run = fun d -> checkMentions d "c2.weir" "command not found on PATH: docker-composezz" ctlDashCommand
+    }
+    { id = "control-plan-captures"; what = "a plan outside any server still captures (H4-M3)"; run = fun d -> runs0 d "c3.weir" ctlPlanCaptures }
+]
+
+let probes = [
+    { id = "H4-S1"; what = "readonly refuses File.writeBytes"; run = fun d -> checkSays d "s1.weir" "'File.writeBytes' writes the filesystem" s1Readonly }
+    {
+        id = "H4-S2"
+        what = "--can reports deletes, moves, byte writes, cd, ls and a reified overlay"
+        run = fun d ->
+            canSays d "s2.weir" ["File.delete /x/a"; "File.move /x/b"; "File.writeBytes /x/d"; "changes the working directory (cd)"; "ls (the working directory)"; "sets K for children"] s2Can
+    }
+    { id = "H4-S3"; what = "a bound name glued to a dash is subtraction for check and run"; run = fun d -> Seq.append (checkClean d "s3.weir" s3Dash) (runs0 d "s3.weir" s3Dash) }
+    { id = "H4-S4"; what = "a nullary case takes a guard"; run = fun d -> runs0 d "s4.weir" s4Guard }
+    { id = "H4-S5"; what = "in an arm a short first line arrives when written"; run = fun d -> runs0 d "s5.weir" s5ArmLine }
+    { id = "H4-S6"; what = "a retry-family body takes a command let with a reifier"; run = fun d -> runs0 d "s6.weir" s6RetryLet }
+    { id = "H4-S7"; what = "in an arm a value-headed pipe feeds while its consumer reads"; run = fun d -> runs0 d "s7.weir" s7ArmFeed }
+    { id = "H4-M1"; what = "'<' on a generic ordered type demands the instance"; run = fun d -> checkSays d "m1.weir" "operator '<' is not defined for K<seq<int>>" m1Ord }
+    {
+        id = "H4-M2"
+        what = "a keyword-prefixed name heads a statement or a command"
+        run = fun d -> Seq.append (runs0 d "m2.weir" m2Heads) (checkClean d "m2b.weir" ["type-checkzz --flag"; "module-assistantzz x"])
+    }
+    { id = "H4-M3"; what = "within serve is refused inside plan"; run = fun d -> checkSays d "m3.weir" "'within serve' is refused inside 'plan'" m3ServePlan }
+    { id = "H4-M4"; what = "a block let binds a value-headed pipe"; run = fun d -> runs0 d "m4.weir" m4BlockPipe }
+    { id = "H4-M5"; what = "Table.render takes rows in any field order"; run = fun d -> runs0 d "m5.weir" m5Table }
+    { id = "H4-M6"; what = "a regex class range with an astral end is that range"; run = fun d -> runs0 d "m6.weir" m6Regex }
+    { id = "H4-M7"; what = "inferShape drafts that check and keep the top name"; run = fun d -> runs0 d "m7.weir" m7Infer }
+    { id = "H4-M8"; what = "Yaml.merge applied twice is applied once"; run = fun d -> runs0 d "m8.weir" m8Merge }
+    { id = "H4-M9"; what = "--can shows a literal's control characters"; run = fun d -> canSays d "m9.weir" ["/tmp/ok\\x0a  nothing else"] m9CanEscape }
+    { id = "H4-M10"; what = "a redirect rewrites only POST to GET on 301/302"; run = fun d -> runs0 d "m10.weir" m10Redirect }
+    { id = "H4-M11"; what = "a byte-order mark split across writes selects the decoding"; run = fun d -> runs0 d "m11.weir" m11Bom }
+]
+
+// a label selects by its start; an id ending in a digit never selects a
+// longer number (H4-M1 does not select H4-M10)
+let selected { id = id } =
+    match cli.only with
+    | None -> true
+    | Some o -> id == o || (Str.startsWith o id && not (Str.isMatch @"\d$" o))
+
+let judge okWord badWord { id = id; what = what; run = run } =
+    let failing =
+        within tmp d
+            let f = run d |> Seq.freeze |> try result
+            f
+
+    match failing with
+    | Ok [] -> $"{id} {okWord} — {what}"
+    | Ok fs -> $"{id} {badWord} ({fs |> Str.join "; "}) — {what}"
+    | Error e -> $"{id} {badWord} (the probe failed to run: {e}) — {what}"
+
+let verdicts =
+    if toolsReady then
+        Seq.append
+            (controls |> Seq.where selected |> Seq.map (judge "control ok" "CONTROL FAILED"))
+            (probes |> Seq.where selected |> Seq.map (judge "OK" "REPRODUCES"))
+        |> Seq.freeze
+    else
+        ["instruments SKIP (timeout/sh/cat missing) — every item stays OPEN"]
+
+verdicts |> Seq.iter print
+
+let open =
+    verdicts
+    |> Seq.where (fun l -> (l |> Str.contains " REPRODUCES") || (l |> Str.contains " CONTROL FAILED") || (l |> Str.contains " SKIP"))
+    |> Seq.freeze
+
+let ok = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "H4-") && (l |> Str.contains " OK")) |> Seq.length
+print ""
+print $"summary: {ok} probe(s) OK, {open |> Seq.length} line(s) keep the gate shut"
+
+if open |> Seq.isEmpty then
+    print (if cli.only == None then "ALL ITEMS FIXED" else "ALL SELECTED ITEMS FIXED (--only)")
+else
+    let n = open |> Seq.length
+    exit (if n > 255 then 255 else n)

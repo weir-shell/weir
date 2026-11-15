@@ -3828,6 +3828,7 @@ let resolver (typeEnv: TypeEnv) : Parser.Resolver = {
     // scripts/fmt/CLI carry no aliases (REPL-only) — the REPL overrides
     // this field with its session alias table [D:command-head-alias]
     AliasHead = fun _ -> None
+    IsBuiltinName = fun n -> Map.containsKey n Builtins.typeEnv.Values || Map.containsKey n typeEnv.Modules
 }
 
 let private located (path: string) (lineNo: int) (msg: string) : string =
@@ -5127,7 +5128,23 @@ let rec private checkStatementCore
                         else
                             te.Span
 
+                // where a value is echoed (the REPL, -e) a reified command
+                // is a value like any other: `cmd | complete` shows its
+                // record, as the value-headed spelling already did
+                let reified =
+                    match te.Ty with
+                    | TBool
+                    | TNamed("Completed", _) -> true
+                    | TInt -> exitCodeSpine te
+                    | _ -> false
+
                 match te.Ty with
+                | _ when reified && not gateExprs ->
+                    Ok {
+                        Kind = KExpr te
+                        Env = tenv
+                        Warnings = warningsOf te
+                    }
                 | TBool ->
                     Error(
                         typed StmtTag.Cmd {

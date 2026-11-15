@@ -2129,13 +2129,14 @@ let relativeInstant (nowMs: int64) (ms: int64) : string =
     else
         $"in {phrase}"
 
-let rec private tableCell (v: Value) : (string * bool) option =
+let rec private tableCell (clip: bool) (v: Value) : (string * bool) option =
     // (text, numericish) — numericish drives right-alignment
     match v with
     | VStr s ->
+        // a glance clips a long cell; a piped Table.render does not
         let clipped =
             match echoLimits.MaxStr with
-            | Some m when CodePoints.length s > m -> CodePoints.head s (m - 1) + "…"
+            | Some m when clip && CodePoints.length s > m -> CodePoints.head s (m - 1) + "…"
             | _ -> s
 
         // the table is a tty-only renderer [D:binary-echo]: a data cell's
@@ -2143,7 +2144,8 @@ let rec private tableCell (v: Value) : (string * bool) option =
         // this sanitized text — weir's own colouring is untouched)
         // a raw TAB would jump the cell off its column: it shows as weir
         // spells it [D:str-width]
-        Some((sanitizeTtyEcho clipped).Replace("\t", "\\t"), false)
+        // and a newline would break the row in two
+        Some((sanitizeTtyEcho clipped).Replace("\t", "\\t").Replace("\n", "\\n"), false)
     | VInt _
     | VFloat _
     | VSize _
@@ -2158,7 +2160,7 @@ let rec private tableCell (v: Value) : (string * bool) option =
     | VUuid g -> Some(formatUuid g, false)
     | VSecret _ -> Some("***", false)
     | VUnion("None", None) -> Some("", false)
-    | VUnion("Some", Some inner) -> tableCell inner
+    | VUnion("Some", Some inner) -> tableCell clip inner
     | VUnion(name, None) -> Some(name, false)
     | _ -> None
 
@@ -2200,6 +2202,11 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
             let visible = shown
 
             let keys0 = f0 |> List.map fst
+            // rows of one type carry the same fields in any order
+            // [D:record-order]: a literal keeps its written order, a wire
+            // read the document's
+            let keySet0 = List.sort keys0
+            let clipCells = cap.IsSome || width.IsSome
 
             // an all-None optional column hides [D:filerow]: a column
             // that says nothing on every shown row only costs width —
@@ -2219,9 +2226,9 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
 
             let cellsOf (r: Value) =
                 match r with
-                | VRecord(n, f) when n = n0 && (f |> List.map fst) = keys0 ->
+                | VRecord(n, f) when n = n0 && (f |> List.map fst |> List.sort) = keySet0 ->
                     showKeys
-                    |> List.map (fun k -> tableCell (recGet k f))
+                    |> List.map (fun k -> tableCell clipCells (recGet k f))
                     |> List.fold
                         (fun acc c ->
                             match acc, c with
@@ -7253,11 +7260,15 @@ and private matchView (arms: (Weir.Ast.Pattern * TypedExpr option * TypedExpr) l
 and apply (fn: Value) (arg: Value) : Value =
     match fn with
     | VClosure(param, body, closureEnv) ->
+        // a call is a boundary for a cut and a REPL ^C [D:repl-interrupt-compute]
+        Session.checkCancels ()
+
         if RunPos.IsCall body then
             inFunction (fun () -> eval (Map.add param arg closureEnv) body)
         else
             eval (Map.add param arg closureEnv) body
     | VClosurePat(pat, body, closureEnv) ->
+        Session.checkCancels ()
         let bindings = bindPattern pat arg
         let env' = bindings |> List.fold (fun m (n, v) -> Map.add n v m) closureEnv
 
@@ -7267,7 +7278,8 @@ and apply (fn: Value) (arg: Value) : Value =
             eval env' body
     | VBuiltin f ->
         // every builtin call is a pfirst loser's boundary [D:pfirst-join]
-        Session.checkCancelled ()
+        // and a REPL ^C's [D:repl-interrupt-compute]
+        Session.checkCancels ()
         f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
 
@@ -8946,6 +8958,8 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
             try
                 match fn with
                 | VClosure(param, body, closureEnv) ->
+                    Session.checkCancels ()
+
                     if RunPos.IsCall body then
                         let r = awaitFrame flow (inFunctionAsync flow (Map.add param arg closureEnv) body)
                         r
@@ -8953,6 +8967,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         let r = awaitFrame flow (evalAsync flow (Map.add param arg closureEnv) body)
                         r
                 | VClosurePat(pat, body, closureEnv) ->
+                    Session.checkCancels ()
                     let bindings = bindPattern pat arg
                     let env' = bindings |> List.fold (fun m (n, bv) -> Map.add n bv m) closureEnv
 
@@ -8963,7 +8978,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         let r = awaitFrame flow (evalAsync flow env' body)
                         r
                 | VBuiltin f ->
-                    Session.checkCancelled ()
+                    Session.checkCancels ()
                     let e = asyncOf f
 
                     if isNull e then

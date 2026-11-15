@@ -461,7 +461,9 @@ let private startWith
 
     match s.Input with
     // on a flow the feed waits on the pipe, not on a thread [D:async-flows]
-    | Some lines when fd >= 0 -> feedSuspended p fd lines fault |> ignore
+    // — a flow of its own: the producer's pulls must not hold the starter,
+    // which is about to read what the child writes [D:value-headed-pipe]
+    | Some lines when fd >= 0 -> Session.startFlow (fun () -> feedSuspended p fd lines fault) |> ignore
     | Some lines ->
         try
             offPool "a command's stdin feed" (fun () ->
@@ -814,7 +816,10 @@ type private LineFeed(fallback: System.Text.Encoding) =
             for i in 0 .. n - 1 do
                 head.Add bytes[i]
 
-            if head.Count >= 4 then
+            // decide as soon as the bytes cannot grow into a longer mark:
+            // a short first line (`ok`) must not wait for a fourth byte
+            // that an idle child never sends [D:async-seq]
+            if not (Session.markUndecided (fun i -> head[i]) head.Count) then
                 choose lines
         else
             decode bytes 0 n false lines

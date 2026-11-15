@@ -5604,7 +5604,10 @@ let run (debug: bool) : int =
                                     w.WriteNumber("character", arr[lastIdx].Length)
                                     w.WriteEndObject()
                                     w.WriteEndObject()
-                                    w.WriteString("newText", String.concat "\n" formatted + "\n")
+                                    // the document's own line ending, as `weir fmt`
+                                    // keeps the file's
+                                    let nl = if text.Contains "\r\n" then "\r\n" else "\n"
+                                    w.WriteString("newText", String.concat nl formatted + nl)
                                     w.WriteEndObject()
                                     w.WriteEndArray()
                                 | _ -> w.WriteNullValue() // refusal or already canonical
@@ -5865,7 +5868,19 @@ let run (debug: bool) : int =
                                 // [wordStart, cursor) with the suggestion — bare
                                 // labels double-insert after dots and get
                                 // prefix-filtered inside parens [D:completion-textedit]
-                                for label in items |> List.distinct |> List.truncate 200 do
+                                // past the cap PATH yields first: a binding is
+                                // never cut for a command's sake
+                                let items =
+                                    let items = List.distinct items
+
+                                    if items.Length > 200 then
+                                        let ext = Extern.names ()
+                                        let cmds, names = items |> List.partition ext.Contains
+                                        names @ cmds
+                                    else
+                                        items
+
+                                for label in items |> List.truncate 200 do
                                     w.WriteStartObject()
                                     w.WriteString("label", label)
 

@@ -1999,7 +1999,18 @@ let rec private typeBinOp
     | (">" | "<" | ">=" | "<="), TVar _, (TNamed(n, _) as b) when ordDeclared env n ->
         retryAfter (bind ctx env l.Span b l.Ty)
     | (">" | "<" | ">=" | "<="), (TNamed(n, _) as a), (TNamed(m, _) as b) when n = m && ordDeclared env n ->
-        bind ctx env r.Span a b |> Result.map (fun () -> TBool)
+        // a generic ordered type orders only at an instance whose numbered
+        // members do — the demand Seq.sort makes
+        bind ctx env r.Span a b
+        |> Result.bind (fun () ->
+            let p = {
+                Cls = Cls.Cmp
+                Span = opSpan
+                Describe = cmpDescribe (Some op)
+            }
+
+            demand ctx env p a)
+        |> Result.map (fun () -> TBool)
     | (">" | "<" | ">=" | "<="), (TNamed(n, _) as a), b when ordDeclared env n -> mismatch r.Span a b
     // the author's own record or union without a key names the
     // repair; the prelude's (Option) and anonymous shapes keep the bare
@@ -2816,24 +2827,37 @@ let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, st
     | true, rx -> Ok rx
     | _ ->
         try
-            let rx =
-                System.Text.RegularExpressions.Regex(
-                    pat,
-                    System.Text.RegularExpressions.RegexOptions.None,
-                    regexTimeout
-                )
-
-            // the user's pattern validated above; the engine runs its
-            // code-point form [D:regex-code-points]
-            let rx =
+            // the engine runs the pattern's code-point form
+            // [D:regex-code-points]
+            let codePointForm () =
                 try
-                    System.Text.RegularExpressions.Regex(
-                        Types.regexCodePoints pat,
-                        System.Text.RegularExpressions.RegexOptions.None,
-                        regexTimeout
+                    Some(
+                        System.Text.RegularExpressions.Regex(
+                            Types.regexCodePoints pat,
+                            System.Text.RegularExpressions.RegexOptions.None,
+                            regexTimeout
+                        )
                     )
                 with _ ->
-                    rx
+                    None
+
+            // the user's own pattern is validated first, so an error quotes
+            // what they wrote — except where the engine misreads it: a class
+            // range ending in an emoji is two halves to it
+            let rx =
+                try
+                    let rx =
+                        System.Text.RegularExpressions.Regex(
+                            pat,
+                            System.Text.RegularExpressions.RegexOptions.None,
+                            regexTimeout
+                        )
+
+                    codePointForm () |> Option.defaultValue rx
+                with _ when pat |> Seq.exists System.Char.IsSurrogate ->
+                    match codePointForm () with
+                    | Some rx -> rx
+                    | None -> reraise ()
 
             // named groups are rejected [D:no-named-groups]: .NET
             // numbers positional groups first and named ones after —
@@ -3904,14 +3928,16 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                 | _ when isIrrefutablePat p -> Some 0
                 | _ -> None
 
-            let fixedLens =
-                pats
-                |> List.choose (fun p ->
-                    match p.PKind with
-                    | PSeqNil -> Some 0
-                    | PSeqList ps when ps |> List.forall isIrrefutablePat -> Some ps.Length
-                    | _ -> None)
-                |> Set.ofList
+            // a chain closed by `[]` (or a fixed list) is a fixed length
+            // too: `x :: []` is `[x]`
+            let rec closedLen (p: Pattern) =
+                match p.PKind with
+                | PSeqNil -> Some 0
+                | PSeqList ps when ps |> List.forall isIrrefutablePat -> Some ps.Length
+                | PCons(h, t) when isIrrefutablePat h -> closedLen t |> Option.map ((+) 1)
+                | _ -> None
+
+            let fixedLens = pats |> List.choose closedLen |> Set.ofList
 
             let shortest =
                 pats
@@ -9709,11 +9735,19 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
             "Attr",
             ((function
              | None -> None
+             // names match by LOCAL name [D:from-xml]: a prefixed one could
+             // never match
+             | Some(AStr s) when s.Contains ':' ->
+                 Some
+                     $"takes the attribute's local name — the prefix is dropped when matching, so write [<Attr \"{s.Substring(s.LastIndexOf ':' + 1)}\">]"
              | Some(AStr s) when s <> "" -> None
              | _ -> Some "expects nothing or the attribute name, e.g. [<Attr>] or [<Attr \"Include\">]"),
              [ FieldPos ])
             "Elem",
             ((function
+             | Some(AStr s) when s.Contains ':' ->
+                 Some
+                     $"takes the element's local name — the prefix is dropped when matching, so write [<Elem \"{s.Substring(s.LastIndexOf ':' + 1)}\">]"
              | Some(AStr s) when s <> "" -> None
              | _ -> Some "expects the element name as a string, e.g. [<Elem \"ProjectReference\">] refs: seq<Ref>"),
              [ FieldPos ])

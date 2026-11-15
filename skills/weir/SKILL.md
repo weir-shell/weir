@@ -1330,7 +1330,9 @@ let x =
   weir-native mutation only), the parallel combinators inside a plan
   (`Seq.pmap/pmapWith/piter/piterWith/pfirst/pfirstWith` and `pfor` —
   their arms run on threads outside the plan's capture frame; fan out
-  outside the plan [D:plan-refuses-fanout]), `apply` inside a plan (a capture cannot
+  outside the plan [D:plan-refuses-fanout]), `within serve` inside a plan
+  (its handlers run on the server's threads, outside the capture too),
+  `apply` inside a plan (a capture cannot
   be captured — apply OUTSIDE), a known-after-apply read (any file
   read, existence check or listing at, under, or over a path an
   earlier captured mutation changes would see stale state — a write in
@@ -1918,8 +1920,9 @@ print x
   [D:repl-stop-request].
   `within`'s scopes close as on any raise; an `always` block
   runs as written unless `^C` is pressed again. At an idle prompt
-  `^C` clears the line. Pure computation is not interrupted: it runs
-  to its next wait, which then stops.
+  `^C` clears the line. Computation stops too [D:repl-interrupt-compute]:
+  every function and builtin call is a `^C` boundary, and so is a long
+  range, so `Seq.initInfinite id |> Seq.freeze` returns to the prompt.
 - A REPL foreground child hung reading stdin ends with `^D^D`: the
   first `^D` delivers the partial line (icanon's delimiter — a
   mid-line `^D` is NOT EOF), the second at the now-empty line is EOF.
@@ -3087,7 +3090,9 @@ print $"{fixed} {Path.isName fixed}"
   record and number them with `[<Ord n>]`. Records remain the spelling
   for anything with NAMES. Prefix minus
   follows F#'s adjacency rule: `-n`, `2 * -3`, and `f -1` (passes -1
-  as the ARGUMENT) are prefix; `x-1` and `x - 1` are subtraction. `-x`
+  as the ARGUMENT) are prefix; `x-1` and `x - 1` are subtraction —
+  with `x` bound, `x-1` is never the program named `x-1`, to check and
+  run alike (`^x-1` forces it) [D:dash-binding]. `-x`
   negates in x's own type (float, Duration, Size too)
   [D:prefix-minus-typed]; a lambda parameter of not-yet-known type
   (`fun x -> -x`) still types as int.

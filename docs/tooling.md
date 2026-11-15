@@ -166,7 +166,9 @@ details), with runs of whitespace collapsed and a trailing list of
 library versions dropped (curl's `libcurl/8.18.0 OpenSSL/3.5.5 …`).
 
 `weir verify` compares it with the installed tool's version and
-reports any difference at all. When the tool updates, run
+reports any difference at all. It probes only a tool named plainly
+(found on PATH): a signature recorded for a path (`./tools/jp`) keeps
+its hash check, and verify does not run the file. When the tool updates, run
 `weir add sig` again. If the regenerated file shows no diff, nothing
 that matters to your scripts changed.
 

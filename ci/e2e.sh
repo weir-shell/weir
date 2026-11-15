@@ -163,6 +163,7 @@ replPtyProbes() {
         echo "e2e SKIP: the pty REPL harnesses — python has no pty on Windows (the REPL itself is exercised by the Windows hand-run checklist)"
     else
         replProbe repl-b repl-wordnav.py "repl word navigation" "e2e ok: repl Ctrl+Left/Right word navigation"
+        replProbe repl-b repl-history-edits.py "repl history edits" "e2e ok: repl an edited history entry keeps its edit while browsing; ^C stops a computation [D:repl-history-edits] [D:repl-interrupt-compute]"
         replProbe repl-b repl-codepoints.py "repl code-point editing" "e2e ok: repl Left/Right/Backspace/^D step over a surrogate pair whole [D:str-code-points]"
         replProbe repl-b repl-typeahead.py "repl type-ahead" "e2e ok: repl an Enter typed before the first prompt submits [D:owned-line-editor]"
         replProbe repl-b repl-color.py "repl coloring" "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
@@ -1818,26 +1819,35 @@ echo "$svout" | grep -qF "#save: no such directory: $svdir/nope" || fail "#save 
 echo "$svout" | grep -qF "Access to the path" && fail "#save leaked .NET text: $svout" || true
 echo "e2e ok: #save keeps shadowing chains; its path unquotes; write refusals in weir's words"
 
-# --- #infer drafted-type diagnostic (recast 2026-09-17) [D:infer-diagnostic]/[D:infer-wire-sanitize] --
-# when a drafted type fails to check for any reason, the diagnostic must
-# name the line:col within the drafted text and show the offending line
-# with a caret — the drafted text is weir's own synthesis, so the user
-# must see which generated part is bad. Keyword keys sanitize now
-# ([<Wire "in">] inField — the old {"in": 2} fixture checks and is the
-# positive below), so the remaining un-checkable class is a duplicate
-# key: legal JSON, both occurrences draft the same clean field, and a
-# record refuses a duplicate field. That class drives the diagnostic.
-# The directive prints to stdout, so the piped REPL surfaces it — no
-# pty needed.
-idout=$(printf '%s\n%s\n%s\n' \
-  'let js = ["{\"a\": 1, \"a\": 2}"]' \
+# --- #infer over a repeated key [D:infer-diagnostic]/[D:infer-wire-sanitize] --
+# a duplicate key is legal JSON; it used to draft the field twice, the
+# one class whose draft failed to check (and so drove the drafted-type
+# diagnostic's pin). It now drafts ONE field, the last value's type as
+# `from json` reads it, so the draft checks and reads the sample. No
+# sample is known to draft a non-checking type any more; the diagnostic
+# (line:col in the drafted text + a caret'd snippet) stays as the guard
+# for a future one.
+idout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  'let js = ["{\"a\": 1, \"a\": \"x\"}"]' \
   '#infer js from json as PodsJson' \
+  'let v = js |> from json PodsJson' \
+  'print $"read={v.a}"' \
   '#quit' | $BIN 2>&1)
-echo "$idout" | grep -qF "a drafted type did not check at line 1, col 1: duplicate field 'a'" \
-  || fail "#infer diagnostic lost its line:col: $idout"
-echo "$idout" | grep -qF "type PodsJson = {" || fail "#infer diagnostic lost the offending-line snippet: $idout"
-echo "$idout" | grep -qF "^" || fail "#infer diagnostic lost the caret: $idout"
-echo "e2e ok: a failing #infer drafted type prints line:col + a caret'd snippet (duplicate-key class)"
+echo "$idout" | grep -qF "defined: PodsJson (1 type)" || fail "a repeated key must draft one checking field: $idout"
+echo "$idout" | grep -qF "read=x" || fail "the repeated key's field must read the last value: $idout"
+echo "$idout" | grep -qF "did not check" && fail "a repeated key must not draft a non-checking type: $idout" || true
+echo "e2e ok: #infer drafts one field for a repeated key (last wins) and reads the sample"
+
+# a reified command is a value where values are echoed [D:exit-reifiers]:
+# -e shows it, a script still refuses the discard
+rfout=$($BIN -e 'echo x | succeeds' 2>&1)
+[ "$rfout" = "true : bool" ] || fail "-e must echo a reified command's value: $rfout"
+rfdir=$(mkweirtmp)
+printf 'echo x | succeeds\n' > "$rfdir/rf.weir"
+rfchk=$($BIN check "$rfdir/rf.weir" 2>&1 || true)
+echo "$rfchk" | grep -qF "computes a bool and discards it" || fail "a script must still refuse a discarded reifier: $rfchk"
+rm -rf "$rfdir"
+echo "e2e ok: -e echoes a reified command; a script refuses the discard"
 
 # the positive the old fixture became [D:infer-wire-sanitize]: a keyword
 # key infers to a [<Wire>]'d field on the parser's own repair spelling
@@ -4185,7 +4195,7 @@ let log = Self.args |> Seq.head
 within
     within
         File.append log ["body"]
-        let n = [1..3000000000] |> Seq.length
+        let n = Seq.replicate 2000000000 1 |> Seq.sum
         print $"{n}"
     always
         File.append log ["inner"]
@@ -4903,7 +4913,7 @@ WEOF
     # pure computation holds the terminal ^C's join [D:teardown-joins-arms]:
     # the grace period does not exit while the arms compute — a builtin's
     # own loop, since every evaluated node is a boundary [D:scope-tree]
-    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = [1..600000000] |> Seq.length' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
+    printf '%s\n' 'sh -c "true"' '[1; 2] |> Seq.piter (fun i ->' '    let n = Seq.replicate 2000000000 1 |> Seq.sum' '    print $"arm {i} {n}")' 'print "after"' > "$sedir/purejoin.weir"
     t0=$(now_ms)
     tout=$(printf 'SLEEP 500\nSEND \\x03\nSLEEP 300\n' | python3 "$ptyrun" 40 "$BIN" "$sedir/purejoin.weir")
     took=$(( $(now_ms) - t0 ))
@@ -5249,8 +5259,11 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
 
     # the sweep gate, measured [D:repl-isig]: a ^C the session outlives
     # must not run the exit-hook sweep — the sweep deletes live within-tmp
-    # dirs. The ^C lands mid-pure-computation (a child would die and
-    # unwind the scope), the block then checks its own dir. Linux is the
+    # dirs. The ^C lands mid-pure-computation — one builtin's own loop, the
+    # computation a ^C still does not cut [D:repl-interrupt-compute] (a
+    # child would die and unwind the scope). The entry ends at its next
+    # call, so the scope's `always` — run as written, inside the scope —
+    # is what checks the dir. Linux is the
     # mechanism's platform; the cell runs wherever the pty pins do.
     # multi-line body via Alt-Enter (\x1b\r): plain Enter submits the
     # moment the block parses complete — one body line suffices. Indented
@@ -5259,7 +5272,7 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     gatedir=$(mkweirtmp)
     cat > "$gatedir/gate.scn" <<'SCN'
 SLEEP 700
-SEND within tmp d\x1b\r    ["x"] |> File.write $"{d}/probe.txt"\x1b\r    print d\x1b\r    let n = [1..8000000] |> Seq.fold (fun a x -> a + 1) 0\x1b\r    print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\r
+SEND within tmp d\x1b\r    ["x"] |> File.write $"{d}/probe.txt"\x1b\r    print d\x1b\r    let n = Seq.replicate 600000000 1 |> Seq.sum\x1b\r    print $"{n}"\x1b\ralways\x1b\r    print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\r
 SLEEP 1200
 SEND \x03
 SLEEP 5000
@@ -16944,10 +16957,14 @@ for tag in CHECK CAN CANH; do
 done
 $BIN check --json "$svdir/$jname" > "$svdir/j1.out" 2>/dev/null || true
 $BIN check --can --json "$svdir/c$jname" > "$svdir/j2.out" 2>/dev/null || true
-$BIN check --can "$svdir/c$jname" >> "$svdir/j2.out" 2>/dev/null || true
 python3 -c "import sys; a=open('$svdir/j1.out','rb').read(); b=open('$svdir/j2.out','rb').read(); n=b'r\xe2\x80\xaeq\xc2\x9b.weir'; sys.exit(0 if (n in a and n in b and b'\\\\u' not in a + b and b'\\\\x9b' not in a + b) else 1)" \
-    || fail "tty-bidi: redirected check --json / --can (json and human) must stay byte-faithful (raw RLO/C1 in the path)"
-echo "e2e ok: tty-bidi check --json and --can (json and human) sanitized at a tty, byte-faithful when redirected"
+    || fail "tty-bidi: redirected check --json / --can --json must stay byte-faithful (raw RLO/C1 in the path)"
+# the human --can report is a message [D:error-data-escape]: the path it
+# quotes renders visibly, redirected too
+$BIN check --can "$svdir/c$jname" > "$svdir/j3.out" 2>/dev/null || true
+python3 -c "import sys; b=open('$svdir/j3.out','rb').read(); sys.exit(0 if (b'r\\\\u202Eq\\\\x9b.weir' in b and b'\xe2\x80\xae' not in b and b'\xc2\x9b' not in b) else 1)" \
+    || fail "tty-bidi: a redirected human check --can must escape the path it quotes"
+echo "e2e ok: tty-bidi check --json and --can sanitized at a tty; redirected, the json is byte-faithful and the human report escapes the path"
 # every console sink rides the tty sanitizer [D:tty-sink-sanitize]:
 # printerr, Log.*, the Self.prompt message and the -e echo neutralize an
 # OSC at a tty (the pty harness reprs a raw ESC as \x1b, a defanged one

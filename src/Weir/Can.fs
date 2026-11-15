@@ -32,7 +32,7 @@ type Fact =
     | FsRead of member_: string * path: string option
     | FsWrite of member_: string * path: string option
     | TempWrite of what: string
-    | CwdChange
+    | CwdChange of via: string
     | Network of member_: string * url: string option
     | EnvRead of what: string
     | EnvWrite of via: string * names: string list option
@@ -83,28 +83,27 @@ let private interpreters =
 // for the report. Pure members (Path.fileName, Http.get the
 // constructor…) are deliberately absent — building a request is not
 // sending it.
-let private fsReads =
-    Set [
-        "File.read"
-        "File.readFrom"
-        "File.size"
-        "Dir.list"
-        "Dir.exists"
-        "Path.glob"
-    ]
+// the filesystem members' side comes from the purity partition
+// (Effects.effectClass), never a second hand-kept list [D:can-report]:
+// a File/Dir member the partition calls a mutation is a write here, any
+// other is a read. The Path/Env members that touch the filesystem ride
+// the same question.
+let private fsPathReads = Set [ "Path.glob"; "Path.which"; "Env.fromFile" ]
 
-let private fsWrites =
-    Set [
-        "File.write"
-        "File.writeAtomic"
-        "File.append"
-        "File.copy"
-        "Dir.create"
-        "Dir.delete"
-        "Dir.deleteAll"
-        "Dir.copy"
-        "Dir.move"
-    ]
+/// Some true = a filesystem write, Some false = a read, None = neither
+let private fsSide (qual: string) : bool option =
+    match qual.Split '.' with
+    | [| ("File" | "Dir"); _ |] ->
+        (match Weir.Effects.effectClass qual with
+         | Some Weir.Effects.Mutation -> Some true
+         | _ -> Some false)
+    | _ ->
+        if fsPathReads.Contains qual then Some false
+        elif qual = "Path.newTempDir" then Some true
+        else None
+
+let private isFsRead (qual: string) = fsSide qual = Some false
+let private isFsWrite (qual: string) = fsSide qual = Some true
 
 let private networkMembers = Set [ "Http.send"; "Http.expect"; "Net.portOpen" ]
 
@@ -230,7 +229,7 @@ let rec private walkExpr
           | WithinEnv ->
               let names = arg |> Option.bind (envNamesOf binds)
               add (EnvWrite("within env", names)) te.Span
-          | WithinCd -> add CwdChange te.Span
+          | WithinCd -> add (CwdChange "within cd") te.Span
           // the lock file is a write [D:within-lock]: the scope
           // creates it when missing, so omitting it would deny a
           // write that happens
@@ -268,34 +267,37 @@ let rec private walkExpr
      // classify the reference; a following literal application upgrades
      // "some path/url" to the named one
      | TEVar qual when qual.Contains "." ->
-         if fsReads.Contains qual then
+         if qual = "File.readSecret" then
              add (FsRead(qual, None)) te.Span
-         elif fsWrites.Contains qual then
+             add (SecretLoad "File.readSecret") te.Span
+         elif isFsRead qual then
+             add (FsRead(qual, None)) te.Span
+         elif isFsWrite qual then
              add (FsWrite(qual, None)) te.Span
          elif networkMembers.Contains qual then
              add (Network(qual, None)) te.Span
          elif procMembers.Contains qual then
              add (ProcCtl qual) te.Span
-         elif qual = "File.readSecret" then
-             add (FsRead(qual, None)) te.Span
-             add (SecretLoad "File.readSecret") te.Span
          elif envOneVar.Contains qual then
              add (EnvRead $"a named variable ({qual})") te.Span
          elif qual = "Env.vars" then
              add (EnvRead "the entire environment (Env.vars)") te.Span
      | TEApp({ Kind = TEVar qual }, arg) when qual.Contains "." ->
          (match literalStr arg with
-          | Some lit when fsReads.Contains qual -> add (FsRead(qual, Some lit)) te.Span
-          | Some lit when fsWrites.Contains qual -> add (FsWrite(qual, Some lit)) te.Span
-          | Some lit when envOneVar.Contains qual -> add (EnvRead $"{lit} ({qual})") te.Span
           | Some lit when qual = "File.readSecret" ->
               add (FsRead(qual, Some lit)) te.Span
               add (SecretLoad $"File.readSecret {lit}") te.Span
+          | Some lit when isFsRead qual -> add (FsRead(qual, Some lit)) te.Span
+          | Some lit when isFsWrite qual -> add (FsWrite(qual, Some lit)) te.Span
+          | Some lit when envOneVar.Contains qual -> add (EnvRead $"{lit} ({qual})") te.Span
+          | _ when qual = "File.readSecret" ->
+              add (FsRead(qual, None)) te.Span
+              add (SecretLoad "File.readSecret") te.Span
           | _ ->
               // non-literal application still counts as the bare fact
-              if fsReads.Contains qual then
+              if isFsRead qual then
                   add (FsRead(qual, None)) te.Span
-              elif fsWrites.Contains qual then
+              elif isFsWrite qual then
                   add (FsWrite(qual, None)) te.Span
               elif networkMembers.Contains qual then
                   // an `Http.get "lit"`-shaped request names its url
@@ -313,6 +315,10 @@ let rec private walkExpr
          add (Network(q, requestUrlLit reqArg)) te.Span
          walkExpr binds site acc reqArg
          skipChildren <- true
+     // the bare builtins that touch the directory [D:purity-ambient]:
+     // `cd` moves the process, `ls` reads where it stands
+     | TEVar "cd" -> add (CwdChange "cd") te.Span
+     | TEVar "ls" -> add (FsRead("ls", Some "(the working directory)")) te.Span
      | TEApp({ Kind = TEVar "exit" }, _) -> add (Terminates "exit") te.Span
      | TEApp({ Kind = TEVar "fail" }, _) -> add (Terminates "fail") te.Span
      | TEApp(f, args) ->
@@ -410,6 +416,19 @@ let rec private walkExpr
                       add (RunsDyn display) slot.Span)
              | None -> ()
 
+             // an Env twin leads its program with the overlay — the same
+             // fact the plain command's sigil or prefix reports
+             if h.EndsWith "Env" then
+                 match argsOf te |> List.tryItem (progSlot - 1) with
+                 | Some ov ->
+                     let via =
+                         match ov.Kind with
+                         | TEList _ -> "env prefix"
+                         | _ -> "env sigil"
+
+                     add (EnvWrite(via, envNamesOf binds ov)) te.Span
+                 | None -> ()
+
              // the argv follows the program [D:can-secret-reifier]: a Secret
              // there reaches ps as it does for the plain statement
              match argsOf te |> List.tryItem (progSlot + 1) with
@@ -479,7 +498,7 @@ let private factLine (c: Cap) : string * string =
     | FsWrite(m, Some p) -> "writes", $"{m} {p}"
     | FsWrite(m, None) -> "writes", $"{m} (path not statically known)"
     | TempWrite w -> "writes", w
-    | CwdChange -> "filesystem", "changes the working directory (within cd)"
+    | CwdChange via -> "filesystem", $"changes the working directory ({via})"
     | Network(m, Some u) -> "network", $"{m} {u}"
     | Network(m, None) -> "network", $"{m} (url not statically known)"
     | EnvRead w -> "environment", $"reads {w}"
@@ -531,7 +550,7 @@ let private factClass (f: Fact) : Weir.Effects.EffectClass =
     | OpaqueArg _
     | FsWrite _
     | TempWrite _
-    | CwdChange
+    | CwdChange _
     | EnvWrite _
     | SecretArgv _
     | ProcScope
@@ -551,7 +570,7 @@ let opaqueCount (caps: Cap list) : int =
 let renderHuman (script: string) (caps: Cap list) : string =
     let sb = System.Text.StringBuilder()
 
-    sb.AppendLine $"{script} can (capability, not behaviour — an untaken branch still counts):"
+    sb.AppendLine $"{Weir.Types.quoteData script} can (capability, not behaviour — an untaken branch still counts):"
     |> ignore
 
     let opaque = opaqueCount caps
@@ -576,6 +595,9 @@ let renderHuman (script: string) (caps: Cap list) : string =
     // alongside its section+message+site, so the report groups by
     // class first [D:pure-stage2] — "what does this script change?"
     // is answerable
+    // a line quotes the script's literals (a path, a url, a program
+    // name) — data, rendered visibly so it cannot forge a report line
+    // [D:error-data-escape]
     let entries =
         caps
         |> List.choose (fun c ->
@@ -583,6 +605,13 @@ let renderHuman (script: string) (caps: Cap list) : string =
             | OpaqueArg _ -> None
             | Runs p when opaqueSites.Contains(p, c.Site) -> Some(factClass c.Fact, ("runs", $"{p} (opaque)"), c.Site)
             | _ -> Some(factClass c.Fact, factLine c, c.Site))
+        |> List.map (fun (cls, (kind, text), site) ->
+            cls,
+            (kind, Weir.Types.quoteData text),
+            {
+                site with
+                    File = Weir.Types.quoteData site.File
+            })
 
     // identical messages group with a count, sites kept — repeated
     // runs of the same program carry one line of information
@@ -668,7 +697,7 @@ let renderJson (script: string) (caps: Cap list) : string =
             | FsRead(m, p) -> "read", m + (p |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
             | FsWrite(m, p) -> "write", m + (p |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
             | TempWrite t -> "write", t
-            | CwdChange -> "cwd", "within cd"
+            | CwdChange via -> "cwd", via
             | Network(m, u) -> "network", m + (u |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
             | EnvRead x -> "env-read", x
             | EnvWrite(v, ns) ->
@@ -708,7 +737,7 @@ let renderJson (script: string) (caps: Cap list) : string =
 // ---- the command entry -----------------------------------------------------
 
 /// analyzeLines' product adapted to the walker's pair shape
-let private ofChecked (pairs: (LogicalLine * CheckedStatement) list) : (LogicalLine * CheckedStmt) list =
+let ofChecked (pairs: (LogicalLine * CheckedStatement) list) : (LogicalLine * CheckedStmt) list =
     pairs
     |> List.choose (fun (ll, cs) ->
         match cs.Kind with
