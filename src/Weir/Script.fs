@@ -3805,7 +3805,7 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
     Session.EntryPath <- scriptPath
 
     let valueEnv =
-        valueEnv
+        Eval.splitBase valueEnv
         |> Map.add "Self.pid" (Eval.VInt(int64 System.Environment.ProcessId))
         |> Map.add "Self.args" (Eval.VSeq(scriptArgs |> List.map Eval.VStr :> seq<Eval.Value>))
         |> Map.add "Self.stdin" stdinStream
@@ -5833,7 +5833,7 @@ let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
         te with
             Modules = te.Modules |> Map.add "Self" selfMembers
     },
-    ve |> Map.add "Self.scriptPath" (Eval.VStr absPath)
+    Eval.splitBase ve |> Map.add "Self.scriptPath" (Eval.VStr absPath)
 
 // the lock as `weir:` resolution reads it [D:add-module-closure]: a
 // closure module's entry file is recorded there, so the checker and the

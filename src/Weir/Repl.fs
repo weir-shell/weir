@@ -510,7 +510,7 @@ let private initial =
 
     {
         TypeEnv = typeEnv
-        Values = valueEnv
+        Values = Eval.splitBase valueEnv
         Aliases = Map.empty
     }
 
@@ -2620,7 +2620,9 @@ let private functionEcho (env: TypeEnv) (values: Eval.Env) (te: Check.TypedExpr)
             let names (head: string) =
                 match Script.builtinParamNames env head with
                 | Some r -> Some r
-                | None -> Map.tryFind head values |> Option.map (fun f -> head, Eval.closureParamNames f)
+                | None ->
+                    Eval.lookupValue head values
+                    |> Option.map (fun f -> head, Eval.closureParamNames f)
 
             let style =
                 if Types.Color.onStdout.Value then
@@ -5103,7 +5105,7 @@ let private loadInit (baseState: State) : State =
             notLoaded ()
         | [] ->
 
-            let strictVenv = Prelude.extendValues Builtins.valueEnv.Value
+            let strictVenv = Eval.splitBase (Prelude.extendValues Builtins.valueEnv.Value)
 
             let aliasMap: Map<string, Alias> =
                 ic.Aliases |> List.fold (fun m (_, n, a) -> Map.add n a m) Map.empty

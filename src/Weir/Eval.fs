@@ -2515,7 +2515,48 @@ let orderCompare (name: string) (a: Value) (b: Value) : int =
 
         result
 
-let private binOp (op: string) (l: Value) (r: Value) : Value =
+// two ints, the arms of the table below picked by the operator's characters
+let private intBinOp (op: string) (a: int64) (b: int64) : Value voption =
+    let c1 =
+        match op.Length with
+        | 1 -> ' '
+        | 2 -> op[1]
+        | _ -> '\000'
+
+    try
+        match op[0], c1 with
+        | '+', ' ' -> ValueSome(VInt(Checked.(+) a b))
+        | '-', ' ' -> ValueSome(VInt(Checked.(-) a b))
+        | '*', ' ' -> ValueSome(VInt(Checked.(*) a b))
+        | '/', ' ' ->
+            if b = 0L then
+                failwith "division by zero"
+            else
+                ValueSome(VInt(a / b))
+        | '%', ' ' ->
+            if b = 0L then
+                failwith "modulo by zero"
+            else
+                ValueSome(VInt(a % b))
+        | '>', ' ' -> ValueSome(VBool(a > b))
+        | '<', ' ' -> ValueSome(VBool(a < b))
+        | '>', '=' -> ValueSome(VBool(a >= b))
+        | '<', '=' -> ValueSome(VBool(a <= b))
+        | '=', '=' -> ValueSome(VBool(a = b))
+        | '<', '>' -> ValueSome(VBool(a <> b))
+        | _ -> ValueNone
+    with :? System.OverflowException ->
+        failwith "integer overflow"
+
+let rec private binOp (op: string) (l: Value) (r: Value) : Value =
+    match l, r with
+    | VInt a, VInt b ->
+        match intBinOp op a b with
+        | ValueSome v -> v
+        | ValueNone -> binOpTable op l r
+    | _ -> binOpTable op l r
+
+and private binOpTable (op: string) (l: Value) (r: Value) : Value =
     match op, l, r with
     | "+", VInt a, VInt b -> checkedInt (fun () -> Checked.(+) a b)
     | "+", VFloat a, VFloat b -> checkedFloat "+" (fun () -> a + b)
@@ -5921,6 +5962,36 @@ let private envPairsOf (where: string) (v: Value) : (string * string) list =
 let ambientRebinders =
     System.Collections.Generic.Dictionary<string, Value * (unit -> Value)>()
 
+// the builtin table behind every run's env: a name the env misses reads
+// here, so an env holds a run's own bindings only and a call's bind is a
+// short path
+let mutable private baseValues: System.Collections.Generic.Dictionary<string, Value> =
+    null
+
+/// move the builtin table behind the env; the run starts from an empty one
+let splitBase (values: Env) : Env =
+    if isNull baseValues then
+        let d =
+            System.Collections.Generic.Dictionary<string, Value>(System.StringComparer.Ordinal)
+
+        for KeyValue(k, v) in values do
+            d[k] <- v
+
+        baseValues <- d
+
+    Map.empty
+
+let lookupValue (name: string) (env: Env) : Value option =
+    match Map.tryFind name env with
+    | Some _ as r -> r
+    | None ->
+        match baseValues with
+        | null -> None
+        | d ->
+            match d.TryGetValue name with
+            | true, v -> Some v
+            | _ -> None
+
 // the explicit sigil env only — ambient `within env` layers apply in
 // Proc's starters themselves [D:within-scopes], so every spawn
 // (reifier desugars included) obeys the outer-first rule,
@@ -6122,7 +6193,7 @@ let rec private bodyMaySuspend
     | TECmd _ -> true
     | TEVar v ->
         (Ast.reifierOfVar v).IsSome
-        || (match Map.tryFind v env with
+        || (match lookupValue v env with
             | Some fv -> valueMaySuspend seen fv
             | None -> false)
     | _ -> Check.existsChild (bodyMaySuspend seen env) te
@@ -6370,7 +6441,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     // recovery is tooling-only [D:block-recovery]: no hole reaches eval
     | TEHole _ -> failwith "unreachable: a recovered tree is never evaluated"
     | TEVar name ->
-        match Map.tryFind name env with
+        match lookupValue name env with
         | Some v ->
             // an ambient bare value rebinds to eval-time cwd capture, but
             // only while the name still holds the builtin's own object — a
