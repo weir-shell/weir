@@ -3146,7 +3146,7 @@ let private schemaHover (path: string) (name: string) : string option =
     | Ok(weirDir, file) ->
         match
             (try
-                Ok(IO.File.ReadAllText file)
+                Ok(Contracts.readArtifactText file)
              with ex ->
                  Error $"schema '{name}': cannot read {file} — {ex.Message}")
         with

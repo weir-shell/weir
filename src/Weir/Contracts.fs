@@ -116,6 +116,17 @@ let private resolveExistingPrefix (path: string) : Result<string, string> =
 
     walk (Path.TrimEndingDirectorySeparator path) []
 
+// the vendor root is a directory of its own: were `.weir` a link, the
+// confinement would hold inside whatever it points at (`.git`, say)
+let private linkedDir (dir: string) : bool =
+    try
+        not (isNull (DirectoryInfo(Path.TrimEndingDirectorySeparator dir).LinkTarget))
+    with _ ->
+        false
+
+let private linkedRootRefusal (dir: string) : string =
+    $"'{Weir.Types.quoteData dir}' is a symbolic link — the vendor directory is a directory of its own; this checkout was tampered with"
+
 /// the real-path confinement [D:lockfile-symlink-confinement]: `dest` is
 /// already lexically confined under `root` (confineUnder ran), but a
 /// symlink on the way — an intermediate dir or the final component — can
@@ -124,19 +135,22 @@ let private resolveExistingPrefix (path: string) : Result<string, string> =
 /// destination under the root. The final component is checked too: if it
 /// exists as a link out, realPathOf chases it and the check fails.
 let confineRealUnder (root: string) (dest: string) : Result<string, string> =
-    // resolve both sides through their existing prefixes: a not-yet-created
-    // root (the add fallback, a fresh tree) resolves to its lexical self —
-    // there is no symlink to follow when nothing exists, so confinement
-    // matches the lexical result until a real symlinked component appears.
-    match resolveExistingPrefix root, resolveExistingPrefix dest with
-    | Error e, _
-    | _, Error e -> Error e
-    | Ok realRoot, Ok realDest ->
-        if underResolved realRoot realDest then
-            Ok dest
-        else
-            Error
-                $"'{dest}' resolves through a symlink to outside .weir/ — the real object escapes the vendor directory"
+    if linkedDir root then
+        Error(linkedRootRefusal root)
+    else
+        // resolve both sides through their existing prefixes: a not-yet-created
+        // root (the add fallback, a fresh tree) resolves to its lexical self —
+        // there is no symlink to follow when nothing exists, so confinement
+        // matches the lexical result until a real symlinked component appears.
+        match resolveExistingPrefix root, resolveExistingPrefix dest with
+        | Error e, _
+        | _, Error e -> Error e
+        | Ok realRoot, Ok realDest ->
+            if underResolved realRoot realDest then
+                Ok dest
+            else
+                Error
+                    $"'{dest}' resolves through a symlink to outside .weir/ — the real object escapes the vendor directory"
 
 // ---- whole-file swap and the .weir/ writer lock [D:weir-dir-lock] ----------
 
@@ -469,6 +483,32 @@ let writeConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, s
             else
                 Posix.writeNoFollow dest bytes
 
+/// the same confinement for a file replaced whole (temp + rename: a reader
+/// never sees it half-written): the parent resolves under root, and a leaf
+/// that is a link is refused, never replaced through
+let replaceConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, string> =
+    let parent = Path.GetDirectoryName dest
+
+    match confineRealUnder root parent with
+    | Error e -> Error e
+    | Ok _ ->
+        match confineRealUnder root dest with
+        | Error e -> Error e
+        | Ok _ when
+            (try
+                not (isNull (FileInfo(dest).LinkTarget))
+             with _ ->
+                 false)
+            ->
+            Error $"'{Weir.Types.quoteData dest}' is a symbolic link — a vendored file is a regular file"
+        | Ok _ ->
+            try
+                Directory.CreateDirectory parent |> ignore
+                AtomicFile.replaceFile dest bytes
+                Ok()
+            with ex ->
+                Error $"cannot write '{Weir.Types.quoteData dest}': {Weir.Types.quoteData ex.Message}"
+
 /// a vendored name safe as a file-name segment [D:lockfile-confinement]:
 /// the F14 guard at the argv crossing — no separators, no `..`, no
 /// leading dot, no absolute shape, so `--as` can only ever name a file
@@ -632,16 +672,55 @@ let treeHash (files: (string * string) list) : string =
 
 let private lockPath (weirDir: string) = Path.Combine(weirDir, "lock.json")
 
+let private artifactCap = 64L * 1024L * 1024L
+
+/// a vendored file's bytes, with a ceiling: a lock, a schema or a signature
+/// that is a device (or a link to one) refuses instead of filling memory
+let readArtifact (path: string) : byte[] =
+    use fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
+    use ms = new MemoryStream()
+    let buf = Array.zeroCreate<byte> 65536
+    let mutable n = fs.Read(buf, 0, buf.Length)
+
+    while n > 0 do
+        if ms.Length + int64 n > artifactCap then
+            raise (IOException "not a regular file, or larger than 64 MiB")
+
+        ms.Write(buf, 0, n)
+        n <- fs.Read(buf, 0, buf.Length)
+
+    ms.ToArray()
+
+/// the same, as text (a leading BOM skipped, as File.ReadAllText skips it)
+let readArtifactText (path: string) : string =
+    use r = new StreamReader(new MemoryStream(readArtifact path))
+    r.ReadToEnd()
+
+// a file's hash for the lock comparison; one that cannot be read compares
+// unequal to every recorded hash
+let private artifactSha (path: string) : string =
+    try
+        sha256Hex (readArtifact path)
+    with _ ->
+        "unreadable: not a regular file, or larger than 64 MiB"
+
 exception private LockShape of string
 
 let readLock (weirDir: string) : Result<LockEntry list, string> =
     let p = lockPath weirDir
 
-    if not (File.Exists p) then
+    if linkedDir weirDir then
+        Error(linkedRootRefusal weirDir)
+    elif not (File.Exists p) then
         Ok [] // absent until the first fetch — nothing vendored yet
     else
         try
-            use doc = Text.Json.JsonDocument.Parse(File.ReadAllText p)
+            // the lock is a file of its own: read through a link it would be
+            // rewritten through it too [D:lockfile-symlink-confinement]
+            if not (isNull (FileInfo(p).LinkTarget)) then
+                failwith "it is a symbolic link — a lock is a regular file"
+
+            use doc = Text.Json.JsonDocument.Parse(readArtifactText p)
 
             if doc.RootElement.ValueKind <> Text.Json.JsonValueKind.Object then
                 raise (LockShape "the lockfile must be a JSON object")
@@ -865,6 +944,9 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         Http.useEnvProxy handler
         use client = new Net.Http.HttpClient(handler)
         client.Timeout <- TimeSpan.FromSeconds 60.0
+        // a contract is small: a body past the artifact ceiling is refused,
+        // never buffered whole
+        client.MaxResponseContentBufferSize <- artifactCap
 
         // the explicit follow loop [D:contract-redirect], Http.send's shape:
         // per-message headers (not DefaultRequestHeaders, which cannot be
@@ -930,9 +1012,17 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
 
             Ok(resp.Content.ReadAsByteArrayAsync().Result, ct)
     with ex ->
-        // the shared transport classifier [D:transport-words] — 60s is
-        // this fetch's own client timeout above
-        Error(fst (Http.transportFailure 60000L curUrl ex))
+        let rec tooBig (e: exn) =
+            not (isNull e)
+            && ((e :? Net.Http.HttpRequestException && e.Message.Contains "buffer size")
+                || tooBig e.InnerException)
+
+        if tooBig ex then
+            Error $"{quoteData (Http.redactUrl curUrl)} sent more than 64 MiB — a contract is not that large"
+        else
+            // the shared transport classifier [D:transport-words] — 60s is
+            // this fetch's own client timeout above
+            Error(fst (Http.transportFailure 60000L curUrl ex))
 
 let fetchBytes (url: string) : Result<byte[] * string option, string> = fetchBytesWith [] url
 
@@ -968,15 +1058,38 @@ let rawUrlHint (url: string) : string =
 // stored. An
 // explicit @ref is required — weir does not guess a default branch.
 
-/// the env var a host's token is read from — never stored anywhere
+/// the env var a host's token is read from — never stored anywhere. One
+/// host per name [D:host-token-injective]: a dot is `_` and a hyphen is
+/// `__`, so `gitlab-acme.com` never reads the token of `gitlab.acme.com`
 let hostTokenVar (host: string) : string =
-    "WEIR_TOKEN_" + host.ToUpperInvariant().Replace(".", "_").Replace("-", "_")
+    "WEIR_TOKEN_" + host.ToUpperInvariant().Replace("-", "__").Replace(".", "_")
+
+// labels of letters and digits, hyphens inside a label only: the shape the
+// name above is injective on
+let private tokenHostShape =
+    Text.RegularExpressions.Regex(
+        @"^[a-z0-9]+(-+[a-z0-9]+)*(\.[a-z0-9]+(-+[a-z0-9]+)*)*$",
+        Text.RegularExpressions.RegexOptions.IgnoreCase
+        ||| Text.RegularExpressions.RegexOptions.CultureInvariant
+    )
+
+// a token rides https only (loopback aside): cleartext would hand it to
+// the path [D:host-token-injective]
+let private secureUrl (url: string) : bool =
+    try
+        let u = Uri url
+        u.Scheme = Uri.UriSchemeHttps || u.IsLoopback
+    with _ ->
+        false
 
 let private hostToken (host: string) : string option =
-    match Environment.GetEnvironmentVariable(hostTokenVar host) with
-    | null
-    | "" -> None
-    | t -> Some t
+    if not (tokenHostShape.IsMatch host) then
+        None
+    else
+        match Environment.GetEnvironmentVariable(hostTokenVar host) with
+        | null
+        | "" -> None
+        | t -> Some t
 
 /// a private repo without a token reads as 404 on a raw fetch, 401 on
 /// the ref listing (both hosts), 403 elsewhere — the hint fires on all
@@ -1267,7 +1380,7 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                 ""
 
         let hdrs =
-            match hostToken host with
+            match (if secureUrl spec then hostToken host else None) with
             | Some t -> [ "Authorization", "token " + t ]
             | None -> []
 
@@ -1425,10 +1538,12 @@ let moduleFetchHeaders (url: string) : (string * string) list * string option =
         with _ ->
             ""
 
+    let secure = secureUrl url
+
     let token, tokenHost =
-        match hostToken host with
+        match (if secure then hostToken host else None) with
         | Some t -> Some t, host
-        | None when host = "raw.githubusercontent.com" -> hostToken "github.com", "github.com"
+        | None when secure && host = "raw.githubusercontent.com" -> hostToken "github.com", "github.com"
         | None -> None, host
 
     let auth =
@@ -2626,12 +2741,34 @@ let private restoreClosure (weirDir: string) (e: LockEntry) (c: ModuleClosure) :
             | Ok dest ->
                 let present = File.Exists dest
 
-                if present && sha256Hex (File.ReadAllBytes dest) = sha then
+                if present && artifactSha dest = sha then
                     go acc rest
                 else
                     let url = e.Url + rel
 
-                    match fetchBytesWith headers url with
+                    // the file is fetched where the entry lives: a path that
+                    // moves the url to another origin, or out from under the
+                    // entry's own, would carry the entry's token there
+                    let under =
+                        try
+                            let b = Uri e.Url
+                            let u = Uri url
+
+                            u.Scheme = b.Scheme
+                            && u.Host = b.Host
+                            && u.Port = b.Port
+                            && u.UserInfo = b.UserInfo
+                            && b.AbsolutePath.EndsWith "/"
+                            && u.AbsolutePath.StartsWith(b.AbsolutePath, StringComparison.Ordinal)
+                        with _ ->
+                            false
+
+                    match
+                        (if under then
+                             fetchBytesWith headers url
+                         else
+                             Error "the path leaves the entry's url — this lock was tampered with or hand-edited")
+                    with
                     | Error err ->
                         let err =
                             match tokenHost with
@@ -2694,11 +2831,7 @@ let restore (weirDir: string) : Result<string list, string> =
                         // lock's intent — restore repairs it by refetching, the
                         // same hash-checked path an absent file takes (a
                         // deliberate local edit is a re-add, not an edit-in-place)
-                        let actual =
-                            if File.Exists dest then
-                                Some(sha256Hex (File.ReadAllBytes dest))
-                            else
-                                None
+                        let actual = if File.Exists dest then Some(artifactSha dest) else None
 
                         if actual = Some e.Sha256 then
                             Ok [ $"{e.Kind} {e.Name}: present" ]
@@ -3231,10 +3364,62 @@ module private ProbeSpawn =
                         close fds[0] |> ignore
                         close fds[1] |> ignore
 
+/// a bare tool name as the file PATH provides [D:spawn-path-only]: .NET's
+/// Process looks a bare name up in the working directory before PATH, so a
+/// spawn weir makes on its own never hands it one. Rooted PATH entries
+/// only; a name with a separator (or a drive) is not a tool name
+let locateTool (prog: string) : string option =
+    if
+        prog = ""
+        || prog = "."
+        || prog = ".."
+        || prog.Contains '\000'
+        || Path.GetFileName prog <> prog
+        || (OperatingSystem.IsWindows() && prog.Contains ':')
+    then
+        None
+    else
+        let exts =
+            if OperatingSystem.IsWindows() then
+                (match Environment.GetEnvironmentVariable "PATHEXT" with
+                 | null -> ".COM;.EXE;.BAT;.CMD"
+                 | v -> v)
+                    .Split(';', StringSplitOptions.RemoveEmptyEntries)
+                |> List.ofArray
+            else
+                []
+
+        let runnable (p: string) =
+            File.Exists p
+            && (OperatingSystem.IsWindows()
+                || (File.GetUnixFileMode p
+                    &&& (UnixFileMode.UserExecute
+                         ||| UnixFileMode.GroupExecute
+                         ||| UnixFileMode.OtherExecute))
+                   <> enum 0)
+
+        (match Environment.GetEnvironmentVariable "PATH" with
+         | null -> ""
+         | v -> v)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+        |> Seq.filter Path.IsPathFullyQualified
+        |> Seq.tryPick (fun dir ->
+            "" :: exts
+            |> List.map (fun e -> Path.Combine(dir, prog + e))
+            |> List.tryFind runnable)
+
 // elsewhere (macOS, Windows, a libc without addchdir_np): .NET's Process,
 // the same bounds, the tree kill in place of the group's
 let private runProbeManaged (prog: string) (args: string list) (cwd: string) : ProbeOutput option =
     try
+        let prog =
+            if Path.GetFileName prog <> prog then
+                prog
+            else
+                match locateTool prog with
+                | Some p -> p
+                | None -> raise (FileNotFoundException prog)
+
         let psi = Diagnostics.ProcessStartInfo(prog)
 
         for a in args do
@@ -3422,12 +3607,28 @@ type VerifyFinding =
     | VersionMismatch of LockEntry * actual: string
     | ToolMissing of LockEntry
 
-let verify (resolve: string -> string) (weirDir: string) : Result<string list * VerifyFinding list, string> =
+let verify (weirDir: string) : Result<string list * VerifyFinding list, string> =
     match readLock weirDir with
     | Error e -> Error e
     | Ok entries ->
         let lines = ResizeArray<string>()
         let findings = ResizeArray<VerifyFinding>()
+
+        // one probe per tool however many entries name it, and only of the
+        // file PATH provides [D:spawn-path-only]
+        let probes = Collections.Generic.Dictionary<string, VersionProbe>()
+
+        let probe (name: string) : VersionProbe =
+            match probes.TryGetValue name with
+            | true, r -> r
+            | _ ->
+                let r =
+                    match locateTool name with
+                    | Some abs -> probeToolVersion (fun _ -> abs) name
+                    | None -> ToolAbsent
+
+                probes[name] <- r
+                r
 
         for e in entries do
             match e.Closure with
@@ -3445,7 +3646,7 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
                         findings.Add(Absent e)
                         lines.Add $"{e.Kind} {e.Name}: {rel} ABSENT — run `weir restore`"
                     | Ok dest ->
-                        let actual = sha256Hex (File.ReadAllBytes dest)
+                        let actual = artifactSha dest
 
                         if actual <> sha then
                             findings.Add(Modified(e, actual))
@@ -3475,7 +3676,7 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
                         else
                             lines.Add $"{e.Kind} {e.Name}: ABSENT — run `weir restore`"
                     | _ ->
-                        let actual = sha256Hex (File.ReadAllBytes dest)
+                        let actual = artifactSha dest
 
                         if actual <> e.Sha256 then
                             findings.Add(Modified(e, actual))
@@ -3493,7 +3694,7 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
                                 lines.Add
                                     $"{e.Kind} {e.Name}: ok (hash; version not probed — verify runs no file a lock names by path)"
                             | Some recorded ->
-                                match probeToolVersion resolve e.Name with
+                                match probe e.Name with
                                 | ToolAbsent ->
                                     findings.Add(ToolMissing e)
 

@@ -47576,18 +47576,7 @@ let hunt4Tests =
                     + "\",\"path\":\"sigs/t.weir\",\"version\":\"1\"}]}"
                 )
 
-                let mutable resolved = []
-
-                let out =
-                    Weir.Contracts.verify
-                        (fun p ->
-                            resolved <- p :: resolved
-                            p)
-                        w
-
-                Expect.equal resolved [] "a path-form name is never resolved for a spawn"
-
-                match out with
+                match Weir.Contracts.verify w with
                 | Ok(lines, findings) ->
                     Expect.equal (List.length findings) 0 "the hash arm still holds"
                     Expect.stringContains (String.concat "\n" lines) "version not probed" "the line says so"
@@ -47608,6 +47597,111 @@ let hunt4Tests =
             Expect.isFalse (forged.Contains "m\n  runs  rm.weir") "a newline in a site's file forges no line"
 
             Expect.isFalse (forged.StartsWith "a\nb") "nor in the header"
+        }
+
+        test "lock audit: spawns take PATH's file, a token keeps to its host, the lock is a file of its own" {
+            if not (System.OperatingSystem.IsWindows()) then
+                withTempDir "weir-lockaudit" (fun d ->
+                    let bin = Path.Combine(d, "bin")
+                    let repo = Path.Combine(d, "repo")
+                    Directory.CreateDirectory bin |> ignore
+                    Directory.CreateDirectory repo |> ignore
+
+                    let plant (dir: string) (name: string) =
+                        let p = Path.Combine(dir, name)
+                        File.WriteAllText(p, "#!/bin/sh\n")
+
+                        File.SetUnixFileMode(
+                            p,
+                            UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                        )
+
+                        p
+
+                    let onPath = plant bin "weirlocated"
+                    plant repo "weirplanted" |> ignore
+                    let savedPath = System.Environment.GetEnvironmentVariable "PATH"
+                    let savedCwd = Directory.GetCurrentDirectory()
+
+                    try
+                        Directory.SetCurrentDirectory repo
+                        // a relative and an empty entry: the working directory, to a shell
+                        System.Environment.SetEnvironmentVariable("PATH", ".:" + ":" + bin)
+                        Expect.equal (Weir.Contracts.locateTool "weirlocated") (Some onPath) "PATH's file"
+                        Expect.equal (Weir.Contracts.locateTool "weirplanted") None "never the working directory's"
+                        Expect.equal (Weir.Contracts.locateTool "./weirplanted") None "a path is not a tool name"
+                        Expect.equal (Weir.Contracts.locateTool "..") None "nor a dot name"
+                    finally
+                        Directory.SetCurrentDirectory savedCwd
+                        System.Environment.SetEnvironmentVariable("PATH", savedPath)
+
+                    // a linked lock is refused, never read or rewritten through
+                    let w = Path.Combine(repo, ".weir")
+                    Directory.CreateDirectory w |> ignore
+                    let real = Path.Combine(d, "elsewhere.json")
+                    File.WriteAllText(real, "{\"schemaVersion\":1,\"artifacts\":[]}")
+                    File.CreateSymbolicLink(Path.Combine(w, "lock.json"), real) |> ignore
+
+                    match Weir.Contracts.readLock w with
+                    | Error e -> Expect.stringContains e "symbolic link" "the refusal names the link"
+                    | Ok _ -> failtest "a linked lock was read"
+
+                    // a linked .weir would move the confinement root with it
+                    let repo2 = Path.Combine(d, "repo2")
+                    Directory.CreateDirectory repo2 |> ignore
+                    let w2 = Path.Combine(repo2, ".weir")
+                    Directory.CreateSymbolicLink(w2, repo2) |> ignore
+                    File.WriteAllText(Path.Combine(repo2, "lock.json"), "{\"schemaVersion\":1,\"artifacts\":[]}")
+
+                    match Weir.Contracts.readLock w2 with
+                    | Error e -> Expect.stringContains e "vendor directory is a directory of its own" "a linked root"
+                    | Ok _ -> failtest "a lock was read through a linked .weir"
+
+                    match Weir.Contracts.confineRealUnder w2 (Path.Combine(w2, "x")) with
+                    | Error e -> Expect.stringContains e "symbolic link" "nothing is confined under a linked root"
+                    | Ok _ -> failtest "a write was confined under a linked .weir"
+
+                    // a closure file is fetched under its entry's url, or not at all
+                    let w3 = Path.Combine(d, "repo3", ".weir")
+                    Directory.CreateDirectory w3 |> ignore
+                    let z = System.String(char 48, 64)
+
+                    File.WriteAllText(
+                        Path.Combine(w3, "lock.json"),
+                        "{\"schemaVersion\":2,\"artifacts\":[{\"kind\":\"module\",\"name\":\"m\",\"url\":\"https://host.example.test\",\"sha256\":\""
+                        + z
+                        + "\",\"path\":\"modules/m\",\"entry\":\".evil.example.test/m.weir\",\"files\":[{\"path\":\".evil.example.test/m.weir\",\"sha256\":\""
+                        + z
+                        + "\"}]}]}"
+                    )
+
+                    match Weir.Contracts.restore w3 with
+                    | Error e -> Expect.stringContains e "leaves the entry's url" "the fetch never starts"
+                    | Ok lines -> failtest $"restored: {lines}")
+
+            Expect.notEqual
+                (Weir.Contracts.hostTokenVar "gitlab-acme.com")
+                (Weir.Contracts.hostTokenVar "gitlab.acme.com")
+                "a hyphen and a dot name different variables"
+
+            let var = Weir.Contracts.hostTokenVar "modules.example.test"
+            let saved = System.Environment.GetEnvironmentVariable var
+
+            try
+                System.Environment.SetEnvironmentVariable(var, "t1")
+
+                let auth (url: string) =
+                    fst (Weir.Contracts.moduleFetchHeaders url)
+                    |> List.filter (fun (k, _) -> k <> "User-Agent")
+
+                Expect.equal (auth "http://modules.example.test/m.weir") [] "no token over cleartext"
+
+                Expect.equal
+                    (auth "https://modules.example.test/m.weir")
+                    [ "Authorization", "token t1" ]
+                    "https carries it"
+            finally
+                System.Environment.SetEnvironmentVariable(var, saved)
         }
     ]
 

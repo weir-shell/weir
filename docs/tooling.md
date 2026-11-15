@@ -742,7 +742,8 @@ module's own `file:line`. You can see what a dependency is able to do
 before running anything.
 
 For a private repo, set `WEIR_TOKEN_GITHUB_COM` or
-`WEIR_TOKEN_GITLAB_COM`. Only `add` and `restore` need the token; using
+`WEIR_TOKEN_GITLAB_COM` (the host upper-cased, a dot as `_`, a hyphen
+as `__`). A token is sent only over https. Only `add` and `restore` need the token; using
 the committed file doesn't. Tokens are read from the environment and
 never stored. A private repo without a token answers 401 on the ref
 listing and 404 on the file, so weir's error mentions the token in

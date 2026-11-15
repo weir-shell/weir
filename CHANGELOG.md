@@ -13,6 +13,37 @@
 
 ### Fixed
 
+- **Inside a repository, weir's own spawns take the tool PATH provides.**
+  .NET looks a bare program name up in the working directory first, so
+  in a cloned repo the REPL's Tab on `git checkout ` ran a `./git`
+  planted there and Ctrl+R a planted `./fzf`; on macOS and Windows
+  `weir verify` and `weir add sig` probed the same way. These spawns
+  now resolve the name against PATH's absolute entries or do not
+  start. `verify` also probes each tool once, however many lock
+  entries name it.
+- **A host token goes to its own host, over https.** `WEIR_TOKEN_<host>`
+  mapped a dot and a hyphen to the same `_`, so a lock naming
+  `gitlab-acme.com` received the token of `gitlab.acme.com`, and an
+  `http://` url received it in cleartext. A hyphen is now `__`
+  (`WEIR_TOKEN_MY__HOST_COM`), and a token rides only an https or
+  loopback url. **If your host has a hyphen, rename its variable.**
+- **`weir add sig` no longer writes through a symlink** in
+  `.weir/sigs`, and a `.weir/lock.json` that is a symlink is refused.
+- **A `.weir` that is itself a symlink is refused.** With `.weir`
+  linked to the checkout root, a lock path of `.git/config` passed the
+  confinement and `weir restore` overwrote it.
+- **A module closure's files are fetched under the entry's own url.** A
+  lock could word a file path so the request went to another host,
+  carrying the entry's token; such a path is now refused before any
+  request. `weir add module` with an `http://` url sends no token
+  either.
+- **Vendored files are read with a ceiling.** A lock, schema or
+  vendored file linked to a device (`/dev/zero`) is refused at 64 MiB
+  instead of exhausting memory, and a fetched body past 64 MiB is
+  refused.
+- **`weir verify`, `restore`, `add` and `gen types` escape a newline in
+  a lock field**, on their output and error lines alike; it could forge
+  a line.
 - **LSP completion keeps your bindings when PATH is crowded.** The list
   was sorted and cut at 200, so on a machine with many commands
   sharing the typed prefix a declared name fell off the end. Bindings

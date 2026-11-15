@@ -4260,7 +4260,7 @@ PYEOF
 
     # R6 (C21): a REPL ^C that cut no wait still ends a multi-statement
     # entry — a `| exitCode` child, pure compute [D:repl-entry-check]
-    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND let c = sh -c "sleep 5" | exitCode\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-c")\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 1000' 'SEND let n = [1..6000000] |> Seq.map (fun i -> i % 7) |> Seq.length\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-n")\r' 'SLEEP 500' 'SEND \x03' 'SLEEP 6000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 20 "$BIN")
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND let c = sh -c "sleep 5" | exitCode\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-c")\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 1000' 'SEND let n = [1..600000000] |> Seq.map (fun i -> i % 7) |> Seq.length\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-n")\r' 'SLEEP 500' 'SEND \x03' 'SLEEP 6000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 20 "$BIN")
     echo "$tout" | grep -qF "STILL-HERE" || fail "the REPL survives the entries' ^C: $tout"
     echo "$tout" | grep -qE "LATE-C|LATE-N" && fail "a REPL ^C that cut no wait ends the entry: $tout"
     [ "$(echo "$tout" | grep -o "exit 130" | wc -l)" -ge 2 ] || fail "each ^C'd entry shows exit 130: $tout"
@@ -13542,7 +13542,9 @@ echo "$out" | grep -qF "version: subverstool (Version=1.7.0)" || fail "the secon
 grep -qF 'let version = "subverstool (Version=1.7.0)"' .weir/sigs/subverstool.weir || fail "the sig carries the rung-two identity"
 # the harvest pass [D:sig-version-probe]: weir's own usage-table help
 # has no flag rows — the last-resort --flag harvest records a surface
-out=$($BIN add sig weir 2>&1) || fail "add sig weir must succeed via the harvest: $out"
+# weir's own directory joins PATH: a probe takes the file PATH provides
+# [D:spawn-path-only], never the one beside the running binary
+out=$(PATH="$(pathEntry "$(cd "$(dirname "$BIN")" && pwd)"):$PATH" $BIN add sig weir 2>&1) || fail "add sig weir must succeed via the harvest: $out"
 echo "$out" | grep -qF "source: help-scan" || fail "the harvested surface is labeled: $out"
 grep -qF "json: bool" .weir/sigs/weir.weir || fail "the harvest found weir's own --json"
 # the subcommand walk (the jira/kubectl shape): Cobra keeps the real
