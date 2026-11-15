@@ -36784,6 +36784,53 @@ let qualifiedCasePatternTests =
         }
     ]
 
+// the entry's env holds the Self facts its text names; a module's facts
+// do not depend on what the entry wrote
+let selfFactTests =
+    testList "Self facts reach a module whatever the entry names" [
+        test "an entry that never writes Self imports a module that reads the process facts" {
+            withTempDir "weir-selffacts" (fun td ->
+                let write (name: string) (lines: string list) =
+                    System.IO.File.WriteAllLines(System.IO.Path.Combine(td, name), lines)
+
+                write "facts.weir" [
+                    "module Facts"
+                    ""
+                    "let count : int"
+                    "let count = Self.args |> Seq.length"
+                    "let own : string"
+                    "let own = Self.scriptPath"
+                    "let invoked : string"
+                    "let invoked = Self.entryPath"
+                    "let live : bool"
+                    "let live = Self.pid > 0"
+                ]
+
+                let checks = [
+                    "import \"./facts.weir\" as F"
+                    "if F.count <> 2 then fail $\"count {F.count}\""
+                    "if not (Str.endsWith \"facts.weir\" F.own) then fail $\"own {F.own}\""
+                    "if not F.live then fail \"live\""
+                ]
+
+                write
+                    "plain.weir"
+                    (checks
+                     @ [ "if not (Str.endsWith \"plain.weir\" F.invoked) then fail F.invoked" ])
+
+                write
+                    "named.weir"
+                    (checks
+                     @ [
+                         "if F.invoked <> Self.scriptPath then fail F.invoked"
+                         "if (Self.args |> Seq.length) <> 2 then fail \"own count\""
+                     ])
+
+                for entry in [ "plain.weir"; "named.weir" ] do
+                    Expect.equal (Weir.Script.run (System.IO.Path.Combine(td, entry)) [ "a"; "b" ]) 0 entry)
+        }
+    ]
+
 // validated types [D:validated-types]: a single-case union's `validate`
 // block is the type's one gate — `T.create` builds, the case only reads,
 // and every wire boundary runs the block
@@ -47900,6 +47947,7 @@ let allTests =
         moduleSignatureTests
         qualifiedTypeNameTests
         qualifiedCasePatternTests
+        selfFactTests
         validatedTypeTests
         scriptTests
         multilineTests
