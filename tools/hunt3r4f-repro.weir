@@ -449,7 +449,7 @@ type SigRun = { rc: string; ms: int; left: int; out: seq<string>; err: string; s
 let sigRun d specs tmo mark args =
     let py = put d "sigdrive.py" sigPy
     within cd d
-        let r = env $@noProxy $"TMPDIR={d}" python3 -I $py $d $tmo $mark $@specs -- $cli.bin $@args | complete
+        let r = env $@noProxy $"TMPDIR={d}" DOTNET_GCgen0size=0x1000000 python3 -I $py $d $tmo $mark $@specs -- $cli.bin $@args | complete
         let line = outOf r |> Str.trim
         let err = linesOf $"{d}/err" |> Str.join "\n"
         match line with
@@ -458,11 +458,13 @@ let sigRun d specs tmo mark args =
 
 type RssRun = { ms: int; rss: int; rc: string }
 
-// peak RSS of one child weir run
+// peak RSS of one child weir run. The gen0 budget is pinned: the runtime
+// sizes it from the machine's L3 cache, and on a large one the garbage of
+// more spawns reads as retention
 let rssRun d secs args =
     let py = put d "rss.py" rssPy
     within cd d
-        let line = env $@noProxy $"TMPDIR={d}" python3 -I $py $secs -- $cli.bin $@args | line
+        let line = env $@noProxy $"TMPDIR={d}" DOTNET_GCgen0size=0x1000000 python3 -I $py $secs -- $cli.bin $@args | line
         match line with
         | Regex @"ms=(\d+) rss=(\d+) rc=(\S+)" (ms, rss, rc) -> { ms = Str.toInt ms; rss = Str.toInt rss; rc = rc }
         | _ -> fail $"the RSS meter said '{line}'"
