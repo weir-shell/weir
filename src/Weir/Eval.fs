@@ -5982,8 +5982,16 @@ let private envPairsOf (where: string) (v: Value) : (string * string) list =
 // enclosing `within` scope where the identifier is EVALUATED (the rule the
 // command pipe uses), keyed by the builtin's own object so a user shadow
 // (`let ls = …`) is returned untouched. Populated by Builtins at load.
-let ambientRebinders =
+let private ambientRebinders =
     System.Collections.Generic.Dictionary<string, Value * (unit -> Value)>()
+
+// one bit per length a rebinder's name has: a variable read asks this of
+// its name before it asks anything of its value
+let mutable private ambientNameLengths = 0L
+
+let registerAmbient (name: string) (original: Value) (rebind: unit -> Value) : unit =
+    ambientRebinders[name] <- (original, rebind)
+    ambientNameLengths <- ambientNameLengths ||| (1L <<< name.Length)
 
 // the builtin table behind every run's env: a name the env misses reads
 // here, so an env holds a run's own bindings only and a call's bind is a
@@ -6438,7 +6446,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEVar name ->
         let v = lookupOrNull name env
 
-        if obj.ReferenceEquals(v, null) || isAmbientOriginal v then
+        if
+            obj.ReferenceEquals(v, null)
+            || ((ambientNameLengths >>> name.Length) &&& 1L <> 0L && isAmbientOriginal v)
+        then
             evalNode env te
         else
             v
