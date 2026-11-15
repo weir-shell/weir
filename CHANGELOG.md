@@ -20,6 +20,12 @@
   and a call's position answer is cached per statement. A runtime
   error raised right after such a read is blamed on the enclosing
   expression.
+- **A variable read no longer scans the ambient values** (`ls`, `pwd`,
+  `Env.vars`): it asks its own name first. About 2% on closure
+  pipelines.
+- **A script file runs closure calls as fast as `-e` does** (15–30%
+  on closure pipelines): its environment starts with the `Self` facts
+  its text names and no others, so a call binds into a shallower one.
 
 ### Fixed
 

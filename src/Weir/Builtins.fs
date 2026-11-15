@@ -10663,18 +10663,14 @@ Check.reservedBinderNames.Value <-
 // where evaluated: keyed by the builtin's own object (the value the env
 // still holds), so a user shadow is returned untouched. Eval consults this
 // in the identifier arm. glob captures at its call, so it needs no rebinder.
-Eval.ambientRebinders["ls"] <-
-    (realLs,
-     (fun () ->
-         match Session.scopedCwd () with
-         | Some cwd -> lsForCwd cwd
-         | None -> realLs))
+Eval.registerAmbient "ls" realLs (fun () ->
+    match Session.scopedCwd () with
+    | Some cwd -> lsForCwd cwd
+    | None -> realLs)
 
-Eval.ambientRebinders["pwd"] <- (pwdImpl, (fun () -> pwdForCwd (Session.Cwd())))
+Eval.registerAmbient "pwd" pwdImpl (fun () -> pwdForCwd (Session.Cwd()))
 
-Eval.ambientRebinders["Env.vars"] <-
-    (envVarsImpl,
-     (fun () ->
-         match Session.scopedOverlay () with
-         | Some layers -> envVarsFor (Some layers)
-         | None -> envVarsImpl))
+Eval.registerAmbient "Env.vars" envVarsImpl (fun () ->
+    match Session.scopedOverlay () with
+    | Some layers -> envVarsFor (Some layers)
+    | None -> envVarsImpl)
