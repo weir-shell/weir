@@ -36856,7 +36856,7 @@ let scopeCellTests =
                         "    | None -> k"
                         "let viaAsync n ="
                         "    let k = n * 2"
-                        "    let out = $(sh -c \"echo 5\") |> Seq.length"
+                        "    let out = $(git --version) |> Seq.length"
                         "    match Some (k + out) with"
                         "    | Some k -> k + n"
                         "    | None -> k"
