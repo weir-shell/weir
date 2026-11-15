@@ -4684,7 +4684,7 @@ let rec private loop (state: State) =
             if body.Trim() = "" then
                 if Map.isEmpty state.Aliases then
                     Console.WriteLine
-                        "no aliases — declare them in the init file (weir/init.weir) or here: #alias k = kubectl"
+                        "no aliases — declare them in the init file (weir/init.weir) or here: #alias g = git"
                 else
                     for KeyValue(name, a) in state.Aliases do
                         let tgt = String.concat " " (a.Exe :: a.Prefix)
