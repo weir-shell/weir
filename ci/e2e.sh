@@ -5261,8 +5261,9 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     # must not run the exit-hook sweep — the sweep deletes live within-tmp
     # dirs. The ^C lands mid-pure-computation — one builtin's own loop, the
     # computation a ^C still does not cut [D:repl-interrupt-compute] (a
-    # child would die and unwind the scope) — the block then checks its
-    # own dir. Linux is the
+    # child would die and unwind the scope). The entry ends at its next
+    # call, so the scope's `always` — run as written, inside the scope —
+    # is what checks the dir. Linux is the
     # mechanism's platform; the cell runs wherever the pty pins do.
     # multi-line body via Alt-Enter (\x1b\r): plain Enter submits the
     # moment the block parses complete — one body line suffices. Indented
@@ -5271,7 +5272,7 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     gatedir=$(mkweirtmp)
     cat > "$gatedir/gate.scn" <<'SCN'
 SLEEP 700
-SEND within tmp d\x1b\r    ["x"] |> File.write $"{d}/probe.txt"\x1b\r    print d\x1b\r    let n = Seq.replicate 600000000 1 |> Seq.sum\x1b\r    print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\r
+SEND within tmp d\x1b\r    ["x"] |> File.write $"{d}/probe.txt"\x1b\r    print d\x1b\r    let n = Seq.replicate 600000000 1 |> Seq.sum\x1b\r    print $"{n}"\x1b\ralways\x1b\r    print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\r
 SLEEP 1200
 SEND \x03
 SLEEP 5000
