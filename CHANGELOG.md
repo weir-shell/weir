@@ -4,6 +4,11 @@
 
 ### Changed
 
+- **`weir verify --probe-paths` checks the version of a tool the lock
+  names by path.** Without the flag such a tool is still never run, and
+  its line now names the flag. With it, verify runs the file from the
+  project root and compares its version; use it on a checkout you
+  trust.
 - **Closure calls and int arithmetic are about three times faster.** A
   call bound its parameter into a map that also held every builtin;
   the builtin table now sits behind the environment, and two ints take
