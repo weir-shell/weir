@@ -1313,7 +1313,7 @@ let private wordStartAt (text: string) (pos: int) = Complete.wordStartAt text po
 
 let private fzfSearch (query: string) : string option =
     try
-        let psi = Diagnostics.ProcessStartInfo "fzf"
+        let psi = Diagnostics.ProcessStartInfo((Contracts.locateTool "fzf").Value)
 
         // history lines are weir code, and weir's glyphs are fzf query
         // operators in its extended-search mode (`^` prefix-anchor vs
@@ -1423,7 +1423,7 @@ let private minimalSearch (query0: string) : string option =
     result
 
 let private historySearch (query: string) : string option =
-    if Extern.exists "fzf" then
+    if (Contracts.locateTool "fzf").IsSome then
         fzfSearch query
     else
         minimalSearch query
@@ -3469,7 +3469,7 @@ let private findFallback (te: TypeEnv) (query: string) : string =
 /// `#help <name>` answer. Cancel (130/Esc) prints nothing.
 let private findFzf (te: TypeEnv) (query: string) : string option =
     try
-        let psi = Diagnostics.ProcessStartInfo "fzf"
+        let psi = Diagnostics.ProcessStartInfo((Contracts.locateTool "fzf").Value)
 
         // candidate names carry weir glyphs' module dots only, but the
         // same reasoning as Ctrl+R holds: literal fuzzy matching is the
@@ -3533,7 +3533,7 @@ let private findDirective (te: TypeEnv) (query: string) =
     let interactive =
         not Console.IsInputRedirected
         && not Console.IsOutputRedirected
-        && Extern.exists "fzf"
+        && (Contracts.locateTool "fzf").IsSome
 
     if interactive then
         match findFzf te query with

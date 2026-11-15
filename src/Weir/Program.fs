@@ -683,7 +683,7 @@ let main argv =
              | Ok weirDir ->
                  match Contracts.restore weirDir with
                  | Ok lines ->
-                     lines |> List.iter (fun l -> Console.WriteLine(lockText l))
+                     lines |> List.iter (fun l -> Console.WriteLine(Types.quoteData l))
 
                      0
                  | Error e ->
@@ -698,12 +698,12 @@ let main argv =
                  Console.Error.WriteLine $"weir verify: {e}"
                  1
              | Ok weirDir ->
-                 match Contracts.verify Proc.resolveProg weirDir with
+                 match Contracts.verify weirDir with
                  | Error e ->
                      Console.Error.WriteLine $"weir verify: {lockText e}"
                      1
                  | Ok(lines, findings) ->
-                     lines |> List.iter (fun l -> Console.WriteLine(lockText l))
+                     lines |> List.iter (fun l -> Console.WriteLine(Types.quoteData l))
 
                      if List.isEmpty findings then 0 else 1)
         | "verify" :: _ ->

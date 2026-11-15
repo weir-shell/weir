@@ -183,7 +183,15 @@ type RunResult =
 let run (exe: string) (args: string list) (timeout: int) (abort: unit -> bool) : RunResult =
     let started =
         try
-            let psi = System.Diagnostics.ProcessStartInfo(Proc.resolveProg exe)
+            let prog =
+                if System.IO.Path.GetFileName exe <> exe then
+                    Proc.resolveProg exe
+                else
+                    match Contracts.locateTool exe with
+                    | Some p -> p
+                    | None -> raise (System.IO.FileNotFoundException exe)
+
+            let psi = System.Diagnostics.ProcessStartInfo(prog)
 
             for a in args do
                 psi.ArgumentList.Add a

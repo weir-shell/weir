@@ -7981,7 +7981,15 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
             let r =
                 match resolveSchemaFile path name with
                 | Error e -> Error e
-                | Ok(_, file) -> Contracts.parseSchema name (IO.File.ReadAllText file)
+                | Ok(_, file) ->
+                    match
+                        (try
+                            Ok(Contracts.readArtifactText file)
+                         with ex ->
+                             Error $"schema '{quoteData name}': cannot read {quoteData file} — {quoteData ex.Message}")
+                    with
+                    | Error e -> Error e
+                    | Ok txt -> Contracts.parseSchema name txt
 
             cache[name] <- r
             r
@@ -12238,55 +12246,60 @@ module SigGen =
                                     | Error e -> Error e
                                     | Ok(entries, movedNote) ->
                                         let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
-                                        IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
-                                        Contracts.AtomicFile.replaceFile dest (Text.UTF8Encoding(false).GetBytes text)
-                                        let bytes = IO.File.ReadAllBytes dest
+                                        let bytes = Text.UTF8Encoding(false).GetBytes text
 
-                                        let entry: Contracts.LockEntry = {
-                                            Kind = "sig"
-                                            Name = tool
-                                            Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
-                                            Sha256 = Contracts.sha256Hex bytes
-                                            Path = IO.Path.Combine("sigs", sigFileName tool)
-                                            Version = version
-                                            Closure = None
-                                        }
+                                        // confined like every vendored write
+                                        // [D:lockfile-symlink-confinement]: a linked
+                                        // sigs/ or leaf is refused, never written through
+                                        match Contracts.writeConfined weirDir dest bytes with
+                                        | Error e -> Error e
+                                        | Ok() ->
 
-                                        let others =
-                                            entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
+                                            let entry: Contracts.LockEntry = {
+                                                Kind = "sig"
+                                                Name = tool
+                                                Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
+                                                Sha256 = Contracts.sha256Hex bytes
+                                                Path = IO.Path.Combine("sigs", sigFileName tool)
+                                                Version = version
+                                                Closure = None
+                                            }
 
-                                        Contracts.writeLock weirDir (others @ [ entry ])
+                                            let others =
+                                                entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
 
-                                        // this tool's file under the legacy name is
-                                        // superseded — unless another entry owns that
-                                        // name [D:sig-probe-bounds]
-                                        let legacy = "sigs/" + legacySigFileName tool
+                                            Contracts.writeLock weirDir (others @ [ entry ])
 
-                                        if
-                                            legacy <> "sigs/" + sigFileName tool
-                                            && entries
-                                               |> List.exists (fun e ->
-                                                   e.Kind = "sig"
-                                                   && e.Name = tool
-                                                   && e.Path.Replace('\\', '/') = legacy)
-                                            && not (
-                                                others |> List.exists (fun e -> e.Path.Replace('\\', '/') = legacy)
-                                            )
-                                        then
-                                            try
-                                                IO.File.Delete(IO.Path.Combine(weirDir, legacy))
-                                            with _ ->
-                                                ()
+                                            // this tool's file under the legacy name is
+                                            // superseded — unless another entry owns that
+                                            // name [D:sig-probe-bounds]
+                                            let legacy = "sigs/" + legacySigFileName tool
 
-                                        let cutTail =
-                                            ([ cutNote; slowNote ]
-                                             |> List.filter ((<>) "")
-                                             |> List.map (fun n -> "; " + n)
-                                             |> String.concat "")
-                                            + movedNote
+                                            if
+                                                legacy <> "sigs/" + sigFileName tool
+                                                && entries
+                                                   |> List.exists (fun e ->
+                                                       e.Kind = "sig"
+                                                       && e.Name = tool
+                                                       && e.Path.Replace('\\', '/') = legacy)
+                                                && not (
+                                                    others |> List.exists (fun e -> e.Path.Replace('\\', '/') = legacy)
+                                                )
+                                            then
+                                                try
+                                                    IO.File.Delete(IO.Path.Combine(weirDir, legacy))
+                                                with _ ->
+                                                    ()
 
-                                        Ok
-                                            $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — partial by default; verify and mark exhaustive by hand")
+                                            let cutTail =
+                                                ([ cutNote; slowNote ]
+                                                 |> List.filter ((<>) "")
+                                                 |> List.map (fun n -> "; " + n)
+                                                 |> String.concat "")
+                                                + movedNote
+
+                                            Ok
+                                                $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — partial by default; verify and mark exhaustive by hand")
                 finally
                     try
                         IO.File.Delete tmp
