@@ -25,7 +25,7 @@ holds the deep-lock exactly as locally.
 [D:storm-nightly] (linux, also workflow_dispatch with `runs`, `count`,
 `tty`, `trees`, `repl_runs`). `ci/storm/storm.py` sends INT/TERM/HUP/QUIT
 at random points into the fixtures in `ci/storm/fx/` and judges each run
-against docs/reference/concurrency.md (exit by the first signal, cleanups
+against dev/CONCURRENCY.md (exit by the first signal, cleanups
 whole and once, nothing after a cut, no orphan, no tmp left, no core, a
 cooked pty after a terminal run); six storms — one signal, `--count 2-3`,
 `--tty`, `--kinds QUIT`, `--group` (TERM/HUP to the process group) and

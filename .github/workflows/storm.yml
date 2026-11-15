@@ -3,7 +3,7 @@
 # ci/storm/storm.py sends INT/TERM/HUP/QUIT at random points into fixtures
 # that nest scopes, fan-outs, races, locks, procs, serve, a backstop-adopted
 # compute and a cleanup reading the terminal, and judges each run against
-# the documented signal semantics (docs/reference/concurrency.md): the exit
+# the documented signal semantics (dev/CONCURRENCY.md): the exit
 # status, cleanups whole and once, nothing after a cut, no orphan, no tmp
 # left, no core, a cooked terminal after a pty run. Storms: one signal,
 # several, at a terminal, QUIT, group-directed (kill -- -pgid), and terminal
