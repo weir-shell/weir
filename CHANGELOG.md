@@ -10,6 +10,11 @@
   a direct path through the operators. `[1..3000000] |> Seq.map (fun n
   -> n * 2) |> Seq.where (fun n -> n % 3 == 0) |> Seq.length` went from
   1.9 s to 0.6 s.
+- **Variable reads and literals are cheaper again** (9–15% on closure
+  pipelines): they skip the per-node position and boundary bookkeeping,
+  and a call's position answer is cached per statement. A runtime
+  error raised right after such a read is blamed on the enclosing
+  expression.
 
 ### Fixed
 
