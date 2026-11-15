@@ -1134,8 +1134,9 @@ let checkInterrupted () : unit =
 
 /// raise whichever cancel stopped this flow (the race's, then ^C's)
 let checkCancels () : unit =
-    checkCancelled ()
-    checkInterrupted ()
+    if System.Threading.Volatile.Read &cutsPending <> 0 then
+        checkCancelled ()
+        checkInterrupted ()
 
 // a node's token, made at the first wait that needs one; cancelled by the
 // node's cut. `hard`: the one a wait on a child holds — a soft teardown
