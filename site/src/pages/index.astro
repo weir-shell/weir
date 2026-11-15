@@ -416,14 +416,18 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
   .copy-btn.copied { color: var(--ok); border-color: var(--ok); }
   /* the fold is a single stacked column [D:hero-2]: intro, then the
-     code demo, then the install lines — top to bottom, in the reading
-     measure (no full-bleed, no side-by-side); the feature sections
-     below still go two-up */
+     code demo, then the install lines — top to bottom, a little wider
+     than the reading measure so the larger code fits (no full-bleed,
+     no side-by-side); the feature sections below still go two-up */
   .hero-grid {
+    width: min(52rem, calc(100vw - 2.5rem));
+    margin-left: 50%;
+    transform: translateX(-50%);
     padding: var(--space-3) 0 var(--space-3);
   }
+  .hero-intro .sub { max-width: 68ch; }
   .hero-demo { margin: var(--space-4) 0; }
-  .hero-demo .astro-code { font-size: 0.8rem; }
+  .hero-demo .astro-code { font-size: var(--text-code); }
   .refusal.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
   /* feature sections [D:hero-2]: short prose BESIDE its example —
      the gleam shape; stacked on narrow screens */
@@ -447,7 +451,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
   .feature-demo { margin-top: var(--space-3); min-width: 0; }
   .feature-prose { min-width: 0; }
   .feature-prose h2 { margin-top: var(--space-4); }
-  .feature-demo .astro-code { font-size: 0.85rem; }
+  .feature-demo .astro-code { font-size: var(--text-code); }
   .hero-band {
     width: min(72rem, calc(100vw - 2.5rem));
     margin-left: 50%;
@@ -491,7 +495,7 @@ const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken
     border: 1px solid var(--border);
     border-left: 3px solid var(--danger);
     color: var(--fg);
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     line-height: 1.5;
     padding: 0.7rem 0.9rem;
     border-radius: 6px;

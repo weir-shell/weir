@@ -111,6 +111,8 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
         --b1: #004396;
         --b2: #00658a;
         --b3: #007575;
+        /* code blocks sit close to the prose size: the code is the content */
+        --text-code: 0.95rem;
         /* the type scale — five sizes, no arbitrary values per element */
         --text-sm: 0.88rem;
         --text-base: 1rem;
@@ -351,7 +353,7 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
         box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
         overflow-x: auto;   /* long weir lines SCROLL, never wrap or bleed */
         max-width: 100%;
-        font-size: var(--text-sm);
+        font-size: var(--text-code);
         line-height: 1.55;
         background: var(--code-bg);
         border: 1px solid var(--border);
@@ -372,7 +374,7 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
         background: var(--code-bg);
         padding: 0.16em 0.42em;
         border-radius: 4px;
-        font-size: 0.85em;
+        font-size: 0.9em;
       }
       h1, h2, h3 { line-height: 1.25; font-weight: 600; letter-spacing: -0.01em; }
       h1 { font-size: var(--text-2xl); margin-bottom: var(--space-3); }
