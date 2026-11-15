@@ -9,6 +9,16 @@
   cell over the top level's names instead of a new copy of the
   environment's tree; a fold through functions that build and match a
   union went from 1.8 s to 1.1 s for two million elements.
+- **An operator passed as a function is several times faster.**
+  `Seq.reduce (+)`, `Seq.fold (fun a n -> a + n) 0` and any lambda
+  whose body is one operator over two ints answer without walking
+  the body.
+
+### Fixed
+
+- **A value piped into an operator is refused like `(>) 1`.**
+  `1 |> (>)` passed the check and meant `fun x -> 1 > x`, the
+  half application `(>) 1` already refuses for reading backwards.
 
 ## v0.0.92
 

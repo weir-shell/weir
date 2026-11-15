@@ -33611,6 +33611,26 @@ let operatorValueTests =
             Expect.stringContains m "cannot be partially applied" "the rule"
             Expect.stringContains m "fun x -> v > x" "the backwards reading, shown"
             Expect.stringContains m "fun x -> x > v" "the likely-intended direction, shown"
+
+            // a pipe is the same half application
+            Expect.stringContains
+                (checkErr "[1; 2] |> Seq.where (10 |> (>))").Message
+                "cannot be partially applied"
+                "piped in"
+
+            Expect.stringContains (checkErr "let f = 1 |> (+) in f 2").Message "cannot be partially applied" "bound"
+        }
+        test "a one-operator lambda over ints answers as the walk does" {
+            Expect.equal (run "[1; 2; 3] |> Seq.reduce (+)") (VInt 6L) "an operator value"
+            Expect.equal (run "[1; 2; 3] |> Seq.fold (fun a n -> a - n) 10") (VInt 4L) "a spelled lambda"
+            Expect.equal (run "[1; 5] |> Seq.where (fun n -> n > 1) |> Seq.length") (VInt 1L) "a literal operand"
+            Expect.equal (run "[\"a\"; \"b\"] |> Seq.reduce (+)") (VStr "ab") "not ints: the walk"
+            Expect.equal (run "let k = 3 in [1; 2] |> Seq.map (fun n -> n * k) |> Seq.reduce (+)") (VInt 9L) "a capture"
+
+            Expect.stringContains
+                (Expect.throwsC (fun () -> run "[1; 2] |> Seq.map (fun n -> n / 0) |> Seq.length" |> ignore) id).Message
+                "division by zero"
+                "a raise takes the walk"
         }
         test "partial-application teach: a commutative op offers the directions as alternatives" {
             let m = (checkErr "[1; 2] |> Seq.map ((==) 1)").Message

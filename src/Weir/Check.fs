@@ -4950,6 +4950,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         err
             expr.Span
             "Reply.json takes the value it renders — `Reply.json status value` or `value |> Reply.json status`; lines already rendered are `Reply.rawJson status lines`"
+    // a pipe into an operator value is the same half application
+    // [D:operator-values]: `v |> (>)` refuses as `(>) v` does
+    | EPipe(arg, ({ Kind = EOpValue _ } as opHead)) -> infer ctx env { expr with Kind = EApp(opHead, arg) }
     | EApp _ ->
         let head, args = spine expr
 
