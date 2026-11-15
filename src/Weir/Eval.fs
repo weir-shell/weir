@@ -55,9 +55,29 @@ type RunPos() =
 
     static member val SameStatement: System.Func<obj, bool> = null with get, set
 
+    // the answer per body under one statement's hook: a slot holds the body,
+    // the hook it was asked of and the answer, replaced whole
+    static member val private CallCache: (obj * obj * bool)[] = Array.zeroCreate 64 with get
+
     static member IsCall(body: obj) =
         let f = RunPos.SameStatement
-        not (isNull f) && not (f.Invoke body)
+
+        if isNull f then
+            false
+        else
+            let slot = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode body &&& 63
+
+            let hit = RunPos.CallCache[slot]
+
+            if
+                not (obj.ReferenceEquals(hit, null))
+                && (let (b, h, _) = hit in obj.ReferenceEquals(b, body) && obj.ReferenceEquals(h, f))
+            then
+                (let (_, _, r) = hit in r)
+            else
+                let r = not (f.Invoke body)
+                RunPos.CallCache[slot] <- (body, box f, r)
+                r
 
 /// a raise's provenance: the node it is blamed on (a command at its own
 /// column, or the innermost node evaluated, line only) and the call sites
@@ -2515,6 +2535,9 @@ let orderCompare (name: string) (a: Value) (b: Value) : int =
 
         result
 
+let private vTrue = VBool true
+let private vFalse = VBool false
+
 // two ints, the arms of the table below picked by the operator's characters
 let private intBinOp (op: string) (a: int64) (b: int64) : Value voption =
     let c1 =
@@ -2538,12 +2561,12 @@ let private intBinOp (op: string) (a: int64) (b: int64) : Value voption =
                 failwith "modulo by zero"
             else
                 ValueSome(VInt(a % b))
-        | '>', ' ' -> ValueSome(VBool(a > b))
-        | '<', ' ' -> ValueSome(VBool(a < b))
-        | '>', '=' -> ValueSome(VBool(a >= b))
-        | '<', '=' -> ValueSome(VBool(a <= b))
-        | '=', '=' -> ValueSome(VBool(a = b))
-        | '<', '>' -> ValueSome(VBool(a <> b))
+        | '>', ' ' -> ValueSome(if a > b then vTrue else vFalse)
+        | '<', ' ' -> ValueSome(if a < b then vTrue else vFalse)
+        | '>', '=' -> ValueSome(if a >= b then vTrue else vFalse)
+        | '<', '=' -> ValueSome(if a <= b then vTrue else vFalse)
+        | '=', '=' -> ValueSome(if a = b then vTrue else vFalse)
+        | '<', '>' -> ValueSome(if a <> b then vTrue else vFalse)
         | _ -> ValueNone
     with :? System.OverflowException ->
         failwith "integer overflow"
@@ -5992,6 +6015,41 @@ let lookupValue (name: string) (env: Env) : Value option =
             | true, v -> Some v
             | _ -> None
 
+// the same read for the evaluator's variable arm: null for a miss, no option
+let private lookupOrNull (name: string) (env: Env) : Value =
+    let mutable v = Unchecked.defaultof<Value>
+
+    if env.TryGetValue(name, &v) then
+        v
+    else
+        match baseValues with
+        | null -> Unchecked.defaultof<Value>
+        | d ->
+            if d.TryGetValue(name, &v) then
+                v
+            else
+                Unchecked.defaultof<Value>
+
+// the rebinders' own objects, for the variable arm's first question: is
+// this value one of them at all
+let mutable private ambientOriginals: Value[] = [||]
+let mutable private ambientSeen = 0
+
+let private isAmbientOriginal (v: Value) : bool =
+    if ambientSeen <> ambientRebinders.Count then
+        ambientOriginals <- ambientRebinders.Values |> Seq.map fst |> Array.ofSeq
+        ambientSeen <- ambientRebinders.Count
+
+    let os = ambientOriginals
+    let mutable i = 0
+    let mutable found = false
+
+    while not found && i < os.Length do
+        found <- obj.ReferenceEquals(os[i], v)
+        i <- i + 1
+
+    found
+
 // the explicit sigil env only — ambient `within env` layers apply in
 // Proc's starters themselves [D:within-scopes], so every spawn
 // (reifier desugars included) obeys the outer-first rule,
@@ -6370,6 +6428,23 @@ and private progOf (env: Env) (h: Check.TCmdHead) (pairs: (string * string) list
             s
 
 and eval (env: Env) (te: TypedExpr) : Value =
+    // a literal and a plain variable read neither raise nor wait: no
+    // position to record, no boundary to cross
+    match te.Kind with
+    | TEInt n -> VInt(int64 n)
+    | TEStr s -> VStr s
+    | TEBool b -> if b then vTrue else vFalse
+    | TEUnit -> VUnit
+    | TEVar name ->
+        let v = lookupOrNull name env
+
+        if obj.ReferenceEquals(v, null) || isAmbientOriginal v then
+            evalNode env te
+        else
+            v
+    | _ -> evalNode env te
+
+and private evalNode (env: Env) (te: TypedExpr) : Value =
     RunPos.Current <- box te
     RunPos.Exact <- false
     // a signal or closed stdout unwinds here, before the node runs
@@ -6446,9 +6521,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // an ambient bare value rebinds to eval-time cwd capture, but
             // only while the name still holds the builtin's own object — a
             // shadow returns as-is [D:ambient-capture]
-            match ambientRebinders.TryGetValue name with
-            | true, (original, rebind) when obj.ReferenceEquals(v, original) -> rebind ()
-            | _ -> v
+            if isAmbientOriginal v then
+                match ambientRebinders.TryGetValue name with
+                | true, (original, rebind) when obj.ReferenceEquals(v, original) -> rebind ()
+                | _ -> v
+            else
+                v
         // `T.create` [D:validated-types]: registered when the type ran; a
         // refusal raises validate's message, located at the `T.create`
         | None when name.StartsWith createVarPrefix ->
