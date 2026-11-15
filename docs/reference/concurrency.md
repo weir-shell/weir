@@ -5,7 +5,7 @@ stopped. It is written for whoever changes `Session.fs`, `Builtins.fs`
 (the fan-outs), `Eval.fs` (`within`) or `Proc.fs`, and for whoever tests
 them: each invariant names the decisions it rests on and the function
 that enforces it. The user-facing promises are in
-[Scopes](../docs/reference/scopes.md) and the SKILL; this page is their mechanism.
+[Scopes](scopes.md) and the SKILL; this page is their mechanism.
 
 ## The scope tree
 

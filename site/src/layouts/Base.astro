@@ -40,7 +40,7 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta name="twitter:card" content="summary_large_image" />
-    <link rel="preload" href="/fonts/figtree-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/iosevka-aile-regular.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/iosevka-term-ext-regular.woff2" as="font" type="font/woff2" crossorigin />
     <script is:inline>
       // theme before first paint [D:queil-theme]: stored choice wins,
@@ -58,33 +58,10 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
          styles the chrome and leaves every rendered doc browser-default
          (how the code blocks shipped unpadded: the rule existed, the
          scoping kept it from matching). */
-      /* the prose face [D:site-trim]: Figtree, one variable file per
-         range (~20KB latin); the code keeps Iosevka Term. Iosevka Aile
-         stays declared so --font-body can name it again. */
-      @font-face {
-        font-family: "Figtree";
-        src: url("/fonts/figtree-latin-wght-normal.woff2") format("woff2-variations");
-        font-weight: 300 900;
-        font-style: normal;
-        font-display: swap;
-        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-      }
-      @font-face {
-        font-family: "Figtree";
-        src: url("/fonts/figtree-latin-ext-wght-normal.woff2") format("woff2-variations");
-        font-weight: 300 900;
-        font-style: normal;
-        font-display: swap;
-        unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-      }
-      @font-face {
-        font-family: "Figtree";
-        src: url("/fonts/figtree-latin-wght-italic.woff2") format("woff2-variations");
-        font-weight: 300 900;
-        font-style: italic;
-        font-display: swap;
-        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-      }
+      /* the prose face [D:site-style]: Iosevka Aile — the humanist
+         SANS sibling of the Term mono, so the page and its code share
+         one type family instead of a generic system stack. Subset to
+         the site's charset (~73KB/weight). */
       @font-face {
         font-family: "Iosevka Aile";
         src: url("/fonts/iosevka-aile-light.woff2") format("woff2");
@@ -134,11 +111,6 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
         --b1: #004396;
         --b2: #00658a;
         --b3: #007575;
-        /* the two faces: prose and code; swap one here and the site follows */
-        --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
-        --font-code: "Iosevka Term Ext", ui-monospace, "SF Mono", Consolas, monospace;
-        /* code blocks sit close to the prose size: the code is the content */
-        --text-code: 0.95rem;
         /* the type scale — five sizes, no arbitrary values per element */
         --text-sm: 0.88rem;
         --text-base: 1rem;
@@ -186,13 +158,8 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
         background: var(--bg);
         color: var(--fg);
         /* dense technical prose: taller leading than display text wants */
-        font: 400 1.0625rem/1.65 var(--font-body);
+        font: 400 16px/1.7 "Iosevka Aile", system-ui, -apple-system, "Segoe UI", sans-serif;
         -webkit-font-smoothing: antialiased;
-        /* a faint wash of the mark's hues behind the top of every page */
-        background-image:
-          radial-gradient(60rem 22rem at 12% -6rem, color-mix(in srgb, var(--b1) 9%, transparent), transparent 70%),
-          radial-gradient(48rem 20rem at 92% -8rem, color-mix(in srgb, var(--b3) 8%, transparent), transparent 70%);
-        background-repeat: no-repeat;
       }
       ::selection { background: color-mix(in srgb, var(--accent) 22%, transparent); }
       :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -204,7 +171,6 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
         border-bottom: 1px solid var(--border);
-        border-image: linear-gradient(90deg, color-mix(in srgb, var(--b1) 40%, var(--border)), var(--border) 35%, var(--border) 65%, color-mix(in srgb, var(--b3) 40%, var(--border))) 1;
         padding: 0.75rem 1.25rem;
         display: flex;
         flex-wrap: wrap;   /* six links survive a narrow viewport */
@@ -236,7 +202,7 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
         color: var(--muted);
         text-decoration: none;
         font-size: var(--text-sm);
-        font-family: var(--font-code);
+        font-family: "Iosevka Term Ext", ui-monospace, monospace;
       }
       .nav-right .ver:hover { color: var(--accent); }
       .icon-link {
@@ -385,14 +351,14 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
         box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
         overflow-x: auto;   /* long weir lines SCROLL, never wrap or bleed */
         max-width: 100%;
-        font-size: var(--text-code);
+        font-size: var(--text-sm);
         line-height: 1.55;
         background: var(--code-bg);
         border: 1px solid var(--border);
       }
-      code { font-family: var(--font-code); }
+      code { font-family: "Iosevka Term Ext", ui-monospace, "SF Mono", Consolas, monospace; }
       kbd {
-        font: 0.82em var(--font-code);
+        font: 0.78em "Iosevka Term Ext", ui-monospace, "SF Mono", Consolas, monospace;
         background: var(--code-bg);
         border: 1px solid var(--border);
         border-bottom-width: 2px;
@@ -406,9 +372,9 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
         background: var(--code-bg);
         padding: 0.16em 0.42em;
         border-radius: 4px;
-        font-size: 0.9em;
+        font-size: 0.85em;
       }
-      h1, h2, h3 { line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; }
+      h1, h2, h3 { line-height: 1.25; font-weight: 600; letter-spacing: -0.01em; }
       h1 { font-size: var(--text-2xl); margin-bottom: var(--space-3); }
       /* the h2 triplet marker RETIRED [D:hero-2]: at 3px-bar scale it
          read as a malformed logo beside every heading — the h1
@@ -417,22 +383,17 @@ const current = (href) => (path === href || path.startsWith(href) ? "page" : und
       h2 + p, h3 + p { margin-top: 0; }
       main a:hover { color: var(--b2); }
       h3 { font-size: var(--text-lg); margin-top: var(--space-5); }
-      hr {
-        border: 0;
-        height: 1px;
-        background: linear-gradient(90deg, transparent, var(--border) 18%, var(--border) 82%, transparent);
-        margin: var(--space-5) 0;
-      }
+      hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
       table { border-collapse: collapse; display: block; overflow-x: auto; font-size: var(--text-sm); }
       th, td { border: 1px solid var(--border); padding: 0.4rem 0.7rem; text-align: left; vertical-align: top; }
-      th { background: linear-gradient(180deg, var(--code-bg), color-mix(in srgb, var(--code-bg) 70%, var(--bg))); font-weight: 600; }
+      th { background: var(--code-bg); font-weight: 600; }
       tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--code-bg) 55%, transparent); }
       blockquote {
         margin: var(--space-3) 0;
         padding: 0.6rem 1rem;
         border-left: 3px solid var(--b2);
         border-radius: 0 6px 6px 0;
-        background: linear-gradient(90deg, color-mix(in srgb, var(--b2) 7%, var(--code-bg)), var(--code-bg) 60%);
+        background: var(--code-bg);
         color: var(--fg);
       }
       blockquote p { margin: 0.3rem 0; }
