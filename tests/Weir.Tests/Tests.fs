@@ -47576,11 +47576,38 @@ let hunt4Tests =
                     + "\",\"path\":\"sigs/t.weir\",\"version\":\"1\"}]}"
                 )
 
-                match Weir.Contracts.verify w with
+                match Weir.Contracts.verify w false with
                 | Ok(lines, findings) ->
                     Expect.equal (List.length findings) 0 "the hash arm still holds"
                     Expect.stringContains (String.concat "\n" lines) "version not probed" "the line says so"
-                | Error e -> failtest e)
+                | Error e -> failtest e
+
+                // asked, it runs the file from the project root [D:verify-probe-paths]
+                if not (System.OperatingSystem.IsWindows()) then
+                    let tool = Path.Combine(Path.GetDirectoryName w, "tools", "setup.sh")
+                    Directory.CreateDirectory(Path.GetDirectoryName tool) |> ignore
+
+                    let probed () =
+                        match Weir.Contracts.verify w true with
+                        | Ok(lines, findings) -> String.concat "\n" lines, List.length findings
+                        | Error e -> failtest e
+
+                    let answer (v: string) =
+                        File.WriteAllText(tool, "#!/bin/sh\necho " + v + "\n")
+
+                        File.SetUnixFileMode(
+                            tool,
+                            System.IO.UnixFileMode.UserRead
+                            ||| System.IO.UnixFileMode.UserWrite
+                            ||| System.IO.UnixFileMode.UserExecute
+                        )
+
+                        probed ()
+
+                    Expect.equal (answer "1") ("sig tools/setup.sh: ok (hash + version)", 0) "the recorded version"
+                    Expect.stringContains (fst (answer "2")) "VERSION MISMATCH" "a drifted tool"
+                    File.Delete tool
+                    Expect.stringContains (fst (probed ())) "TOOL MISSING" "no file there")
 
             let forged =
                 Weir.Can.renderHuman "a\nb.weir" [

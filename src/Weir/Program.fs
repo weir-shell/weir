@@ -692,13 +692,13 @@ let main argv =
         | "restore" :: _ ->
             Console.Error.WriteLine "usage: weir restore — re-materialize everything the lock records (hash-verified)"
             2
-        | [ "verify" ] ->
+        | "verify" :: ([] | [ "--probe-paths" ] as flags) ->
             (match Contracts.findWeirDir "." with
              | Error e ->
                  Console.Error.WriteLine $"weir verify: {lockText e}"
                  1
              | Ok weirDir ->
-                 match Contracts.verify weirDir with
+                 match Contracts.verify weirDir (not (List.isEmpty flags)) with
                  | Error e ->
                      Console.Error.WriteLine $"weir verify: {lockText e}"
                      1
@@ -708,7 +708,7 @@ let main argv =
                      if List.isEmpty findings then 0 else 1)
         | "verify" :: _ ->
             Console.Error.WriteLine
-                "usage: weir verify — vendored contracts against the lock (absent/modified are findings; exit 1)"
+                "usage: weir verify [--probe-paths] — vendored contracts against the lock (absent/modified are findings; exit 1); --probe-paths also runs a tool the lock names by path, for its version"
 
             2
         // the schema→types generator [D:schema-types]: locked schema →
@@ -950,7 +950,7 @@ let main argv =
                 + "       weir add module <name>[@<tag>] [--as <name>]    an official library module (github.com/weir-shell/lib); no tag = latest\n"
                 + "       weir gen types --schema <name>          generate weir types from a locked schema\n"
                 + "       weir restore                            re-materialize the lock's artifacts\n"
-                + "       weir verify                             vendored contracts vs the lock\n"
+                + "       weir verify [--probe-paths]             vendored contracts vs the lock\n"
                 + "       weir --version                          the build stamp"
 
             match args with

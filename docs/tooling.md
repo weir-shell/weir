@@ -27,7 +27,7 @@ usage: weir                                    the REPL
        weir add module <name>[@<tag>] [--as <name>]    an official library module (github.com/weir-shell/lib); no tag = latest
        weir gen types --schema <name>          generate weir types from a locked schema
        weir restore                            re-materialize the lock's artifacts
-       weir verify                             vendored contracts vs the lock
+       weir verify [--probe-paths]             vendored contracts vs the lock
        weir --version                          the build stamp
 ```
 
@@ -168,7 +168,10 @@ library versions dropped (curl's `libcurl/8.18.0 OpenSSL/3.5.5 …`).
 `weir verify` compares it with the installed tool's version and
 reports any difference at all. It probes only a tool named plainly
 (found on PATH): a signature recorded for a path (`./tools/jp`) keeps
-its hash check, and verify does not run the file. When the tool updates, run
+its hash check, and verify does not run the file. `weir verify
+--probe-paths` does: it runs each such file from the project root (the
+directory holding `.weir/`) and compares its version too — for a
+checkout you trust, such as a job that runs the scripts anyway. When the tool updates, run
 `weir add sig` again. If the regenerated file shows no diff, nothing
 that matters to your scripts changed.
 

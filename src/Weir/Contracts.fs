@@ -3364,6 +3364,30 @@ module private ProbeSpawn =
                         close fds[0] |> ignore
                         close fds[1] |> ignore
 
+/// a tool's file at a path: the path itself, or on Windows under a
+/// PATHEXT extension; executable on Unix
+let private toolFile (path: string) : string option =
+    let exts =
+        if OperatingSystem.IsWindows() then
+            (match Environment.GetEnvironmentVariable "PATHEXT" with
+             | null -> ".COM;.EXE;.BAT;.CMD"
+             | v -> v)
+                .Split(';', StringSplitOptions.RemoveEmptyEntries)
+            |> List.ofArray
+        else
+            []
+
+    let runnable (p: string) =
+        File.Exists p
+        && (OperatingSystem.IsWindows()
+            || (File.GetUnixFileMode p
+                &&& (UnixFileMode.UserExecute
+                     ||| UnixFileMode.GroupExecute
+                     ||| UnixFileMode.OtherExecute))
+               <> enum 0)
+
+    "" :: exts |> List.map (fun e -> path + e) |> List.tryFind runnable
+
 /// a bare tool name as the file PATH provides [D:spawn-path-only]: .NET's
 /// Process looks a bare name up in the working directory before PATH, so a
 /// spawn weir makes on its own never hands it one. Rooted PATH entries
@@ -3379,34 +3403,12 @@ let locateTool (prog: string) : string option =
     then
         None
     else
-        let exts =
-            if OperatingSystem.IsWindows() then
-                (match Environment.GetEnvironmentVariable "PATHEXT" with
-                 | null -> ".COM;.EXE;.BAT;.CMD"
-                 | v -> v)
-                    .Split(';', StringSplitOptions.RemoveEmptyEntries)
-                |> List.ofArray
-            else
-                []
-
-        let runnable (p: string) =
-            File.Exists p
-            && (OperatingSystem.IsWindows()
-                || (File.GetUnixFileMode p
-                    &&& (UnixFileMode.UserExecute
-                         ||| UnixFileMode.GroupExecute
-                         ||| UnixFileMode.OtherExecute))
-                   <> enum 0)
-
         (match Environment.GetEnvironmentVariable "PATH" with
          | null -> ""
          | v -> v)
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
         |> Seq.filter Path.IsPathFullyQualified
-        |> Seq.tryPick (fun dir ->
-            "" :: exts
-            |> List.map (fun e -> Path.Combine(dir, prog + e))
-            |> List.tryFind runnable)
+        |> Seq.tryPick (fun dir -> toolFile (Path.Combine(dir, prog)))
 
 // elsewhere (macOS, Windows, a libc without addchdir_np): .NET's Process,
 // the same bounds, the tree kill in place of the group's
@@ -3607,7 +3609,7 @@ type VerifyFinding =
     | VersionMismatch of LockEntry * actual: string
     | ToolMissing of LockEntry
 
-let verify (weirDir: string) : Result<string list * VerifyFinding list, string> =
+let verify (weirDir: string) (probePaths: bool) : Result<string list * VerifyFinding list, string> =
     match readLock weirDir with
     | Error e -> Error e
     | Ok entries ->
@@ -3615,15 +3617,27 @@ let verify (weirDir: string) : Result<string list * VerifyFinding list, string> 
         let findings = ResizeArray<VerifyFinding>()
 
         // one probe per tool however many entries name it, and only of the
-        // file PATH provides [D:spawn-path-only]
+        // file PATH provides [D:spawn-path-only] — or, asked for, of the file
+        // a path-form name is from the project root [D:verify-probe-paths]
         let probes = Collections.Generic.Dictionary<string, VersionProbe>()
+
+        let pathForm (name: string) = name.IndexOfAny [| '/'; '\\' |] >= 0
+
+        let located (name: string) : string option =
+            if not (pathForm name) then
+                locateTool name
+            else
+                try
+                    toolFile (Path.GetFullPath(name, Path.GetDirectoryName(Path.GetFullPath weirDir)))
+                with _ ->
+                    None
 
         let probe (name: string) : VersionProbe =
             match probes.TryGetValue name with
             | true, r -> r
             | _ ->
                 let r =
-                    match locateTool name with
+                    match located name with
                     | Some abs -> probeToolVersion (fun _ -> abs) name
                     | None -> ToolAbsent
 
@@ -3690,16 +3704,22 @@ let verify (weirDir: string) : Result<string list * VerifyFinding list, string> 
                             match e.Version with
                             // a path-form name is a file the lock chose: verify
                             // spawns only a tool PATH provides [D:verify-probe-path-only]
-                            | Some _ when e.Kind <> "sig" || e.Name.IndexOfAny [| '/'; '\\' |] >= 0 ->
+                            | Some _ when e.Kind <> "sig" || (pathForm e.Name && not probePaths) ->
                                 lines.Add
-                                    $"{e.Kind} {e.Name}: ok (hash; version not probed — verify runs no file a lock names by path)"
+                                    $"{e.Kind} {e.Name}: ok (hash; version not probed — verify runs no file a lock names by path; --probe-paths does)"
                             | Some recorded ->
                                 match probe e.Name with
                                 | ToolAbsent ->
                                     findings.Add(ToolMissing e)
 
+                                    let where =
+                                        if pathForm e.Name then
+                                            "is no executable file from the project root"
+                                        else
+                                            "is not on PATH"
+
                                     lines.Add
-                                        $"{e.Kind} {e.Name}: TOOL MISSING — '{e.Name}' is not on PATH (the signature records: {recorded})"
+                                        $"{e.Kind} {e.Name}: TOOL MISSING — '{e.Name}' {where} (the signature records: {recorded})"
                                 | RefusesVersionFlag ->
                                     findings.Add(
                                         VersionMismatch(e, "(the tool no longer answers --version or version)")
