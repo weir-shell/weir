@@ -29468,7 +29468,7 @@ let dumpTeachTests =
                     [ "let e = 1"; "let y = (e : int)" ],
                     2,
                     12,
-                    "weir has no type annotation inside an expression — annotate the binding instead: `let y: T = e`"
+                    "weir has no type annotation inside an expression — it infers the type, so drop the `: <type>`; in a module, a signature line states one: `let y : <type>`"
                 ] do
                 let d = one lines
                 Expect.equal (d.Message.Replace("\r\n", " ").Replace("\n", " ")) msg $"{lines}"
