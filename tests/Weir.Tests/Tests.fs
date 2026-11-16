@@ -47733,6 +47733,77 @@ let hunt4Tests =
             Expect.isFalse (forged.StartsWith "a\nb") "nor in the header"
         }
 
+        test "lock audit: a FIFO is no artifact, a refused sig write moves nothing, a long arrow renders in line" {
+            if System.OperatingSystem.IsLinux() then
+                withTempDir "weir-lockaudit2" (fun d ->
+                    let w = Path.Combine(d, ".weir")
+                    Directory.CreateDirectory(Path.Combine(w, "sigs")) |> ignore
+                    let fifo = Path.Combine(w, "sigs", "t.weir")
+                    use mk = System.Diagnostics.Process.Start("mkfifo", [| fifo |])
+                    mk.WaitForExit()
+                    Expect.isTrue (Weir.Contracts.pipeLike fifo) "a FIFO"
+                    Expect.isFalse (Weir.Contracts.pipeLike (Path.Combine(w, "absent"))) "an absent path"
+
+                    Expect.throws
+                        (fun () -> Weir.Contracts.readArtifact fifo |> ignore)
+                        "the read refuses, never waits"
+
+                    let z = System.String(char 48, 64)
+
+                    File.WriteAllText(
+                        Path.Combine(w, "lock.json"),
+                        "{\"schemaVersion\":1,\"artifacts\":[{\"kind\":\"sig\",\"name\":\"t\",\"url\":\"generated:help\",\"sha256\":\""
+                        + z
+                        + "\",\"path\":\"sigs/t.weir\"}]}"
+                    )
+
+                    match Weir.Contracts.verify w false with
+                    | Ok(lines, findings) ->
+                        Expect.equal (List.length findings) 1 "one finding"
+                        Expect.stringContains (String.concat "\n" lines) "MODIFIED" "a FIFO compares unequal"
+                    | Error e -> failtest e
+
+                    let real = Path.Combine(d, "real.weir")
+                    File.WriteAllText(real, "x")
+                    let link = Path.Combine(w, "sigs", "l.weir")
+                    File.CreateSymbolicLink(link, real) |> ignore
+                    Expect.isError (Weir.Contracts.confinedLeaf w link) "a linked leaf, nothing written"
+                    Expect.isOk (Weir.Contracts.confinedLeaf w (Path.Combine(w, "sigs", "n.weir"))) "a new leaf")
+
+            let chain =
+                List.fold (fun t _ -> Weir.Types.TFun(Weir.Types.TInt, t)) Weir.Types.TInt [ 1..50000 ]
+
+            Expect.equal (Weir.Types.formatTy chain).Length (3 + 50000 * 7) "every arrow, once"
+
+            Expect.equal
+                (Weir.Types.formatTy (
+                    Weir.Types.TFun(
+                        Weir.Types.TFun(Weir.Types.TInt, Weir.Types.TStr),
+                        Weir.Types.TTuple [
+                            Weir.Types.TSeq Weir.Types.TInt
+                            Weir.Types.TNamed(
+                                "Map",
+                                [ Weir.Types.TStr; Weir.Types.TRowVar("r", [ "a", Weir.Types.TInt ]) ]
+                            )
+                        ]
+                    )
+                ))
+                "(int -> string) -> seq<int> * Map<string, { a: int; .. }>"
+                "the spelling is unchanged"
+
+            // a function type takes 256 arrows and no more [D:arrow-chain-bound]
+            let signed (arrows: int) =
+                Weir.Parser.parseLine cmdResolver ("let f : int" + String.replicate arrows " -> int")
+
+            match signed 257 with
+            | Error msg -> Expect.stringContains msg "bound is 256" "the refusal names the bound"
+            | Ok _ -> failtest "257 arrows parsed"
+
+            match signed 256 with
+            | Error msg -> failtest msg
+            | Ok _ -> ()
+        }
+
         test "lock audit: spawns take PATH's file, a token keeps to its host, the lock is a file of its own" {
             if not (System.OperatingSystem.IsWindows()) then
                 withTempDir "weir-lockaudit" (fun d ->

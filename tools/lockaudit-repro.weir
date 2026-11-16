@@ -1,0 +1,306 @@
+#!/usr/bin/env weir
+// Acceptance instrument for the hostile-lock audit of `weir add`, `verify`
+// and `restore` (2026-11-15) and the fixes that followed it: one probe per
+// item. Each probe prints `<id> OK` when its item is fixed and
+// `<id> REPRODUCES (...)` otherwise, so one script is both the bug report
+// and the gate.
+//
+//     weir tools/lockaudit-repro.weir --bin /abs/path/to/weir [--only LA-FIFO]
+//
+// Most probes are sh fixtures: they build a hostile checkout (links, FIFOs,
+// planted tools, a forged lock) with ln/mkfifo/chmod and drive the binary
+// under test through `$WEIR`. LA-TMP and LA-HOPS need a listener and are
+// weir fixtures the binary under test runs, serving and fetching on
+// loopback; LA-TOKEN needs a proxy and starts a python one. A fixture exits 0 when the behaviour is the
+// fixed one and a small number naming the failing step otherwise, so a
+// probe that fails to run counts as reproducing, never as a pass.
+//
+// LA-RELPATH has not been seen to reproduce on Linux (no binary to hand ran
+// ./jp there); it pins the rule where the managed road is not taken.
+//
+// Not here: the REPL's Tab and Ctrl+R spawns (they need a terminal), the
+// managed-spawn road of macOS and Windows, and a token's host over https
+// (LA-TOKEN reads the variable's name off the refusal instead).
+
+type Cli = {
+    /// the weir binary under test (an absolute path: fixtures run elsewhere)
+    [<Default "weir">]
+    bin: string
+    /// run only the probes whose label starts with this text
+    only: Option<string>
+}
+
+let cli = Args.load Cli
+
+let toolsReady = sh -c "command -v timeout && command -v sha256sum && command -v mkfifo && command -v truncate && command -v yes" | succeeds
+
+// ---- runners ---------------------------------------------------------------
+
+let put dir name lines =
+    let p = $"{dir}/{name}"
+    lines |> File.write p
+    p
+
+let weirVar = $"WEIR={cli.bin}"
+
+let firstErr { stderr = se } = se |> Seq.tryHead |> Option.defaultValue ""
+
+let shIn dir script =
+    within cd dir
+        let r = timeout -k 2 180 env $weirVar sh $script | complete
+        r
+
+let weirIn dir script =
+    within cd dir
+        let r = timeout -k 2 180 $cli.bin $script | complete
+        r
+
+let shPre = <<<
+    W="$WEIR"
+    Z=0000000000000000000000000000000000000000000000000000000000000000
+    fail() { echo "$2" >&2; exit "$1"; }
+    sha() { sha256sum "$1" | cut -d' ' -f1; }
+    mk_tool() { mkdir -p "$(dirname "$1")"; printf '#!/bin/sh\n%s\n' "$2" > "$1"; chmod +x "$1"; }
+    lock1() { mkdir -p .weir; printf '{"schemaVersion":1,"artifacts":[{"kind":"sig","name":"%s","url":"generated:help","sha256":"%s","path":"%s","version":"%s"}]}' "$1" "$2" "$3" "$4" > .weir/lock.json; }
+
+// an sh fixture exits 0 when fixed
+let shRuns lines dir =
+    let r = shIn dir (put dir "probe.sh" (Seq.append shPre lines))
+    if r.exitCode == 0 then [] else [$"step {r.exitCode}: {firstErr r}"]
+
+// a weir fixture the binary under test runs; `bin` is that binary
+let weirRuns lines dir =
+    let r = weirIn dir (put dir "probe.weir" (Seq.append [$"let bin = \"{cli.bin}\""] lines))
+    if r.exitCode == 0 then [] else [$"step {r.exitCode}: {firstErr r}"]
+
+// ---- fixtures: the audit's fixes --------------------------------------------
+
+let relPath = <<<
+    mkdir -p .weir/sigs
+    echo x > .weir/sigs/jp.weir
+    lock1 jp "$(sha .weir/sigs/jp.weir)" sigs/jp.weir "jp 1.0"
+    mk_tool ./jp 'touch pwned; echo "jp 1.0"'
+    out=$(PATH=".:/usr/bin:/bin" timeout 20 "$W" verify 2>&1)
+    [ ! -e pwned ] || fail 3 "verify ran ./jp through a '.' PATH entry"
+    echo "$out" | grep -q "TOOL MISSING" || fail 4 "no TOOL MISSING: $out"
+    out=$(PATH=":/usr/bin:/bin" timeout 20 "$W" verify 2>&1)
+    [ ! -e pwned ] || fail 5 "verify ran ./jp through an empty PATH entry"
+
+let pathForm = <<<
+    mkdir -p .weir/sigs
+    echo x > .weir/sigs/t.weir
+    lock1 tools/setup.sh "$(sha .weir/sigs/t.weir)" sigs/t.weir 1
+    mk_tool tools/setup.sh 'touch pwned; echo 1'
+    out=$(timeout 20 "$W" verify 2>&1) || fail 3 "verify exit $?: $out"
+    [ ! -e pwned ] || fail 4 "verify ran the file the lock names by path"
+    echo "$out" | grep -q "version not probed" || fail 5 "the line does not say so: $out"
+
+let probePaths = <<<
+    mkdir -p .weir/sigs sub
+    echo x > .weir/sigs/t.weir
+    lock1 tools/setup.sh "$(sha .weir/sigs/t.weir)" sigs/t.weir 1
+    mk_tool tools/setup.sh 'echo 1'
+    out=$(cd sub && timeout 20 "$W" verify --probe-paths 2>&1) || fail 3 "from a subdirectory, exit $?: $out"
+    echo "$out" | grep -q "ok (hash + version)" || fail 4 "$out"
+    mk_tool tools/setup.sh 'echo 2'
+    out=$(timeout 20 "$W" verify --probe-paths 2>&1) && fail 5 "a drifted tool passes"
+    echo "$out" | grep -q "VERSION MISMATCH" || fail 6 "$out"
+    chmod -x tools/setup.sh
+    out=$(timeout 20 "$W" verify --probe-paths 2>&1) && fail 7 "a file that does not run passes"
+    echo "$out" | grep -q "TOOL MISSING" || fail 8 "$out"
+
+let linkedLock = <<<
+    mkdir -p .weir
+    printf '{"schemaVersion":1,"artifacts":[]}' > outside.json
+    ln -s ../outside.json .weir/lock.json
+    out=$(timeout 20 "$W" verify 2>&1) && fail 3 "verify read a linked lock"
+    echo "$out" | grep -q "symbolic link" || fail 4 "$out"
+
+let linkedRoot = <<<
+    mkdir real
+    printf '{"schemaVersion":1,"artifacts":[]}' > real/lock.json
+    ln -s real .weir
+    out=$(timeout 20 "$W" verify 2>&1) && fail 3 "verify read through a linked .weir"
+    echo "$out" | grep -q "symbolic link" || fail 4 "$out"
+    out=$(timeout 20 "$W" restore 2>&1) && fail 5 "restore read through a linked .weir"
+    exit 0
+
+let closureUrl = <<<
+    mkdir -p .weir
+    printf '{"schemaVersion":2,"artifacts":[{"kind":"module","name":"m","url":"https://host.example.test","sha256":"%s","path":"modules/m","entry":".evil.example.test/m.weir","files":[{"path":".evil.example.test/m.weir","sha256":"%s"}]}]}' "$Z" "$Z" > .weir/lock.json
+    out=$(https_proxy=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 timeout 60 "$W" restore 2>&1) && fail 3 "restore passed"
+    echo "$out" | grep -q "leaves the entry's url" || fail 4 "$out"
+
+let cap = <<<
+    mkdir -p .weir
+    truncate -s 65M .weir/lock.json
+    out=$(timeout 60 "$W" verify 2>&1) && fail 3 "verify passed"
+    echo "$out" | grep -q "64 MiB" || fail 4 "$(echo "$out" | cut -c1-200)"
+
+let forgedLine = <<<
+    mkdir -p .weir/sigs
+    lock1 't\nsig evil: ok' "$Z" sigs/t.weir 1
+    out=$(timeout 20 "$W" verify 2>&1)
+    echo "$out" | grep -q '^sig evil: ok' && fail 3 "verify prints the forged line"
+    out=$(timeout 20 "$W" restore 2>&1)
+    echo "$out" | grep -q '^sig evil: ok' && fail 4 "restore prints the forged line"
+    exit 0
+
+// a python listener stands in as the proxy: weir's own server answers its
+// loopback names only, so it cannot show what a foreign host would be sent
+let token = <<<
+    command -v python3 >/dev/null || fail 9 "python3 missing — the item stays open"
+    cat > px.py <<'PY'
+    import http.server
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"module M\nlet x : int\nlet x = 1\n"
+            self.send_response(200 if self.headers.get("Authorization") else 404)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    open("port", "w").write(str(srv.server_port))
+    srv.serve_forever()
+    PY
+    python3 -I px.py &
+    pid=$!
+    trap 'kill $pid 2>/dev/null' EXIT
+    i=0
+    while [ ! -s port ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+    px="http://127.0.0.1:$(cat port)"
+    http_proxy=$px WEIR_TOKEN_TOK_EXAMPLE=sekrit timeout 60 "$W" add module http://tok.example/m.weir --as m >o 2>&1 && fail 3 "the token went out over http"
+    out=$(http_proxy=$px WEIR_TOKEN_TOK_X_EXAMPLE=sekrit timeout 60 "$W" add module http://tok-x.example/m.weir --as n 2>&1)
+    echo "$out" | grep -q "WEIR_TOKEN_TOK__X_EXAMPLE" || fail 4 "tok-x.example reads the variable of tok.x.example: $out"
+    WEIR_TOKEN_127_0_0_1=sekrit timeout 60 "$W" add module "$px/m.weir" --as o >o 2>&1 || fail 5 "loopback lost its token: $(head -1 o)"
+
+// ---- fixtures: the follow-up fixes ------------------------------------------
+
+let fifo = <<<
+    mkdir -p .weir/sigs bin
+    mk_tool bin/jp 'echo "jp 1.0"'
+    mkfifo .weir/sigs/jp.weir
+    lock1 jp "$Z" sigs/jp.weir "jp 1.0"
+    PATH="$PWD/bin:$PATH" timeout 10 "$W" verify >o 2>&1
+    [ $? -eq 1 ] || fail 3 "verify waits on a FIFO signature"
+    printf '#sig jp\njp --fast\n' > s.weir
+    PATH="$PWD/bin:$PATH" timeout 10 "$W" check s.weir >o 2>&1
+    [ $? -lt 124 ] || fail 4 "check waits on a FIFO signature"
+    grep -q "not a regular file" o || fail 5 "$(head -1 o)"
+    rm .weir/lock.json
+    mkfifo .weir/lock.json
+    timeout 10 "$W" verify >o 2>&1
+    [ $? -eq 1 ] || fail 6 "verify waits on a FIFO lock"
+
+let refusedMove = <<<
+    mkdir -p .weir outside bin
+    ln -s ../outside .weir/sigs
+    echo x > outside/a_b.weir
+    printf '{"schemaVersion":1,"artifacts":[{"kind":"sig","name":"a b","url":"generated:help","sha256":"%s","path":"sigs/a_b.weir"}]}' "$(sha outside/a_b.weir)" > .weir/lock.json
+    mk_tool bin/a_b 'case "$1" in --version) echo "a_b 1";; *) printf "Usage: a_b [options]\n\nOptions:\n  --fast  go\n";; esac'
+    PATH="$PWD/bin:$PATH" timeout 120 "$W" add sig a_b >o 2>&1 && fail 3 "add sig wrote through a linked sigs/"
+    [ -e outside/a_b.weir ] || fail 4 "the refused add moved the other tool's signature"
+
+let arrows = <<<
+    { printf 'module T\nlet f : int'; yes ' -> int' | head -20000 | tr -d '\n'; printf '\nlet f = 1\n'; } > m.weir
+    timeout 4 "$W" check m.weir >/dev/null 2>&1
+    [ $? -eq 1 ] || fail 3 "check took over 4 s on a 20000-arrow signature"
+    { printf 'module T\nlet f : int'; yes ' -> int' | head -1000000 | tr -d '\n'; printf '\nlet f = 1\n'; } > deep.weir
+    timeout 20 "$W" check deep.weir > deep.out 2>&1
+    [ $? -eq 1 ] || fail 4 "check did not refuse a million-arrow signature"
+    grep -q "bound is 256" deep.out || fail 5 "the refusal does not name the bound"
+
+let tmpName = <<<
+    let route = fun rq -> Reply.text 200 "module M\nlet x : int\nlet x = 1\n"
+    within serve srv handler=route
+        File.write "victim" ["keep"]
+        mkdir t
+        ln -s ../victim t/weir-add-m.weir
+        let u = $"http://127.0.0.1:{Server.port srv}/m.weir"
+        let td = $"TMPDIR={Self.scriptPath |> Path.dir}/t"
+        let r = env $td $bin add module $u --as m | complete
+        if not r.ok then exit 3
+        let kept = grep -q keep victim | succeeds
+        if not kept then exit 4
+
+let hops = <<<
+    let route = fun rq ->
+        match rq.path with
+        | "/r0" -> Reply.redirect 302 "/r1"
+        | "/r1" -> Reply.redirect 302 "/r2"
+        | "/r2" -> Reply.redirect 302 "/r3"
+        | "/r3" -> Reply.redirect 302 "/r4"
+        | "/r4" -> Reply.redirect 302 "/r5"
+        | "/r5" -> Reply.redirect 302 "/r6"
+        | "/r6" -> Reply.redirect 302 "/r7"
+        | "/r7" -> Reply.redirect 302 "/r8"
+        | "/r8" -> Reply.redirect 302 "/r9"
+        | "/r9" -> Reply.redirect 302 "/r10"
+        | "/r10" -> Reply.redirect 302 "/r11"
+        | "/r11" -> Reply.redirect 302 "/r12"
+        | _ -> Reply.text 200 "module M\nlet x : int\nlet x = 1\n"
+    within serve srv handler=route
+        let far = $"http://127.0.0.1:{Server.port srv}/r0"
+        let near = $"http://127.0.0.1:{Server.port srv}/r3"
+        let twelve = env $bin add module $far --as m | complete
+        if twelve.ok then exit 3
+        let nine = env $bin add module $near --as n | complete
+        if not nine.ok then exit 4
+
+// ---- the table ---------------------------------------------------------------
+
+type Item = { id: string; what: string; run: string -> seq<string> }
+
+let probes = [
+    { id = "LA-RELPATH"; what = "verify's probe skips a relative or empty PATH entry"; run = shRuns relPath }
+    { id = "LA-PATHFORM"; what = "verify runs no file a lock names by path"; run = shRuns pathForm }
+    { id = "LA-PROBEPATHS"; what = "verify --probe-paths runs it from the project root and compares its version"; run = shRuns probePaths }
+    { id = "LA-LINKLOCK"; what = "a linked lock.json is refused"; run = shRuns linkedLock }
+    { id = "LA-LINKROOT"; what = "a linked .weir is refused"; run = shRuns linkedRoot }
+    { id = "LA-CLOSURE"; what = "restore fetches a closure file under its entry's url or not at all"; run = shRuns closureUrl }
+    { id = "LA-CAP"; what = "a lock past 64 MiB is refused"; run = shRuns cap }
+    { id = "LA-FORGED"; what = "a newline in a lock field forges no line in verify or restore"; run = shRuns forgedLine }
+    { id = "LA-TOKEN"; what = "a token rides https or loopback only, under a name one host owns"; run = shRuns token }
+    { id = "LA-FIFO"; what = "a FIFO signature or lock is refused, never waited on"; run = shRuns fifo }
+    { id = "LA-TMP"; what = "add module validates outside a guessable temp name"; run = weirRuns tmpName }
+    { id = "LA-MOVE"; what = "a refused add sig moves no other signature"; run = shRuns refusedMove }
+    { id = "LA-HOPS"; what = "a contract fetch follows ten redirects"; run = weirRuns hops }
+    { id = "LA-ARROWS"; what = "a long function type renders in linear time"; run = shRuns arrows }
+]
+
+let selected { id = id } =
+    match cli.only with
+    | None -> true
+    | Some o -> Str.startsWith o id
+
+let judge { id = id; what = what; run = run } =
+    let failing =
+        within tmp d
+            let f = run d |> Seq.freeze |> try result
+            f
+
+    match failing with
+    | Ok [] -> $"{id} OK — {what}"
+    | Ok fs -> $"{id} REPRODUCES ({fs |> Str.join "; "}) — {what}"
+    | Error e -> $"{id} REPRODUCES (the probe failed to run: {e}) — {what}"
+
+let verdicts =
+    if toolsReady then
+        probes |> Seq.where selected |> Seq.map judge |> Seq.freeze
+    else
+        ["instruments SKIP (timeout/sha256sum/mkfifo/truncate/yes missing) — every item stays OPEN"]
+
+verdicts |> Seq.iter print
+
+let open = verdicts |> Seq.where (fun l -> (l |> Str.contains " REPRODUCES") || (l |> Str.contains " SKIP")) |> Seq.freeze
+let ok = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "LA-") && (l |> Str.contains " OK")) |> Seq.length
+print ""
+print $"summary: {ok} probe(s) OK, {open |> Seq.length} line(s) keep the gate shut"
+
+if open |> Seq.isEmpty then
+    print (if cli.only == None then "ALL ITEMS FIXED" else "ALL SELECTED ITEMS FIXED (--only)")
+else
+    let n = open |> Seq.length
+    exit (if n > 255 then 255 else n)

@@ -518,14 +518,18 @@ let main argv =
                 let addLeaf (url: string) (bytes: byte[]) =
                     // validate before any .weir/ write [D:add-validates]:
                     // a module that does not check must not land
-                    let tmp = IO.Path.Combine(IO.Path.GetTempPath(), $"weir-add-{name}.weir")
-                    IO.File.WriteAllBytes(tmp, bytes)
-                    let checked' = Script.checkVendoredModule tmp
+                    let scratch = IO.Directory.CreateTempSubdirectory("weir-add-").FullName
+                    let tmp = IO.Path.Combine(scratch, name + ".weir")
 
-                    (try
-                        IO.File.Delete tmp
-                     with _ ->
-                         ())
+                    let checked' =
+                        try
+                            IO.File.WriteAllBytes(tmp, bytes)
+                            Script.checkVendoredModule tmp
+                        finally
+                            try
+                                IO.Directory.Delete(scratch, true)
+                            with _ ->
+                                ()
 
                     match checked' with
                     | Error e ->

@@ -20,6 +20,32 @@
   `1 |> (>)` passed the check and meant `fun x -> 1 > x`, the
   half application `(>) 1` already refuses for reading backwards.
 
+### Fixed
+
+- **A FIFO where a vendored file is expected is refused, never
+  waited on.** `weir verify`, `weir check` on a `#sig` script and every
+  read of `.weir/lock.json` opened the path and waited for a writer;
+  a FIFO or socket is now "not a regular file" for the lock, a schema,
+  a signature and any imported module.
+- **`weir add module` validates in a private scratch directory.** The
+  single-file form wrote the download to `/tmp/weir-add-<name>.weir`,
+  a name another local user could plant as a link first.
+- **A refused `weir add sig` moves nothing.** A legacy-named signature
+  of another tool was moved to its own name before the write was
+  confined, so a refusal (a linked `sigs/`) left the move behind and
+  the lock unaware of it.
+- **A contract fetch follows ten redirects, not fifty.**
+- **A long function type renders in linear time.** A signature of
+  16,000 arrows that its implementation did not match took 7 s in
+  `weir check` (each arrow copied the rest of the text); it takes
+  under 0.1 s.
+- **A function type takes at most 256 arrows.** A signature of a
+  million arrows ended `weir check` in a stack overflow with no
+  message; it is now a parse error naming the count.
+- **The language server refuses a FIFO where a module or a signature
+  is expected.** The refusal sat behind the editor's buffer lookup, so
+  `weir lsp` still opened the path and waited.
+
 ## v0.0.92
 
 ### Changed

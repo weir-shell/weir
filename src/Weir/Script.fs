@@ -6171,22 +6171,28 @@ type internal ImportRead =
     | IBadUtf8 of line: int * col: int
 
 let internal readImportSource (absPath: string) : ImportRead =
-    match importSourceOverride.Value with
-    | Some f ->
-        match f absPath with
-        | Some lines -> ISource lines
-        | None -> IAbsent
-    | None ->
-        // present but unreadable — permission denied, a directory, a
-        // device, an IO fault; name the path and the reason, located
-        match readSourceFile absPath with
-        | Ok lines -> ISource lines
-        | Error NotFound -> IAbsent
-        | Error IsDirectory -> IUnreadable "it is a directory, not a module"
-        | Error PermissionDenied -> IUnreadable "permission denied"
-        | Error NotRegular -> IUnreadable "not a regular file — a module is a text file"
-        | Error(IoFault m) -> IUnreadable m
-        | Error(InvalidUtf8(l, c)) -> IBadUtf8(l, c)
+    // before the buffer override too: the editor's read of a file that is
+    // not open falls to the disk [D:artifact-not-a-pipe]
+    if Contracts.pipeLike absPath then
+        IUnreadable "not a regular file — a module is a text file"
+    else
+
+        match importSourceOverride.Value with
+        | Some f ->
+            match f absPath with
+            | Some lines -> ISource lines
+            | None -> IAbsent
+        | None ->
+            // present but unreadable — permission denied, a directory, a
+            // device, an IO fault; name the path and the reason, located
+            match readSourceFile absPath with
+            | Ok lines -> ISource lines
+            | Error NotFound -> IAbsent
+            | Error IsDirectory -> IUnreadable "it is a directory, not a module"
+            | Error PermissionDenied -> IUnreadable "permission denied"
+            | Error NotRegular -> IUnreadable "not a regular file — a module is a text file"
+            | Error(IoFault m) -> IUnreadable m
+            | Error(InvalidUtf8(l, c)) -> IBadUtf8(l, c)
 
 // one run's module loads [D:parallel-imports]: the per-key memo (real
 // path -> result) the loader always had, now shared by worker threads —
@@ -12205,7 +12211,7 @@ module SigGen =
                                     // tool's signature — never overwritten: it moves to
                                     // its owner's own name first, its lock entry with it
                                     // [D:sig-probe-bounds]
-                                    let moved =
+                                    let moveLegacy () =
                                         match
                                             entries0
                                             |> List.tryFind (fun e ->
@@ -12241,6 +12247,16 @@ module SigGen =
                                                 with ex ->
                                                     Error
                                                         $"{rel} is the signature of '{shown}', and moving it to sigs/{ownName} failed: {ex.Message}"
+
+                                    // a write that would be refused moves nothing first
+                                    let moved =
+                                        match
+                                            Contracts.confinedLeaf
+                                                weirDir
+                                                (IO.Path.Combine(weirDir, "sigs", sigFileName tool))
+                                        with
+                                        | Error e -> Error e
+                                        | Ok() -> moveLegacy ()
 
                                     match moved with
                                     | Error e -> Error e
