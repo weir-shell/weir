@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.0.95
+
+### Added
+
+- **`weir --trace script.weir` shows each command before it starts.**
+  One line on stderr per command, with the file and line it was
+  written on and its arguments as the child receives them:
+  `+ deploy.weir:12: rsync -av 'my file' backup:/srv`. A word holding
+  a space, or nothing, is quoted; a `Secret` is `***`. `WEIR_TRACE=1`
+  does the same for a script run through its shebang.
+- **`Debug.peek` shows a value in passing.** `xs |> Debug.peek` prints
+  the value on stderr with its file and line and hands it on
+  unchanged; a lazy sequence is cached first.
+- **`Debug.break ()` stops the script at a prompt.** The prompt sees
+  every name in scope: expressions echo, `let` binds, commands run;
+  `#continue` goes on, `#vars` lists the names, `#quit` ends the
+  script. Without a terminal on stdin the break is skipped with a
+  note. `weir check` warns at each `Debug.peek` and `Debug.break`.
+
+### Fixed
+
+- **The REPL colors an env-prefix value as one word.** In
+  `TOKEN=dkr@22aed5 tool …` the `22` was tinted as a number and the
+  rest as a command that would fail.
+- **A pasted line no longer floods the terminal.** The REPL repainted
+  the whole line after every character, and a paste arrives as its
+  characters, so an 8,000-character paste wrote 33 MB and a longer one
+  froze the prompt. The line is now painted once, when the paste ends.
+- **The annotation hint no longer suggests syntax weir refuses.**
+  `(e : int)` was answered with "annotate the binding instead:
+  `let y: T = e`", which is refused too; the hint now says to drop
+  the annotation.
+- **`Str.toInt` says "out of range" for digits past the 64-bit
+  range**, where it said "not an integer".
+
 ## v0.0.94
 
 ### Changed

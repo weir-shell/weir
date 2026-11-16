@@ -1610,6 +1610,7 @@ let private readLineTty () : string option =
     // display rows between the region top and the cursor at the last
     // paint — the way back up through wraps
     let mutable lastCursorDisplay = 0
+    let mutable unpainted = false
 
     let termWidth () =
         try
@@ -1840,6 +1841,20 @@ let private readLineTty () : string option =
         Term.snapshot ()
         let ctrl = k.Modifiers.HasFlag ConsoleModifiers.Control
         let alt = k.Modifiers.HasFlag ConsoleModifiers.Alt
+
+        // characters a paste left unpainted show before anything acts on
+        // the line [D:repl-paste-repaint]
+        if
+            unpainted
+            && (ctrl
+                || alt
+                || k.KeyChar < ' '
+                || k.KeyChar = '\x7f'
+                || k.Key = ConsoleKey.Backspace
+                || k.Key = ConsoleKey.Delete)
+        then
+            unpainted <- false
+            redraw ()
 
         match k.Key with
         // Alt+Enter (and Ctrl+J below): force a newline even when the
@@ -2237,7 +2252,15 @@ let private readLineTty () : string option =
         | _ when k.KeyChar >= ' ' ->
             cur().Insert(col, k.KeyChar) |> ignore
             col <- col + 1
-            redraw ()
+
+            // a paste paints once, at its end [D:repl-paste-repaint]: with
+            // more input already queued the line is left unpainted, and the
+            // loop paints it before any key that is not another character
+            if typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable) then
+                unpainted <- true
+            else
+                unpainted <- false
+                redraw ()
         | _ -> ()
 
     activeRedraw.Value <- None

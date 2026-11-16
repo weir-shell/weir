@@ -59,6 +59,28 @@ let showArgv (words: string list) : string =
     |> List.map (fun w -> if secretWords.ContainsKey w then "***" else w)
     |> String.concat " "
 
+/// one command line for the trace [D:command-trace]: every word bounded,
+/// so a word holding a space or nothing reads as the one argument it is;
+/// Secret-spliced words masked, data escaped [D:error-data-escape]
+let traceArgv (words: string list) : string =
+    words
+    |> List.map (fun w ->
+        if secretWords.ContainsKey w then
+            "***"
+        elif
+            w <> ""
+            && w
+               |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || "-_./=:,+@%^".Contains c)
+        then
+            w
+        else
+            "'" + (Types.quoteData w).Replace("'", "'\\''") + "'")
+    |> String.concat " "
+
+/// told each process start, before it [D:command-trace]; null while no
+/// trace runs
+let mutable onSpawn: System.Action<string, string list> = null
+
 // NUL refusal at the spawn hand-off [D:spawn-nul-funnel]: argv and
 // env are NUL-terminated C strings, so a NUL-bearing word would
 // silently truncate at the child (the prefix runs; exit 0; no
@@ -143,6 +165,10 @@ let private spawnWith
     (args: string list)
     (env: (string * string) list)
     : Process =
+    match onSpawn with
+    | null -> ()
+    | told -> told.Invoke(prog, args)
+
     // runtime plan refusal [D:plan-proc-runtime-guard]: the syntactic
     // firstPlanRefusal follows earlier top-level helpers but not a
     // callable passed as a value or imported, so an indirect proc

@@ -15,6 +15,7 @@ block matches `weir --help` exactly):
 ```text
 usage: weir                                    the REPL
        weir <script> [args...]                 run a script
+       weir --trace <script> [args...]         run it, each command shown on stderr
        weir -e <program>                       evaluate a program; the result is its last expression
        weir check [--json] <script>            diagnostics only (no evaluation)
        weir check --can [--strict] [--json] <script>  the static capability report
@@ -38,6 +39,13 @@ usage: weir                                    the REPL
 - `weir script.weir args...` — run a script. A `#!/usr/bin/env weir`
   shebang works too. The script gets its arguments as `Self.args`, or
   parsed into a type you declare with `Args.load`.
+- `weir --trace script.weir args...` — run a script and show each
+  command on stderr just before it starts, with the file and line it
+  was written on: `+ deploy.weir:12: rsync -av 'my file' backup:/srv`.
+  Every word is one argument; a word holding a space, or nothing, is
+  quoted so that shows. A `Secret` spliced into a command shows as
+  `***`. `WEIR_TRACE=1` does the same for a script run through its
+  shebang.
 - `weir -e '<program>'` — run a program and print the value of its
   last statement with its type (`3 : int`), as the REPL echoes it with
   `#types on`: a unit value prints nothing, and a lazy seq shows its

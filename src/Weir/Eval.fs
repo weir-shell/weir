@@ -516,6 +516,23 @@ and [<Sealed; AllowNullLiteral>] Scope private (name: string, value: Value, next
 
         found || c.Top.TryGetValue(n, &v)
 
+    /// every name the scope holds, the nearest bind of each
+    member this.ToMap() : Env =
+        let cells = ResizeArray<string * Value>()
+        let mutable c = this
+
+        while not (isNull c.Name) do
+            cells.Add(c.Name, c.Value)
+            c <- c.Next
+
+        let mutable m = c.Top
+
+        for i in cells.Count - 1 .. -1 .. 0 do
+            let (n, v) = cells[i]
+            m <- Map.add n v m
+
+        m
+
 /// the parameter names a function value still takes [D:partial-echo] —
 /// the closure's own binder, then its body's lambda chain; a builtin or
 /// a pattern binder names nothing
@@ -6444,6 +6461,14 @@ let inline awaitFrame (flow: Flow) (t: System.Threading.Tasks.Task<'a>) : 'a =
 
         reraise ()
 
+/// where a node was written, as `file:line`, for the debugging aids
+/// [D:debug-aids]; the runner sets it, and it is null outside a run
+let mutable positionOf: System.Func<obj, string> = null
+
+/// `Debug.break ()` reached with its scope's number and its names
+/// [D:debug-aids]; the runner sets it
+let mutable onBreak: System.Action<int64, Env> = null
+
 // an int expression read without a walk: names, literals and the five
 // arithmetic operators answer as raw ints, so nothing between the leaves
 // and the root is a value. `ok` falls where the tree holds anything else,
@@ -6702,6 +6727,14 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
         evalIn (bindings |> List.fold (fun (m: Scope) (n, v) -> m.Add(n, v)) env) body
     | TELambdaPat(pat, body) -> VClosurePat(pat, body, env)
     | TELambda(param, _, body) -> VClosure(param, body, env)
+    // the prompt sees this scope [D:debug-aids]; outside a run the call
+    // is the builtin's, which does nothing
+    | TEApp({ Kind = TEVar "Debug.break" }, { Kind = TEInt scope }) ->
+        (match onBreak with
+         | null -> ()
+         | hook -> hook.Invoke(scope, env.ToMap()))
+
+        VUnit
     | TEApp(fn, arg) -> callAt env fn arg
     | TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) }) ->
         // collect the command chain left of this hop [D:byte-pipes]: a

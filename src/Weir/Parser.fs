@@ -6357,7 +6357,8 @@ let private dumpTeach (r: Resolver) (input: string) (idx: int) (msg: string) : s
     elif rest.StartsWith ")" && beforeT.EndsWith "(" then
         Some "an empty '()' is not a command argument — quote literal text: \"()\""
     elif rest.StartsWith ":" && not (rest.StartsWith "::") && parenDepth > 0 then
-        Some "weir has no type annotation inside an expression — annotate the binding instead: `let y: T = e`"
+        Some
+            "weir has no type annotation inside an expression — it infers the type, so drop the `: <type>`; in a module, a signature line states one: `let y : <type>`"
     elif
         (rest.StartsWith "/" || rest.StartsWith "./" || rest.StartsWith "~/")
         && lastIdent.IsSome

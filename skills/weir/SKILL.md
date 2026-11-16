@@ -3467,6 +3467,20 @@ print port
   runtime error for the data it quotes — a parse input, a document
   excerpt, a path, a file name, an env var name — always, piped too:
   CR, LF and escapes render as `\x0d`, `\x0a`, `\x1b` [D:error-data-escape].
+- DEBUGGING [D:debug-aids] [D:command-trace]: `weir --trace f.weir`
+  (or `WEIR_TRACE=1` for a shebang run) shows each command on stderr
+  before it starts — `+ f.weir:12: git tag 'v 1' ***` — one word per
+  argument, a spaced or empty word quoted, a Secret masked.
+  `x |> Debug.peek` shows the value on stderr with its `file:line` and
+  hands it on unchanged (a lazy seq is cached first, so the look takes
+  nothing from the next reader). `Debug.break ()` stops there and opens
+  a prompt over the names in scope: expressions echo, `let` binds for
+  the prompt's life, commands run; an empty line or `#continue` goes
+  on, `#vars` lists the names, `#quit` ends the script (exit 1). It
+  needs a terminal on stdin; without one it is skipped with a note.
+  Write it APPLIED — the scope is taken where `Debug.break ()` is
+  written, so `Debug.break` passed as a value does nothing. `weir
+  check` WARNS at each aid: they are not meant to stay.
 - `Log.trace/debug/info/warn "msg"` — levelled diagnostics, ALWAYS to
   stderr (stdout is data; there is no stream knob). `WEIR_LOG=level`
   selects (`trace|debug|info|warn|off`; default `info`; invalid
@@ -3531,6 +3545,7 @@ not the teaching.
 - `Frontier`: `fold` — the worklist fold `Graph.reach` and `Tree.walk` derive from
 - `Tree`: `fold` `walk` — `Tree.walk step root`, parents before children, for effects; `Tree.fold children combine root`, children before parents, for a value
 - `Http`: `defaults` `delete` `expect` `get` `head` `header` `headerAll` `options` `patch` `post` `put` `query` `send` `withQuery`
+- `Debug`: `break` `peek`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`

@@ -4264,8 +4264,68 @@ let private recoverLetPat
         Ok(patBinderNames pat |> List.map (fun n -> n, holeScheme ctx), holeNode span (holeVar ctx))
     | _ -> r
 
+/// a run keeps the scope at each `Debug.break ()` [D:debug-aids]: the
+/// checker stores it under a number and writes the number where the call's
+/// unit argument was, so the evaluator can hand the prompt the names and
+/// their types. Off for every other check (the editor's, the REPL's)
+let captureBreaks: bool ref = ref false
+
+let private breakScopes =
+    System.Collections.Concurrent.ConcurrentDictionary<int64, Ctx * TypeEnv>()
+
+let mutable private breakSeq = 0L
+
+type private BreakGuard() =
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private inside: bool
+
+    static member Inside
+        with get () = BreakGuard.inside
+        and set (v: bool) = BreakGuard.inside <- v
+
+/// a break's scope with every type the statement settled, for the prompt
+let settledBreakScope (id: int64) : TypeEnv option =
+    match breakScopes.TryGetValue id with
+    | true, (ctx, env) ->
+        Some {
+            env with
+                Values =
+                    env.Values
+                    |> Map.map (fun _ sch ->
+                        if sch.Forall.IsEmpty then
+                            { sch with Ty = finalTy ctx sch.Ty }
+                        else
+                            sch)
+                OpenIndex = None
+        }
+    | _ -> None
+
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
+    | EApp({
+               Kind = EField({ Kind = EVar "Debug" }, "break", _)
+           },
+           _) when captureBreaks.Value && not BreakGuard.Inside ->
+        BreakGuard.Inside <- true
+
+        let typed =
+            try
+                infer ctx env expr
+            finally
+                BreakGuard.Inside <- false
+
+        typed
+        |> Result.map (fun t ->
+            match t.Kind with
+            | TEApp(f, a) ->
+                let id = System.Threading.Interlocked.Increment &breakSeq
+                breakScopes[id] <- (ctx, env)
+
+                {
+                    t with
+                        Kind = TEApp(f, { a with Kind = TEInt id })
+                }
+            | _ -> t)
     // a failure as a value [D:try-form]: Option, or Result carrying the message
     | ETry(body, asResult) ->
         result {
@@ -10408,6 +10468,12 @@ let warnings (te: TypedExpr) : Warning list =
 
     let rec walk (te: TypedExpr) =
         (match te.Kind with
+         // a debugging aid is not meant to stay [D:debug-aids]
+         | TEVar("Debug.peek" | "Debug.break" as aid) ->
+             acc.Add {
+                 Span = te.Span
+                 Message = $"{aid} is a debugging aid — take it out before the script ships"
+             }
          | TECmd(_, args, _) ->
              // the bash prior-bleed family: ; does not chain, > / >>
              // do not redirect — warn, never block (a quoted literal

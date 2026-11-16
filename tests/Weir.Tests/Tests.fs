@@ -7122,6 +7122,22 @@ let stringTests =
             expectValue "Str.length \"abc\"" (VInt 3)
             expectValue "toInt \"42\" + 1" (VInt 43)
             Expect.throws (fun () -> run "toInt \"nope\"" |> ignore) "toInt raises"
+
+            let raised (src: string) =
+                (Expect.throwsC (fun () -> run src |> ignore) id).Message
+
+            Expect.stringContains (raised "toInt \"nope\"") "not an integer" "text that is no number"
+
+            Expect.stringContains
+                (raised "toInt \"99999999999999999999\"")
+                "out of range for a 64-bit integer"
+                "digits past the range"
+
+            Expect.stringContains
+                (raised "toInt \"-99999999999999999999\"")
+                "out of range for a 64-bit integer"
+                "signed too"
+
             expectValue "tryToInt \"42\"" (VUnion("Some", Some(VInt 42)))
             expectValue "tryToInt \"nope\"" (VUnion("None", None))
         }
@@ -29468,7 +29484,7 @@ let dumpTeachTests =
                     [ "let e = 1"; "let y = (e : int)" ],
                     2,
                     12,
-                    "weir has no type annotation inside an expression — annotate the binding instead: `let y: T = e`"
+                    "weir has no type annotation inside an expression — it infers the type, so drop the `: <type>`; in a module, a signature line states one: `let y : <type>`"
                 ] do
                 let d = one lines
                 Expect.equal (d.Message.Replace("\r\n", " ").Replace("\n", " ")) msg $"{lines}"
@@ -33619,6 +33635,18 @@ let operatorValueTests =
                 "piped in"
 
             Expect.stringContains (checkErr "let f = 1 |> (+) in f 2").Message "cannot be partially applied" "bound"
+        }
+        test "the trace bounds every word, and peek hands its value on [D:command-trace] [D:debug-aids]" {
+            Expect.equal
+                (Weir.Proc.traceArgv [ "git"; "tag"; "v 1"; ""; "--file=a/b.txt"; "it's" ])
+                "git tag 'v 1' '' --file=a/b.txt 'it'\\''s'"
+                "a spaced, an empty and a quoted word"
+
+            Weir.Proc.markSecretWord "trace-test-secret"
+            Expect.equal (Weir.Proc.traceArgv [ "curl"; "trace-test-secret" ]) "curl ***" "a Secret word"
+            Expect.equal (run "[1; 2; 3] |> Seq.map (fun n -> n * 2) |> Debug.peek |> Seq.sum") (VInt 12L) "a seq"
+            Expect.equal (run "let x = 5 |> Debug.peek in x + 1") (VInt 6L) "a scalar"
+            Expect.equal (run "Debug.break ()") VUnit "no run, no prompt"
         }
         test "a lambda that is an int expression answers as the walk does" {
             Expect.equal
@@ -39997,6 +40025,18 @@ let envPrefixTests =
         | Ok s -> failtest $"expected a refusal, got {Weir.Ast.sexprStmt s}"
 
     testList "env prefix [D:env-prefix]" [
+        test "an env-prefix value is one inert word for the colorizer [D:repl-color-words]" {
+            let c =
+                Weir.Script.colorizeRepl (fun n -> n = "rooz") "ROOZ_ALLOW=dkr@22aed5c9f6 rooz -H lambda update"
+
+            Expect.stringContains c "ROOZ_ALLOW=dkr@22aed5c9f6 " "the value carries no tint"
+            Expect.isFalse (c.Contains "\x1b[31m") "nothing in it reads as a head that would fail"
+
+            Expect.stringContains
+                (Weir.Script.colorizeRepl (fun n -> n = "rooz") "A=1 B=x2y rooz")
+                "A=1 B=x2y "
+                "each prefix's value"
+        }
         test "prefixes become the segment's overlay" {
             Expect.equal
                 (shape "EDITOR=nano git commit")
