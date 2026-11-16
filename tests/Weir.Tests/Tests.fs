@@ -7137,6 +7137,7 @@ let stringTests =
                 (raised "toInt \"-99999999999999999999\"")
                 "out of range for a 64-bit integer"
                 "signed too"
+
             expectValue "tryToInt \"42\"" (VUnion("Some", Some(VInt 42)))
             expectValue "tryToInt \"nope\"" (VUnion("None", None))
         }
