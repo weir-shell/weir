@@ -19,6 +19,12 @@
   script. Without a terminal on stdin the break is skipped with a
   note. `weir check` warns at each `Debug.peek` and `Debug.break`.
 
+### Fixed
+
+- **The REPL colors an env-prefix value as one word.** In
+  `TOKEN=dkr@22aed5 tool …` the `22` was tinted as a number and the
+  rest as a command that would fail.
+
 ## v0.0.94
 
 ### Changed

@@ -3452,7 +3452,19 @@ let colorizeReplWith (isAlias: string -> bool) (isKnown: string -> bool) (line: 
                             && line[i] = '='
                             && not (i + 1 < line.Length && line[i + 1] = '=')
                         then
-                            // an env-prefix name is not a head [D:env-prefix]
+                            // an env-prefix name is not a head [D:env-prefix],
+                            // and its value is one inert word: `dkr@22aed5`
+                            // holds no number and no head [D:repl-color-words]
+                            let mutable k = i + 1
+
+                            while k < line.Length
+                                  && free k
+                                  && not holes[k]
+                                  && line[k] <> '$'
+                                  && Parser.cmdWordChar line[k] do
+                                k <- k + 1
+
+                            i <- k
                             None
                         elif
                             slot = Complete.HeadSlot.Stage

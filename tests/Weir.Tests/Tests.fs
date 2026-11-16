@@ -40009,6 +40009,18 @@ let envPrefixTests =
         | Ok s -> failtest $"expected a refusal, got {Weir.Ast.sexprStmt s}"
 
     testList "env prefix [D:env-prefix]" [
+        test "an env-prefix value is one inert word for the colorizer [D:repl-color-words]" {
+            let c =
+                Weir.Script.colorizeRepl (fun n -> n = "rooz") "ROOZ_ALLOW=dkr@22aed5c9f6 rooz -H lambda update"
+
+            Expect.stringContains c "ROOZ_ALLOW=dkr@22aed5c9f6 " "the value carries no tint"
+            Expect.isFalse (c.Contains "\x1b[31m") "nothing in it reads as a head that would fail"
+
+            Expect.stringContains
+                (Weir.Script.colorizeRepl (fun n -> n = "rooz") "A=1 B=x2y rooz")
+                "A=1 B=x2y "
+                "each prefix's value"
+        }
         test "prefixes become the segment's overlay" {
             Expect.equal
                 (shape "EDITOR=nano git commit")
