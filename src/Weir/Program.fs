@@ -906,6 +906,14 @@ let main argv =
 
             2
         | path :: rest when not (path.StartsWith "-") -> runOnMain (fun () -> Script.run path rest)
+        | "--trace" :: path :: rest when not (path.StartsWith "-") ->
+            Script.traceCommands.Value <- true
+            runOnMain (fun () -> Script.run path rest)
+        | [ "--trace" ] ->
+            Console.Error.WriteLine
+                "usage: weir --trace <script> [args...] — run a script, telling stderr each command it starts"
+
+            2
         // teaching arms, not dumps [D:windows-v1]: a mistyped option gets a
         // did-you-mean; a mis-quoted -e gets its arity named (on Windows a
         // one-expression intent often arrives shell-split into many argv)
@@ -925,6 +933,7 @@ let main argv =
                 "-e"
                 "--help"
                 "--version"
+                "--trace"
                 "check"
                 "fmt"
                 "lsp"
@@ -942,6 +951,7 @@ let main argv =
             let usage =
                 "usage: weir                                    the REPL\n"
                 + "       weir <script> [args...]                 run a script\n"
+                + "       weir --trace <script> [args...]         run it, each command shown on stderr\n"
                 + "       weir -e <program>                       evaluate a program; the result is its last expression\n"
                 + "       weir check [--json] <script>            diagnostics only (no evaluation)\n"
                 + "       weir check --can [--strict] [--json] <script>  the static capability report\n"

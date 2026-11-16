@@ -33620,6 +33620,18 @@ let operatorValueTests =
 
             Expect.stringContains (checkErr "let f = 1 |> (+) in f 2").Message "cannot be partially applied" "bound"
         }
+        test "the trace bounds every word, and peek hands its value on [D:command-trace] [D:debug-aids]" {
+            Expect.equal
+                (Weir.Proc.traceArgv [ "git"; "tag"; "v 1"; ""; "--file=a/b.txt"; "it's" ])
+                "git tag 'v 1' '' --file=a/b.txt 'it'\\''s'"
+                "a spaced, an empty and a quoted word"
+
+            Weir.Proc.markSecretWord "trace-test-secret"
+            Expect.equal (Weir.Proc.traceArgv [ "curl"; "trace-test-secret" ]) "curl ***" "a Secret word"
+            Expect.equal (run "[1; 2; 3] |> Seq.map (fun n -> n * 2) |> Debug.peek |> Seq.sum") (VInt 12L) "a seq"
+            Expect.equal (run "let x = 5 |> Debug.peek in x + 1") (VInt 6L) "a scalar"
+            Expect.equal (run "Debug.break ()") VUnit "no run, no prompt"
+        }
         test "a lambda that is an int expression answers as the walk does" {
             Expect.equal
                 (run "[1; 2; 3; 4; 5; 6] |> Seq.where (fun n -> n * 2 % 3 == 0) |> Seq.length")

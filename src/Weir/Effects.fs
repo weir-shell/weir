@@ -47,7 +47,7 @@ let effectfulModules =
     // Term/Color read the terminal (width, tty-ness) — ambient; Term.title
     // writes it (a mutation, placed in effectClass) [D:term-title]
     // [D:purity-ambient]
-    Set [ "File"; "Dir"; "Env"; "Args"; "Proc"; "Net"; "Log"; "Term"; "Color" ]
+    Set [ "File"; "Dir"; "Env"; "Args"; "Proc"; "Net"; "Log"; "Debug"; "Term"; "Color" ]
 
 let effectfulQualified =
     Set [
@@ -247,4 +247,5 @@ let effectClass (n: string) : EffectClass option =
             | [| ("Term" | "Color"); _ |] -> Some Ambient // reads the terminal [D:purity-ambient]
             | [| "Http"; _ |] -> Some Ambient // constructors are pure; send handled above
             | [| "Log"; _ |] -> Some Mutation // writes logs to a stream
+            | [| "Debug"; _ |] -> Some Mutation // writes to stderr, or stops for a prompt
             | _ -> Some Mutation // an unclassified effect: the safe (refusing) direction

@@ -2993,6 +2993,56 @@ if 1 > 2 then fail "impossible"
 print "done"
 ```
 
+## Debugging
+
+Three tools, from lightest to heaviest.
+
+**See every command.** `weir --trace deploy.weir` prints each command
+on stderr just before it starts, with where it was written:
+
+```text
++ deploy.weir:12: rsync -av 'my file' backup:/srv
++ deploy.weir:14: curl -H *** https://api.example.com/deploy
+```
+
+Each word is one argument. A word that holds a space, or nothing at
+all, is quoted so you can see it arrived as one; a `Secret` shows as
+`***`. For a script you run through its shebang, set `WEIR_TRACE=1`.
+
+**Look at a value in passing.** `Debug.peek` prints what flows through
+a pipeline, with the file and line, and hands it on unchanged:
+
+```weir
+let total =
+    [1; 2; 3]
+    |> Seq.map (fun n -> n * 2)
+    |> Debug.peek
+    |> Seq.sum
+print $"{total}"
+```
+
+It writes to stderr, so the script's own output is untouched. A lazy
+sequence is cached before it is shown, so peeking at a command's lines
+does not use them up.
+
+**Stop and look around.** `Debug.break ()` pauses the script and opens a
+prompt that sees every name in scope at that line:
+
+```text
+break at deploy.weir:21 — an empty line or #continue goes on, #vars lists the names, #quit ends the script
+break> pkg.version
+"2.4.0" : string
+break> let tag = $"v{pkg.version}"
+break> git tag --list $tag
+break> #continue
+```
+
+Expressions echo their value and type, a `let` lasts until you
+continue, and commands run. The prompt needs a terminal: when stdin is
+a pipe or a file the break is skipped with a note, so a forgotten one
+cannot hang a CI job. `weir check` warns at every `Debug.peek` and
+`Debug.break`, since neither is meant to stay.
+
 ## The REPL
 
 `weir` with no arguments starts the REPL. Here you can use short names

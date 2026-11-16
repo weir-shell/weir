@@ -185,6 +185,7 @@ let rec private effectPhrase (n: string) : string =
             | [| "Proc"; _ |] -> $"'{n}' touches a process"
             | [| ("Net" | "Http"); _ |] -> $"'{n}' talks to the network"
             | [| "Log"; _ |] -> $"'{n}' writes logs"
+            | [| "Debug"; _ |] -> $"'{n}' writes to the terminal"
             | [| ("Term" | "Color"); _ |] -> $"'{n}' reads the terminal"
             | _ -> $"'{n}' is effectful"
 

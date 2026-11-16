@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.0.95
+
+### Added
+
+- **`weir --trace script.weir` shows each command before it starts.**
+  One line on stderr per command, with the file and line it was
+  written on and its arguments as the child receives them:
+  `+ deploy.weir:12: rsync -av 'my file' backup:/srv`. A word holding
+  a space, or nothing, is quoted; a `Secret` is `***`. `WEIR_TRACE=1`
+  does the same for a script run through its shebang.
+- **`Debug.peek` shows a value in passing.** `xs |> Debug.peek` prints
+  the value on stderr with its file and line and hands it on
+  unchanged; a lazy sequence is cached first.
+- **`Debug.break ()` stops the script at a prompt.** The prompt sees
+  every name in scope: expressions echo, `let` binds, commands run;
+  `#continue` goes on, `#vars` lists the names, `#quit` ends the
+  script. Without a terminal on stdin the break is skipped with a
+  note. `weir check` warns at each `Debug.peek` and `Debug.break`.
+
 ## v0.0.94
 
 ### Changed

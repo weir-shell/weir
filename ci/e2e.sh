@@ -172,6 +172,7 @@ replPtyProbes() {
         replProbe repl-b cooked-trap.py "cooked trap / echo-once" "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
         replProbe repl-b repl-it-streamed.py "it FSI-parity / function echo" "e2e ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help, a failed command quiets to an exit-code status [D:repl-it] [D:repl-fn-echo] [D:repl-cmd-fail]"
         replProbe repl-b repl-f1.py "repl F1 key bindings" "e2e ok: repl F1 prints the bindings mid-buffer and keeps it, raw F1 sequences, one-time hint [D:repl-f1-keys]"
+        replProbe repl-b debug-break.py "Debug.break prompt" "e2e ok: Debug.break stops at a prompt over its scope; an empty line goes on, #quit ends the script [D:debug-aids]"
         replProbe repl-b repl-directives.py "repl directives" "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
         replProbe repl-b repl-pathquote.py "repl path-quote completion" "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
         replProbe repl-b repl-mapkeys.py "repl map-key completion" "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
@@ -18049,5 +18050,41 @@ print x' 2>&1) && fail "| line must raise on two lines"
 echo "$out" | grep -qF "'printf a\x0ab\x0a | line' expected exactly one line of output, got 2" || fail "| line must escape the argv it echoes: $out"
 echo "e2e ok: a | line count error escapes the argv it echoes [D:error-data-escape]"
 rm -rf "$bbdir"
+
+# ---- the debugging aids [D:command-trace] [D:debug-aids] ------------------
+# --trace: one stderr line per command, where it was written and the
+# words the child receives — a spaced and an empty word quoted, a Secret
+# masked — and stdout untouched; WEIR_TRACE=1 is the same switch
+dbgdir=$(mkweirtmp)
+cat > "$dbgdir/t.weir" <<'WEOF'
+let who = "a b"
+let tok = Secret.of "hunter2"
+let r = git rev-parse --sq-quote $who "" $tok | complete
+print $"ran {r.ok}"
+WEOF
+out=$(cd "$dbgdir" && "$BIN" --trace t.weir 2>"$dbgdir/err") || fail "--trace run failed: $out $(cat "$dbgdir/err")"
+[ "$out" = "ran true" ] || fail "--trace must leave stdout alone: $out"
+grep -qxF "+ t.weir:3: git rev-parse --sq-quote 'a b' '' ***" "$dbgdir/err" || fail "the trace line drifted: $(cat "$dbgdir/err")"
+grep -qF hunter2 "$dbgdir/err" && fail "the trace showed a Secret: $(cat "$dbgdir/err")"
+(cd "$dbgdir" && WEIR_TRACE=1 "$BIN" t.weir 2>"$dbgdir/err2" >/dev/null) || fail "WEIR_TRACE run failed"
+grep -qF "+ t.weir:3: git rev-parse" "$dbgdir/err2" || fail "WEIR_TRACE=1 must trace too: $(cat "$dbgdir/err2")"
+(cd "$dbgdir" && "$BIN" t.weir 2>"$dbgdir/err3" >/dev/null) || fail "the untraced run failed"
+[ ! -s "$dbgdir/err3" ] || fail "an untraced run writes no trace: $(cat "$dbgdir/err3")"
+echo "e2e ok: command trace (file:line, words bounded, Secret masked, stdout untouched, WEIR_TRACE) [D:command-trace]"
+# Debug.peek hands its value on and shows it at its line; Debug.break
+# without a terminal is skipped with a note; check warns at both
+cat > "$dbgdir/p.weir" <<'WEOF'
+let xs = [1; 2; 3] |> Seq.map (fun n -> n * 2) |> Debug.peek
+Debug.break ()
+print $"{xs |> Seq.sum}"
+WEOF
+out=$(cd "$dbgdir" && "$BIN" p.weir 2>"$dbgdir/perr" </dev/null) || fail "the peek/break run failed: $(cat "$dbgdir/perr")"
+[ "$out" = "12" ] || fail "peek must hand its value on: $out"
+grep -qxF "[p.weir:1] [2; 4; 6]" "$dbgdir/perr" || fail "the peek line drifted: $(cat "$dbgdir/perr")"
+grep -qF "Debug.break at p.weir:2: skipped — stdin is not a terminal" "$dbgdir/perr" || fail "a break with no terminal must say it was skipped: $(cat "$dbgdir/perr")"
+out=$(cd "$dbgdir" && "$BIN" check p.weir 2>&1) || fail "a debugging aid is a warning, not an error: $out"
+[ "$(echo "$out" | grep -c 'is a debugging aid')" = "2" ] || fail "check must warn at each aid: $out"
+echo "e2e ok: debug aids (peek at its line, a break without a terminal skipped, check warns) [D:debug-aids]"
+rm -rf "$dbgdir"
 
 echo "e2e battery: all green"

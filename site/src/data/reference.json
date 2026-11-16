@@ -177,6 +177,25 @@
       ]
     },
     {
+      "name": "Debug",
+      "members": [
+        {
+          "name": "break",
+          "signature": "Debug.break () : unit",
+          "summary": "Stop the script here and open a prompt that sees every name in scope: evaluate expressions, bind names, run commands. An empty line or #continue goes on, #vars lists the names, #quit ends the script. Write it applied, Debug.break (). Without a terminal on stdin it is skipped with a note.",
+          "example": "Debug.break ()",
+          "pointer": null
+        },
+        {
+          "name": "peek",
+          "signature": "Debug.peek (value: \u0027a) : \u0027a",
+          "summary": "Show a value on stderr, with the file and line of the call, and return it unchanged. It drops into the middle of a pipeline. A lazy sequence is cached first, so the look does not use it up.",
+          "example": "[1; 2; 3] |\u003E Seq.map (fun n -\u003E n * 2) |\u003E Debug.peek |\u003E Seq.sum",
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Dir",
       "members": [
         {

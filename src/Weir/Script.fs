@@ -13031,7 +13031,7 @@ let private firstRunEffect (isLetRhs: bool) (te: Check.TypedExpr) : (string * Sp
         | "Http.send"
         | "Http.expect"
         | "Net.portOpen" -> Some $"'{n}'"
-        | _ when quiet.Contains n || n.StartsWith "Log." -> None
+        | _ when quiet.Contains n || n.StartsWith "Log." || n.StartsWith "Debug." -> None
         | _ when Effects.isCommandReifier n -> None // the command is named at its program slot
         | _ ->
             match Effects.effectClass n with
@@ -14249,7 +14249,91 @@ let checkOnly (json: bool) (path: string) : int =
 // physical line, so scope by the decl's physical lines (its Segments); a
 // field name is unique within a decl. An empty first line -> no help entry
 // (silence beats a mystery), same as no doc.
+// the prompt `Debug.break ()` opens [D:debug-aids]: one line an entry,
+// checked against the scope the break stands in and run over its values;
+// a name bound here lasts until the script goes on
+let private breakPrompt (at: string) (tenv0: TypeEnv) (venv0: Eval.Env) : unit =
+    if Console.IsInputRedirected then
+        Console.Error.WriteLine $"Debug.break at {at}: skipped — stdin is not a terminal"
+    else
+        let savedNode = Eval.RunPos.Current
+        let savedExact = Eval.RunPos.Exact
+        Console.Out.Flush()
+
+        Console.Error.WriteLine
+            $"break at {at} — an empty line or #continue goes on, #vars lists the names, #quit ends the script"
+
+        let mutable tenv = tenv0
+        let mutable venv = venv0
+        let mutable go = true
+
+        while go do
+            Console.Error.Write "break> "
+
+            match Console.In.ReadLine() with
+            | null ->
+                Console.Error.WriteLine ""
+                go <- false
+            | line ->
+                match line.Trim() with
+                | ""
+                | "#continue" -> go <- false
+                | "#quit" -> raise (Eval.ExitRequest 1)
+                | "#vars" ->
+                    for KeyValue(n, _) in venv do
+                        if not (n.StartsWith "Self.") then
+                            match Map.tryFind n tenv.Values with
+                            | Some sch -> Console.Error.WriteLine $"{n} : {formatEchoTy sch.Ty}"
+                            | None -> Console.Error.WriteLine n
+                | text ->
+                    match
+                        checkStatement false None resolver sessionImportLoader tenv (singleLine (stripComment text))
+                    with
+                    | Error d -> Console.Error.WriteLine $"error: {d.Message}"
+                    | Ok chk ->
+                        try
+                            match chk.Kind with
+                            | KType(decl, validator) ->
+                                venv <- Eval.declare venv decl validator
+                                tenv <- chk.Env
+                            | KLet(name, _, te) ->
+                                venv <- Map.add name (Eval.eval venv te) venv
+                                tenv <- chk.Env
+                            | KLetPat(pat, _, te) ->
+                                venv <-
+                                    Eval.bindPattern pat (Eval.eval venv te)
+                                    |> List.fold (fun m (n, v) -> Map.add n v m) venv
+
+                                tenv <- chk.Env
+                            | KImport lm ->
+                                venv <- importInto venv lm
+                                tenv <- chk.Env
+                            | KCmd te -> printResult (Eval.eval venv te)
+                            | KExpr te ->
+                                let v = Eval.eval venv te
+
+                                if v <> Eval.VUnit then
+                                    let rendered, hint = Eval.echoValue Eval.echoPipedCap (Eval.echoPrep v)
+
+                                    Console.Error.WriteLine
+                                        $"{Eval.echoRender Console.IsErrorRedirected rendered} : {formatEchoTy te.Ty}{Eval.echoTail hint}"
+                            | KModule _
+                            | KSig _ -> Console.Error.WriteLine "error: a module line belongs in a file"
+                        with
+                        | Eval.ExitRequest _ -> reraise ()
+                        | ex -> Console.Error.WriteLine $"error: {ex.Message}"
+
+        Eval.RunPos.Current <- savedNode
+        Eval.RunPos.Exact <- savedExact
+
+/// `--trace` or WEIR_TRACE=1 [D:command-trace]: a run tells stderr each
+/// command it starts
+let traceCommands: bool ref =
+    ref (Environment.GetEnvironmentVariable "WEIR_TRACE" = "1")
+
 let run (path: string) (scriptArgs: string list) : int =
+    Check.captureBreaks.Value <- true
+
     match readEntryScript path with
     | Error msg ->
         Console.Error.WriteLine $"weir: {msg}"
@@ -14312,6 +14396,49 @@ let run (path: string) (scriptArgs: string list) : int =
                 // node -> physical position, for runtime errors [D:runtime-position]
                 let runPositions =
                     System.Collections.Generic.Dictionary<obj, string * int * int * int>(HashIdentity.Reference)
+
+                // where a node was written, `file:line`, or "" for one the run
+                // never placed [D:debug-aids] [D:command-trace]
+                let whereOf (n: obj) : string =
+                    match n with
+                    | null -> ""
+                    | n ->
+                        match runPositions.TryGetValue n with
+                        | true, (file, _, l, _) ->
+                            let shown =
+                                if file = path then
+                                    file
+                                else
+                                    let rel = IO.Path.GetRelativePath(Environment.CurrentDirectory, file)
+
+                                    if rel.StartsWith ".." || IO.Path.IsPathRooted rel then
+                                        file
+                                    else
+                                        rel
+
+                            $"{quoteData shown}:{l}"
+                        | _ -> ""
+
+                Eval.positionOf <- System.Func<obj, string>(whereOf)
+
+                Eval.onBreak <-
+                    System.Action<int64, Eval.Env>(fun scope venv ->
+                        match Check.settledBreakScope scope with
+                        | Some tenv -> breakPrompt (whereOf Eval.RunPos.Current) tenv venv
+                        | None -> ())
+
+                // each command before it starts, on stderr [D:command-trace]:
+                // where it was written, then the words it is given
+                if traceCommands.Value then
+                    Proc.onSpawn <-
+                        System.Action<string, string list>(fun prog args ->
+                            let at =
+                                match whereOf Eval.RunPos.Current with
+                                | "" -> ""
+                                | w -> w + ": "
+
+                            Console.Out.Flush()
+                            Console.Error.WriteLine("+ " + at + Proc.traceArgv (prog :: args)))
 
                 // a module's statements, with ITS file, so a function defined
                 // there reports its own lines [D:runtime-position]

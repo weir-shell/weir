@@ -5410,6 +5410,34 @@ let private logWithMember (level: int) (code: string) (label: string) : Value =
 
         VUnit)
 
+// ---- the Debug module [D:debug-aids] ---------------------------------------
+// peek shows a value on stderr with where it was written and hands it on;
+// a seq is cached first, so the look takes nothing from whoever reads next
+let private debugPeekImpl: Value =
+    VBuiltin(fun v ->
+        let v =
+            match v with
+            | VSeq items -> VSeq(Seq.cache items)
+            | v -> v
+
+        let at =
+            match positionOf with
+            | null -> ""
+            | f -> f.Invoke RunPos.Current
+
+        let rendered, hint = echoValue echoPipedCap (echoPrep v)
+        let rendered = echoRender System.Console.IsErrorRedirected rendered
+        System.Console.Out.Flush()
+
+        System.Console.Error.WriteLine((if at = "" then "[peek] " else $"[{at}] ") + rendered + echoTail hint)
+
+        v)
+
+let private debugMembers: (string * Ty * Value) list = [
+    "peek", TFun(tA, tA), debugPeekImpl
+    "break", TFun(TUnit, TUnit), VBuiltin(fun _ -> VUnit)
+]
+
 let private logMembers: (string * Ty * Value) list =
     let thunk = TFun(TUnit, TStr)
 
@@ -7917,6 +7945,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list = [
     "Args", argsMembers
     "Env", envMembers
     "Log", logMembers
+    "Debug", debugMembers
     "Duration", durationMembers
     "Size", sizeMembers
     "Bytes", bytesMembers
@@ -9252,6 +9281,19 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 None
              |> named [ "path" ])
 
+            // ---- Debug [D:debug-aids]: for the hour a script misbehaves ----
+            "Debug.peek",
+            (bd
+                "Show a value on stderr, with the file and line of the call, and return it unchanged. It drops into the middle of a pipeline. A lazy sequence is cached first, so the look does not use it up."
+                (Some "[1; 2; 3] |> Seq.map (fun n -> n * 2) |> Debug.peek |> Seq.sum")
+                None
+             |> named [ "value" ])
+            "Debug.break",
+            (bd
+                "Stop the script here and open a prompt that sees every name in scope: evaluate expressions, bind names, run commands. An empty line or #continue goes on, #vars lists the names, #quit ends the script. Write it applied, Debug.break (). Without a terminal on stdin it is skipped with a note."
+                (Some "Debug.break ()")
+                None
+             |> named [ "unit" ])
             // ---- Log [D:log-module]: STDERR always — stdout is DATA ----
             "Log.trace",
             (bd
@@ -10042,6 +10084,7 @@ let moduleBlurbs: Map<string, string> =
         "Http", "HTTP requests: one record, one runner, typed auth"
         "Instant", "points on the UTC timeline: now, parse, compare"
         "Json", "JSON helpers: inferShape drafts type decls from a sample"
+        "Debug", "debugging aids: peek at a value, break into a prompt"
         "Log", "levelled diagnostics to stderr (WEIR_LOG selects)"
         "Map", "immutable maps keyed by any equatable type: get, add, pairs"
         "Net", "network probes: portOpen"
