@@ -40,4 +40,6 @@ jobs:
       - name: tree-sitter grammar is current
         run: ~/.local/bin/weir ci/grammar-currency.weir
       - name: zed rev + queries are current
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: ~/.local/bin/weir ci/zed-rev-current.weir

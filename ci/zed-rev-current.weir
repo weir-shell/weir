@@ -11,7 +11,9 @@
 //      highlights.scm exists in the grammar's node inventory at the
 //      pinned rev — a matching rev with queries naming nodes the
 //      grammar no longer has is green-but-broken.
-// Public repo — plain fetches, no token. Runs at release and on the
+// Public repo — an API fetch carries GITHUB_TOKEN when CI sets it (the
+// anonymous limit is per address, and a shared runner's is often
+// spent); without one the fetch is plain. Runs at release and on the
 // weekly schedule, never on PRs: bumping the rev requires the grammar
 // push to have happened first, so a PR red here is unfixable in the PR.
 //
@@ -51,15 +53,26 @@ let localSha d = git -C $d rev-parse HEAD | line
 // a transient 5xx retries (a real 504 turned a green preflight red);
 // a 4xx is a fact and returns at once
 let fetchWithRetry url =
+    let request =
+        match Env.get "GITHUB_TOKEN" with
+        | Some t when t <> "" && Str.startsWith "https://api.github.com/" url -> { Http.get url with auth = Bearer (Secret.of t) }
+        | _ -> Http.get url
     retry attempts=3 delay=5s
-        Http.send (Http.get url)
+        Http.send request
     until r
         r.status < 500
+
+// what a refused API call most likely is
+let refusal status =
+    if status == 403 || status == 429 then
+        $"{status} — the GitHub API's rate limit for this address; set GITHUB_TOKEN (CI passes its own)"
+    else
+        $"{status}"
 
 let fetchedSha () =
     let resp = fetchWithRetry "https://api.github.com/repos/weir-shell/tree-sitter-weir/commits/main"
     if resp.status <> 200 then
-        fail $"grammar main query answered {resp.status}"
+        fail $"grammar main query answered {refusal resp.status}"
     (resp.body |> from json Commit).sha
 
 let mainSha =
