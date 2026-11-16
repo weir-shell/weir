@@ -28,6 +28,32 @@ This extension gives you:
   `Check script (--can)` in the command palette and the editor title,
   running the same weir binary the server uses in a `weir` terminal
 
+## Debugging
+
+Set a breakpoint in the gutter of a `.weir` file and press F5. The
+extension starts `weir dap` — the same binary as the language server —
+and you get step in, step over, step out, the call stack, and the
+names in scope at each frame. The script's output goes to the debug
+console.
+
+A `launch.json` is optional. To pass arguments or stop at the first
+statement:
+
+```json
+{
+  "type": "weir",
+  "request": "launch",
+  "name": "deploy to staging",
+  "program": "${workspaceFolder}/deploy.weir",
+  "args": ["--target", "staging"],
+  "stopOnEntry": true
+}
+```
+
+Not there yet: pausing a running script, evaluating expressions (a
+hover reads a name), and expanding records or sequences in the
+variables pane.
+
 ## Requires weir
 
 The language server is the weir binary itself (`weir lsp`) — install

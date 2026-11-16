@@ -516,6 +516,29 @@ and [<Sealed; AllowNullLiteral>] Scope private (name: string, value: Value, next
 
         found || c.Top.TryGetValue(n, &v)
 
+    /// the names bound over the top level, nearest first, each once
+    member this.Locals() : (string * Value) list =
+        let seen = System.Collections.Generic.HashSet<string>()
+        let cells = ResizeArray<string * Value>()
+        let mutable c = this
+
+        while not (isNull c.Name) do
+            if seen.Add c.Name then
+                cells.Add(c.Name, c.Value)
+
+            c <- c.Next
+
+        List.ofSeq cells
+
+    /// the top level's names
+    member this.Globals() : Env =
+        let mutable c = this
+
+        while not (isNull c.Name) do
+            c <- c.Next
+
+        c.Top
+
     /// every name the scope holds, the nearest bind of each
     member this.ToMap() : Env =
         let cells = ResizeArray<string * Value>()
@@ -6465,6 +6488,25 @@ let inline awaitFrame (flow: Flow) (t: System.Threading.Tasks.Task<'a>) : 'a =
 /// [D:debug-aids]; the runner sets it, and it is null outside a run
 let mutable positionOf: System.Func<obj, string> = null
 
+/// a debugger's view of the walk [D:step-debugger]: told each node as
+/// it is entered, with its scope; null unless one is attached, and then
+/// the shortcuts that answer without entering a node stand down
+let mutable onNode: System.Action<obj, Scope> = null
+
+/// a node's file and line for the debugger; line 0 for one the run
+/// never placed
+let mutable placeOf: System.Func<obj, struct (string * int)> = null
+
+/// how many function bodies deep the walk is, per thread, kept only
+/// while a debugger is attached
+type DebugDepth() =
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private depth: int
+
+    static member Depth
+        with get () = DebugDepth.depth
+        and set (v: int) = DebugDepth.depth <- v
+
 /// `Debug.break ()` reached with its scope's number and its names
 /// [D:debug-aids]; the runner sets it
 let mutable onBreak: System.Action<int64, Env> = null
@@ -6624,6 +6666,10 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
     // a signal or closed stdout unwinds here, before the node runs
     // [D:signal-main-unwind]; any flow's cut stops it here [D:scope-tree]
     Session.evalBoundary ()
+
+    (match onNode with
+     | null -> ()
+     | told -> told.Invoke(te, env))
 
     match te.Kind with
     // a failure as a value [D:try-form]: the body runs inside the capture
@@ -7607,7 +7653,7 @@ and apply (fn: Value) (arg: Value) : Value =
         | TELambda(inner, _, innerBody) -> VClosure(inner, innerBody, closureEnv.Add(param, arg))
         // an operator over int expressions answers without a walk; anything
         // else — and any raise — takes the walk below, which places it
-        | TEBinOp _ ->
+        | TEBinOp _ when isNull onNode ->
             let env = closureEnv.Add(param, arg)
             let quick = tryIntTree env body
 
@@ -8730,10 +8776,22 @@ and apply2 (fn: Value) (a: Value) (b: Value) : Value =
     | _ -> apply (apply fn a) b
 
 and private applyWalk (env: Scope) (body: TypedExpr) : Value =
-    if RunPos.IsCall body then
-        inFunction env body
+    if isNull onNode then
+        if RunPos.IsCall body then
+            inFunction env body
+        else
+            evalIn env body
     else
-        evalIn env body
+        // a body is one level deeper for a step over or out [D:step-debugger]
+        DebugDepth.Depth <- DebugDepth.Depth + 1
+
+        try
+            if RunPos.IsCall body then
+                inFunction env body
+            else
+                evalIn env body
+        finally
+            DebugDepth.Depth <- DebugDepth.Depth - 1
 
 and private inFunction (env: Scope) (body: TypedExpr) : Value =
     let callSite = RunPos.Current

@@ -21,6 +21,7 @@ usage: weir                                    the REPL
        weir check --can [--strict] [--json] <script>  the static capability report
        weir fmt [--check] <script>             canonical formatter
        weir lsp                                language server (stdio)
+       weir dap                                debug adapter (stdio), for an editor's debugger
        weir add sig [--global] <tool>          generate a command signature from the installed binary
        weir add schema <url> --as <name>       fetch an external contract, lock it
        weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it
@@ -138,6 +139,10 @@ These maintain the [`.weir/` tree](#project-layout-weir):
   usage (of the subcommand, if one was named), or for an unknown
   option a pointer to `weir --help`.
 - If you mistype an option, weir suggests the closest one.
+- `weir dap` is the debug adapter: the Debug Adapter Protocol over
+  stdio, for an editor's debugger. It starts the script as a child
+  process and relays its output, so nothing but the protocol is on its
+  stdout. See [Debugging](GUIDE.md#debugging).
 - `weir lsp` speaks JSON-RPC over stdio; arguments that editors
   commonly pass, like `--stdio`, are accepted ([editors](editors.md)).
 - `weir --version` prints `<tag>+<hash>`, identifying the exact

@@ -18,6 +18,12 @@
   `#continue` goes on, `#vars` lists the names, `#quit` ends the
   script. Without a terminal on stdin the break is skipped with a
   note. `weir check` warns at each `Debug.peek` and `Debug.break`.
+- **`weir dap` is a step debugger for editors.** It speaks the Debug
+  Adapter Protocol: breakpoints, step in, over and out, the call
+  stack and the names in scope at each frame, with the script's
+  output in the debug console. The VS Code extension uses it: set a
+  breakpoint and press F5. Pause, expression evaluation and expanding
+  records in the variables pane are not there yet.
 
 ### Fixed
 

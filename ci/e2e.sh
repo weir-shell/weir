@@ -18052,6 +18052,16 @@ echo "$out" | grep -qF "'printf a\x0ab\x0a | line' expected exactly one line of 
 echo "e2e ok: a | line count error escapes the argv it echoes [D:error-data-escape]"
 rm -rf "$bbdir"
 
+# ---- the step debugger [D:step-debugger] -----------------------------------
+# a whole session over the adapter's stdio, as an editor drives it
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "e2e SKIP: python3 absent — the debug adapter session NOT run" >&2
+elif [ "$IS_WINDOWS" = "1" ]; then
+    echo "e2e SKIP: the debug adapter session — its probe compares POSIX paths"
+else
+    python3 "$(dirname "$0")/../tests/dap/dap-session.py" "$BIN" || fail "the debug adapter session"
+    echo "e2e ok: weir dap — breakpoints, step in/over/out, frames and their names, output as events, the exit code [D:step-debugger]"
+fi
 # ---- the debugging aids [D:command-trace] [D:debug-aids] ------------------
 # --trace: one stderr line per command, where it was written and the
 # words the child receives — a spaced and an empty word quoted, a Secret

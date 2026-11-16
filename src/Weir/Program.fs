@@ -905,6 +905,12 @@ let main argv =
                 "usage: weir gen types --schema <name> [--as <TypeName>] [--out <path>|-]   generate weir types from a locked schema"
 
             2
+        | [ "dap" ] -> Debugger.runAdapter ()
+        | "dap" :: _ ->
+            Console.Error.WriteLine
+                "usage: weir dap — the debug adapter an editor starts (the Debug Adapter Protocol on stdio)"
+
+            2
         | path :: rest when not (path.StartsWith "-") -> runOnMain (fun () -> Script.run path rest)
         | "--trace" :: path :: rest when not (path.StartsWith "-") ->
             Script.traceCommands.Value <- true
@@ -937,6 +943,7 @@ let main argv =
                 "check"
                 "fmt"
                 "lsp"
+                "dap"
                 "add"
                 "gen"
                 "restore"
@@ -957,6 +964,7 @@ let main argv =
                 + "       weir check --can [--strict] [--json] <script>  the static capability report\n"
                 + "       weir fmt [--check] <script>             canonical formatter\n"
                 + "       weir lsp                                language server (stdio)\n"
+                + "       weir dap                                debug adapter (stdio), for an editor's debugger\n"
                 + "       weir add sig [--global] <tool>          generate a command signature from the installed binary\n"
                 + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
                 + "       weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it\n"

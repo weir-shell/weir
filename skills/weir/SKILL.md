@@ -13,7 +13,8 @@ stops being true fails the build.
   declaration is refused (`-e` shows you a result, by design — a
   deliberate divergence from `python -c`).
 - `weir fmt file.weir` canonicalizes indentation (4 per block depth);
-  `--check` for CI. `weir lsp` is the language server (stdio).
+  `--check` for CI. `weir lsp` is the language server (stdio), `weir
+  dap` the debug adapter an editor's debugger starts [D:step-debugger].
 - Command signatures: `weir add sig <tool>` probes the installed
   binary and writes `.weir/sigs/<tool>.weir` (+ lock entry); a script
   opts in with a `#sig <tool>` line at its top, and `weir check` then

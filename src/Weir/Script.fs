@@ -14433,6 +14433,19 @@ let run (path: string) (scriptArgs: string list) : int =
 
                 Eval.positionOf <- System.Func<obj, string>(whereOf)
 
+                // an editor's debugger, when one started this run
+                // [D:step-debugger]: it places a node by its full path
+                Eval.placeOf <-
+                    System.Func<obj, struct (string * int)>(fun n ->
+                        match n with
+                        | null -> struct ("", 0)
+                        | n ->
+                            match runPositions.TryGetValue n with
+                            | true, (file, _, l, _) -> struct (IO.Path.GetFullPath file, l)
+                            | _ -> struct ("", 0))
+
+                Debugger.attachIfAsked ()
+
                 Eval.onBreak <-
                     System.Action<int64, Eval.Env>(fun scope venv ->
                         match Check.settledBreakScope scope with
