@@ -2599,6 +2599,14 @@ let private intBinOp (op: string) (a: int64) (b: int64) : Value voption =
     with :? System.OverflowException ->
         failwith "integer overflow"
 
+/// a node whose value is a read or a literal: evaluating it twice is free
+/// of effects
+let private isLeaf (te: TypedExpr) : bool =
+    match te.Kind with
+    | TEVar _
+    | TEInt _ -> true
+    | _ -> false
+
 let rec private binOp (op: string) (l: Value) (r: Value) : Value =
     match l, r with
     | VInt a, VInt b ->
@@ -7459,10 +7467,29 @@ and apply (fn: Value) (arg: Value) : Value =
         // a call is a boundary for a cut and a REPL ^C [D:repl-interrupt-compute]
         Session.checkCancels ()
 
-        if RunPos.IsCall body then
-            inFunction (fun () -> evalIn (closureEnv.Add(param, arg)) body)
-        else
-            evalIn (closureEnv.Add(param, arg)) body
+        match body.Kind with
+        // the outer half of a two-argument function: its value is the inner
+        // closure, and nothing in between can raise
+        | TELambda(inner, _, innerBody) -> VClosure(inner, innerBody, closureEnv.Add(param, arg))
+        // one operator over two names or literals, both ints: the answer
+        // needs no walk. Anything else — and any raise — takes the walk
+        // below, which places it
+        | TEBinOp(op, l, r) when isLeaf l && isLeaf r ->
+            let env = closureEnv.Add(param, arg)
+
+            match evalIn env l, evalIn env r with
+            | VInt a, VInt b ->
+                let quick =
+                    try
+                        intBinOp op a b
+                    with _ ->
+                        ValueNone
+
+                match quick with
+                | ValueSome v -> v
+                | ValueNone -> applyWalk env body
+            | _ -> applyWalk env body
+        | _ -> applyWalk (closureEnv.Add(param, arg)) body
     | VClosurePat(pat, body, closureEnv) ->
         Session.checkCancels ()
         let bindings = bindPattern pat arg
@@ -8528,6 +8555,48 @@ and private callAtWith (fn: TypedExpr) (f: Value) (a: Value) : Value =
 // a call of a function defined elsewhere [D:runtime-position]: a raise
 // unwinding through it is blamed on the innermost node first (if nothing
 // blamed it yet), then gains this call site as a trace frame
+/// a two-argument function applied whole: `fun a b -> a op b` over two
+/// ints answers from its arguments, binding nothing; every other function,
+/// operand and raise is `apply` twice
+and apply2 (fn: Value) (a: Value) (b: Value) : Value =
+    match fn, a, b with
+    | VClosure(p1,
+               {
+                   Kind = TELambda(p2,
+                                   _,
+                                   {
+                                       Kind = TEBinOp(op, { Kind = TEVar l }, { Kind = TEVar r })
+                                   })
+               },
+               _),
+      VInt x,
+      VInt y when
+        not (System.String.Equals(p1, p2))
+        && (System.String.Equals(l, p1) || System.String.Equals(l, p2))
+        && (System.String.Equals(r, p1) || System.String.Equals(r, p2))
+        ->
+        Session.checkCancels ()
+
+        let quick =
+            try
+                intBinOp
+                    op
+                    (if System.String.Equals(l, p1) then x else y)
+                    (if System.String.Equals(r, p1) then x else y)
+            with _ ->
+                ValueNone
+
+        match quick with
+        | ValueSome v -> v
+        | ValueNone -> apply (apply fn a) b
+    | _ -> apply (apply fn a) b
+
+and private applyWalk (env: Scope) (body: TypedExpr) : Value =
+    if RunPos.IsCall body then
+        inFunction (fun () -> evalIn env body)
+    else
+        evalIn env body
+
 and private inFunction (f: unit -> Value) : Value =
     let callSite = RunPos.Current
 

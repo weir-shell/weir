@@ -1649,7 +1649,7 @@ within tmp d
   `Seq.reduce (+)`, `Seq.fold (+) 0` — exactly `fun a b -> a + b`, so
   context resolves the overload (`(+)` sums floats/strings/Durations/
   Sizes where the elements say so). Admitted: `+ - * / % > < >= <= ==
-  <>`. Partial application REFUSES (`(>) 10` reads backwards — the
+  <>`. Partial application REFUSES, piped too (`(>) 10` and `10 |> (>)` read backwards — the
   message shows both lambda directions, as interchangeable only for
   a commutative op (`==`, `<>`, `*`); for the rest it says the
   directions differ); `(&&)`/`(||)` refuse (a value

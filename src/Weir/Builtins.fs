@@ -1714,7 +1714,7 @@ let private foldImpl: Value =
         VBuiltin(fun init ->
             VBuiltin(fun sv ->
                 match sv with
-                | VSeq items -> items |> Seq.fold (fun acc v -> apply (apply folder acc) v) init
+                | VSeq items -> items |> Seq.fold (fun acc v -> apply2 folder acc v) init
                 | v -> unreachable $"the checker rejects 'fold' on {formatValue v}")))
 
 let private sortByImpl: Value =
@@ -3035,7 +3035,7 @@ let private reduceImpl: Value =
                     acc <-
                         match acc with
                         | ValueNone -> ValueSome x
-                        | ValueSome a -> ValueSome(apply (apply folder a) x)
+                        | ValueSome a -> ValueSome(apply2 folder a x)
 
                 match acc with
                 | ValueSome a -> a
@@ -3056,7 +3056,7 @@ let private tryReduceImpl: Value =
                     acc <-
                         match acc with
                         | ValueNone -> ValueSome x
-                        | ValueSome a -> ValueSome(apply (apply folder a) x)
+                        | ValueSome a -> ValueSome(apply2 folder a x)
 
                 match acc with
                 | ValueSome a -> vSome a
@@ -3086,7 +3086,7 @@ let private scanImpl: Value =
                         {
                             Step =
                                 fun x ->
-                                    acc.Value <- apply (apply folder acc.Value) x
+                                    acc.Value <- apply2 folder acc.Value x
                                     Emit acc.Value
                             StepAsync = Unchecked.defaultof<_>
                             Prefix = [ init ]
