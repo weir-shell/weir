@@ -1,0 +1,50 @@
+// A script to try the debugger on. Suggested breakpoints are marked BP.
+// Run it plain first: weir examples/debug-tour.weir
+
+type Shape =
+    | Circle of int
+    | Rect of int * int
+    | Square of int
+
+type Item = { name: string; shape: Shape; qty: int }
+
+// BP 1: stop here, then step over. `s` is a local; each arm binds its own names.
+let area s =
+    match s with
+    | Circle r -> 3 * r * r
+    | Rect (w, h) ->
+        let doubled = w * 2
+        doubled * h / 2
+    | Square side -> side * side
+
+// BP 2: step IN from the call to `area` below, then step OUT again.
+// The call stack shows `cost` over the line that called it.
+let cost item =
+    let each = area item.shape
+    let total = each * item.qty
+    total
+
+let items = [
+    { name = "plate"; shape = Circle 4; qty = 3 }
+    { name = "tray"; shape = Rect (6, 4); qty = 2 }
+    { name = "tile"; shape = Square 5; qty = 10 }
+]
+
+// BP 3: `items` is in "Top level". This line computes nothing yet: Seq.map is lazy.
+let costs = items |> Seq.map (fun i -> (i.name, cost i))
+
+// BP 4: the loop pulls one item at a time, so BP 2 and BP 4 take turns.
+for (name, c) in costs do
+    let label = if c > 200 then "big" else "small"
+    print $"{name}: {c} ({label})"
+
+// BP 5: a command's output is a lazy seq until something reads it.
+// Before this line runs `lines` shows as <lazy seq>; `count` is a plain int.
+let lines = git --version
+let count = lines |> Seq.length
+
+// With BP 2 still set, this line stops in `cost` three more times:
+// reading a lazy seq again computes it again. `|> Seq.freeze` at the
+// end of the `costs` line would compute it once.
+let grand = costs |> Seq.map (fun (_, c) -> c) |> Seq.sum
+print $"{count} line from git, grand total {grand}"

@@ -3050,6 +3050,10 @@ names in scope at each frame. The VS Code extension wires it up: open
 a script, set a breakpoint in the gutter, press F5. The script's own
 output appears in the debug console.
 
+[`examples/debug-tour.weir`](https://github.com/weir-shell/weir/blob/main/examples/debug-tour.weir) is a script
+made for trying it: its comments mark five breakpoints and say what
+each one shows, including a lazy sequence being computed twice.
+
 What it does not do yet: pause a running script (it stops at the next
 breakpoint), evaluate an expression (a hover reads a name; for more,
 put a `Debug.break ()` there and use its prompt), or expand a record
