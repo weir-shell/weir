@@ -33620,6 +33620,45 @@ let operatorValueTests =
 
             Expect.stringContains (checkErr "let f = 1 |> (+) in f 2").Message "cannot be partially applied" "bound"
         }
+        test "a lambda that is an int expression answers as the walk does" {
+            Expect.equal
+                (run "[1; 2; 3; 4; 5; 6] |> Seq.where (fun n -> n * 2 % 3 == 0) |> Seq.length")
+                (VInt 2L)
+                "nested operators"
+
+            Expect.equal
+                (run "let k = 10 in [1; 2] |> Seq.map (fun n -> (n + k) * (n - 1) / 2) |> Seq.sum")
+                (VInt 6L)
+                "a capture"
+
+            Expect.equal
+                (run "[1; 2] |> Seq.map (fun n -> 7 / n - 7 % n) |> Seq.sum")
+                (VInt 9L)
+                "division and remainder"
+
+            Expect.equal (run "[2000; 3000] |> Seq.map (fun n -> n + 1) |> Seq.sum") (VInt 5002L) "past the small ints"
+
+            Expect.equal
+                (run "[1.5; 2.5] |> Seq.map (fun x -> x * 2.0 + 1.0) |> Seq.reduce (+)")
+                (VFloat 10.0)
+                "floats take the walk"
+
+            Expect.stringContains
+                (Expect.throwsC (fun () -> run "[1; 0] |> Seq.map (fun n -> 10 % n + 1) |> Seq.length" |> ignore) id)
+                    .Message
+                "modulo by zero"
+                "a zero divisor takes the walk"
+
+            Expect.stringContains
+                (Expect.throwsC
+                    (fun () ->
+                        run "[9223372036854775807] |> Seq.map (fun n -> n + 1 - 1) |> Seq.length"
+                        |> ignore)
+                    id)
+                    .Message
+                "integer overflow"
+                "an overflow in the middle"
+        }
         test "a one-operator lambda over ints answers as the walk does" {
             Expect.equal (run "[1; 2; 3] |> Seq.reduce (+)") (VInt 6L) "an operator value"
             Expect.equal (run "[1; 2; 3] |> Seq.fold (fun a n -> a - n) 10") (VInt 4L) "a spelled lambda"

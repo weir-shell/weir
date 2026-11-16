@@ -13,6 +13,16 @@
   `Seq.reduce (+)`, `Seq.fold (fun a n -> a + n) 0` and any lambda
   whose body is one operator over two ints answer without walking
   the body.
+- **Named-function calls and pattern matches cost less.** A call no
+  longer allocates a closure for its error frame, a match arm binds
+  straight into the scope, and a name read compares one string
+  reference where it compared characters; a fold through functions
+  that match a union is about a sixth faster, `Seq.fold` over an
+  operator a third.
+- **A lambda that is an int expression allocates nothing in
+  between.** `fun n -> n * 2 % 3 == 0` reads its names and answers
+  from raw ints, where every operator made a value on the heap; a
+  map and filter over three million elements is about a fifth faster.
 
 ### Fixed
 

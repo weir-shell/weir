@@ -123,7 +123,7 @@ let private wordAhead (st: St) : string =
         while j < t.Length && isIdentCont t[j] do
             j <- j + 1
 
-        let w = t.Substring(st.I, j - st.I)
+        let w = String.Intern(t.Substring(st.I, j - st.I))
         st.WordAt <- st.I
         st.Word <- w
         w

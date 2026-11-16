@@ -501,7 +501,14 @@ and [<Sealed; AllowNullLiteral>] Scope private (name: string, value: Value, next
         let mutable found = false
 
         while not found && not (isNull c.Name) do
-            if System.String.Equals(c.Name, n) then
+            let k = c.Name
+
+            // the same string, or the same length and first character before
+            // any walk of the two
+            if
+                obj.ReferenceEquals(k, n)
+                || (k.Length = n.Length && k.Length > 0 && k[0] = n[0] && System.String.Equals(k, n))
+            then
                 v <- c.Value
                 found <- true
             else
@@ -2566,6 +2573,15 @@ let orderCompare (name: string) (a: Value) (b: Value) : int =
 let private vTrue = VBool true
 let private vFalse = VBool false
 
+// the ints a count, an index or a remainder usually is, made once
+let private smallInts: Value[] = Array.init 1152 (fun i -> VInt(int64 i - 128L))
+
+let private boxInt (i: int64) : Value =
+    if i >= -128L && i < 1024L then
+        smallInts[int i + 128]
+    else
+        VInt i
+
 // two ints, the arms of the table below picked by the operator's characters
 let private intBinOp (op: string) (a: int64) (b: int64) : Value voption =
     let c1 =
@@ -2576,19 +2592,19 @@ let private intBinOp (op: string) (a: int64) (b: int64) : Value voption =
 
     try
         match op[0], c1 with
-        | '+', ' ' -> ValueSome(VInt(Checked.(+) a b))
-        | '-', ' ' -> ValueSome(VInt(Checked.(-) a b))
-        | '*', ' ' -> ValueSome(VInt(Checked.(*) a b))
+        | '+', ' ' -> ValueSome(boxInt (Checked.(+) a b))
+        | '-', ' ' -> ValueSome(boxInt (Checked.(-) a b))
+        | '*', ' ' -> ValueSome(boxInt (Checked.(*) a b))
         | '/', ' ' ->
             if b = 0L then
                 failwith "division by zero"
             else
-                ValueSome(VInt(a / b))
+                ValueSome(boxInt (a / b))
         | '%', ' ' ->
             if b = 0L then
                 failwith "modulo by zero"
             else
-                ValueSome(VInt(a % b))
+                ValueSome(boxInt (a % b))
         | '>', ' ' -> ValueSome(if a > b then vTrue else vFalse)
         | '<', ' ' -> ValueSome(if a < b then vTrue else vFalse)
         | '>', '=' -> ValueSome(if a >= b then vTrue else vFalse)
@@ -2598,14 +2614,6 @@ let private intBinOp (op: string) (a: int64) (b: int64) : Value voption =
         | _ -> ValueNone
     with :? System.OverflowException ->
         failwith "integer overflow"
-
-/// a node whose value is a read or a literal: evaluating it twice is free
-/// of effects
-let private isLeaf (te: TypedExpr) : bool =
-    match te.Kind with
-    | TEVar _
-    | TEInt _ -> true
-    | _ -> false
 
 let rec private binOp (op: string) (l: Value) (r: Value) : Value =
     match l, r with
@@ -5008,6 +5016,35 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
 
 // binder patterns are irrefutable by checking, so the bind always
 // succeeds — the None arm is the standard checker-guarantee marker
+/// a pattern's binds laid over a scope, null where it does not match: the
+/// shapes a match arm usually has bind in place, the rest through tryBind
+let rec private bindInto (p: Pattern) (v: Value) (env: Scope) : Scope =
+    match p.PKind, v with
+    | PWildcard, _
+    | PUnit, _ -> env
+    | PVar name, _ -> env.Add(name, v)
+    | PInt n, VInt i -> if n = i then env else null
+    | PBool b, VBool x -> if b = x then env else null
+    | PCase(ctor, None, _), VUnion(case, None) -> if ctor = case then env else null
+    | PCase(ctor, Some argPat, _), VUnion(case, Some payload) ->
+        if ctor = case then bindInto argPat payload env else null
+    | PCase _, VUnion _ -> null
+    | PTuple ps, VTuple vs when List.length ps = List.length vs ->
+        let mutable e = env
+        let mutable ps = ps
+        let mutable vs = vs
+
+        while not (isNull e) && not ps.IsEmpty do
+            e <- bindInto ps.Head vs.Head e
+            ps <- ps.Tail
+            vs <- vs.Tail
+
+        e
+    | _ ->
+        match tryBind p v with
+        | Some bindings -> bindings |> List.fold (fun (e: Scope) (n, bv) -> e.Add(n, bv)) env
+        | None -> null
+
 let bindPattern (p: Pattern) (v: Value) : (string * Value) list =
     match tryBind p v with
     | Some bs -> bs
@@ -6407,6 +6444,70 @@ let inline awaitFrame (flow: Flow) (t: System.Threading.Tasks.Task<'a>) : 'a =
 
         reraise ()
 
+// an int expression read without a walk: names, literals and the five
+// arithmetic operators answer as raw ints, so nothing between the leaves
+// and the root is a value. `ok` falls where the tree holds anything else,
+// a name that is no int, or a zero divisor
+let rec private intOf (env: Scope) (te: TypedExpr) (ok: byref<bool>) : int64 =
+    match te.Kind with
+    | TEInt i -> i
+    | TEVar name ->
+        match lookupOrNull name env with
+        | VInt i -> i
+        | _ ->
+            ok <- false
+            0L
+    | TEBinOp(op, l, r) when op.Length = 1 ->
+        let a = intOf env l &ok
+        let b = if ok then intOf env r &ok else 0L
+
+        if not ok then
+            0L
+        else
+            match op[0] with
+            | '+' -> Checked.(+) a b
+            | '-' -> Checked.(-) a b
+            | '*' -> Checked.(*) a b
+            | '/' when b <> 0L -> a / b
+            | '%' when b <> 0L -> a % b
+            | _ ->
+                ok <- false
+                0L
+    | _ ->
+        ok <- false
+        0L
+
+// the shape intOf reads, asked before any name is: a tree holding a call
+// or a field is the walk's from the start
+let rec private intShape (te: TypedExpr) : bool =
+    match te.Kind with
+    | TEInt _
+    | TEVar _ -> true
+    | TEBinOp(op, l, r) -> op.Length = 1 && intShape l && intShape r
+    | _ -> false
+
+/// an operator node over int expressions, answered from them; null where
+/// it is anything else or would raise — the walk answers those, and places
+/// the raise
+let private tryIntTree (env: Scope) (te: TypedExpr) : Value =
+    match te.Kind with
+    | TEBinOp(op, l, r) when intShape l && intShape r ->
+        let mutable ok = true
+
+        try
+            let a = intOf env l &ok
+            let b = if ok then intOf env r &ok else 0L
+
+            if not ok then
+                Unchecked.defaultof<Value>
+            else
+                match intBinOp op a b with
+                | ValueSome v -> v
+                | ValueNone -> Unchecked.defaultof<Value>
+        with _ ->
+            Unchecked.defaultof<Value>
+    | _ -> Unchecked.defaultof<Value>
+
 let rec private overlayOf (env: Scope) (cenvO: TypedExpr option) : (string * string) list =
     match cenvO with
     | None -> []
@@ -6840,10 +6941,11 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
             match arms with
             | [] -> unreachable $"the checker guarantees totality; no arm matched {formatValue v}"
             | (pat, guard, body) :: rest ->
-                match tryBind pat v with
-                | Some bindings ->
-                    let armEnv = bindings |> List.fold (fun (e: Scope) (n, bv) -> e.Add(n, bv)) env
+                let armEnv = bindInto pat v env
 
+                if isNull armEnv then
+                    tryArms rest
+                else
                     let guardPasses =
                         match guard with
                         | None -> true
@@ -6853,7 +6955,6 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
                             | gv -> unreachable $"the checker rejects a non-bool guard: {formatValue gv}"
 
                     if guardPasses then evalIn armEnv body else tryArms rest
-                | None -> tryArms rest
 
         tryArms arms
     | TEArgsLoad target -> argvLoad target
@@ -7471,34 +7572,25 @@ and apply (fn: Value) (arg: Value) : Value =
         // the outer half of a two-argument function: its value is the inner
         // closure, and nothing in between can raise
         | TELambda(inner, _, innerBody) -> VClosure(inner, innerBody, closureEnv.Add(param, arg))
-        // one operator over two names or literals, both ints: the answer
-        // needs no walk. Anything else — and any raise — takes the walk
-        // below, which places it
-        | TEBinOp(op, l, r) when isLeaf l && isLeaf r ->
+        // an operator over int expressions answers without a walk; anything
+        // else — and any raise — takes the walk below, which places it
+        | TEBinOp _ ->
             let env = closureEnv.Add(param, arg)
+            let quick = tryIntTree env body
 
-            match evalIn env l, evalIn env r with
-            | VInt a, VInt b ->
-                let quick =
-                    try
-                        intBinOp op a b
-                    with _ ->
-                        ValueNone
-
-                match quick with
-                | ValueSome v -> v
-                | ValueNone -> applyWalk env body
-            | _ -> applyWalk env body
+            if obj.ReferenceEquals(quick, null) then
+                applyWalk env body
+            else
+                quick
         | _ -> applyWalk (closureEnv.Add(param, arg)) body
     | VClosurePat(pat, body, closureEnv) ->
         Session.checkCancels ()
-        let bindings = bindPattern pat arg
-        let env' = bindings |> List.fold (fun (m: Scope) (n, v) -> m.Add(n, v)) closureEnv
+        let env' = bindInto pat arg closureEnv
 
-        if RunPos.IsCall body then
-            inFunction (fun () -> evalIn env' body)
-        else
-            evalIn env' body
+        if isNull env' then
+            unreachable $"the checker guarantees binder patterns match; got {formatValue arg}"
+
+        applyWalk env' body
     | VBuiltin f ->
         // every builtin call is a pfirst loser's boundary [D:pfirst-join]
         // and a REPL ^C's [D:repl-interrupt-compute]
@@ -8570,38 +8662,51 @@ and apply2 (fn: Value) (a: Value) (b: Value) : Value =
                },
                _),
       VInt x,
-      VInt y when
-        not (System.String.Equals(p1, p2))
-        && (System.String.Equals(l, p1) || System.String.Equals(l, p2))
-        && (System.String.Equals(r, p1) || System.String.Equals(r, p2))
-        ->
-        Session.checkCancels ()
+      VInt y ->
+        // which argument a name reads: the inner parameter first, as it
+        // shadows the outer; 0 is a name that is neither
+        let inline side (n: string) =
+            if obj.ReferenceEquals(n, p2) then
+                2
+            elif obj.ReferenceEquals(n, p1) && not (System.String.Equals(p1, p2)) then
+                1
+            elif System.String.Equals(n, p2) then
+                2
+            elif System.String.Equals(n, p1) then
+                1
+            else
+                0
 
-        let quick =
-            try
-                intBinOp
-                    op
-                    (if System.String.Equals(l, p1) then x else y)
-                    (if System.String.Equals(r, p1) then x else y)
-            with _ ->
-                ValueNone
+        let ls = side l
+        let rs = side r
 
-        match quick with
-        | ValueSome v -> v
-        | ValueNone -> apply (apply fn a) b
+        if ls = 0 || rs = 0 then
+            apply (apply fn a) b
+        else
+            Session.checkCancels ()
+
+            let quick =
+                try
+                    intBinOp op (if ls = 1 then x else y) (if rs = 1 then x else y)
+                with _ ->
+                    ValueNone
+
+            match quick with
+            | ValueSome v -> v
+            | ValueNone -> apply (apply fn a) b
     | _ -> apply (apply fn a) b
 
 and private applyWalk (env: Scope) (body: TypedExpr) : Value =
     if RunPos.IsCall body then
-        inFunction (fun () -> evalIn env body)
+        inFunction env body
     else
         evalIn env body
 
-and private inFunction (f: unit -> Value) : Value =
+and private inFunction (env: Scope) (body: TypedExpr) : Value =
     let callSite = RunPos.Current
 
     try
-        f ()
+        evalIn env body
     with
     | ExitRequest _ -> reraise ()
     | ex ->
