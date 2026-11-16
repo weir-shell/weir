@@ -501,7 +501,14 @@ and [<Sealed; AllowNullLiteral>] Scope private (name: string, value: Value, next
         let mutable found = false
 
         while not found && not (isNull c.Name) do
-            if System.String.Equals(c.Name, n) then
+            let k = c.Name
+
+            // the same string, or the same length and first character before
+            // any walk of the two
+            if
+                obj.ReferenceEquals(k, n)
+                || (k.Length = n.Length && k.Length > 0 && k[0] = n[0] && System.String.Equals(k, n))
+            then
                 v <- c.Value
                 found <- true
             else
@@ -5008,6 +5015,35 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
 
 // binder patterns are irrefutable by checking, so the bind always
 // succeeds — the None arm is the standard checker-guarantee marker
+/// a pattern's binds laid over a scope, null where it does not match: the
+/// shapes a match arm usually has bind in place, the rest through tryBind
+let rec private bindInto (p: Pattern) (v: Value) (env: Scope) : Scope =
+    match p.PKind, v with
+    | PWildcard, _
+    | PUnit, _ -> env
+    | PVar name, _ -> env.Add(name, v)
+    | PInt n, VInt i -> if n = i then env else null
+    | PBool b, VBool x -> if b = x then env else null
+    | PCase(ctor, None, _), VUnion(case, None) -> if ctor = case then env else null
+    | PCase(ctor, Some argPat, _), VUnion(case, Some payload) ->
+        if ctor = case then bindInto argPat payload env else null
+    | PCase _, VUnion _ -> null
+    | PTuple ps, VTuple vs when List.length ps = List.length vs ->
+        let mutable e = env
+        let mutable ps = ps
+        let mutable vs = vs
+
+        while not (isNull e) && not ps.IsEmpty do
+            e <- bindInto ps.Head vs.Head e
+            ps <- ps.Tail
+            vs <- vs.Tail
+
+        e
+    | _ ->
+        match tryBind p v with
+        | Some bindings -> bindings |> List.fold (fun (e: Scope) (n, bv) -> e.Add(n, bv)) env
+        | None -> null
+
 let bindPattern (p: Pattern) (v: Value) : (string * Value) list =
     match tryBind p v with
     | Some bs -> bs
@@ -6840,10 +6876,11 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
             match arms with
             | [] -> unreachable $"the checker guarantees totality; no arm matched {formatValue v}"
             | (pat, guard, body) :: rest ->
-                match tryBind pat v with
-                | Some bindings ->
-                    let armEnv = bindings |> List.fold (fun (e: Scope) (n, bv) -> e.Add(n, bv)) env
+                let armEnv = bindInto pat v env
 
+                if isNull armEnv then
+                    tryArms rest
+                else
                     let guardPasses =
                         match guard with
                         | None -> true
@@ -6853,7 +6890,6 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
                             | gv -> unreachable $"the checker rejects a non-bool guard: {formatValue gv}"
 
                     if guardPasses then evalIn armEnv body else tryArms rest
-                | None -> tryArms rest
 
         tryArms arms
     | TEArgsLoad target -> argvLoad target
@@ -7492,13 +7528,12 @@ and apply (fn: Value) (arg: Value) : Value =
         | _ -> applyWalk (closureEnv.Add(param, arg)) body
     | VClosurePat(pat, body, closureEnv) ->
         Session.checkCancels ()
-        let bindings = bindPattern pat arg
-        let env' = bindings |> List.fold (fun (m: Scope) (n, v) -> m.Add(n, v)) closureEnv
+        let env' = bindInto pat arg closureEnv
 
-        if RunPos.IsCall body then
-            inFunction (fun () -> evalIn env' body)
-        else
-            evalIn env' body
+        if isNull env' then
+            unreachable $"the checker guarantees binder patterns match; got {formatValue arg}"
+
+        applyWalk env' body
     | VBuiltin f ->
         // every builtin call is a pfirst loser's boundary [D:pfirst-join]
         // and a REPL ^C's [D:repl-interrupt-compute]
@@ -8570,38 +8605,51 @@ and apply2 (fn: Value) (a: Value) (b: Value) : Value =
                },
                _),
       VInt x,
-      VInt y when
-        not (System.String.Equals(p1, p2))
-        && (System.String.Equals(l, p1) || System.String.Equals(l, p2))
-        && (System.String.Equals(r, p1) || System.String.Equals(r, p2))
-        ->
-        Session.checkCancels ()
+      VInt y ->
+        // which argument a name reads: the inner parameter first, as it
+        // shadows the outer; 0 is a name that is neither
+        let inline side (n: string) =
+            if obj.ReferenceEquals(n, p2) then
+                2
+            elif obj.ReferenceEquals(n, p1) && not (System.String.Equals(p1, p2)) then
+                1
+            elif System.String.Equals(n, p2) then
+                2
+            elif System.String.Equals(n, p1) then
+                1
+            else
+                0
 
-        let quick =
-            try
-                intBinOp
-                    op
-                    (if System.String.Equals(l, p1) then x else y)
-                    (if System.String.Equals(r, p1) then x else y)
-            with _ ->
-                ValueNone
+        let ls = side l
+        let rs = side r
 
-        match quick with
-        | ValueSome v -> v
-        | ValueNone -> apply (apply fn a) b
+        if ls = 0 || rs = 0 then
+            apply (apply fn a) b
+        else
+            Session.checkCancels ()
+
+            let quick =
+                try
+                    intBinOp op (if ls = 1 then x else y) (if rs = 1 then x else y)
+                with _ ->
+                    ValueNone
+
+            match quick with
+            | ValueSome v -> v
+            | ValueNone -> apply (apply fn a) b
     | _ -> apply (apply fn a) b
 
 and private applyWalk (env: Scope) (body: TypedExpr) : Value =
     if RunPos.IsCall body then
-        inFunction (fun () -> evalIn env body)
+        inFunction env body
     else
         evalIn env body
 
-and private inFunction (f: unit -> Value) : Value =
+and private inFunction (env: Scope) (body: TypedExpr) : Value =
     let callSite = RunPos.Current
 
     try
-        f ()
+        evalIn env body
     with
     | ExitRequest _ -> reraise ()
     | ex ->

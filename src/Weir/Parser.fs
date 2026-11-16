@@ -410,7 +410,9 @@ let private here: Parser<Pos, unit> =
 let private spanned (p: Parser<'a, unit>) : Parser<'a * Span, unit> =
     pipe3 here p here (fun s x e -> x, { Start = s; End = e })
 
-let private rawWord = many1Satisfy2L isIdentStart isIdentCont "identifier"
+// interned: a name read and the name bound are then one string
+let private rawWord =
+    many1Satisfy2L isIdentStart isIdentCont "identifier" |>> System.String.Intern
 
 // a splice's name and its `.field` path [D:field-splices]: `$cli.tag`
 // is one word, the field's value — only an identifier tail extends it,
