@@ -82,6 +82,36 @@ export function activate(context: vscode.ExtensionContext): void {
 
   void client.start();
 
+  // the debugger is `weir dap` as shipped, the SAME binary the server
+  // runs — the client only says where it is. F5 with no launch.json
+  // debugs the open script
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterDescriptorFactory("weir", {
+      createDebugAdapterDescriptor: () =>
+        new vscode.DebugAdapterExecutable(resolved, ["dap"]),
+    }),
+    vscode.debug.registerDebugConfigurationProvider("weir", {
+      resolveDebugConfiguration: (folder, config) => {
+        if (!config.type && !config.request && !config.name) {
+          const editor = vscode.window.activeTextEditor;
+          if (!editor || editor.document.languageId !== "weir") {
+            return undefined;
+          }
+          config.type = "weir";
+          config.request = "launch";
+          config.name = "weir: debug this script";
+          config.program = editor.document.uri.fsPath;
+        }
+        if (!config.cwd) {
+          config.cwd =
+            folder?.uri.fsPath ??
+            (config.program ? path.dirname(config.program) : undefined);
+        }
+        return config;
+      },
+    })
+  );
+
   // run / check / check --can in a reused integrated terminal named
   // `weir`, with the SAME binary the server runs — no code lens, no
   // server-side execution: the server never evaluates

@@ -157,6 +157,7 @@
     <Compile Include="Complete.fs" />
     <Compile Include="DynComplete.fs" />
     <Compile Include="Prelude.fs" />
+    <Compile Include="Debugger.fs" />
     <Compile Include="Script.fs" />
     <!-- after Script: the capability walker reads CheckedStmt trees
          [D:can-report] -->

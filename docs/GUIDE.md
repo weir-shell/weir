@@ -3043,6 +3043,19 @@ a pipe or a file the break is skipped with a note, so a forgotten one
 cannot hang a CI job. `weir check` warns at every `Debug.peek` and
 `Debug.break`, since neither is meant to stay.
 
+**Step through it in the editor.** `weir dap` is a debug adapter: an
+editor that speaks the Debug Adapter Protocol starts it and gets
+breakpoints, step in, step over, step out, the call stack, and the
+names in scope at each frame. The VS Code extension wires it up: open
+a script, set a breakpoint in the gutter, press F5. The script's own
+output appears in the debug console.
+
+What it does not do yet: pause a running script (it stops at the next
+breakpoint), evaluate an expression (a hover reads a name; for more,
+put a `Debug.break ()` there and use its prompt), or expand a record
+or sequence in the variables pane. A script that reads stdin gets
+none. Breakpoints inside parallel arms stop one arm at a time.
+
 ## The REPL
 
 `weir` with no arguments starts the REPL. Here you can use short names

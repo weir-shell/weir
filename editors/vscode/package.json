@@ -13,7 +13,8 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onLanguage:weir"
+    "onLanguage:weir",
+    "onDebugResolve:weir"
   ],
   "contributes": {
     "languages": [
@@ -38,6 +39,61 @@
         "language": "weir",
         "scopeName": "source.weir",
         "path": "./syntaxes/weir.tmLanguage.json"
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "weir"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "weir",
+        "label": "weir",
+        "languages": [
+          "weir"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "The weir script to run.",
+                "default": "${file}"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The script's arguments.",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "The directory the script runs in.",
+                "default": "${workspaceFolder}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the script's first statement.",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "weir",
+            "request": "launch",
+            "name": "weir: debug this script",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}"
+          }
+        ]
       }
     ],
     "configuration": {
