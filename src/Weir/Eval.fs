@@ -2573,6 +2573,15 @@ let orderCompare (name: string) (a: Value) (b: Value) : int =
 let private vTrue = VBool true
 let private vFalse = VBool false
 
+// the ints a count, an index or a remainder usually is, made once
+let private smallInts: Value[] = Array.init 1152 (fun i -> VInt(int64 i - 128L))
+
+let private boxInt (i: int64) : Value =
+    if i >= -128L && i < 1024L then
+        smallInts[int i + 128]
+    else
+        VInt i
+
 // two ints, the arms of the table below picked by the operator's characters
 let private intBinOp (op: string) (a: int64) (b: int64) : Value voption =
     let c1 =
@@ -2583,19 +2592,19 @@ let private intBinOp (op: string) (a: int64) (b: int64) : Value voption =
 
     try
         match op[0], c1 with
-        | '+', ' ' -> ValueSome(VInt(Checked.(+) a b))
-        | '-', ' ' -> ValueSome(VInt(Checked.(-) a b))
-        | '*', ' ' -> ValueSome(VInt(Checked.(*) a b))
+        | '+', ' ' -> ValueSome(boxInt (Checked.(+) a b))
+        | '-', ' ' -> ValueSome(boxInt (Checked.(-) a b))
+        | '*', ' ' -> ValueSome(boxInt (Checked.(*) a b))
         | '/', ' ' ->
             if b = 0L then
                 failwith "division by zero"
             else
-                ValueSome(VInt(a / b))
+                ValueSome(boxInt (a / b))
         | '%', ' ' ->
             if b = 0L then
                 failwith "modulo by zero"
             else
-                ValueSome(VInt(a % b))
+                ValueSome(boxInt (a % b))
         | '>', ' ' -> ValueSome(if a > b then vTrue else vFalse)
         | '<', ' ' -> ValueSome(if a < b then vTrue else vFalse)
         | '>', '=' -> ValueSome(if a >= b then vTrue else vFalse)
@@ -2605,14 +2614,6 @@ let private intBinOp (op: string) (a: int64) (b: int64) : Value voption =
         | _ -> ValueNone
     with :? System.OverflowException ->
         failwith "integer overflow"
-
-/// a node whose value is a read or a literal: evaluating it twice is free
-/// of effects
-let private isLeaf (te: TypedExpr) : bool =
-    match te.Kind with
-    | TEVar _
-    | TEInt _ -> true
-    | _ -> false
 
 let rec private binOp (op: string) (l: Value) (r: Value) : Value =
     match l, r with
@@ -6443,6 +6444,70 @@ let inline awaitFrame (flow: Flow) (t: System.Threading.Tasks.Task<'a>) : 'a =
 
         reraise ()
 
+// an int expression read without a walk: names, literals and the five
+// arithmetic operators answer as raw ints, so nothing between the leaves
+// and the root is a value. `ok` falls where the tree holds anything else,
+// a name that is no int, or a zero divisor
+let rec private intOf (env: Scope) (te: TypedExpr) (ok: byref<bool>) : int64 =
+    match te.Kind with
+    | TEInt i -> i
+    | TEVar name ->
+        match lookupOrNull name env with
+        | VInt i -> i
+        | _ ->
+            ok <- false
+            0L
+    | TEBinOp(op, l, r) when op.Length = 1 ->
+        let a = intOf env l &ok
+        let b = if ok then intOf env r &ok else 0L
+
+        if not ok then
+            0L
+        else
+            match op[0] with
+            | '+' -> Checked.(+) a b
+            | '-' -> Checked.(-) a b
+            | '*' -> Checked.(*) a b
+            | '/' when b <> 0L -> a / b
+            | '%' when b <> 0L -> a % b
+            | _ ->
+                ok <- false
+                0L
+    | _ ->
+        ok <- false
+        0L
+
+// the shape intOf reads, asked before any name is: a tree holding a call
+// or a field is the walk's from the start
+let rec private intShape (te: TypedExpr) : bool =
+    match te.Kind with
+    | TEInt _
+    | TEVar _ -> true
+    | TEBinOp(op, l, r) -> op.Length = 1 && intShape l && intShape r
+    | _ -> false
+
+/// an operator node over int expressions, answered from them; null where
+/// it is anything else or would raise — the walk answers those, and places
+/// the raise
+let private tryIntTree (env: Scope) (te: TypedExpr) : Value =
+    match te.Kind with
+    | TEBinOp(op, l, r) when intShape l && intShape r ->
+        let mutable ok = true
+
+        try
+            let a = intOf env l &ok
+            let b = if ok then intOf env r &ok else 0L
+
+            if not ok then
+                Unchecked.defaultof<Value>
+            else
+                match intBinOp op a b with
+                | ValueSome v -> v
+                | ValueNone -> Unchecked.defaultof<Value>
+        with _ ->
+            Unchecked.defaultof<Value>
+    | _ -> Unchecked.defaultof<Value>
+
 let rec private overlayOf (env: Scope) (cenvO: TypedExpr option) : (string * string) list =
     match cenvO with
     | None -> []
@@ -7507,24 +7572,16 @@ and apply (fn: Value) (arg: Value) : Value =
         // the outer half of a two-argument function: its value is the inner
         // closure, and nothing in between can raise
         | TELambda(inner, _, innerBody) -> VClosure(inner, innerBody, closureEnv.Add(param, arg))
-        // one operator over two names or literals, both ints: the answer
-        // needs no walk. Anything else — and any raise — takes the walk
-        // below, which places it
-        | TEBinOp(op, l, r) when isLeaf l && isLeaf r ->
+        // an operator over int expressions answers without a walk; anything
+        // else — and any raise — takes the walk below, which places it
+        | TEBinOp _ ->
             let env = closureEnv.Add(param, arg)
+            let quick = tryIntTree env body
 
-            match evalIn env l, evalIn env r with
-            | VInt a, VInt b ->
-                let quick =
-                    try
-                        intBinOp op a b
-                    with _ ->
-                        ValueNone
-
-                match quick with
-                | ValueSome v -> v
-                | ValueNone -> applyWalk env body
-            | _ -> applyWalk env body
+            if obj.ReferenceEquals(quick, null) then
+                applyWalk env body
+            else
+                quick
         | _ -> applyWalk (closureEnv.Add(param, arg)) body
     | VClosurePat(pat, body, closureEnv) ->
         Session.checkCancels ()

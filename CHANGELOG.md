@@ -19,6 +19,10 @@
   reference where it compared characters; a fold through functions
   that match a union is about a sixth faster, `Seq.fold` over an
   operator a third.
+- **A lambda that is an int expression allocates nothing in
+  between.** `fun n -> n * 2 % 3 == 0` reads its names and answers
+  from raw ints, where every operator made a value on the heap; a
+  map and filter over three million elements is about a fifth faster.
 
 ### Fixed
 
