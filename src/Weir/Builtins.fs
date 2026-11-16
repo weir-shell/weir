@@ -1867,6 +1867,10 @@ let private toIntImpl: Value =
         | VStr s ->
             match System.Int64.TryParse s with
             | true, n -> VInt n
+            // digits past the 64-bit range are an integer weir cannot hold,
+            // which is not the same mistake as text that is no number
+            | _ when System.Text.RegularExpressions.Regex.IsMatch(s, @"^\s*[+-]?[0-9]+\s*$") ->
+                failwith $"toInt: out of range for a 64-bit integer: \"{excerpt s}\""
             | _ -> failwith $"toInt: not an integer: \"{excerpt s}\""
         | v -> unreachable $"the checker rejects 'toInt' on {formatValue v}")
 

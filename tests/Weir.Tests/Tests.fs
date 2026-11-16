@@ -7122,6 +7122,21 @@ let stringTests =
             expectValue "Str.length \"abc\"" (VInt 3)
             expectValue "toInt \"42\" + 1" (VInt 43)
             Expect.throws (fun () -> run "toInt \"nope\"" |> ignore) "toInt raises"
+
+            let raised (src: string) =
+                (Expect.throwsC (fun () -> run src |> ignore) id).Message
+
+            Expect.stringContains (raised "toInt \"nope\"") "not an integer" "text that is no number"
+
+            Expect.stringContains
+                (raised "toInt \"99999999999999999999\"")
+                "out of range for a 64-bit integer"
+                "digits past the range"
+
+            Expect.stringContains
+                (raised "toInt \"-99999999999999999999\"")
+                "out of range for a 64-bit integer"
+                "signed too"
             expectValue "tryToInt \"42\"" (VUnion("Some", Some(VInt 42)))
             expectValue "tryToInt \"nope\"" (VUnion("None", None))
         }
