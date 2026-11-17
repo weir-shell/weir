@@ -14261,6 +14261,33 @@ let checkOnly (json: bool) (path: string) : int =
 // physical line, so scope by the decl's physical lines (its Segments); a
 // field name is unique within a decl. An empty first line -> no help entry
 // (silence beats a mystery), same as no doc.
+/// what a statement binds [D:statement-exec]: the one place a `let`, a
+/// pattern, a type or an import changes the values a run holds, for every
+/// front end that runs statements. `names` are the binds a `let` or a
+/// pattern made, for a front end that shows them
+type StatementBinds =
+    | Binds of values: Eval.Env * names: (string * Eval.Value) list
+    /// a command or an expression: nothing is bound, and its value is the
+    /// front end's to stream, echo or drop
+    | Runs of te: Check.TypedExpr * command: bool
+    /// a module line or a signature: nothing to run
+    | Declares
+
+let bindStatement (venv: Eval.Env) (kind: CheckedKind) : StatementBinds =
+    match kind with
+    | KType(decl, validator) -> Binds(Eval.declare venv decl validator, [])
+    | KLet(name, _, te) ->
+        let v = Eval.eval venv te
+        Binds(Map.add name v venv, [ name, v ])
+    | KLetPat(pat, _, te) ->
+        let bindings = Eval.bindPattern pat (Eval.eval venv te)
+        Binds(bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv, bindings)
+    | KImport lm -> Binds(importInto venv lm, [])
+    | KCmd te -> Runs(te, true)
+    | KExpr te -> Runs(te, false)
+    | KModule _
+    | KSig _ -> Declares
+
 // the prompt `Debug.break ()` opens [D:debug-aids]: one line an entry,
 // checked against the scope the break stands in and run over its values;
 // a name bound here lasts until the script goes on
@@ -14304,24 +14331,12 @@ let private breakPrompt (at: string) (tenv0: TypeEnv) (venv0: Eval.Env) : unit =
                     | Error d -> Console.Error.WriteLine $"error: {d.Message}"
                     | Ok chk ->
                         try
-                            match chk.Kind with
-                            | KType(decl, validator) ->
-                                venv <- Eval.declare venv decl validator
+                            match bindStatement venv chk.Kind with
+                            | Binds(bound, _) ->
+                                venv <- bound
                                 tenv <- chk.Env
-                            | KLet(name, _, te) ->
-                                venv <- Map.add name (Eval.eval venv te) venv
-                                tenv <- chk.Env
-                            | KLetPat(pat, _, te) ->
-                                venv <-
-                                    Eval.bindPattern pat (Eval.eval venv te)
-                                    |> List.fold (fun m (n, v) -> Map.add n v m) venv
-
-                                tenv <- chk.Env
-                            | KImport lm ->
-                                venv <- importInto venv lm
-                                tenv <- chk.Env
-                            | KCmd te -> printResult (Eval.eval venv te)
-                            | KExpr te ->
+                            | Runs(te, true) -> printResult (Eval.eval venv te)
+                            | Runs(te, false) ->
                                 let v = Eval.eval venv te
 
                                 if v <> Eval.VUnit then
@@ -14329,8 +14344,7 @@ let private breakPrompt (at: string) (tenv0: TypeEnv) (venv0: Eval.Env) : unit =
 
                                     Console.Error.WriteLine
                                         $"{Eval.echoRender Console.IsErrorRedirected rendered} : {formatEchoTy te.Ty}{Eval.echoTail hint}"
-                            | KModule _
-                            | KSig _ -> Console.Error.WriteLine "error: a module line belongs in a file"
+                            | Declares -> Console.Error.WriteLine "error: a module line belongs in a file"
                         with
                         | Eval.ExitRequest _ -> reraise ()
                         | ex -> Console.Error.WriteLine $"error: {ex.Message}"
