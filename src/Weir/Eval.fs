@@ -6507,6 +6507,18 @@ type DebugDepth() =
         with get () = DebugDepth.depth
         and set (v: int) = DebugDepth.depth <- v
 
+/// what entering a node is, for both evaluators [D:eval-twin-entry]: the
+/// position a raise is blamed on, the boundary a signal or a cut unwinds
+/// at [D:signal-main-unwind] [D:scope-tree], and the debugger's look
+let inline private enterNode (env: Scope) (te: TypedExpr) : unit =
+    RunPos.Current <- box te
+    RunPos.Exact <- false
+    Session.evalBoundary ()
+
+    match onNode with
+    | null -> ()
+    | told -> told.Invoke(te, env)
+
 /// `Debug.break ()` reached with its scope's number and its names
 /// [D:debug-aids]; the runner sets it
 let mutable onBreak: System.Action<int64, Env> = null
@@ -6661,15 +6673,7 @@ and evalIn (env: Scope) (te: TypedExpr) : Value =
     | _ -> evalNode env te
 
 and private evalNode (env: Scope) (te: TypedExpr) : Value =
-    RunPos.Current <- box te
-    RunPos.Exact <- false
-    // a signal or closed stdout unwinds here, before the node runs
-    // [D:signal-main-unwind]; any flow's cut stops it here [D:scope-tree]
-    Session.evalBoundary ()
-
-    (match onNode with
-     | null -> ()
-     | told -> told.Invoke(te, env))
+    enterNode env te
 
     match te.Kind with
     // a failure as a value [D:try-form]: the body runs inside the capture
@@ -8832,25 +8836,19 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                 else
                     match te.Kind with
                     | TELet(name, _, value, body) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let x = awaitFrame flow (evalAsync flow env value)
                         let r = awaitFrame flow (evalAsync flow (env.Add(name, x)) body)
                         r
                     | TELetPat(pat, value, body) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let x = awaitFrame flow (evalAsync flow env value)
                         let bindings = bindPattern pat x
                         let env' = bindings |> List.fold (fun (m: Scope) (n, bv) -> m.Add(n, bv)) env
                         let r = awaitFrame flow (evalAsync flow env' body)
                         r
                     | TEApp(fn, arg) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let f = awaitFrame flow (evalAsync flow env fn)
                         let a = awaitFrame flow (evalAsync flow env arg)
                         callPos fn
@@ -8860,9 +8858,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                     | TEPipe({ Kind = TECmd(head, args, cenvO) }, { Kind = TEVar "|print" }) when
                         Session.pipesSuspend && not (System.Console.IsOutputRedirected)
                         ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         System.Console.Out.Flush()
                         let overlay = overlayOf env cenvO
 
@@ -8882,9 +8878,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                     | TEPipe({ Kind = TECmd(head, args, cenvO) } as c, ({ Kind = TEVar "|print" } as fn)) when
                         Session.pipesSuspend
                         ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let f = evalIn env fn
                         let spec = commandSpec env head args cenvO
                         RunPos.Current <- box c
@@ -8902,9 +8896,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                                  Kind = TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) })
                              },
                              ({ Kind = TEVar "|print" } as fn)) when Session.pipesSuspend ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
 
                         if not (System.Console.IsOutputRedirected) then
                             System.Console.Out.Flush()
@@ -8932,9 +8924,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                          | TEVar "|print", TEPipe(_, { Kind = TECmd _ }) -> false
                          | _ -> true)
                         ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let f = awaitFrame flow (evalAsync flow env fn)
                         let a = awaitFrame flow (evalAsync flow env arg)
                         callPos fn
@@ -8942,22 +8932,16 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         RunPos.Exact <- false
                         r
                     | TEField(target, field) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let t = awaitFrame flow (evalAsync flow env target)
                         fieldOf field t
                     | TESeq(a, b) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let _ = awaitFrame flow (evalAsync flow env a)
                         let r = awaitFrame flow (evalAsync flow env b)
                         r
                     | TEIf(cond, thn, els) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let c = awaitFrame flow (evalAsync flow env cond)
 
                         match c, els with
@@ -8970,9 +8954,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         | VBool false, None -> VUnit
                         | v, _ -> unreachable $"the checker rejects a non-bool condition: {formatValue v}"
                     | TEMatch(scrutinee, arms) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let v0 = awaitFrame flow (evalAsync flow env scrutinee)
                         let v = matchView arms v0
                         let mutable rest = arms
@@ -9008,9 +8990,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                         result
                     | TEBinOp("&&", l, r) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let lv = awaitFrame flow (evalAsync flow env l)
 
                         match lv with
@@ -9020,9 +9000,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                             rv
                         | v -> unreachable $"the checker rejects '&&' on {formatValue v}"
                     | TEBinOp("||", l, r) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let lv = awaitFrame flow (evalAsync flow env l)
 
                         match lv with
@@ -9032,16 +9010,12 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                             rv
                         | v -> unreachable $"the checker rejects '||' on {formatValue v}"
                     | TEBinOp(op, l, r) when op <> ">>" ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let lv = awaitFrame flow (evalAsync flow env l)
                         let rv = awaitFrame flow (evalAsync flow env r)
                         binOp op lv rv
                     | TERecord(name, fields) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let built = ResizeArray<string * Value>()
                         let mutable rest = fields
 
@@ -9053,9 +9027,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                         VRecord(name, List.ofSeq built)
                     | TEList items ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let built = ResizeArray<Value>()
                         let mutable rest = items
 
@@ -9066,9 +9038,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                         VSeq(List.ofSeq built)
                     | TETuple items ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let built = ResizeArray<Value>()
                         let mutable rest = items
 
@@ -9079,9 +9049,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                         VTuple(List.ofSeq built)
                     | TEInterp parts ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let sb = System.Text.StringBuilder()
                         let mutable rest = parts
 
@@ -9096,9 +9064,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                         VStr(sb.ToString())
                     | TETry(body, asResult) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
 
                         try
                             let r = awaitFrame flow (evalAsync flow env body)
@@ -9118,15 +9084,11 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                             else
                                 VUnion("None", None)
                     | TEOrFail(body, msg, site) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let r = awaitFrame flow (evalAsync flow env body)
                         orFailValue env msg site r
                     | TEAlways(body, cleanup) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let hooked = Session.registerAlways ()
 
                         let claimAndRun () =
@@ -9186,9 +9148,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                                 raise original
                     | TEHold body when not (PlanMode.active ()) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let v = awaitFrame flow (evalAsync flow env body)
                         let scope = Session.stopAwareScope ()
 
@@ -9207,9 +9167,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                         v
                     | TERetry(LoopRepeat, optsE, _, body, until) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let ctl = repeatCtl env optsE until
                         let scope = Session.stopAwareScope ()
 
@@ -9291,9 +9249,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         finally
                             scope.Dispose()
                     | TERetry(kind, optsE, watchE, body, until) when kind <> LoopRepeat ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let ctl = retryCtl env kind optsE watchE until
 
                         try
@@ -9355,15 +9311,11 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         finally
                             ctl.Cts.Dispose()
                     | TEWithin((WithinPure | WithinReadonly), _, _, _, body) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let r = awaitFrame flow (evalAsync flow env body)
                         r
                     | TEWithin(WithinServe, binder, targ, topts, body) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
 
                         let struct (env', serveNode, home, frame, release) =
                             serveScope env binder targ topts body
@@ -9393,9 +9345,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                                targ,
                                topts,
                                body) ->
-                        RunPos.Current <- box te
-                        RunPos.Exact <- false
-                        Session.evalBoundary ()
+                        enterNode env te
                         let struct (env', release) = withinScope env kind binder targ topts
                         let frame = Session.pushFrame release
 
@@ -9426,22 +9376,41 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                 | VClosure(param, body, closureEnv) ->
                     Session.checkCancels ()
 
+                    // a body is one level deeper for the debugger, as in
+                    // applyWalk; set outright after the wait, which may
+                    // have raised nothing but moved nothing either
+                    let depth = DebugDepth.Depth
+
+                    if not (isNull onNode) then
+                        DebugDepth.Depth <- depth + 1
+
                     if RunPos.IsCall body then
                         let r = awaitFrame flow (inFunctionAsync flow (closureEnv.Add(param, arg)) body)
+                        DebugDepth.Depth <- depth
                         r
                     else
                         let r = awaitFrame flow (evalAsync flow (closureEnv.Add(param, arg)) body)
+                        DebugDepth.Depth <- depth
                         r
                 | VClosurePat(pat, body, closureEnv) ->
                     Session.checkCancels ()
-                    let bindings = bindPattern pat arg
-                    let env' = bindings |> List.fold (fun (m: Scope) (n, bv) -> m.Add(n, bv)) closureEnv
+                    let env' = bindInto pat arg closureEnv
+
+                    if isNull env' then
+                        unreachable $"the checker guarantees binder patterns match; got {formatValue arg}"
+
+                    let depth = DebugDepth.Depth
+
+                    if not (isNull onNode) then
+                        DebugDepth.Depth <- depth + 1
 
                     if RunPos.IsCall body then
                         let r = awaitFrame flow (inFunctionAsync flow env' body)
+                        DebugDepth.Depth <- depth
                         r
                     else
                         let r = awaitFrame flow (evalAsync flow env' body)
+                        DebugDepth.Depth <- depth
                         r
                 | VBuiltin f ->
                     Session.checkCancels ()

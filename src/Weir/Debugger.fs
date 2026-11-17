@@ -70,6 +70,15 @@ type private Frame(file: string, line: int, scope: Eval.Scope) =
     member _.Line = line
     member _.Scope = scope
 
+/// one thread's walk as the engine sees it: its frames, and the line it
+/// last entered. A parallel arm is its own thread, so its stops show its
+/// own frames and names
+type private ThreadView() =
+    member val Frames = ResizeArray<Frame>() with get
+    member val LastFile = "" with get, set
+    member val LastLine = 0 with get, set
+    member val LastDepth = -1 with get, set
+
 [<AllowNullLiteral>]
 type private Engine(channel: Stream) =
     let gate = obj ()
@@ -78,13 +87,12 @@ type private Engine(channel: Stream) =
     let breakpoints =
         Collections.Generic.Dictionary<string, Collections.Generic.HashSet<int>>()
 
-    let frames = ResizeArray<Frame>()
+    let views = new Threading.ThreadLocal<ThreadView>(fun () -> ThreadView())
     // one thread stops at a time; a second that reaches a node waits here
     let stopGate = obj ()
     let mutable mode = Running
-    let mutable lastFile = ""
-    let mutable lastLine = 0
-    let mutable lastDepth = -1
+    // a step belongs to the thread that was stopped when it was asked for
+    let mutable stepThread = 0
 
     let sameFile (a: string) (b: string) =
         String.Equals(
@@ -152,6 +160,9 @@ type private Engine(channel: Stream) =
 
     // the stopped thread answers questions until it is told to go on
     let rec serve (depth: int) : unit =
+        let frames = views.Value.Frames
+        stepThread <- Environment.CurrentManagedThreadId
+
         match reader.ReadLine() with
         | null ->
             // the adapter is gone: a script with nobody to stop for runs on
@@ -281,13 +292,19 @@ type private Engine(channel: Stream) =
         if line > 0 then
             let depth = Eval.DebugDepth.Depth
 
+            let view = views.Value
+            let frames = view.Frames
+
             lock stopGate (fun () ->
                 while frames.Count <= depth do
                     frames.Add null
 
                 frames[depth] <- Frame(file, line, scope)
 
-                let entered = not (line = lastLine && depth = lastDepth && sameFile file lastFile)
+                let entered =
+                    not (line = view.LastLine && depth = view.LastDepth && sameFile file view.LastFile)
+
+                let stepping = stepThread = Environment.CurrentManagedThreadId
 
                 let reason =
                     if not entered then
@@ -295,15 +312,15 @@ type private Engine(channel: Stream) =
                     else
                         match mode with
                         | Pausing -> "pause"
-                        | StepIn -> "step"
-                        | StepOver d when depth <= d -> "step"
-                        | StepOut d when depth < d -> "step"
+                        | StepIn when stepping -> "step"
+                        | StepOver d when stepping && depth <= d -> "step"
+                        | StepOut d when stepping && depth < d -> "step"
                         | _ when hasBreakpoint file line -> "breakpoint"
                         | _ -> ""
 
-                lastFile <- file
-                lastLine <- line
-                lastDepth <- depth
+                view.LastFile <- file
+                view.LastLine <- line
+                view.LastDepth <- depth
 
                 if reason <> "" then
                     Console.Out.Flush()
