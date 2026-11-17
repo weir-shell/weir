@@ -6890,6 +6890,23 @@ let rec loadModuleCachedWith
 let private replayed =
     System.Collections.Generic.Dictionary<string, (LogicalLine * CheckedStmt) list * Eval.Env>()
 
+/// what a `let`, a pattern or a type binds [D:statement-exec] — the part
+/// of a statement's effect a module body and a run share; the values, and
+/// the names a `let` or a pattern made. None for every other statement
+let private bindsOf (venv: Eval.Env) (stmt: CheckedStmt) : (Eval.Env * (string * Eval.Value) list) option =
+    match stmt with
+    | CType(decl, validator) -> Some(Eval.declare venv decl validator, [])
+    | CLet(name, te) ->
+        let v = Eval.eval venv te
+        Some(Map.add name v venv, [ name, v ])
+    | CLetPat(pat, te) ->
+        let bindings = Eval.bindPattern pat (Eval.eval venv te)
+        Some(bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv, bindings)
+    | CExpr _
+    | CCmd _
+    | CNoop
+    | CImport _ -> None
+
 let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) : Eval.Env =
     let key = realPath lm.AbsPath
 
@@ -6923,15 +6940,13 @@ and private replayModuleBody (procFacts: (string * Eval.Value) list) (lm: Loaded
     let rec replay (mv: Eval.Env) body =
         match body with
         | [] -> mv
-        | (_, CType(decl, validator)) :: t -> replay (Eval.declare mv decl validator) t
-        | (_, CLet(name, te)) :: t -> replay (Map.add name (Eval.eval mv te) mv) t
-        | (_, CLetPat(pat, te)) :: t ->
-            let bs = Eval.bindPattern pat (Eval.eval mv te)
-            replay (bs |> List.fold (fun m (n, v) -> Map.add n v m) mv) t
         | (_, CImport nested) :: t ->
             let nestedVenv = replayModule procFacts nested
             replay (expose nested.Alias nested.Members nestedVenv mv) t
-        | _ :: t -> replay mv t
+        | (_, stmt) :: t ->
+            match bindsOf mv stmt with
+            | Some(bound, _) -> replay bound t
+            | None -> replay mv t
 
     replay mBase lm.Body
 
@@ -14273,20 +14288,32 @@ type StatementBinds =
     /// a module line or a signature: nothing to run
     | Declares
 
-let bindStatement (venv: Eval.Env) (kind: CheckedKind) : StatementBinds =
+/// a checked statement as a run and a module body hold it
+let checkedOf (kind: CheckedKind) : CheckedStmt =
     match kind with
-    | KType(decl, validator) -> Binds(Eval.declare venv decl validator, [])
-    | KLet(name, _, te) ->
-        let v = Eval.eval venv te
-        Binds(Map.add name v venv, [ name, v ])
-    | KLetPat(pat, _, te) ->
-        let bindings = Eval.bindPattern pat (Eval.eval venv te)
-        Binds(bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv, bindings)
-    | KImport lm -> Binds(importInto venv lm, [])
-    | KCmd te -> Runs(te, true)
-    | KExpr te -> Runs(te, false)
+    | KType(decl, validator) -> CType(decl, validator)
+    | KLet(name, _, te) -> CLet(name, te)
+    | KLetPat(pat, _, te) -> CLetPat(pat, te)
+    | KCmd te -> CCmd te
+    | KExpr te -> CExpr te
+    | KImport lm -> CImport lm
     | KModule _
-    | KSig _ -> Declares
+    | KSig _ -> CNoop
+
+let bindChecked (venv: Eval.Env) (stmt: CheckedStmt) : StatementBinds =
+    match stmt with
+    | CImport lm -> Binds(importInto venv lm, [])
+    | CCmd te -> Runs(te, true)
+    | CExpr te -> Runs(te, false)
+    | CNoop -> Declares
+    | CType _
+    | CLet _
+    | CLetPat _ ->
+        match bindsOf venv stmt with
+        | Some(bound, names) -> Binds(bound, names)
+        | None -> Declares
+
+let bindStatement (venv: Eval.Env) (kind: CheckedKind) : StatementBinds = bindChecked venv (checkedOf kind)
 
 // the prompt `Debug.break ()` opens [D:debug-aids]: one line an entry,
 // checked against the scope the break stands in and run over its values;
@@ -14650,19 +14677,10 @@ let run (path: string) (scriptArgs: string list) : int =
                                         | None ->
                                             runUnused.Feed ll chk
 
-                                            let stmt =
-                                                match chk.Kind with
-                                                | KType(decl, validator) -> CType(decl, validator)
-                                                | KLet(name, _, te) -> CLet(name, te)
-                                                | KLetPat(pat, _, te) -> CLetPat(pat, te)
-                                                | KCmd te -> CCmd te
-                                                | KExpr te -> CExpr te
-                                                | KImport lm -> CImport lm
-                                                // unreachable: the marker is caught before the fold,
-                                                // and a script's KSig never checks (scripts refuse
-                                                // the form) [D:module-signatures]
-                                                | KModule _
-                                                | KSig _ -> CNoop
+                                            // a module marker is caught before the fold, and a
+                                            // script's signature never checks (scripts refuse
+                                            // the form) [D:module-signatures]: neither is here
+                                            let stmt = checkedOf chk.Kind
 
                                             // enrich a record's (or union's) Docs from
                                             // the `///` field (case) docs, so --help
@@ -14911,43 +14929,21 @@ let run (path: string) (scriptArgs: string list) : int =
 
                         match stmt with
                         | CNoop -> Ok venv
-                        | CImport lm ->
+                        // an import replays the module (its Body, including any
+                        // nested imports) and exposes its members as
+                        // `alias.member` [D:modules-v1]; the process facts
+                        // ride from the entry and the module keeps its own
+                        // scriptPath. Every bind is the shared step's
+                        // [D:statement-exec]
+                        | CImport _
+                        | CType _
+                        | CLetPat _
+                        | CLet _ ->
                             try
-                                // replay the module (its Body, including any
-                                // nested imports) and expose its members as
-                                // `alias.member` [D:modules-v1]
-                                // process facts (incl. entryPath) ride from
-                                // the entry; the module keeps its own scriptPath
-                                let procFacts =
-                                    [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
-                                    |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
-
-                                let moduleVenv = replayModule procFacts lm
-
-                                lm.Members
-                                |> List.fold
-                                    (fun acc (n, _) ->
-                                        match Map.tryFind n moduleVenv with
-                                        | Some v -> Map.add $"{lm.Alias}.{n}" v acc
-                                        | None -> acc)
-                                    venv
-                                |> Ok
-                            with ex ->
-                                fail lineNo ex
-                        | CType(decl, validator) ->
-                            try
-                                Ok(Eval.declare venv decl validator)
-                            with ex ->
-                                fail lineNo ex
-                        | CLetPat(pat, te) ->
-                            try
-                                let bindings = Eval.bindPattern pat (Eval.eval venv te)
-                                Ok(bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv)
-                            with ex ->
-                                fail lineNo ex
-                        | CLet(name, te) ->
-                            try
-                                Ok(Map.add name (Eval.eval venv te) venv)
+                                match bindChecked venv stmt with
+                                | Binds(bound, _) -> Ok bound
+                                | Runs _
+                                | Declares -> Ok venv
                             with ex ->
                                 fail lineNo ex
                         | CCmd te ->
