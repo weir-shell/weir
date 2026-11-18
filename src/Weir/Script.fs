@@ -14385,7 +14385,10 @@ let traceCommands: bool ref =
     ref (Environment.GetEnvironmentVariable "WEIR_TRACE" = "1")
 
 let run (path: string) (scriptArgs: string list) : int =
-    Check.captureBreaks.Value <- true
+    // this run's own hooks and break scopes [D:run-hooks], put back at its end
+    let hooks = Session.RunHooks()
+    use _hooks = Session.withRunHooks hooks
+    use _breaks = Check.capturingBreaks ()
 
     match readEntryScript path with
     | Error msg ->
@@ -14472,11 +14475,11 @@ let run (path: string) (scriptArgs: string list) : int =
                             $"{quoteData shown}:{l}"
                         | _ -> ""
 
-                Eval.positionOf <- System.Func<obj, string>(whereOf)
+                hooks.PositionOf <- System.Func<obj, string>(whereOf)
 
                 // an editor's debugger, when one started this run
                 // [D:step-debugger]: it places a node by its full path
-                Eval.placeOf <-
+                hooks.PlaceOf <-
                     System.Func<obj, struct (string * int)>(fun n ->
                         match n with
                         | null -> struct ("", 0)
@@ -14485,18 +14488,18 @@ let run (path: string) (scriptArgs: string list) : int =
                             | true, (file, _, l, _) -> struct (IO.Path.GetFullPath file, l)
                             | _ -> struct ("", 0))
 
-                Debugger.attachIfAsked ()
+                Debugger.attachIfAsked hooks
 
-                Eval.onBreak <-
-                    System.Action<int64, Eval.Env>(fun scope venv ->
+                hooks.OnBreak <-
+                    System.Action<int64, obj>(fun scope venv ->
                         match Check.settledBreakScope scope with
-                        | Some tenv -> breakPrompt (whereOf Eval.RunPos.Current) tenv venv
+                        | Some tenv -> breakPrompt (whereOf Eval.RunPos.Current) tenv (venv :?> Eval.Env)
                         | None -> ())
 
                 // each command before it starts, on stderr [D:command-trace]:
                 // where it was written, then the words it is given
                 if traceCommands.Value then
-                    Proc.onSpawn <-
+                    hooks.OnSpawn <-
                         System.Action<string, string list>(fun prog args ->
                             let at =
                                 match whereOf Eval.RunPos.Current with

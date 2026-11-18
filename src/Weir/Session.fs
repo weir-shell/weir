@@ -12,6 +12,46 @@ module Weir.Session
 // raise it; Eval re-exports it.
 exception ExitRequest of code: int
 
+/// what one run lends the machinery under it [D:run-hooks]: where a node
+/// was written, what to do at a break, who to tell of a spawn or a node.
+/// A run installs its own for its own logical context, so two runs in
+/// one process — the unit suite's, an embedding's — never read each
+/// other's. Typed loosely: this module sits under the evaluator's
+[<AllowNullLiteral>]
+type RunHooks() =
+    /// told each process start, before it [D:command-trace]
+    member val OnSpawn: System.Action<string, string list> = null with get, set
+    /// a node as `file:line`, "" for one the run never placed [D:debug-aids]
+    member val PositionOf: System.Func<obj, string> = null with get, set
+    /// a node's full path and line for a debugger; line 0 when unplaced
+    member val PlaceOf: System.Func<obj, struct (string * int)> = null with get, set
+    /// `Debug.break ()` reached, with its scope's number and its names
+    member val OnBreak: System.Action<int64, obj> = null with get, set
+    /// a debugger's view of the walk [D:step-debugger]: each node entered
+    /// and its scope
+    member val OnNode: System.Action<obj, obj> = null with get, set
+
+let private runHooks = System.Threading.AsyncLocal<RunHooks>()
+
+/// the running script's hooks, null outside a run
+let currentRunHooks () : RunHooks = runHooks.Value
+
+/// install a run's hooks until the handle is disposed, which puts back
+/// whatever was there
+let withRunHooks (hooks: RunHooks) : System.IDisposable =
+    let before = runHooks.Value
+    runHooks.Value <- hooks
+
+    {
+        new System.IDisposable with
+            member _.Dispose() = runHooks.Value <- before
+    }
+
+/// set once a debugger attaches to any run in the process: the walk's
+/// one cheap test before it asks the hooks, and the sign for the
+/// shortcuts that answer without entering a node to stand down
+let mutable debugging = false
+
 let mutable private rootCwd: string =
     System.IO.Path.TrimEndingDirectorySeparator(System.IO.Directory.GetCurrentDirectory())
 

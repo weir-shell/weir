@@ -5425,9 +5425,12 @@ let private debugPeekImpl: Value =
             | v -> v
 
         let at =
-            match positionOf with
+            match Session.currentRunHooks () with
             | null -> ""
-            | f -> f.Invoke RunPos.Current
+            | hooks ->
+                match hooks.PositionOf with
+                | null -> ""
+                | f -> f.Invoke RunPos.Current
 
         let rendered, hint = echoValue echoPipedCap (echoPrep v)
         let rendered = echoRender System.Console.IsErrorRedirected rendered

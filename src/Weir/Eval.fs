@@ -6484,19 +6484,6 @@ let inline awaitFrame (flow: Flow) (t: System.Threading.Tasks.Task<'a>) : 'a =
 
         reraise ()
 
-/// where a node was written, as `file:line`, for the debugging aids
-/// [D:debug-aids]; the runner sets it, and it is null outside a run
-let mutable positionOf: System.Func<obj, string> = null
-
-/// a debugger's view of the walk [D:step-debugger]: told each node as
-/// it is entered, with its scope; null unless one is attached, and then
-/// the shortcuts that answer without entering a node stand down
-let mutable onNode: System.Action<obj, Scope> = null
-
-/// a node's file and line for the debugger; line 0 for one the run
-/// never placed
-let mutable placeOf: System.Func<obj, struct (string * int)> = null
-
 /// how many function bodies deep the walk is, per thread, kept only
 /// while a debugger is attached
 type DebugDepth() =
@@ -6515,13 +6502,13 @@ let inline private enterNode (env: Scope) (te: TypedExpr) : unit =
     RunPos.Exact <- false
     Session.evalBoundary ()
 
-    match onNode with
-    | null -> ()
-    | told -> told.Invoke(te, env)
-
-/// `Debug.break ()` reached with its scope's number and its names
-/// [D:debug-aids]; the runner sets it
-let mutable onBreak: System.Action<int64, Env> = null
+    if Session.debugging then
+        match Session.currentRunHooks () with
+        | null -> ()
+        | hooks ->
+            match hooks.OnNode with
+            | null -> ()
+            | told -> told.Invoke(box te, box env)
 
 // an int expression read without a walk: names, literals and the five
 // arithmetic operators answer as raw ints, so nothing between the leaves
@@ -6780,9 +6767,12 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
     // the prompt sees this scope [D:debug-aids]; outside a run the call
     // is the builtin's, which does nothing
     | TEApp({ Kind = TEVar "Debug.break" }, { Kind = TEInt scope }) ->
-        (match onBreak with
+        (match Session.currentRunHooks () with
          | null -> ()
-         | hook -> hook.Invoke(scope, env.ToMap()))
+         | hooks ->
+             match hooks.OnBreak with
+             | null -> ()
+             | hook -> hook.Invoke(scope, box (env.ToMap())))
 
         VUnit
     | TEApp(fn, arg) -> callAt env fn arg
@@ -7657,7 +7647,7 @@ and apply (fn: Value) (arg: Value) : Value =
         | TELambda(inner, _, innerBody) -> VClosure(inner, innerBody, closureEnv.Add(param, arg))
         // an operator over int expressions answers without a walk; anything
         // else — and any raise — takes the walk below, which places it
-        | TEBinOp _ when isNull onNode ->
+        | TEBinOp _ when not Session.debugging ->
             let env = closureEnv.Add(param, arg)
             let quick = tryIntTree env body
 
@@ -8780,7 +8770,7 @@ and apply2 (fn: Value) (a: Value) (b: Value) : Value =
     | _ -> apply (apply fn a) b
 
 and private applyWalk (env: Scope) (body: TypedExpr) : Value =
-    if isNull onNode then
+    if not Session.debugging then
         if RunPos.IsCall body then
             inFunction env body
         else
@@ -9381,7 +9371,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                     // have raised nothing but moved nothing either
                     let depth = DebugDepth.Depth
 
-                    if not (isNull onNode) then
+                    if Session.debugging then
                         DebugDepth.Depth <- depth + 1
 
                     if RunPos.IsCall body then
@@ -9401,7 +9391,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
 
                     let depth = DebugDepth.Depth
 
-                    if not (isNull onNode) then
+                    if Session.debugging then
                         DebugDepth.Depth <- depth + 1
 
                     if RunPos.IsCall body then
