@@ -33693,6 +33693,48 @@ let operatorValueTests =
                     Expect.equal (find own [ bin ] "tool") (Some tool) "a rooted entry's runnable file"
                     Expect.equal (find own [ bin ] "absent") None "nothing there")
         }
+        test "one redirect rule for both clients [D:one-redirect-rule]" {
+            let secret = Set.ofList [ "authorization"; "private-token" ]
+            let headers = [ "Authorization", "t"; "PRIVATE-TOKEN", "p"; "Accept", "x" ]
+
+            let hop hops code (loc: string) =
+                Weir.Http.nextHop
+                    3
+                    secret
+                    hops
+                    "https://a.example/x/y"
+                    headers
+                    code
+                    (Some(System.Uri(loc, System.UriKind.RelativeOrAbsolute)))
+
+            Expect.equal
+                (hop 0 302 "https://a.example/z")
+                (Weir.Http.Follow("https://a.example/z", headers))
+                "the same origin keeps every header"
+
+            Expect.equal
+                (hop 0 302 "/z")
+                (Weir.Http.Follow("https://a.example/z", headers))
+                "a relative Location, against the current URL"
+
+            Expect.equal
+                (hop 0 307 "https://b.example/z")
+                (Weir.Http.Follow("https://b.example/z", [ "Accept", "x" ]))
+                "another origin: the credentials stay behind, whatever their case"
+
+            Expect.equal
+                (hop 0 302 "http://a.example/z")
+                (Weir.Http.Follow("http://a.example/z", [ "Accept", "x" ]))
+                "a downgrade to http is another origin"
+
+            Expect.equal (hop 3 302 "https://a.example/z") Weir.Http.Exhausted "the hops are spent"
+            Expect.equal (hop 0 200 "https://a.example/z") Weir.Http.Final "not a redirect status"
+
+            Expect.equal
+                (Weir.Http.nextHop 3 secret 0 "https://a.example/" headers 302 None)
+                Weir.Http.Final
+                "no Location"
+        }
         test "both evaluators enter a node through one step [D:eval-twin-entry]" {
             let src =
                 System.IO.File.ReadAllLines(

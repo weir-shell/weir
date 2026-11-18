@@ -284,6 +284,48 @@ let isRedirect (code: int) : bool =
 [<Literal>]
 let private maxRedirects = 50
 
+/// what a response means to a client that follows redirects itself
+/// [D:one-redirect-rule]
+type Hop =
+    /// go on to this URL with these headers
+    | Follow of url: string * headers: (string * string) list
+    /// a redirect, with the hops already spent
+    | Exhausted
+    /// not a redirect: the answer
+    | Final
+
+/// the one rule both of weir's clients follow [D:secret-redirect]
+/// [D:contract-redirect]: a redirect status with a Location is followed up
+/// to `limit` hops; a relative Location resolves against the current URL;
+/// and on a hop to another origin every `sensitive` header (names
+/// lowercased) is left behind, as the BCL leaves Authorization
+let nextHop
+    (limit: int)
+    (sensitive: Set<string>)
+    (hops: int)
+    (curUrl: string)
+    (headers: (string * string) list)
+    (code: int)
+    (location: Uri option)
+    : Hop =
+    match location with
+    | Some loc when isRedirect code ->
+        if hops >= limit then
+            Exhausted
+        else
+            let fromUri = Uri curUrl
+            let nextUri = if loc.IsAbsoluteUri then loc else Uri(fromUri, loc)
+
+            let kept =
+                if sameOrigin fromUri nextUri || Set.isEmpty sensitive then
+                    headers
+                else
+                    headers
+                    |> List.filter (fun (k, _) -> not (sensitive.Contains(k.ToLowerInvariant())))
+
+            Follow(nextUri.ToString(), kept)
+    | _ -> Final
+
 // every valid Duration is honoured as a timeout [D:long-waits]: .NET
 // timers (HttpClient.Timeout, CancelAfter) take at most Int32.MaxValue
 // ms (~24.8 days), so a longer deadline re-arms in slices of `sliceMs`
@@ -829,22 +871,11 @@ and private sendCheckedAsync
                     | null -> None
                     | l -> Some l
 
-                match location with
-                | Some loc when isRedirect code && hops < maxRedirects ->
+                match nextHop maxRedirects req.SensitiveHeaders hops curUrl curHeaders code location with
+                | Follow(nextUrl, kept) ->
                     resp.Dispose()
                     hops <- hops + 1
-
-                    let fromUri = Uri curUrl
-                    // a relative Location resolves against the current URL
-                    let nextUri = if loc.IsAbsoluteUri then loc else Uri(fromUri, loc)
-
-                    // on a cross-origin hop, drop the credential headers — the
-                    // F4 fix [D:secret-redirect], the same drop the BCL does
-                    // for Authorization, now covering secretHeaders too
-                    if not (sameOrigin fromUri nextUri) && not (Set.isEmpty req.SensitiveHeaders) then
-                        curHeaders <-
-                            curHeaders
-                            |> List.filter (fun (k, _) -> not (req.SensitiveHeaders.Contains(k.ToLowerInvariant())))
+                    curHeaders <- kept
 
                     // 303, and 301/302 from a method with a body, rewrite to GET
                     // and drop the body (the BCL/browser rule); 307/308 preserve
@@ -857,11 +888,11 @@ and private sendCheckedAsync
                         curMethod <- "GET"
                         curBody <- None
 
-                    curUrl <- nextUri.ToString()
-                | Some _ when isRedirect code ->
+                    curUrl <- nextUrl
+                | Exhausted ->
                     resp.Dispose()
                     raise (TooManyRedirects(hops, curUrl))
-                | _ ->
+                | Final ->
                     result <- resp
                     go <- false
 
