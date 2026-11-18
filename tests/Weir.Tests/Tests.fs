@@ -33657,6 +33657,42 @@ let operatorValueTests =
             Expect.equal (seen |> Seq.sort |> List.ofSeq) [ "a=aa"; "b=bb" ] "each run read its own"
             Expect.isNull (Weir.Session.currentRunHooks ()) "nothing is left installed"
         }
+        test "one PATH walk, two rules [D:one-path-walk]" {
+            withTempDir "weir-pathwalk" (fun td ->
+                if not (System.OperatingSystem.IsWindows()) then
+                    let bin = System.IO.Path.Combine(td, "bin")
+                    System.IO.Directory.CreateDirectory bin |> ignore
+                    let plain = System.IO.Path.Combine(bin, "plain")
+                    let tool = System.IO.Path.Combine(bin, "tool")
+                    System.IO.File.WriteAllText(plain, "x")
+                    System.IO.File.WriteAllText(tool, "x")
+
+                    System.IO.File.SetUnixFileMode(
+                        tool,
+                        System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserExecute
+                    )
+
+                    let shell: Weir.PathLookup.Rule = {
+                        Anchor = Some(fun p -> System.IO.Path.GetFullPath(p, td))
+                        Executable = false
+                    }
+
+                    let own: Weir.PathLookup.Rule = { Anchor = None; Executable = true }
+                    let find rule dirs prog = Weir.PathLookup.find rule [] dirs prog
+
+                    // the shell's rule: a relative entry counts, read from the anchor, and a file need only exist
+                    Expect.equal (find shell [ "bin" ] "plain") (Some plain) "a relative entry, anchored"
+
+                    Expect.equal
+                        (find shell [ "/nonexistent-weir"; bin ] "tool")
+                        (Some tool)
+                        "the first directory that holds it"
+                    // weir's own spawns: rooted entries and runnable files only
+                    Expect.equal (find own [ "bin" ] "tool") None "a relative entry is skipped"
+                    Expect.equal (find own [ bin ] "plain") None "a file with no execute bit is no tool"
+                    Expect.equal (find own [ bin ] "tool") (Some tool) "a rooted entry's runnable file"
+                    Expect.equal (find own [ bin ] "absent") None "nothing there")
+        }
         test "both evaluators enter a node through one step [D:eval-twin-entry]" {
             let src =
                 System.IO.File.ReadAllLines(
