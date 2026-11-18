@@ -33636,6 +33636,27 @@ let operatorValueTests =
 
             Expect.stringContains (checkErr "let f = 1 |> (+) in f 2").Message "cannot be partially applied" "bound"
         }
+        test "a run's hooks are its own, and gone when it ends [D:run-hooks]" {
+            let seen = System.Collections.Concurrent.ConcurrentBag<string>()
+
+            let run (tag: string) =
+                System.Threading.Tasks.Task.Run(fun () ->
+                    let hooks = Weir.Session.RunHooks()
+                    hooks.PositionOf <- System.Func<obj, string>(fun _ -> tag)
+                    use _installed = Weir.Session.withRunHooks hooks
+                    System.Threading.Thread.Sleep 50
+
+                    // a thread the run starts sees the run's hooks
+                    let inner =
+                        System.Threading.Tasks.Task.Run(fun () ->
+                            Weir.Session.currentRunHooks().PositionOf.Invoke null)
+
+                    seen.Add(tag + "=" + Weir.Session.currentRunHooks().PositionOf.Invoke null + inner.Result))
+
+            System.Threading.Tasks.Task.WaitAll [| run "a"; run "b" |]
+            Expect.equal (seen |> Seq.sort |> List.ofSeq) [ "a=aa"; "b=bb" ] "each run read its own"
+            Expect.isNull (Weir.Session.currentRunHooks ()) "nothing is left installed"
+        }
         test "both evaluators enter a node through one step [D:eval-twin-entry]" {
             let src =
                 System.IO.File.ReadAllLines(

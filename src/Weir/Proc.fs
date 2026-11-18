@@ -77,10 +77,6 @@ let traceArgv (words: string list) : string =
             "'" + (Types.quoteData w).Replace("'", "'\\''") + "'")
     |> String.concat " "
 
-/// told each process start, before it [D:command-trace]; null while no
-/// trace runs
-let mutable onSpawn: System.Action<string, string list> = null
-
 // NUL refusal at the spawn hand-off [D:spawn-nul-funnel]: argv and
 // env are NUL-terminated C strings, so a NUL-bearing word would
 // silently truncate at the child (the prefix runs; exit 0; no
@@ -165,9 +161,13 @@ let private spawnWith
     (args: string list)
     (env: (string * string) list)
     : Process =
-    match onSpawn with
+    // a run that traces is told each start, before it [D:command-trace]
+    match Session.currentRunHooks () with
     | null -> ()
-    | told -> told.Invoke(prog, args)
+    | hooks ->
+        match hooks.OnSpawn with
+        | null -> ()
+        | told -> told.Invoke(prog, args)
 
     // runtime plan refusal [D:plan-proc-runtime-guard]: the syntactic
     // firstPlanRefusal follows earlier top-level helpers but not a

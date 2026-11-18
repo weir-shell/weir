@@ -285,9 +285,12 @@ type private Engine(channel: Stream) =
 
     member _.OnNode(node: obj, scope: Eval.Scope) : unit =
         let struct (file, line) =
-            match Eval.placeOf with
+            match Session.currentRunHooks () with
             | null -> struct ("", 0)
-            | f -> f.Invoke node
+            | hooks ->
+                match hooks.PlaceOf with
+                | null -> struct ("", 0)
+                | f -> f.Invoke node
 
         if line > 0 then
             let depth = Eval.DebugDepth.Depth
@@ -339,7 +342,7 @@ let mutable private attached: Engine = null
 /// the script's side: connect to the adapter named by WEIR_DEBUG_PORT, take
 /// its breakpoints and wait for its word to start. Without the variable a
 /// run has no debugger and pays nothing
-let attachIfAsked () : unit =
+let attachIfAsked (hooks: Session.RunHooks) : unit =
     match Environment.GetEnvironmentVariable "WEIR_DEBUG_PORT" with
     | null
     | "" -> ()
@@ -368,7 +371,8 @@ let attachIfAsked () : unit =
                 let engine = Engine(stream)
                 attached <- engine
                 engine.AwaitStart()
-                Eval.onNode <- Action<obj, Eval.Scope>(fun node scope -> engine.OnNode(node, scope))
+                hooks.OnNode <- Action<obj, obj>(fun node scope -> engine.OnNode(node, scope :?> Eval.Scope))
+                Session.debugging <- true
             with ex ->
                 Console.Error.WriteLine
                     $"weir: the debugger at port {p} did not answer — running without it ({ex.Message})"

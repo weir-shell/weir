@@ -4268,7 +4268,18 @@ let private recoverLetPat
 /// checker stores it under a number and writes the number where the call's
 /// unit argument was, so the evaluator can hand the prompt the names and
 /// their types. Off for every other check (the editor's, the REPL's)
-let captureBreaks: bool ref = ref false
+let private capturing = System.Threading.AsyncLocal<bool>()
+
+/// keep break scopes for the checks this logical context makes, until the
+/// handle is disposed
+let capturingBreaks () : System.IDisposable =
+    let before = capturing.Value
+    capturing.Value <- true
+
+    {
+        new System.IDisposable with
+            member _.Dispose() = capturing.Value <- before
+    }
 
 let private breakScopes =
     System.Collections.Concurrent.ConcurrentDictionary<int64, Ctx * TypeEnv>()
@@ -4305,7 +4316,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EApp({
                Kind = EField({ Kind = EVar "Debug" }, "break", _)
            },
-           _) when captureBreaks.Value && not BreakGuard.Inside ->
+           _) when capturing.Value && not BreakGuard.Inside ->
         BreakGuard.Inside <- true
 
         let typed =
