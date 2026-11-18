@@ -159,31 +159,22 @@ let private evalOnce (input: string) : int =
                         | [] -> 0
                         | (_, (chk: Script.CheckedStatement)) :: tail ->
                             try
-                                match chk.Kind with
-                                | Script.KType(decl, validator) ->
-                                    execAll (Eval.declare venv decl validator) (idx + 1) tail
-                                | Script.KLet(name, _, te) ->
-                                    execAll (Map.add name (Eval.eval venv te) venv) (idx + 1) tail
-                                | Script.KLetPat(pat, _, te) ->
-                                    let bindings = Eval.bindPattern pat (Eval.eval venv te)
-                                    execAll (bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv) (idx + 1) tail
-                                | Script.KImport lm -> execAll (Script.importInto venv lm) (idx + 1) tail
-                                | Script.KModule _
-                                | Script.KSig _ ->
+                                match Script.bindStatement venv chk.Kind with
+                                | Script.Binds(bound, _) -> execAll bound (idx + 1) tail
+                                | Script.Declares ->
                                     // unreachable: gated above / by the
                                     // sig-context refusal [D:module-signatures]
                                     execAll venv (idx + 1) tail
-                                | Script.KExpr te
-                                | Script.KCmd te when idx < lastIdx ->
+                                | Script.Runs(te, command) when idx < lastIdx ->
                                     // mid-program statements behave as in a file:
                                     // commands stream, expression values discard
-                                    (match chk.Kind with
-                                     | Script.KCmd _ -> Script.printResult (Eval.eval venv te)
-                                     | _ -> Eval.eval venv te |> ignore)
+                                    (if command then
+                                         Script.printResult (Eval.eval venv te)
+                                     else
+                                         Eval.eval venv te |> ignore)
 
                                     execAll venv (idx + 1) tail
-                                | Script.KExpr te
-                                | Script.KCmd te ->
+                                | Script.Runs(te, _) ->
                                     // the last statement is the result — the -e echo
                                     let v = Eval.eval venv te
 
