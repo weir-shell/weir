@@ -26,18 +26,20 @@ let refresh () =
 // Windows resolves a bare `git` to `git.exe` via PATHEXT; the name
 // as-given always wins first. POSIX: the empty list — names resolve
 // as themselves only. [D:windows-v1]
-let private pathExtsOf (value: string option) : string list =
-    if OperatingSystem.IsWindows() then
-        (value |> Option.defaultValue ".COM;.EXE;.BAT;.CMD").Split(';', StringSplitOptions.RemoveEmptyEntries)
-        |> List.ofArray
-    else
-        []
+let private pathExtsOf (value: string option) : string list = PathLookup.extsOf value
+
+// a script's command, found as a shell finds it [D:one-path-walk]: every
+// PATH entry counts, a relative one read from where the child starts —
+// the session's directory — and a file need only exist
+let private shellRule: PathLookup.Rule = {
+    Anchor = Some Session.resolve
+    Executable = false
+}
 
 let private pathExts () : string list =
     pathExtsOf (Environment.GetEnvironmentVariable "PATHEXT" |> Option.ofObj)
 
-let private pathDirsOf (value: string) =
-    value.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+let private pathDirsOf (value: string) = PathLookup.dirsOf value
 
 let private pathDirs () =
     pathDirsOf (
@@ -87,19 +89,7 @@ let resolveOn (pairs: (string * string) list) (pathValue: string) (prog: string)
         | Some v -> pathExtsOf (Some v)
         | None -> pathExts ()
 
-    pathDirsOf pathValue
-    |> Seq.tryPick (fun dir ->
-        let candidate = Session.resolve (Path.Combine(dir, prog))
-
-        if File.Exists candidate then
-            Some candidate
-        else
-            exts
-            |> List.tryPick (fun e ->
-                if File.Exists(candidate + e) then
-                    Some(candidate + e)
-                else
-                    None))
+    PathLookup.find shellRule exts (pathDirsOf pathValue) prog
 
 /// the file a command head names [D:path-which]: a bare name on the
 /// PATH its env sets, else weir's own — the spawn's rule [D:overlay-path]
@@ -113,12 +103,7 @@ let which (pairs: (string * string) list) (prog: string) : string option =
             | Some v -> pathExtsOf (Some v)
             | None -> pathExts ()
 
-        let r = Session.resolve prog
-
-        if File.Exists r then
-            Some r
-        else
-            exts |> List.tryPick (fun e -> if File.Exists(r + e) then Some(r + e) else None)
+        PathLookup.fileOrExt shellRule exts (Session.resolve prog)
     else
         let pathValue =
             match lastPair pairs "PATH" with
@@ -165,19 +150,7 @@ let isPathy (prog: string) = isPathyName prog
 /// as-given first (the stated rule), then each PATHEXT in order.
 /// POSIX callers never need it (resolveProg passes bare names through).
 let resolveFile (prog: string) : string option =
-    pathDirs ()
-    |> Seq.tryPick (fun dir ->
-        let candidate = Path.Combine(dir, prog)
-
-        if File.Exists candidate then
-            Some candidate
-        else
-            pathExts ()
-            |> List.tryPick (fun e ->
-                if File.Exists(candidate + e) then
-                    Some(candidate + e)
-                else
-                    None))
+    PathLookup.find shellRule (pathExts ()) (pathDirs ()) prog
 
 let exists (prog: string) : bool =
     // parse-time NUL guard [D:nul-path]: a NUL-bearing head is not a real
@@ -189,25 +162,13 @@ let exists (prog: string) : bool =
     if prog.Contains '\000' then
         false
     elif isPathy prog then
-        let resolved = Session.resolve prog
-
-        File.Exists resolved
-        || pathExts () |> List.exists (fun e -> File.Exists(resolved + e))
+        (PathLookup.fileOrExt shellRule (pathExts ()) (Session.resolve prog)).IsSome
     else
         // per-program memo (not names()): a distinct name pays one scan
         // then hits the cache; a one-command line does not enumerate all
         // of PATH. Live per-name scan, so a file created after refresh()
         // is still seen on its first query [D:head-word-bound].
-        existsCache.GetOrAdd(
-            prog,
-            fun p ->
-                pathDirs ()
-                |> Array.exists (fun dir ->
-                    let candidate = Path.Combine(dir, p)
-
-                    File.Exists candidate
-                    || pathExts () |> List.exists (fun e -> File.Exists(candidate + e)))
-        )
+        existsCache.GetOrAdd(prog, fun p -> (PathLookup.find shellRule (pathExts ()) (pathDirs ()) p).IsSome)
 
 /// `exists` under a command's env [D:overlay-path]: a PATH the env sets
 /// is the one searched, else weir's own

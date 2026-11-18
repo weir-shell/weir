@@ -3404,29 +3404,18 @@ module private ProbeSpawn =
                         close fds[0] |> ignore
                         close fds[1] |> ignore
 
+// a spawn weir makes on its own [D:spawn-path-only]: rooted PATH entries,
+// runnable files — never the shell's rule, where a relative entry or the
+// working directory can name a repository's file
+let private ownSpawn: PathLookup.Rule = { Anchor = None; Executable = true }
+
+let private toolExts () : string list =
+    PathLookup.extsOf (Environment.GetEnvironmentVariable "PATHEXT" |> Option.ofObj)
+
 /// a tool's file at a path: the path itself, or on Windows under a
 /// PATHEXT extension; executable on Unix
 let private toolFile (path: string) : string option =
-    let exts =
-        if OperatingSystem.IsWindows() then
-            (match Environment.GetEnvironmentVariable "PATHEXT" with
-             | null -> ".COM;.EXE;.BAT;.CMD"
-             | v -> v)
-                .Split(';', StringSplitOptions.RemoveEmptyEntries)
-            |> List.ofArray
-        else
-            []
-
-    let runnable (p: string) =
-        File.Exists p
-        && (OperatingSystem.IsWindows()
-            || (File.GetUnixFileMode p
-                &&& (UnixFileMode.UserExecute
-                     ||| UnixFileMode.GroupExecute
-                     ||| UnixFileMode.OtherExecute))
-               <> enum 0)
-
-    "" :: exts |> List.map (fun e -> path + e) |> List.tryFind runnable
+    PathLookup.fileOrExt ownSpawn (toolExts ()) path
 
 /// a bare tool name as the file PATH provides [D:spawn-path-only]: .NET's
 /// Process looks a bare name up in the working directory before PATH, so a
@@ -3443,12 +3432,15 @@ let locateTool (prog: string) : string option =
     then
         None
     else
-        (match Environment.GetEnvironmentVariable "PATH" with
-         | null -> ""
-         | v -> v)
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-        |> Seq.filter Path.IsPathFullyQualified
-        |> Seq.tryPick (fun dir -> toolFile (Path.Combine(dir, prog)))
+        PathLookup.find
+            ownSpawn
+            (toolExts ())
+            (PathLookup.dirsOf (
+                match Environment.GetEnvironmentVariable "PATH" with
+                | null -> ""
+                | v -> v
+            ))
+            prog
 
 // elsewhere (macOS, Windows, a libc without addchdir_np): .NET's Process,
 // the same bounds, the tree kill in place of the group's
