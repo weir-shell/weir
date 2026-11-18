@@ -165,6 +165,32 @@ check("total 124" in s.output("stdout"), f"the script's stdout arrives as output
 s.request("disconnect")
 s.p.wait(timeout=10)
 
+# a parallel arm is walked by the flow evaluator [D:eval-twin-entry]: its
+# breakpoints stop too, once per arm and line, each stop with its own
+# arm's names
+par = os.path.join(d, "par.weir")
+with open(par, "w") as f:
+    f.write("let work n =\n    let out = git --version |> Seq.length\n    n + out\nlet rs = [1; 2] |> Seq.pmap work |> Seq.sum\nprint $\"{rs}\"\n")
+s = Session(d)
+s.request("initialize", {"adapterID": "weir"})
+s.request("launch", {"program": par, "cwd": d})
+s.wait_event("initialized")
+s.request("setBreakpoints", {"source": {"path": par}, "breakpoints": [{"line": 2}, {"line": 3}]})
+s.request("configurationDone")
+seen = []
+for i in range(4):
+    s.wait_event("stopped", i)
+    frames = s.request("stackTrace", {"threadId": 1})["body"]["stackFrames"]
+    scopes = s.request("scopes", {"frameId": frames[0]["id"]})["body"]["scopes"]
+    got = {v["name"]: v["value"] for v in s.request("variables", {"variablesReference": scopes[0]["variablesReference"]})["body"]["variables"]}
+    seen.append((frames[0]["line"], got.get("n"), "out" in got))
+    s.request("continue", {"threadId": 1})
+exited = s.wait_event("exited")
+check(sorted(seen) == [(2, "1", False), (2, "2", False), (3, "1", True), (3, "2", True)], f"each arm stops at each line with its own names: {seen}")
+check(exited["body"]["exitCode"] == 0 and "5" in s.output("stdout"), f"the parallel script finishes: {exited} {s.output('stdout')!r}")
+s.request("disconnect")
+s.p.wait(timeout=10)
+
 # a script that fails its check never reaches a breakpoint: its error is
 # output, and the session ends with its exit code
 bad = os.path.join(d, "bad.weir")

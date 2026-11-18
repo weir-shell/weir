@@ -33636,6 +33636,32 @@ let operatorValueTests =
 
             Expect.stringContains (checkErr "let f = 1 |> (+) in f 2").Message "cannot be partially applied" "bound"
         }
+        test "both evaluators enter a node through one step [D:eval-twin-entry]" {
+            let src =
+                System.IO.File.ReadAllLines(
+                    System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "src", "Weir", "Eval.fs")
+                )
+
+            let count (needle: string) (lines: string seq) =
+                lines |> Seq.filter (fun l -> l.Contains needle) |> Seq.length
+
+            // the boundary is crossed in enterNode and nowhere else: an entry
+            // written out by hand would miss whatever the step gains next
+            Expect.equal (count "Session.evalBoundary ()" src) 1 "one crossing of the boundary, inside enterNode"
+
+            // every node kind the flow evaluator spells out enters through it
+            let from = src |> Array.findIndex (fun l -> l.TrimEnd().EndsWith "] evalAsync")
+            let until = src |> Array.findIndex (fun l -> l.TrimEnd().EndsWith "] applyAsync")
+            let twin = src[from..until]
+
+            let arms =
+                twin
+                |> Seq.filter (fun l -> l.StartsWith "                    | TE")
+                |> Seq.length
+
+            Expect.isGreaterThan arms 20 "the flow evaluator's arms were found"
+            Expect.equal (count "enterNode env te" twin) arms "each of its arms enters through the shared step"
+        }
         test "the trace bounds every word, and peek hands its value on [D:command-trace] [D:debug-aids]" {
             Expect.equal
                 (Weir.Proc.traceArgv [ "git"; "tag"; "v 1"; ""; "--file=a/b.txt"; "it's" ])

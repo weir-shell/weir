@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.96
+
+### Fixed
+
+- **Breakpoints work inside parallel arms.** In `Seq.pmap`, `pfor` and
+  a server handler the debugger stopped only some of the time and
+  showed another arm's names. Each arm now stops at each breakpoint
+  with its own frames, and step over and step out work there.
+
 ## v0.0.95
 
 ### Added
