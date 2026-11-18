@@ -43,7 +43,8 @@ let areaOfSrc p =
     // the module table Builtins' members answer to [D:module-table]
     | "src/Weir/Builtins.fs" | "src/Weir/Prelude.fs" | "src/Weir/Modules.fs" -> Some "builtins"
     | "src/Weir/Repl.fs" | "src/Weir/Complete.fs" | "src/Weir/DynComplete.fs" -> Some "repl"
-    | "src/Weir/Lsp.fs" -> Some "lsp"
+    // the framing the language server and the debug adapter share [D:one-framing]
+    | "src/Weir/Lsp.fs" | "src/Weir/Framing.fs" -> Some "lsp"
     // the editor's debugger, the language server's sibling [D:step-debugger]
     | "src/Weir/Debugger.fs" -> Some "dap"
     | "src/Weir/Fmt.fs" -> Some "fmt"
