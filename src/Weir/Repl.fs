@@ -1520,6 +1520,15 @@ let private readKey () =
     else
         ttyIo (fun () -> Console.ReadKey(intercept = true))
 
+/// what a statement binds, through the step every front end shares
+/// [D:statement-exec]: the values after it and the names it made; a
+/// statement that binds nothing leaves the values as they were
+let private boundBy (values: Eval.Env) (kind: Script.CheckedKind) : Eval.Env * (string * Eval.Value) list =
+    match Script.bindStatement values kind with
+    | Script.Binds(bound, names) -> bound, names
+    | Script.Runs _
+    | Script.Declares -> values, []
+
 /// after a bare Esc: is an Enter already queued behind it? Alt+Enter is
 /// ESC CR, and .NET reads a lone ESC as Escape when the CR is not in its
 /// buffer yet — a paste or a real Alt+Enter has it queued. No waiting: a
@@ -2761,14 +2770,13 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
         {
             state with
                 TypeEnv = chk.Env
-                Values = Eval.declare state.Values decl validator
+                Values = fst (boundBy state.Values chk.Kind)
         }
-    | Script.KLetPat(pat, schemes, te) ->
+    | Script.KLetPat(_, schemes, te) ->
         printWarnings state te
 
         (try
-            let v = Eval.eval state.Values te
-            let bindings = Eval.bindPattern pat v
+            let bound, bindings = boundBy state.Values chk.Kind
 
             for n, _ in schemes do
                 commandSeqNames <- Set.remove n commandSeqNames
@@ -2798,7 +2806,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             {
                 state with
                     TypeEnv = chk.Env
-                    Values = bindings |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values
+                    Values = bound
             }
          with
          | Eval.ExitRequest _ -> reraise ()
@@ -2817,7 +2825,8 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
         printWarnings state te
 
         (try
-            let v = Eval.eval state.Values te
+            let bound, names = boundBy state.Values chk.Kind
+            let v = snd names.Head
             let commandBacked = letCommandBacked te v
             noteCommandSeq name te v
 
@@ -2884,7 +2893,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             {
                 state with
                     TypeEnv = chk.Env
-                    Values = Map.add name v state.Values
+                    Values = bound
             }
          with
          | Eval.ExitRequest _ -> reraise ()
@@ -3051,7 +3060,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             let prefix = lm.Alias + "."
             let reload = Map.containsKey lm.Alias state.TypeEnv.Modules
             let kept = state.Values |> Map.filter (fun k _ -> not (k.StartsWith prefix))
-            let venv = Script.importInto kept lm
+            let venv = fst (boundBy kept chk.Kind)
 
             initDocs <-
                 lm.MemberDocs
@@ -3755,7 +3764,7 @@ let private injectDecls (state: State) (declText: string list) : Result<State * 
                         let st' = {
                             st with
                                 TypeEnv = chk.Env
-                                Values = Eval.declare st.Values decl validator
+                                Values = fst (boundBy st.Values chk.Kind)
                         }
 
                         go st' (decl.Name :: defined) tail
@@ -5218,43 +5227,26 @@ let private loadInit (baseState: State) : State =
                             tenv <- chk.Env
 
                             try
+                                // every bind is the shared step's [D:statement-exec];
+                                // an import replays the module and exposes
+                                // `Alias.member`, as the script runner does
+                                // [D:init-import]
+                                let bound, bindings = boundBy venv chk.Kind
+                                venv <- bound
+
                                 match chk.Kind with
-                                | Script.KType(decl, validator) ->
-                                    names <- names + 1
-                                    venv <- Eval.declare venv decl validator
+                                | Script.KType _ -> names <- names + 1
                                 | Script.KLet(name, _, te) ->
                                     names <- names + 1
-                                    let v = Eval.eval venv te
-                                    noteCommandSeq name te v
-                                    venv <- Map.add name v venv
+                                    noteCommandSeq name te (snd bindings.Head)
 
                                     (match
                                         attachments |> List.tryFind (fun (a: Script.DocAttach) -> a.Line = ll.Head)
                                      with
                                      | Some a -> docs <- Map.add name a.Doc docs
                                      | None -> ())
-                                | Script.KLetPat(pat, _, te) ->
-                                    let bindings = Eval.bindPattern pat (Eval.eval venv te)
-                                    names <- names + bindings.Length
-                                    venv <- bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                | Script.KLetPat _ -> names <- names + bindings.Length
                                 | Script.KImport lm ->
-                                    // replay the module and expose `Alias.member`,
-                                    // as the script runner does [D:init-import]
-                                    let procFacts =
-                                        [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
-                                        |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
-
-                                    let moduleVenv = Script.replayModule procFacts lm
-
-                                    venv <-
-                                        lm.Members
-                                        |> List.fold
-                                            (fun acc (n, _) ->
-                                                match Map.tryFind n moduleVenv with
-                                                | Some v -> Map.add $"{lm.Alias}.{n}" v acc
-                                                | None -> acc)
-                                            venv
-
                                     docs <-
                                         lm.MemberDocs
                                         |> Map.fold (fun acc n d -> Map.add $"{lm.Alias}.{n}" d acc) docs
