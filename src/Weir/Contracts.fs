@@ -1023,20 +1023,16 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
                 | null -> None
                 | l -> Some l
 
-            match location with
-            | Some loc when Http.isRedirect code && hops < 10 ->
+            // ten hops [D:contract-hop-bound]; past them the redirect itself
+            // is the answer, and reads as the status it is
+            match Http.nextHop 10 contractSensitiveHeaders hops curUrl curHeaders code location with
+            | Http.Follow(nextUrl, kept) ->
                 resp.Dispose()
                 hops <- hops + 1
-                let fromUri = Uri curUrl
-                let nextUri = if loc.IsAbsoluteUri then loc else Uri(fromUri, loc)
-
-                if not (Http.sameOrigin fromUri nextUri) then
-                    curHeaders <-
-                        curHeaders
-                        |> List.filter (fun (k, _) -> not (contractSensitiveHeaders.Contains(k.ToLowerInvariant())))
-
-                curUrl <- nextUri.ToString()
-            | _ ->
+                curHeaders <- kept
+                curUrl <- nextUrl
+            | Http.Exhausted
+            | Http.Final ->
                 result <- resp
                 go <- false
 
