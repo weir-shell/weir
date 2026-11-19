@@ -3553,6 +3553,21 @@ let operatorValueTests =
 
             Expect.isGreaterThan arms 20 "the flow evaluator's arms were found"
             Expect.equal (count "enterNode env te" twin) arms "each of its arms enters through the shared step"
+
+            // and evaluates its children through an arm both evaluators share
+            // [D:eval-one-arm]: the flow evaluator awaits a child by hand in
+            // five places only — orFail, a pure region and always (the body
+            // and its cleanup, twice) — so a kind spelled out in it alone
+            // moves this count and is sent to the shared arms
+            Expect.equal
+                (count "awaitFrame flow (evalAsync flow env" twin)
+                5
+                "the flow evaluator's own child evaluations"
+
+            Expect.isGreaterThan
+                (count "(fun e t -> awaitFrame flow (evalAsync flow e t))" twin)
+                15
+                "its arms are the shared ones, given how a flow evaluates a child"
         }
         test "the trace bounds every word, and peek hands its value on [D:command-trace] [D:debug-aids]" {
             Expect.equal

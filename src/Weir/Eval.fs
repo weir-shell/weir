@@ -6609,6 +6609,467 @@ let private tryIntTree (env: Scope) (te: TypedExpr) : Value =
             Unchecked.defaultof<Value>
     | _ -> Unchecked.defaultof<Value>
 
+// ---- the arms both evaluators share [D:eval-one-arm] ---------------------
+// A node kind whose children can wait is evaluated by `eval` and by the
+// flow evaluator. Its arm is written once here, over `ev` — how a child is
+// evaluated: a call for `eval`, an awaited frame for a flow — and inlined
+// into each, so neither pays for the sharing and an await stays directly
+// in the flow evaluator's own method [D:runtime-async].
+
+let inline private armLet
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env: Scope)
+    (name: string)
+    (value: TypedExpr)
+    (body: TypedExpr)
+    : Value =
+    let x = ev env value
+    let r = ev (env.Add(name, x)) body
+    r
+
+let inline private armField
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    ([<InlineIfLambda>] fieldOf: string -> Value -> Value)
+    (env: Scope)
+    (target: TypedExpr)
+    (field: string)
+    : Value =
+    let t = ev env target
+    fieldOf field t
+
+let inline private armSeq
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env: Scope)
+    (a: TypedExpr)
+    (b: TypedExpr)
+    : Value =
+    let _ = ev env a
+    let r = ev env b
+    r
+
+let inline private armIf
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env: Scope)
+    (cond: TypedExpr)
+    (thn: TypedExpr)
+    (els: TypedExpr option)
+    : Value =
+    let c = ev env cond
+
+    match c, els with
+    | VBool true, _ ->
+        let r = ev env thn
+        r
+    | VBool false, Some e ->
+        let r = ev env e
+        r
+    | VBool false, None -> VUnit
+    | v, _ -> unreachable $"the checker rejects a non-bool condition: {formatValue v}"
+
+let inline private armLetPat
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env: Scope)
+    (pat: Pattern)
+    (value: TypedExpr)
+    (body: TypedExpr)
+    : Value =
+    let x = ev env value
+    let bindings = bindPattern pat x
+    let env' = bindings |> List.fold (fun (m: Scope) (n, bv) -> m.Add(n, bv)) env
+    let r = ev env' body
+    r
+
+// an application, and a pipe into a function: the callee, the argument,
+// then the call under the callee's position [D:runtime-position-call]
+let inline private armCall
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    ([<InlineIfLambda>] ap: Value -> Value -> Value)
+    ([<InlineIfLambda>] callPos: TypedExpr -> unit)
+    (env: Scope)
+    (fn: TypedExpr)
+    (arg: TypedExpr)
+    : Value =
+    let f = ev env fn
+    let a = ev env arg
+    callPos fn
+    let r = ap f a
+    RunPos.Exact <- false
+    r
+
+let inline private armAnd
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env: Scope)
+    (l: TypedExpr)
+    (r: TypedExpr)
+    : Value =
+    let lv = ev env l
+
+    match lv with
+    | VBool false -> VBool false
+    | VBool true ->
+        let rv = ev env r
+        rv
+    | v -> unreachable $"the checker rejects '&&' on {formatValue v}"
+
+let inline private armOr
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env: Scope)
+    (l: TypedExpr)
+    (r: TypedExpr)
+    : Value =
+    let lv = ev env l
+
+    match lv with
+    | VBool true -> VBool true
+    | VBool false ->
+        let rv = ev env r
+        rv
+    | v -> unreachable $"the checker rejects '||' on {formatValue v}"
+
+let inline private armBinOp
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env: Scope)
+    (op: string)
+    (l: TypedExpr)
+    (r: TypedExpr)
+    : Value =
+    let lv = ev env l
+    let rv = ev env r
+    binOp op lv rv
+
+// a child at a time, in a loop: an await may not sit in a lambda
+// [D:runtime-async], so neither evaluator maps over the children
+let inline private armRecord
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env: Scope)
+    (name: string)
+    (fields: (string * TypedExpr) list)
+    : Value =
+    match fields with
+    // the sizes a record usually is, built with no array between
+    | [ (n1, f1) ] ->
+        let v1 = ev env f1
+        VRecord(name, [ n1, v1 ])
+    | [ (n1, f1); (n2, f2) ] ->
+        let v1 = ev env f1
+        let v2 = ev env f2
+        VRecord(name, [ n1, v1; n2, v2 ])
+    | [ (n1, f1); (n2, f2); (n3, f3) ] ->
+        let v1 = ev env f1
+        let v2 = ev env f2
+        let v3 = ev env f3
+        VRecord(name, [ n1, v1; n2, v2; n3, v3 ])
+    | _ ->
+        let built = Array.zeroCreate<string * Value>(List.length fields)
+        let mutable rest = fields
+        let mutable i = 0
+
+        while not rest.IsEmpty do
+            let n, fv = rest.Head
+            rest <- rest.Tail
+            let v = ev env fv
+            built[i] <- (n, v)
+            i <- i + 1
+
+        VRecord(name, List.ofArray built)
+
+let inline private armItems
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env: Scope)
+    (items: TypedExpr list)
+    : Value list =
+    match items with
+    | [ a ] ->
+        let va = ev env a
+        [ va ]
+    | [ a; b ] ->
+        let va = ev env a
+        let vb = ev env b
+        [ va; vb ]
+    | [ a; b; c ] ->
+        let va = ev env a
+        let vb = ev env b
+        let vc = ev env c
+        [ va; vb; vc ]
+    | _ ->
+        let built = Array.zeroCreate<Value>(List.length items)
+        let mutable rest = items
+        let mutable i = 0
+
+        while not rest.IsEmpty do
+            let v = ev env rest.Head
+            rest <- rest.Tail
+            built[i] <- v
+            i <- i + 1
+
+        List.ofArray built
+
+let inline private armInterp
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    ([<InlineIfLambda>] append: System.Text.StringBuilder -> string -> unit)
+    ([<InlineIfLambda>] piece: Value -> string)
+    (env: Scope)
+    (parts: InterpPart<TypedExpr> list)
+    : Value =
+    let sb = System.Text.StringBuilder()
+    let mutable rest = parts
+
+    while not rest.IsEmpty do
+        match rest.Head with
+        | IStr str -> append sb str
+        | IExpr e ->
+            let v = ev env e
+            append sb (piece v)
+
+        rest <- rest.Tail
+
+    VStr(sb.ToString())
+
+// a failure as a value [D:try-form]: the body runs inside the capture
+// and its value is forced there — a lazy seq would otherwise raise
+// after `try` returned. exit and weir's own internal errors pass through
+let inline private armTry
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    ([<InlineIfLambda>] force: Value -> Value)
+    (env: Scope)
+    (body: TypedExpr)
+    (asResult: bool)
+    : Value =
+    try
+        let r = ev env body
+        let v = force r
+
+        if asResult then
+            VUnion("Ok", Some v)
+        else
+            VUnion("Some", Some v)
+    with
+    | ExitRequest _ -> reraise ()
+    | :? System.OperationCanceledException -> reraise ()
+    | Failure m when m.StartsWith "unreachable:" -> reraise ()
+    | ex ->
+        if asResult then
+            VUnion("Error", Some(VStr ex.Message))
+        else
+            VUnion("None", None)
+
+let inline private armMatch
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    ([<InlineIfLambda>] view: (Pattern * TypedExpr option * TypedExpr) list -> Value -> Value)
+    (env: Scope)
+    (scrutinee: TypedExpr)
+    (arms: (Pattern * TypedExpr option * TypedExpr) list)
+    : Value =
+    let v0 = ev env scrutinee
+    let v = view arms v0
+    let mutable rest = arms
+    let mutable result = Unchecked.defaultof<Value>
+    let mutable found = false
+
+    while not found do
+        match rest with
+        | [] -> unreachable $"the checker guarantees totality; no arm matched {formatValue v}"
+        | (pat, guard, body) :: tail ->
+            rest <- tail
+            let armEnv = bindInto pat v env
+
+            if not (isNull armEnv) then
+                let mutable passes = true
+
+                match guard with
+                | None -> ()
+                | Some g ->
+                    let gv = ev armEnv g
+
+                    match gv with
+                    | VBool b -> passes <- b
+                    | other -> unreachable $"the checker rejects a non-bool guard: {formatValue other}"
+
+                if passes then
+                    let r = ev armEnv body
+                    result <- r
+                    found <- true
+
+    result
+
+// a within scope that holds something for its body [D:within-scopes]
+let inline private armScoped
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env': Scope)
+    (frame: Session.Frame)
+    (release: unit -> unit)
+    (body: TypedExpr)
+    : Value =
+    try
+        let r = ev env' body
+        r
+    finally
+        Session.releaseFrame frame release
+
+let inline private armServe
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    (env': Scope)
+    (serveNode: Session.Node)
+    (home: Session.Node)
+    (frame: Session.Frame)
+    (release: unit -> unit)
+    (body: TypedExpr)
+    : Value =
+    let mutable v = VUnit
+
+    try
+        try
+            Session.setCurrentNode serveNode
+
+            try
+                let r = ev env' body
+                v <- r
+            finally
+                Session.setCurrentNode home
+        with
+        | :? ExitRequest -> reraise ()
+        // the body cut by a handler's `exit n`: raised below
+        | _ when not (isNull serveNode.Exit) -> ()
+    finally
+        Session.releaseFrame frame release
+
+    match serveNode.Exit with
+    | null -> v
+    | e -> raise e
+
+// retry and poll [D:retry-poll]: the attempts are one loop for both
+// evaluators; `delay` is the wait between two of them — blocking for
+// `eval`, suspended for a flow — and answers whether it ran out of time.
+// Raises propagate: retry retries on the predicate, never on exceptions
+let inline private armRetry
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    ([<InlineIfLambda>] delay: RetryCtl -> bool)
+    (env: Scope)
+    (ctl: RetryCtl)
+    (body: TypedExpr)
+    (until: ((string * Span) * TypedExpr) option)
+    : Value =
+    try
+        let mutable n = 1
+        let mutable result = VUnit
+        let mutable go = true
+
+        while go do
+            ctl.Before()
+            let v = ev env body
+            let mutable met = false
+
+            match until with
+            | Some((b, _), pred) ->
+                let pv = ev (env.Add(b, v)) pred
+                met <- ctl.Verdict pv
+            | None -> met <- ctl.Predicate v
+
+            if met then
+                result <- (if ctl.Yields then v else VUnit)
+                go <- false
+            elif n >= ctl.Attempts || ctl.Expired() then
+                result <- ctl.Exhausted n
+                go <- false
+            else
+                // the indicator wraps only the wait between attempts — the
+                // body may own the terminal [D:waiting-indicator]
+                let timedOut = if ctl.DelayMs > 0L then delay ctl else ctl.Expired()
+
+                if timedOut then
+                    result <- ctl.Exhausted n
+                    go <- false
+                else
+                    n <- n + 1
+
+        result
+    finally
+        ctl.Cts.Dispose()
+
+// repeat [D:repeat]: one loop for both evaluators, stop-aware while it
+// runs [D:stop-request]; `interval` is the wait between two iterations and
+// answers Some true when a stop ended it, Some false when the deadline
+// did, None to go round again
+let inline private armRepeat
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    ([<InlineIfLambda>] interval: RepeatCtl -> bool option)
+    (env: Scope)
+    (ctl: RepeatCtl)
+    (body: TypedExpr)
+    (until: ((string * Span) * TypedExpr) option)
+    : Value =
+    let scope = Session.stopAwareScope ()
+
+    try
+        let mutable n = 1
+        let mutable last: Value option = None
+        let mutable result = VUnit
+        let mutable go = true
+
+        while go do
+            if Session.stopRequested () && ctl.Stoppable last then
+                result <- ctl.Finish last
+                go <- false
+            else
+                let mutable v: Value option = None
+
+                try
+                    let r = ev env body
+                    v <- Some r
+                with ex when ctl.StopCaused ex && ctl.Stoppable last ->
+                    ()
+
+                match v with
+                | None ->
+                    result <- ctl.Finish last
+                    go <- false
+                | Some x when ctl.Predicate x ->
+                    result <- (if until.IsSome then x else VUnit)
+                    go <- false
+                | Some x when Session.stopRequested () ->
+                    result <- ctl.Finish(Some x)
+                    go <- false
+                | Some _ when ctl.PastDeadline() ->
+                    result <- ctl.TimedOut n
+                    go <- false
+                | Some x ->
+                    // the indicator wraps only the wait between iterations
+                    // — the block may own the terminal [D:waiting-indicator]
+                    match interval ctl with
+                    | Some true ->
+                        result <- ctl.Finish(Some x)
+                        go <- false
+                    | Some false ->
+                        result <- ctl.TimedOut n
+                        go <- false
+                    | None ->
+                        n <- n + 1
+                        last <- Some x
+
+        result
+    finally
+        scope.Dispose()
+
+// a within's `until stopped` [D:held-scope]: the body, then the hold,
+// stop-aware while it waits [D:stop-request]; `waitStop` is one wait for
+// the stop
+let inline private armHold
+    ([<InlineIfLambda>] ev: Scope -> TypedExpr -> Value)
+    ([<InlineIfLambda>] waitStop: unit -> unit)
+    (env: Scope)
+    (body: TypedExpr)
+    : Value =
+    let v = ev env body
+    let scope = Session.stopAwareScope ()
+
+    try
+        while not (Session.stopRequested ()) do
+            waitStop ()
+    finally
+        scope.Dispose()
+
+    v
+
 let rec private overlayOf (env: Scope) (cenvO: TypedExpr option) : (string * string) list =
     match cenvO with
     | None -> []
@@ -6698,26 +7159,7 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
     enterNode env te
 
     match te.Kind with
-    // a failure as a value [D:try-form]: the body runs inside the capture
-    // and its value is forced there — a lazy seq would otherwise raise
-    // after `try` returned. exit and weir's own internal errors pass through
-    | TETry(body, asResult) ->
-        try
-            let v = forceValue (evalIn env body)
-
-            if asResult then
-                VUnion("Ok", Some v)
-            else
-                VUnion("Some", Some v)
-        with
-        | ExitRequest _ -> reraise ()
-        | :? System.OperationCanceledException -> reraise ()
-        | Failure m when m.StartsWith "unreachable:" -> reraise ()
-        | ex ->
-            if asResult then
-                VUnion("Error", Some(VStr ex.Message))
-            else
-                VUnion("None", None)
+    | TETry(body, asResult) -> armTry (fun e t -> evalIn e t) (fun v -> forceValue v) env body asResult
     // the inverse of try [D:orfail-form]: the raise points at the form;
     // an Error's text is data spliced into the message [D:error-data-escape]
     | TEOrFail(body, msg, site) -> orFailValue env msg site (evalIn env body)
@@ -6727,35 +7169,13 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
     | TEFloat f -> VFloat f
     | TERetry(LoopRepeat, optsE, _, body, until) -> evalRepeat env optsE body until
     | TERetry(kind, optsE, watchE, body, until) ->
-        let ctl = retryCtl env kind optsE watchE until
-
-        try
-            let rec loop (n: int) =
-                ctl.Before()
-                // raises propagate [D:retry-poll]: retry retries on the
-                // predicate, never on exceptions — command failure becomes
-                // data through the reifier family
-                let v = evalIn env body
-
-                if ctl.Predicate v then
-                    if ctl.Yields then v else VUnit
-                elif n >= ctl.Attempts || ctl.Expired() then
-                    ctl.Exhausted n
-                else
-                    let timedOut =
-                        if ctl.DelayMs > 0L then
-                            // the indicator wraps only the wait between
-                            // attempts — the body may own the terminal
-                            // [D:waiting-indicator]
-                            Waiting.during ctl.WaitLabel ctl.WaitDelay
-                        else
-                            ctl.Expired()
-
-                    if timedOut then ctl.Exhausted n else loop (n + 1)
-
-            loop 1
-        finally
-            ctl.Cts.Dispose()
+        armRetry
+            (fun e t -> evalIn e t)
+            (fun ctl -> Waiting.during ctl.WaitLabel ctl.WaitDelay)
+            env
+            (retryCtl env kind optsE watchE until)
+            body
+            until
     | TEStr s -> VStr s
     | TEBool b -> VBool b
     | TEUnit -> VUnit
@@ -6793,10 +7213,8 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
                     RunPos.Exact <- true
                     failwith msg)
         | None -> unreachable $"the checker rejects unbound variable '{name}'"
-    | TELet(name, _, value, body) -> evalIn (env.Add(name, (evalIn env value))) body
-    | TELetPat(pat, value, body) ->
-        let bindings = bindPattern pat (evalIn env value)
-        evalIn (bindings |> List.fold (fun (m: Scope) (n, v) -> m.Add(n, v)) env) body
+    | TELet(name, _, value, body) -> armLet (fun e t -> evalIn e t) env name value body
+    | TELetPat(pat, value, body) -> armLetPat (fun e t -> evalIn e t) env pat value body
     | TELambdaPat(pat, body) -> VClosurePat(pat, body, env)
     | TELambda(param, _, body) -> VClosure(param, body, env)
     // the prompt sees this scope [D:debug-aids]; outside a run the call
@@ -6864,7 +7282,7 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
         let specs = chainSpecs env arg chead cargs cenvO
         callAtWith fn f (chainSeq true specs)
     | TEPipe(arg, fn) -> callAt env fn arg
-    | TEField(target, field) -> fieldOf field (evalIn env target)
+    | TEField(target, field) -> armField (fun e t -> evalIn e t) (fun f t -> fieldOf f t) env target field
     | TESlice(target, lo, hi, on, loFromEnd, hiFromEnd) ->
         // inclusive, clamping [D:range-slicing]: an absent bound is an open
         // end (lo -> 0, hi -> last), out-of-range and reversed yield the
@@ -6965,24 +7383,16 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
                             }
                         )
             | v -> unreachable $"the checker guarantees a sequence slice target; got {formatValue v}"
-    | TEBinOp("&&", l, r) ->
-        (match evalIn env l with
-         | VBool false -> VBool false
-         | VBool true -> evalIn env r
-         | v -> unreachable $"the checker rejects '&&' on {formatValue v}")
-    | TEBinOp("||", l, r) ->
-        (match evalIn env l with
-         | VBool true -> VBool true
-         | VBool false -> evalIn env r
-         | v -> unreachable $"the checker rejects '||' on {formatValue v}")
+    | TEBinOp("&&", l, r) -> armAnd (fun e t -> evalIn e t) env l r
+    | TEBinOp("||", l, r) -> armOr (fun e t -> evalIn e t) env l r
     // composition sits here, not in binOp: it needs `apply` (the
     // eval/apply knot) [D:composition-operators]
     | TEBinOp(">>", l, r) ->
         let f = evalIn env l
         let g = evalIn env r
         VBuiltin(fun x -> apply g (apply f x))
-    | TEBinOp(op, l, r) -> binOp op (evalIn env l) (evalIn env r)
-    | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, evalIn env fv))
+    | TEBinOp(op, l, r) -> armBinOp (fun e t -> evalIn e t) env op l r
+    | TERecord(name, fields) -> armRecord (fun e t -> evalIn e t) env name fields
     | TEUpdate(src, updates) ->
         // source evaluated once [D:record-update]; nested paths overlay
         let source = evalIn env src
@@ -7004,18 +7414,11 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
 
                 go acc path)
             source
-    | TEList items -> VSeq(items |> List.map (evalIn env))
-    | TETuple items -> VTuple(items |> List.map (evalIn env))
+    | TEList items -> VSeq(armItems (fun e t -> evalIn e t) env items)
+    | TETuple items -> VTuple(armItems (fun e t -> evalIn e t) env items)
     | TECmd(head, args, cenvO) -> commandLines false env te head args cenvO
     | TEInterp parts ->
-        let sb = System.Text.StringBuilder()
-
-        for p in parts do
-            match p with
-            | IStr s -> interpAppend sb s
-            | IExpr e -> interpAppend sb (interpPiece (evalIn env e))
-
-        VStr(sb.ToString())
+        armInterp (fun e t -> evalIn e t) (fun sb str -> interpAppend sb str) (fun v -> interpPiece v) env parts
     | TEFrom(fmt, top, defs, udefs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf top defs udefs
     | TEFromYaml(_, shape, stream) -> yamlFromImpl shape stream
     | TEFromToml(_, shape) -> tomlFromImpl shape
@@ -7042,29 +7445,7 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
         // renderer, once; an array document forces its seq (one line
         // cannot stream)
         drainsWhole (VBuiltin(fun v -> VSeq [ VStr(jsonLine renames unions (encodeTree fmt codecs v)) ]))
-    | TEMatch(scrutinee, arms) ->
-        let v = matchView arms (evalIn env scrutinee)
-
-        let rec tryArms arms =
-            match arms with
-            | [] -> unreachable $"the checker guarantees totality; no arm matched {formatValue v}"
-            | (pat, guard, body) :: rest ->
-                let armEnv = bindInto pat v env
-
-                if isNull armEnv then
-                    tryArms rest
-                else
-                    let guardPasses =
-                        match guard with
-                        | None -> true
-                        | Some g ->
-                            match evalIn armEnv g with
-                            | VBool b -> b
-                            | gv -> unreachable $"the checker rejects a non-bool guard: {formatValue gv}"
-
-                    if guardPasses then evalIn armEnv body else tryArms rest
-
-        tryArms arms
+    | TEMatch(scrutinee, arms) -> armMatch (fun e t -> evalIn e t) (fun arms v -> matchView arms v) env scrutinee arms
     | TEArgsLoad target -> argvLoad target
     | TEEnvLoad(def, enums) ->
         // snapshot at force time; collect every problem, raise once
@@ -7150,9 +7531,7 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
             failwith ($"Env.load {def.Name}: " + String.concat "; " problems)
 
         VRecord(def.Name, fields)
-    | TESeq(a, b) ->
-        evalIn env a |> ignore
-        evalIn env b
+    | TESeq(a, b) -> armSeq (fun e t -> evalIn e t) env a b
     | TEAlways(body, cleanup) ->
         // the bare scope [D:within-always]; raise handling:
         //  1. normal exit + cleanup raises -> the scope raises (always
@@ -7193,14 +7572,13 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
             failwith
                 "'until stopped' is refused inside 'plan' — a plan's dry run cannot wait for a signal; hold the scope outside the plan"
 
-        let v = evalIn env body
-
-        Session.stopAware (fun () ->
-            while not (Session.stopRequested ()) do
+        armHold
+            (fun e t -> evalIn e t)
+            (fun () ->
                 Session.waitOrCancel System.Threading.Timeout.InfiniteTimeSpan (Session.stopToken ())
                 |> ignore)
-
-        v
+            env
+            body
     | TEWithin(kind, binder, targ, topts, body) ->
         // dispatch kind-first on the union [D:within-kind-union]: a new
         // kind must claim its runtime here or the build fails. Binder
@@ -7242,25 +7620,7 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
             let struct (env', serveNode, home, frame, release) =
                 serveScope env binder targ topts body
 
-            let v =
-                try
-                    try
-                        Session.setCurrentNode serveNode
-
-                        try
-                            evalIn env' body
-                        finally
-                            Session.setCurrentNode home
-                    with
-                    | :? ExitRequest -> reraise ()
-                    // the body cut by a handler's `exit n`: raised below
-                    | _ when not (isNull serveNode.Exit) -> VUnit
-                finally
-                    Session.releaseFrame frame release
-
-            match serveNode.Exit with
-            | null -> v
-            | e -> raise e
+            armServe (fun e t -> evalIn e t) env' serveNode home frame release body
         | WithinLock
         | WithinCd
         | WithinEnv
@@ -7268,17 +7628,8 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
         | WithinTmp ->
             let struct (env', release) = withinScope env kind binder targ topts
             let frame = Session.pushFrame release
-
-            try
-                evalIn env' body
-            finally
-                Session.releaseFrame frame release
-    | TEIf(cond, thn, els) ->
-        match evalIn env cond, els with
-        | VBool true, _ -> evalIn env thn
-        | VBool false, Some e -> evalIn env e
-        | VBool false, None -> VUnit
-        | v, _ -> unreachable $"the checker rejects a non-bool condition: {formatValue v}"
+            armScoped (fun e t -> evalIn e t) env' frame release body
+    | TEIf(cond, thn, els) -> armIf (fun e t -> evalIn e t) env cond thn els
     // TESplat [D:argv-splat] lives only in TECmd argv, expanded by
     // argvOf; it never reaches value evaluation. Closes the match so a
     // stray splat is a clear internal error, not a MatchFailureException.
@@ -7422,36 +7773,13 @@ and private evalRepeat
     (body: TypedExpr)
     (until: ((string * Span) * TypedExpr) option)
     : Value =
-    let ctl = repeatCtl env optsE until
-
-    Session.stopAware (fun () ->
-        let rec loop (n: int) (last: Value option) =
-            if Session.stopRequested () && ctl.Stoppable last then
-                ctl.Finish last
-            else
-                let v =
-                    try
-                        Some(evalIn env body)
-                    with ex when ctl.StopCaused ex && ctl.Stoppable last ->
-                        None
-
-                match v with
-                | None -> ctl.Finish last
-                | Some v when ctl.Predicate v ->
-                    match until with
-                    | Some _ -> v
-                    | None -> VUnit
-                | Some v when Session.stopRequested () -> ctl.Finish(Some v)
-                | Some _ when ctl.PastDeadline() -> ctl.TimedOut n
-                | Some v ->
-                    // the indicator wraps only the wait between iterations
-                    // — the block may own the terminal [D:waiting-indicator]
-                    match Waiting.during ctl.WaitLabel ctl.WaitInterval with
-                    | Some true -> ctl.Finish(Some v)
-                    | Some false -> ctl.TimedOut n
-                    | None -> loop (n + 1) (Some v)
-
-        loop 1 None)
+    armRepeat
+        (fun e t -> evalIn e t)
+        (fun ctl -> Waiting.during ctl.WaitLabel ctl.WaitInterval)
+        env
+        (repeatCtl env optsE until)
+        body
+        until
 
 and private liftYaml (v: Value) : Value option =
     match v with
@@ -7711,8 +8039,7 @@ and apply (fn: Value) (arg: Value) : Value =
 // a builtin) is reported at the callee's column, not the line's first
 // [D:runtime-position-call]
 and private callAt (env: Scope) (fn: TypedExpr) (arg: TypedExpr) : Value =
-    let f = evalIn env fn
-    callAtWith fn f (evalIn env arg)
+    armCall (fun e t -> evalIn e t) (fun f a -> apply f a) (fun fn -> callPos fn) env fn arg
 
 // a command's lazy lines; `statement`: armed as a statement, output unused
 and private forceValue (v: Value) : Value =
@@ -8862,24 +9189,20 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                     match te.Kind with
                     | TELet(name, _, value, body) ->
                         enterNode env te
-                        let x = awaitFrame flow (evalAsync flow env value)
-                        let r = awaitFrame flow (evalAsync flow (env.Add(name, x)) body)
-                        r
+                        armLet (fun e t -> awaitFrame flow (evalAsync flow e t)) env name value body
                     | TELetPat(pat, value, body) ->
                         enterNode env te
-                        let x = awaitFrame flow (evalAsync flow env value)
-                        let bindings = bindPattern pat x
-                        let env' = bindings |> List.fold (fun (m: Scope) (n, bv) -> m.Add(n, bv)) env
-                        let r = awaitFrame flow (evalAsync flow env' body)
-                        r
+                        armLetPat (fun e t -> awaitFrame flow (evalAsync flow e t)) env pat value body
                     | TEApp(fn, arg) ->
                         enterNode env te
-                        let f = awaitFrame flow (evalAsync flow env fn)
-                        let a = awaitFrame flow (evalAsync flow env arg)
-                        callPos fn
-                        let r = awaitFrame flow (applyAsync flow f a)
-                        RunPos.Exact <- false
-                        r
+
+                        armCall
+                            (fun e t -> awaitFrame flow (evalAsync flow e t))
+                            (fun f a -> awaitFrame flow (applyAsync flow f a))
+                            (fun fn -> callPos fn)
+                            env
+                            fn
+                            arg
                     | TEPipe({ Kind = TECmd(head, args, cenvO) }, { Kind = TEVar "|print" }) when
                         Session.pipesSuspend && not (System.Console.IsOutputRedirected)
                         ->
@@ -8950,164 +9273,74 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                          | _ -> true)
                         ->
                         enterNode env te
-                        let f = awaitFrame flow (evalAsync flow env fn)
-                        let a = awaitFrame flow (evalAsync flow env arg)
-                        callPos fn
-                        let r = awaitFrame flow (applyAsync flow f a)
-                        RunPos.Exact <- false
-                        r
+
+                        armCall
+                            (fun e t -> awaitFrame flow (evalAsync flow e t))
+                            (fun f a -> awaitFrame flow (applyAsync flow f a))
+                            (fun fn -> callPos fn)
+                            env
+                            fn
+                            arg
                     | TEField(target, field) ->
                         enterNode env te
-                        let t = awaitFrame flow (evalAsync flow env target)
-                        fieldOf field t
+
+                        armField
+                            (fun e t -> awaitFrame flow (evalAsync flow e t))
+                            (fun f t -> fieldOf f t)
+                            env
+                            target
+                            field
                     | TESeq(a, b) ->
                         enterNode env te
-                        let _ = awaitFrame flow (evalAsync flow env a)
-                        let r = awaitFrame flow (evalAsync flow env b)
-                        r
+                        armSeq (fun e t -> awaitFrame flow (evalAsync flow e t)) env a b
                     | TEIf(cond, thn, els) ->
                         enterNode env te
-                        let c = awaitFrame flow (evalAsync flow env cond)
-
-                        match c, els with
-                        | VBool true, _ ->
-                            let r = awaitFrame flow (evalAsync flow env thn)
-                            r
-                        | VBool false, Some e ->
-                            let r = awaitFrame flow (evalAsync flow env e)
-                            r
-                        | VBool false, None -> VUnit
-                        | v, _ -> unreachable $"the checker rejects a non-bool condition: {formatValue v}"
+                        armIf (fun e t -> awaitFrame flow (evalAsync flow e t)) env cond thn els
                     | TEMatch(scrutinee, arms) ->
                         enterNode env te
-                        let v0 = awaitFrame flow (evalAsync flow env scrutinee)
-                        let v = matchView arms v0
-                        let mutable rest = arms
-                        let mutable result = Unchecked.defaultof<Value>
-                        let mutable found = false
 
-                        while not found do
-                            match rest with
-                            | [] -> unreachable $"the checker guarantees totality; no arm matched {formatValue v}"
-                            | (pat, guard, body) :: tail ->
-                                rest <- tail
-
-                                match tryBind pat v with
-                                | Some bindings ->
-                                    let armEnv = bindings |> List.fold (fun (e: Scope) (n, bv) -> e.Add(n, bv)) env
-                                    let mutable passes = true
-
-                                    match guard with
-                                    | None -> ()
-                                    | Some g ->
-                                        let gv = awaitFrame flow (evalAsync flow armEnv g)
-
-                                        match gv with
-                                        | VBool b -> passes <- b
-                                        | other ->
-                                            unreachable $"the checker rejects a non-bool guard: {formatValue other}"
-
-                                    if passes then
-                                        let r = awaitFrame flow (evalAsync flow armEnv body)
-                                        result <- r
-                                        found <- true
-                                | None -> ()
-
-                        result
+                        armMatch
+                            (fun e t -> awaitFrame flow (evalAsync flow e t))
+                            (fun arms v -> matchView arms v)
+                            env
+                            scrutinee
+                            arms
                     | TEBinOp("&&", l, r) ->
                         enterNode env te
-                        let lv = awaitFrame flow (evalAsync flow env l)
-
-                        match lv with
-                        | VBool false -> VBool false
-                        | VBool true ->
-                            let rv = awaitFrame flow (evalAsync flow env r)
-                            rv
-                        | v -> unreachable $"the checker rejects '&&' on {formatValue v}"
+                        armAnd (fun e t -> awaitFrame flow (evalAsync flow e t)) env l r
                     | TEBinOp("||", l, r) ->
                         enterNode env te
-                        let lv = awaitFrame flow (evalAsync flow env l)
-
-                        match lv with
-                        | VBool true -> VBool true
-                        | VBool false ->
-                            let rv = awaitFrame flow (evalAsync flow env r)
-                            rv
-                        | v -> unreachable $"the checker rejects '||' on {formatValue v}"
+                        armOr (fun e t -> awaitFrame flow (evalAsync flow e t)) env l r
                     | TEBinOp(op, l, r) when op <> ">>" ->
                         enterNode env te
-                        let lv = awaitFrame flow (evalAsync flow env l)
-                        let rv = awaitFrame flow (evalAsync flow env r)
-                        binOp op lv rv
+                        armBinOp (fun e t -> awaitFrame flow (evalAsync flow e t)) env op l r
                     | TERecord(name, fields) ->
                         enterNode env te
-                        let built = ResizeArray<string * Value>()
-                        let mutable rest = fields
-
-                        while not rest.IsEmpty do
-                            let n, fv = rest.Head
-                            rest <- rest.Tail
-                            let v = awaitFrame flow (evalAsync flow env fv)
-                            built.Add((n, v))
-
-                        VRecord(name, List.ofSeq built)
+                        armRecord (fun e t -> awaitFrame flow (evalAsync flow e t)) env name fields
                     | TEList items ->
                         enterNode env te
-                        let built = ResizeArray<Value>()
-                        let mutable rest = items
-
-                        while not rest.IsEmpty do
-                            let v = awaitFrame flow (evalAsync flow env rest.Head)
-                            rest <- rest.Tail
-                            built.Add v
-
-                        VSeq(List.ofSeq built)
+                        VSeq(armItems (fun e t -> awaitFrame flow (evalAsync flow e t)) env items)
                     | TETuple items ->
                         enterNode env te
-                        let built = ResizeArray<Value>()
-                        let mutable rest = items
-
-                        while not rest.IsEmpty do
-                            let v = awaitFrame flow (evalAsync flow env rest.Head)
-                            rest <- rest.Tail
-                            built.Add v
-
-                        VTuple(List.ofSeq built)
+                        VTuple(armItems (fun e t -> awaitFrame flow (evalAsync flow e t)) env items)
                     | TEInterp parts ->
                         enterNode env te
-                        let sb = System.Text.StringBuilder()
-                        let mutable rest = parts
 
-                        while not rest.IsEmpty do
-                            match rest.Head with
-                            | IStr str -> interpAppend sb str
-                            | IExpr e ->
-                                let v = awaitFrame flow (evalAsync flow env e)
-                                interpAppend sb (interpPiece v)
-
-                            rest <- rest.Tail
-
-                        VStr(sb.ToString())
+                        armInterp
+                            (fun e t -> awaitFrame flow (evalAsync flow e t))
+                            (fun sb str -> interpAppend sb str)
+                            (fun v -> interpPiece v)
+                            env
+                            parts
                     | TETry(body, asResult) ->
                         enterNode env te
 
-                        try
-                            let r = awaitFrame flow (evalAsync flow env body)
-                            let v = forceValue r
-
-                            if asResult then
-                                VUnion("Ok", Some v)
-                            else
-                                VUnion("Some", Some v)
-                        with
-                        | ExitRequest _ -> reraise ()
-                        | :? System.OperationCanceledException -> reraise ()
-                        | Failure m when m.StartsWith "unreachable:" -> reraise ()
-                        | ex ->
-                            if asResult then
-                                VUnion("Error", Some(VStr ex.Message))
-                            else
-                                VUnion("None", None)
+                        armTry
+                            (fun e t -> awaitFrame flow (evalAsync flow e t))
+                            (fun v -> forceValue v)
+                            env
+                            body
+                            asResult
                     | TEOrFail(body, msg, site) ->
                         enterNode env te
                         let r = awaitFrame flow (evalAsync flow env body)
@@ -9174,11 +9407,10 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                                 raise original
                     | TEHold body when not (PlanMode.active ()) ->
                         enterNode env te
-                        let v = awaitFrame flow (evalAsync flow env body)
-                        let scope = Session.stopAwareScope ()
 
-                        try
-                            while not (Session.stopRequested ()) do
+                        armHold
+                            (fun e t -> awaitFrame flow (evalAsync flow e t))
+                            (fun () ->
                                 let _ =
                                     awaitLeaf (
                                         Session.waitOrCancelSuspended
@@ -9186,155 +9418,86 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                                             (Session.stopToken ())
                                     )
 
-                                ()
-                        finally
-                            scope.Dispose()
-
-                        v
+                                ())
+                            env
+                            body
                     | TERetry(LoopRepeat, optsE, _, body, until) ->
                         enterNode env te
-                        let ctl = repeatCtl env optsE until
-                        let scope = Session.stopAwareScope ()
 
-                        try
-                            let mutable n = 1
-                            let mutable last: Value option = None
-                            let mutable result = VUnit
-                            let mutable go = true
+                        armRepeat
+                            (fun e t -> awaitFrame flow (evalAsync flow e t))
+                            (fun ctl ->
+                                let mutable ended: bool option = None
+                                let mutable left = ctl.IntervalMs
+                                let waiting = Waiting.start ctl.WaitLabel
 
-                            while go do
-                                if Session.stopRequested () && ctl.Stoppable last then
-                                    result <- ctl.Finish last
-                                    go <- false
-                                else
-                                    let mutable v: Value option = None
+                                try
+                                    while left > 0L && ended.IsNone do
+                                        let slice = ctl.Slice left
 
-                                    try
-                                        let r = awaitFrame flow (evalAsync flow env body)
-                                        v <- Some r
-                                    with ex when ctl.StopCaused ex && ctl.Stoppable last ->
-                                        ()
-
-                                    match v with
-                                    | None ->
-                                        result <- ctl.Finish last
-                                        go <- false
-                                    | Some x when ctl.Predicate x ->
-                                        result <- (if until.IsSome then x else VUnit)
-                                        go <- false
-                                    | Some x when Session.stopRequested () ->
-                                        result <- ctl.Finish(Some x)
-                                        go <- false
-                                    | Some _ when ctl.PastDeadline() ->
-                                        result <- ctl.TimedOut n
-                                        go <- false
-                                    | Some x ->
-                                        let mutable ended: bool option = None
-                                        let mutable left = ctl.IntervalMs
-                                        let waiting = Waiting.start ctl.WaitLabel
-
-                                        try
-                                            while left > 0L && ended.IsNone do
-                                                let slice = ctl.Slice left
-
-                                                if slice <= 0L then
-                                                    ended <- Some false
-                                                else
-                                                    let woke =
-                                                        awaitLeaf (
-                                                            Session.waitOrCancelSuspended
-                                                                (System.TimeSpan.FromTicks(
-                                                                    slice * System.TimeSpan.TicksPerMillisecond
-                                                                ))
-                                                                (Session.stopToken ())
-                                                        )
-
-                                                    if woke then
-                                                        ended <- Some true
-
-                                                    left <- left - slice
-                                        finally
-                                            waiting.Dispose()
-
-                                        if ended.IsNone && ctl.PastDeadline() then
+                                        if slice <= 0L then
                                             ended <- Some false
+                                        else
+                                            let woke =
+                                                awaitLeaf (
+                                                    Session.waitOrCancelSuspended
+                                                        (System.TimeSpan.FromTicks(
+                                                            slice * System.TimeSpan.TicksPerMillisecond
+                                                        ))
+                                                        (Session.stopToken ())
+                                                )
 
-                                        match ended with
-                                        | Some true ->
-                                            result <- ctl.Finish(Some x)
-                                            go <- false
-                                        | Some false ->
-                                            result <- ctl.TimedOut n
-                                            go <- false
-                                        | None ->
-                                            n <- n + 1
-                                            last <- Some x
+                                            if woke then
+                                                ended <- Some true
 
-                            result
-                        finally
-                            scope.Dispose()
+                                            left <- left - slice
+                                finally
+                                    waiting.Dispose()
+
+                                if ended.IsNone && ctl.PastDeadline() then
+                                    ended <- Some false
+
+                                ended)
+                            env
+                            (repeatCtl env optsE until)
+                            body
+                            until
                     | TERetry(kind, optsE, watchE, body, until) when kind <> LoopRepeat ->
                         enterNode env te
-                        let ctl = retryCtl env kind optsE watchE until
 
-                        try
-                            let mutable n = 1
-                            let mutable result = VUnit
-                            let mutable go = true
+                        armRetry
+                            (fun e t -> awaitFrame flow (evalAsync flow e t))
+                            (fun ctl ->
+                                let mutable timedOut = false
+                                let mutable left = ctl.DelayMs
+                                let waiting = Waiting.start ctl.WaitLabel
 
-                            while go do
-                                ctl.Before()
-                                let v = awaitFrame flow (evalAsync flow env body)
-                                let mutable met = false
+                                try
+                                    while left > 0L && not timedOut do
+                                        let slice = ctl.Slice left
 
-                                match until with
-                                | Some((b, _), pred) ->
-                                    let pv = awaitFrame flow (evalAsync flow (env.Add(b, v)) pred)
-                                    met <- ctl.Verdict pv
-                                | None -> met <- ctl.Predicate v
+                                        if slice <= 0L then
+                                            timedOut <- true
+                                        else
+                                            let cut =
+                                                awaitLeaf (
+                                                    Session.waitOrCancelSuspended
+                                                        (System.TimeSpan.FromTicks(
+                                                            slice * System.TimeSpan.TicksPerMillisecond
+                                                        ))
+                                                        ctl.Cts.Token
+                                                )
 
-                                if met then
-                                    result <- (if ctl.Yields then v else VUnit)
-                                    go <- false
-                                elif n >= ctl.Attempts || ctl.Expired() then
-                                    result <- ctl.Exhausted n
-                                    go <- false
-                                else
-                                    let mutable timedOut = false
+                                            timedOut <- cut
+                                            left <- left - slice
+                                finally
+                                    waiting.Dispose()
 
-                                    if ctl.DelayMs > 0L then
-                                        let mutable left = ctl.DelayMs
-                                        use _ = Waiting.start ctl.WaitLabel
-
-                                        while left > 0L && not timedOut do
-                                            let slice = ctl.Slice left
-
-                                            if slice <= 0L then
-                                                timedOut <- true
-                                            else
-                                                let cut =
-                                                    awaitLeaf (
-                                                        Session.waitOrCancelSuspended
-                                                            (System.TimeSpan.FromTicks(
-                                                                slice * System.TimeSpan.TicksPerMillisecond
-                                                            ))
-                                                            ctl.Cts.Token
-                                                    )
-
-                                                timedOut <- cut
-                                                left <- left - slice
-                                    else
-                                        timedOut <- ctl.Expired()
-
-                                    if timedOut then
-                                        result <- ctl.Exhausted n
-                                        go <- false
-                                    else
-                                        n <- n + 1
-
-                            result
-                        finally
-                            ctl.Cts.Dispose()
+                                timedOut)
+                            env
+                            (retryCtl env kind optsE watchE until)
+                            body
+                            until
                     | TEWithin((WithinPure | WithinReadonly), _, _, _, body) ->
                         enterNode env te
                         let r = awaitFrame flow (evalAsync flow env body)
@@ -9345,26 +9508,14 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         let struct (env', serveNode, home, frame, release) =
                             serveScope env binder targ topts body
 
-                        let mutable v = VUnit
-
-                        try
-                            try
-                                Session.setCurrentNode serveNode
-
-                                try
-                                    let r = awaitFrame flow (evalAsync flow env' body)
-                                    v <- r
-                                finally
-                                    Session.setCurrentNode home
-                            with
-                            | :? ExitRequest -> reraise ()
-                            | _ when not (isNull serveNode.Exit) -> ()
-                        finally
-                            Session.releaseFrame frame release
-
-                        match serveNode.Exit with
-                        | null -> v
-                        | e -> raise e
+                        armServe
+                            (fun e t -> awaitFrame flow (evalAsync flow e t))
+                            env'
+                            serveNode
+                            home
+                            frame
+                            release
+                            body
                     | TEWithin((WithinLock | WithinCd | WithinEnv | WithinProc | WithinTmp) as kind,
                                binder,
                                targ,
@@ -9373,12 +9524,7 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         enterNode env te
                         let struct (env', release) = withinScope env kind binder targ topts
                         let frame = Session.pushFrame release
-
-                        try
-                            let r = awaitFrame flow (evalAsync flow env' body)
-                            r
-                        finally
-                            Session.releaseFrame frame release
+                        armScoped (fun e t -> awaitFrame flow (evalAsync flow e t)) env' frame release body
                     | _ -> evalIn env te
             with ex ->
                 pinOnThread ex
