@@ -288,4 +288,5 @@ let allTests =
         hunt4Tests
         framingTests
         valueRendererTests
+        tintParityTests
     ]

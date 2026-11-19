@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **The REPL colors three command shapes as the editor does.** After a
+  forced head (`^git status`) the arguments were not dimmed; a splat's
+  name (`$@files`) was dimmed as if it were a plain word; and the inside
+  of a parenthesised argument (`git -C (d) status`) was dimmed as argv
+  where it is code.
+- **The debugger's variables pane never runs anything.** A lazy sequence
+  inside a record was enumerated when the pane showed it; it now shows
+  as `<lazy seq>` wherever it sits.
 - **Breakpoints work inside parallel arms.** In `Seq.pmap`, `pfor` and
   a server handler the debugger stopped only some of the time and
   showed another arm's names. Each arm now stops at each breakpoint

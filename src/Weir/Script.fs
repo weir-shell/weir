@@ -3384,6 +3384,9 @@ let colorizeReplWith (isAlias: string -> bool) (isKnown: string -> bool) (line: 
         // chain to an expression stage — the same three-way the LSP
         // tokens carry (head / argv / splice), from the same resolver
         let mutable cmdMode = false
+        // a `(…)` or `$@(…)` argument is expression land between its
+        // delimiters [D:tint-parity]: how many parens deep inside one
+        let mutable argParens = 0
 
         while i < line.Length do
             if not (free i) then
@@ -3444,7 +3447,14 @@ let colorizeReplWith (isAlias: string -> bool) (isKnown: string -> bool) (line: 
                         // ^head: PATH only — `^x` names a program,
                         // never a keyword, a form, or an alias
                         i <- fullEnd
-                        Some(if Extern.exists full then "34" else "31")
+
+                        if Extern.exists full then
+                            // a forced head is a command like any other:
+                            // its words are argv [D:tint-parity]
+                            cmdMode <- true
+                            Some "34"
+                        else
+                            Some "31"
                     | slot ->
                         if
                             slot <> Complete.HeadSlot.No
@@ -3556,10 +3566,44 @@ let colorizeReplWith (isAlias: string -> bool) (isKnown: string -> bool) (line: 
                 codes[i] <- Some "36"
                 i <- i + 1
 
-                if line[i - 1] = '$' && i < line.Length && free i && isIdentStart line[i] then
+                // `$@name` is one splice, as `$name` is [D:argv-splat]
+                if line[i - 1] = '$' && i < line.Length && free i && line[i] = '@' then
+                    codes[i] <- Some "36"
+                    i <- i + 1
+
+                    if cmdMode && i < line.Length && free i && line[i] = '(' then
+                        codes[i] <- Some "36"
+                        i <- i + 1
+                        argParens <- 1
+                        cmdMode <- false
+
+                if
+                    (line[i - 1] = '$' || line[i - 1] = '@')
+                    && i < line.Length
+                    && free i
+                    && isIdentStart line[i]
+                then
                     while i < line.Length && free i && isIdentCont line[i] do
                         codes[i] <- Some "36"
                         i <- i + 1
+            elif cmdMode && line[i] = '(' && not holes[i] then
+                // a parenthesised argument: the delimiters mark the
+                // splice, the inside is expression code [D:tint-parity]
+                codes[i] <- Some "36"
+                i <- i + 1
+                argParens <- 1
+                cmdMode <- false
+            elif argParens > 0 && line[i] = '(' then
+                argParens <- argParens + 1
+                i <- i + 1
+            elif argParens > 0 && line[i] = ')' then
+                argParens <- argParens - 1
+
+                if argParens = 0 then
+                    codes[i] <- Some "36"
+                    cmdMode <- true
+
+                i <- i + 1
             elif "|><=+-*/".Contains(line[i]) then
                 if line[i] = '|' && not holes[i] then
                     // a stage boundary: what follows is expression land
