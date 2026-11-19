@@ -402,11 +402,7 @@ type private Adapter() =
          build w
          w.WriteEndObject())
 
-        lock outGate (fun () ->
-            let header = Encoding.ASCII.GetBytes $"Content-Length: {buf.Length}\r\n\r\n"
-            output.Write(header, 0, header.Length)
-            output.Write(buf.GetBuffer(), 0, int buf.Length)
-            output.Flush())
+        lock outGate (fun () -> Framing.write output (buf.GetBuffer()) (int buf.Length))
 
     let nextSeq () = Threading.Interlocked.Increment &seq
 
@@ -819,55 +815,22 @@ type private Adapter() =
             true
 
     member _.Run() : int =
-        let header = ResizeArray<byte>()
         let mutable go = true
 
-        let readExact (n: int) : byte[] =
-            let buf = Array.zeroCreate<byte> n
-            let mutable got = 0
-
-            while got < n && go do
-                let r = input.Read(buf, got, n - got)
-
-                if r <= 0 then go <- false else got <- got + r
-
-            buf
-
         while go do
-            // a message: header lines, a blank line, then the counted body
-            header.Clear()
-            let mutable length = -1
-            let mutable inHeader = true
+            // the bounds are the shared reader's [D:one-framing]; a request
+            // past them is dropped and the session goes on
+            match Framing.read input (16 * 1024 * 1024) with
+            | Framing.End -> go <- false
+            | Framing.Dropped _ -> ()
+            | Framing.Message body ->
+                try
+                    use doc = JsonDocument.Parse(ReadOnlyMemory body)
 
-            while inHeader && go do
-                let b = input.ReadByte()
-
-                if b < 0 then
-                    go <- false
-                elif b = int '\n' then
-                    let line = Encoding.ASCII.GetString(header.ToArray()).TrimEnd('\r')
-                    header.Clear()
-
-                    if line = "" then
-                        inHeader <- false
-                    elif line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase) then
-                        match Int32.TryParse(line.Substring(15).Trim()) with
-                        | true, n when n >= 0 && n <= 16 * 1024 * 1024 -> length <- n
-                        | _ -> go <- false
-                else
-                    header.Add(byte b)
-
-            if go && length >= 0 then
-                let body = readExact length
-
-                if go then
-                    try
-                        use doc = JsonDocument.Parse(ReadOnlyMemory body)
-
-                        if str doc.RootElement "type" = "request" then
-                            go <- handle doc.RootElement
-                    with :? JsonException ->
-                        ()
+                    if str doc.RootElement "type" = "request" then
+                        go <- handle doc.RootElement
+                with :? JsonException ->
+                    ()
 
         stop ()
         0

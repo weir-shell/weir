@@ -4843,3 +4843,62 @@ let hoverReflowTests =
                 "structure kept"
         }
     ]
+
+// the framing the language server and the debug adapter share
+// [D:one-framing]: its bounds are the transport's [D:lsp-transport-caps]
+let framingTests =
+    testList "Content-Length framing, one reader for both servers" [
+        test "a message, an oversized body dropped with the stream still framed, and the end" {
+            let frame (body: string) =
+                System.Text.Encoding.ASCII.GetBytes($"Content-Length: {body.Length}\r\n\r\n{body}")
+
+            let stream =
+                new MemoryStream(
+                    Array.concat [
+                        frame "{\"a\":1}"
+                        frame (System.String('x', 64))
+                        System.Text.Encoding.ASCII.GetBytes "content-length: 2\r\nX-Other: y\r\n\r\nok"
+                    ]
+                )
+
+            let text (r: Weir.Framing.Read) =
+                match r with
+                | Weir.Framing.Message b -> "message " + System.Text.Encoding.ASCII.GetString b
+                | Weir.Framing.Dropped n -> $"dropped {n}"
+                | Weir.Framing.End -> "end"
+
+            Expect.equal (text (Weir.Framing.read stream 32)) "message {\"a\":1}" "a body under the cap"
+            Expect.equal (text (Weir.Framing.read stream 32)) "dropped 64" "a body over it is read past, never held"
+
+            Expect.equal
+                (text (Weir.Framing.read stream 32))
+                "message ok"
+                "the next frame is intact; the header's case and its neighbours do not matter"
+
+            Expect.equal (text (Weir.Framing.read stream 32)) "end" "the stream's end"
+        }
+        test "a body cut short, a header with no length and a header line past its bound all end the read" {
+            let ends (bytes: byte[]) =
+                Weir.Framing.read (new MemoryStream(bytes)) 1024 = Weir.Framing.End
+
+            Expect.isTrue
+                (ends (System.Text.Encoding.ASCII.GetBytes "Content-Length: 10\r\n\r\nshort"))
+                "a body cut short"
+
+            Expect.isTrue (ends (System.Text.Encoding.ASCII.GetBytes "X: y\r\n\r\nbody")) "no Content-Length"
+
+            Expect.isTrue
+                (ends (Array.append (Array.create (Weir.Framing.maxHeaderLineBytes + 10) (byte 'h')) "\r\n\r\n"B))
+                "a header line past its bound"
+        }
+        test "a written message reads back" {
+            let out = new MemoryStream()
+            let body = System.Text.Encoding.UTF8.GetBytes "{\"é\":true}"
+            Weir.Framing.write out body body.Length
+            out.Position <- 0L
+
+            match Weir.Framing.read out 1024 with
+            | Weir.Framing.Message b -> Expect.equal b body "the same bytes"
+            | other -> failtest $"{other}"
+        }
+    ]

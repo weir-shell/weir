@@ -286,4 +286,5 @@ let allTests =
         fileTests
         portOverlayTests
         hunt4Tests
+        framingTests
     ]
