@@ -33735,6 +33735,40 @@ let operatorValueTests =
                 Weir.Http.Final
                 "no Location"
         }
+        test "the module table is where a module's effect and its words come from [D:module-table]" {
+            Expect.equal
+                Weir.Effects.effectfulModules
+                (Set.ofList [ "File"; "Dir"; "Env"; "Args"; "Proc"; "Net"; "Log"; "Debug"; "Term"; "Color" ])
+                "the modules whose every member has an effect"
+
+            let cls n = Weir.Effects.effectClass n
+
+            for name, expected in
+                [
+                    "File.read", Some Weir.Effects.Ambient
+                    "File.write", Some Weir.Effects.Mutation
+                    "Env.get", Some Weir.Effects.Ambient
+                    "Proc.stop", Some Weir.Effects.Mutation
+                    "Net.portOpen", Some Weir.Effects.Ambient
+                    "Term.width", Some Weir.Effects.Ambient
+                    "Term.title", Some Weir.Effects.Mutation
+                    "Log.info", Some Weir.Effects.Mutation
+                    "Debug.peek", Some Weir.Effects.Mutation
+                    "Http.query", Some Weir.Effects.Ambient
+                    "Str.trim", None
+                    "Http.get", None
+                ] do
+                Expect.equal (cls name) expected name
+
+            // one row a module, none twice, and Builtins holds members for each
+            let names = Weir.Modules.rows |> List.map (fun r -> r.Name)
+            Expect.equal (List.length (List.distinct names)) (List.length names) "no module has two rows"
+
+            Expect.equal
+                (Set.ofList names)
+                (Weir.Builtins.moduleBlurbs |> Map.keys |> Set.ofSeq)
+                "the blurbs are the table's"
+        }
         test "both evaluators enter a node through one step [D:eval-twin-entry]" {
             let src =
                 System.IO.File.ReadAllLines(

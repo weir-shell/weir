@@ -13058,7 +13058,7 @@ let private firstRunEffect (isLetRhs: bool) (te: Check.TypedExpr) : (string * Sp
         | "Http.send"
         | "Http.expect"
         | "Net.portOpen" -> Some $"'{n}'"
-        | _ when quiet.Contains n || n.StartsWith "Log." || n.StartsWith "Debug." -> None
+        | _ when quiet.Contains n || (Modules.rowFor n |> Option.exists (fun r -> r.Quiet)) -> None
         | _ when Effects.isCommandReifier n -> None // the command is named at its program slot
         | _ ->
             match Effects.effectClass n with

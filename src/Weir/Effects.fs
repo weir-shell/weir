@@ -47,7 +47,10 @@ let effectfulModules =
     // Term/Color read the terminal (width, tty-ness) — ambient; Term.title
     // writes it (a mutation, placed in effectClass) [D:term-title]
     // [D:purity-ambient]
-    Set [ "File"; "Dir"; "Env"; "Args"; "Proc"; "Net"; "Log"; "Debug"; "Term"; "Color" ]
+    Modules.rows
+    |> List.filter (fun r -> r.Whole && r.Effect <> Modules.NoEffect)
+    |> List.map (fun r -> r.Name)
+    |> Set.ofList
 
 let effectfulQualified =
     Set [
@@ -240,12 +243,11 @@ let effectClass (n: string) : EffectClass option =
         | _ ->
             match n.Split '.' with
             | [| ("File" | "Dir"); m |] when fsWriteMembers.Contains m -> Some Mutation
-            | [| ("File" | "Dir"); _ |] -> Some Ambient // reads the filesystem
-            | [| ("Env" | "Args"); _ |] -> Some Ambient // reads the environment
-            | [| "Proc"; _ |] -> Some Mutation // touches a process
-            | [| "Net"; _ |] -> Some Ambient // Net.portOpen probes, changes nothing
-            | [| ("Term" | "Color"); _ |] -> Some Ambient // reads the terminal [D:purity-ambient]
-            | [| "Http"; _ |] -> Some Ambient // constructors are pure; send handled above
-            | [| "Log"; _ |] -> Some Mutation // writes logs to a stream
-            | [| "Debug"; _ |] -> Some Mutation // writes to stderr, or stops for a prompt
-            | _ -> Some Mutation // an unclassified effect: the safe (refusing) direction
+            | _ ->
+                // the module's own row [D:module-table]; a name with none is
+                // an unclassified effect: the safe (refusing) direction
+                match Modules.rowFor n |> Option.map (fun r -> r.Effect) with
+                | Some(Modules.Reads _) -> Some Ambient
+                | Some(Modules.Writes _)
+                | Some Modules.NoEffect
+                | None -> Some Mutation

@@ -180,14 +180,13 @@ let rec private effectPhrase (n: string) : string =
         | _ ->
             match n.Split '.' with
             | [| ("File" | "Dir"); m |] when fsWriteMembers.Contains m -> $"'{n}' writes the filesystem"
-            | [| ("File" | "Dir"); _ |] -> $"'{n}' reads the filesystem"
-            | [| ("Env" | "Args"); _ |] -> $"'{n}' reads the environment"
-            | [| "Proc"; _ |] -> $"'{n}' touches a process"
-            | [| ("Net" | "Http"); _ |] -> $"'{n}' talks to the network"
-            | [| "Log"; _ |] -> $"'{n}' writes logs"
-            | [| "Debug"; _ |] -> $"'{n}' writes to the terminal"
-            | [| ("Term" | "Color"); _ |] -> $"'{n}' reads the terminal"
-            | _ -> $"'{n}' is effectful"
+            | _ ->
+                // the module's own words [D:module-table]
+                match Weir.Modules.rowFor n |> Option.map (fun r -> r.Effect) with
+                | Some(Weir.Modules.Reads what)
+                | Some(Weir.Modules.Writes what) -> $"'{n}' {what}"
+                | Some Weir.Modules.NoEffect
+                | None -> $"'{n}' is effectful"
 
 /// the first effectful node under a pure region, with its span — the
 /// located teaching's payload [D:pure-stage1]. Mirrors isPureExpr's

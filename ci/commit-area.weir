@@ -40,7 +40,8 @@ let areaOfSrc p =
     | "src/Weir/Check.fs" | "src/Weir/Purity.fs" | "src/Weir/Effects.fs"
     | "src/Weir/Types.fs" -> Some "checker"
     | "src/Weir/Eval.fs" | "src/Weir/Session.fs" | "src/Weir/Proc.fs" -> Some "eval"
-    | "src/Weir/Builtins.fs" | "src/Weir/Prelude.fs" -> Some "builtins"
+    // the module table Builtins' members answer to [D:module-table]
+    | "src/Weir/Builtins.fs" | "src/Weir/Prelude.fs" | "src/Weir/Modules.fs" -> Some "builtins"
     | "src/Weir/Repl.fs" | "src/Weir/Complete.fs" | "src/Weir/DynComplete.fs" -> Some "repl"
     | "src/Weir/Lsp.fs" -> Some "lsp"
     // the editor's debugger, the language server's sibling [D:step-debugger]

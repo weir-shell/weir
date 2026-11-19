@@ -10078,44 +10078,8 @@ let renderBuiltinDoc (d: BuiltinDoc) : string = renderBuiltinDocWith id d
 // gen-lexical pattern): a new module without a blurb fails loud, and a
 // blurb for a retired module fails too.
 let moduleBlurbs: Map<string, string> =
-    Map.ofList [
-        "Args", "typed argv — flags, subcommands, defaults from a record"
-        "Bytes", "the non-text value: base64, sha256, UTF-8 bridges"
-        "Dir", "directory operations: create, list, move, delete, stat"
-        "Duration", "spans of time: literals, arithmetic, parse/show, sleep"
-        "Env", "environment variables: one, a typed record, a dotenv file"
-        "File", "file operations: read, write, copy, hash, secrets"
-        "Float", "finite floats: convert, round, near-compare, parse"
-        "Frontier", "the bounded worklist fold Graph and Tree derive from"
-        "Graph", "reachability over a neighbor function, cycle-safe"
-        "Http", "HTTP requests: one record, one runner, typed auth"
-        "Instant", "points on the UTC timeline: now, parse, compare"
-        "Json", "JSON helpers: inferShape drafts type decls from a sample"
-        "Debug", "debugging aids: peek at a value, break into a prompt"
-        "Log", "levelled diagnostics to stderr (WEIR_LOG selects)"
-        "Map", "immutable maps keyed by any equatable type: get, add, pairs"
-        "Net", "network probes: portOpen"
-        "Reply", "a handler's responses: empty, text, html, json, rawJson, stream, redirect"
-        "Option", "presence and absence: map, bind, defaults"
-        "Result", "the value or the error message `|> try result` gives: map, defaults, toOption"
-        "Path", "path text and discovery: join, confine, glob, temp dirs"
-        "Plan", "plan/apply: preview a plan's ops before applying"
-        "Poll", "poll's options record: defaults"
-        "Proc", "scoped process handles: pid, running, tail, wait, stop"
-        "Server", "scoped HTTP listener handles: port, running; defaults, the default settings (see within serve)"
-        "Retry", "retry's options record: defaults"
-        "Secret", "rendering-masked values: of, map, reveal"
-        "Color", "terminal colour: red/green/…, bold/dim/underline, sgr — auto-off when piped"
-        "Term", "the terminal: width (columns; 80 when there is no terminal), title (set the window title)"
-        "Self", "the process's own facts: args, stdin, pid, paths — and prompt"
-        "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
-        "Size", "byte sizes: binary-unit literals, arithmetic, parse"
-        "Str", "string ops: trim, split, match, encode, hash"
-        "Table", "aligned-table helpers: inferShape drafts a row type from a sample"
-        "Tree", "parent-first effect walks over discovered children"
-        "Uuid", "128-bit identifiers: v4, v5, time-ordered v7, parse, inspect"
-        "Yaml", "YAML nodes: parse, merge (strategic patch), inferShape"
-    ]
+    // each module's line in the one table [D:module-table]
+    Modules.rows |> List.map (fun r -> r.Name, r.Blurb) |> Map.ofList
 
 // the allowlist [D:bare-allowlist]: only these modules contribute
 // bare aliases to the REPL. An allowlist, not a blocklist: a blocklist

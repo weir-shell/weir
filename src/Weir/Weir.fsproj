@@ -138,6 +138,7 @@
     <Compile Include="Serve.fs" />
     <!-- before Builtins (Eval) and before Purity (Check): the ambient/
          mutation partition both ends consult [D:pure-stage2] -->
+    <Compile Include="Modules.fs" />
     <Compile Include="Effects.fs" />
     <Compile Include="PathLookup.fs" />
     <Compile Include="Contracts.fs" />
