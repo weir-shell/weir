@@ -7916,3 +7916,48 @@ let parallelImportTests =
                     "one checked body, replayed once [D:module-once]")
         }
     ]
+
+// one renderer, its limits explicit [D:one-value-renderer]: show and the
+// echo force what they show, a debugger's look forces nothing
+let valueRendererTests =
+    testList "one value renderer under explicit limits" [
+        test "a look forces nothing, at any depth; show and the echo still do" {
+            let mutable pulled = 0
+
+            let lazySeq () =
+                VSeq(
+                    seq {
+                        pulled <- pulled + 1
+                        yield VInt 1L
+                        yield VInt 2L
+                    }
+                )
+
+            let inRecord = VRecord("R", [ "n", VInt 7L; "xs", lazySeq () ])
+            Expect.equal (Weir.Eval.inspectValue (lazySeq ())) "<lazy seq>" "an unforced seq, on its own"
+            Expect.equal (Weir.Eval.inspectValue inRecord) "{ n = 7; xs = <lazy seq> }" "and inside a record"
+            Expect.equal pulled 0 "nothing was enumerated"
+
+            Expect.equal
+                (Weir.Eval.inspectValue (VSeq [ for i in 1L .. 25L -> VInt i ]))
+                ("[" + (String.concat "; " [ for i in 1..20 -> string i ]) + "; …]")
+                "a forced seq shows, clipped"
+
+            Expect.equal (Weir.Eval.formatValue (lazySeq ())) "[1; 2]" "show forces"
+            Expect.equal pulled 1 "once"
+        }
+        test "an echo's text and its footer, for a terminal and for a pipe" {
+            let struct (piped, noTail) = Weir.Eval.echoShown true (Some 100) (VStr "a\u001bb")
+
+            let struct (atTty, _) = Weir.Eval.echoShown false (Some 100) (VStr "a\u001bb")
+            Expect.equal piped "\"a\u001bb\"" "redirected: the bytes"
+            Expect.isFalse (atTty.Contains "\u001b") "at a terminal: no raw escape"
+            Expect.equal noTail "" "nothing clipped, no footer"
+
+            let struct (clipped, tail) =
+                Weir.Eval.echoShown true (Some 2) (VSeq(Seq.initInfinite (fun i -> VInt(int64 i))))
+
+            Expect.equal clipped "[0; 1; …]" "an unforced seq shows its cap"
+            Expect.equal tail " (first 2 of an unforced seq — Seq.freeze to echo everything)" "and the footer names it"
+        }
+    ]

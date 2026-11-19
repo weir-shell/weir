@@ -5432,11 +5432,12 @@ let private debugPeekImpl: Value =
                 | null -> ""
                 | f -> f.Invoke RunPos.Current
 
-        let rendered, hint = echoValue echoPipedCap (echoPrep v)
-        let rendered = echoRender System.Console.IsErrorRedirected rendered
+        let struct (rendered, tail) =
+            echoShown System.Console.IsErrorRedirected echoPipedCap (echoPrep v)
+
         System.Console.Out.Flush()
 
-        System.Console.Error.WriteLine((if at = "" then "[peek] " else $"[{at}] ") + rendered + echoTail hint)
+        System.Console.Error.WriteLine((if at = "" then "[peek] " else $"[{at}] ") + rendered + tail)
 
         v)
 

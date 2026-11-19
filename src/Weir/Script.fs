@@ -14367,10 +14367,10 @@ let private breakPrompt (at: string) (tenv0: TypeEnv) (venv0: Eval.Env) : unit =
                                 let v = Eval.eval venv te
 
                                 if v <> Eval.VUnit then
-                                    let rendered, hint = Eval.echoValue Eval.echoPipedCap (Eval.echoPrep v)
+                                    let struct (rendered, tail) =
+                                        Eval.echoShown Console.IsErrorRedirected Eval.echoPipedCap (Eval.echoPrep v)
 
-                                    Console.Error.WriteLine
-                                        $"{Eval.echoRender Console.IsErrorRedirected rendered} : {formatEchoTy te.Ty}{Eval.echoTail hint}"
+                                    Console.Error.WriteLine $"{rendered} : {formatEchoTy te.Ty}{tail}"
                             | Declares -> Console.Error.WriteLine "error: a module line belongs in a file"
                         with
                         | Eval.ExitRequest _ -> reraise ()

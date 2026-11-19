@@ -573,6 +573,9 @@ type private RenderLimits = {
     MaxStr: int option
     MaxDepth: int
     Ellipsis: string
+    /// a seq nothing has forced yet is enumerated to be shown; false
+    /// renders it as `<lazy seq>` at any depth, so looking runs nothing
+    Forces: bool
 }
 
 let private showLimits =
@@ -587,6 +590,7 @@ let private showLimits =
         MaxStr = None
         MaxDepth = 100
         Ellipsis = "; ..."
+        Forces = true
     }
 
 let private echoLimits = {
@@ -594,6 +598,16 @@ let private echoLimits = {
     MaxStr = Some 120
     MaxDepth = 8
     Ellipsis = "; …"
+    Forces = true
+}
+
+// a look that runs nothing [D:one-value-renderer]: the echo's clips, and a
+// seq nobody forced stays unforced — a debugger's pane must not start the
+// command a lazy value stands for
+let private inspectLimits = {
+    echoLimits with
+        MaxItems = 20
+        Forces = false
 }
 
 // ordered-field access [D:record-order]: a linear scan — record widths
@@ -704,6 +718,14 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
 
             let ellipsis = if shown.Length > lim.MaxItems then lim.Ellipsis else ""
             "map [" + body + ellipsis + "]"
+        | VSeq items when
+            not lim.Forces
+            && (match items with
+                | :? (Value list)
+                | :? System.Collections.Generic.ICollection<Value> -> false
+                | _ -> true)
+            ->
+            "<lazy seq>"
         | VSeq items ->
             let shown = items |> Seq.truncate (lim.MaxItems + 1) |> List.ofSeq
 
@@ -737,6 +759,11 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
 // refusal [D:int-narrowing]
 let formatValue (v: Value) : string =
     guardStrBuild "show" (fun () -> formatWith showLimits 0 v)
+
+/// a value as a debugger's pane shows it [D:one-value-renderer]: the one
+/// renderer under limits that force nothing — an unforced seq is
+/// `<lazy seq>` wherever it sits, strings and containers clipped
+let inspectValue (v: Value) : string = formatWith inspectLimits 0 v
 
 // ---- plan/apply capture [D:plan-apply] ------------------------------
 // A `plan` block runs its body but captures external mutations as Op
@@ -2437,6 +2464,14 @@ let echoTail (hint: string option) : string =
     match hint with
     | Some h -> $" ({h})"
     | None -> ""
+
+/// an echo's two parts for a stream [D:echo-one-renderer]: the value's
+/// text as that stream carries it (visible controls at a tty, the bytes
+/// when redirected) and the footer that names a cap. Every echo that is
+/// not a table or a list of lines is these two around its own words
+let echoShown (redirected: bool) (cap: int option) (v: Value) : struct (string * string) =
+    let rendered, hint = echoValue cap v
+    struct (echoRender redirected rendered, echoTail hint)
 
 // The line-per-element renderer. Both consumers — the print builtin
 // and the runner's command-statement streaming — must call this one
