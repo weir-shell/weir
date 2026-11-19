@@ -12923,7 +12923,10 @@ WEOF
     start_ms=$(now_ms)
     $BIN "$pfdir/pforph.weir" > "$pfdir/pforph.out" 2>&1
     took=$(( $(now_ms) - start_ms ))
-    [ "$(cat "$pfdir/pforph.out")" = "winner: 20" ] || fail "pfirst orphan-pipe winner ($body): $(cat "$pfdir/pforph.out")"
+    # Git Bash's sh prints its own fork failures ("0 [main] sh (pid)
+    # child_copy: …") into the stream the fixture shares: not weir's words
+    pforph=$(grep -vE '^ *[0-9]+ \[main\] [a-z]+ \([0-9]+\) ' "$pfdir/pforph.out" || true)
+    [ "$pforph" = "winner: 20" ] || fail "pfirst orphan-pipe winner ($body): $(cat "$pfdir/pforph.out")"
     [ "$took" -lt 1800 ] || fail "pfirst waited on an orphan's pipe (took ${took}ms): $body"
 done
 

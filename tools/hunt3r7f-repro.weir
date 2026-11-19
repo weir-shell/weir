@@ -565,7 +565,12 @@ let ctlARaceShapes d =
 let h3r7t13 d =
     let (cap, rc1, o1) = t13Run d "capture" 3
     let (cmp, rc2, o2) = t13Run d "complete" 4
-    let bound = cap + t13N / 4 + 16
+    // an arm holds a thread, so the capture race cannot truly peak under
+    // one an arm: a sampler starved on a busy runner reads low, and the
+    // bound stands on the arm count then. Two threads an arm is past it
+    // either way
+    let floor = if cap < t13N then t13N else cap
+    let bound = floor + t13N / 4 + 16
     failing [
         ($"a {t13N}-arm pfirstWith of `| complete` arms must take one thread per arm, as the same race through $( ) does: peak at most {bound} threads ({cmp} vs {cap} through $( ); rc {rc2}/{rc1}, '{o2}'/'{o1}')", cap > 0 && rc1 == "0" && rc2 == "0" && cmp <= bound)
     ]

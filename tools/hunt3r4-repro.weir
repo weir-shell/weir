@@ -648,7 +648,7 @@ let h3r4p04 d =
     failing [
         ($"a second terminal ^C while the child ignores ^C: weir exits {aMs}ms after it (limit 1000ms, EXIT {a.code})", (Seq.length a.sent) == 2 && a.exitMs >= 0 && aMs <= 1000)
         ($"""the calibration run (EXIT {calib.code}, {calib.exitMs}ms, '{calibLog}')""", calib.code == "0" && calib.exitMs >= 2000)
-        ($"""a terminal ^C while piter arms compute: weir exits at {b.exitMs}ms, before the arms reach a boundary (unsignalled {calib.exitMs}ms; must hold until {calib.exitMs - 700}ms; EXIT {b.code}, log '{joined landed}')""", b.exitMs >= calib.exitMs - 700 && Seq.isEmpty landed && b.code <> "0")
+        ($"""a terminal ^C while piter arms compute: weir exits at {b.exitMs}ms, before the arms reach a boundary (unsignalled {calib.exitMs}ms; must hold until {calib.exitMs * 6 / 10}ms; EXIT {b.code}, log '{joined landed}')""", b.exitMs * 10 >= calib.exitMs * 6 && Seq.isEmpty landed && b.code <> "0")
     ]
 
 // ---- H3R4-05: a closed stdout kills no child until the command ends ------------

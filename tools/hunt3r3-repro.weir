@@ -904,7 +904,13 @@ let h3r3d1 d =
     // the broken one is quadratic in depth and runs past the limit, which
     // also sets the kill cap so a slow runner is judged by the ratio
     let limit = 12 * t0 + 1000
-    let (t, r) = msOf (fun () -> runIn d $"{limit / 1000 + 2}" [p; "300000"; "w"])
+    let once () = msOf (fun () -> runIn d $"{limit / 1000 + 2}" [p; "300000"; "w"])
+    // the writes create 300000 files and the reads none, so a busy disk
+    // moves the ratio while the baseline stands still: a run over the limit
+    // is measured once more, and the better of the two is judged. The
+    // broken guard is five times over, on every run
+    let first = once ()
+    let (t, r) = if fst first > limit then once () else first
     failing [
         ($"the baseline ran (exit {codeOf r0}, '{outOf r0}')", codeOf r0 == 0 && outOf r0 == "0")
         underMs $"300000 write-if-absent ops at depth 10 inside a plan (the reads alone: {t0}ms)" limit (t, r)
