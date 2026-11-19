@@ -14411,10 +14411,18 @@ let private breakPrompt (at: string) (tenv0: TypeEnv) (venv0: Eval.Env) : unit =
                                 let v = Eval.eval venv te
 
                                 if v <> Eval.VUnit then
-                                    let struct (rendered, tail) =
-                                        Eval.echoShown Console.IsErrorRedirected Eval.echoPipedCap (Eval.echoPrep v)
+                                    let shown = Eval.echoPrep v
 
-                                    Console.Error.WriteLine $"{rendered} : {formatEchoTy te.Ty}{tail}"
+                                    // binary refuses the terminal here as at every echo
+                                    // [D:binary-echo]
+                                    if not Console.IsErrorRedirected && Eval.echoBinary Eval.echoPipedCap shown then
+                                        Console.Error.WriteLine
+                                            $": {formatEchoTy te.Ty} (binary output — the echo refuses a terminal; print it deliberately)"
+                                    else
+                                        let struct (rendered, tail) =
+                                            Eval.echoShown Console.IsErrorRedirected Eval.echoPipedCap shown
+
+                                        Console.Error.WriteLine $"{rendered} : {formatEchoTy te.Ty}{tail}"
                             | Declares -> Console.Error.WriteLine "error: a module line belongs in a file"
                         with
                         | Eval.ExitRequest _ -> reraise ()
