@@ -11,10 +11,11 @@ let counts =
     log
     |> Seq.map (fun line ->
         let hash = line |> Str.split " " |> Seq.head
+        // the suites sit in several files: one count a file, summed
         let count =
-            git show $"{hash}:tests/Weir.Tests/Tests.fs"
-            |> Seq.where (Str.contains "test \"")
-            |> Seq.length
+            git grep -c "test \"" $hash -- tests/Weir.Tests
+            |> Seq.map (fun perFile -> perFile |> Str.split ":" |> Seq.last |> Str.toInt)
+            |> Seq.sum
         { Label = line; Count = count })
     |> Seq.freeze
 
