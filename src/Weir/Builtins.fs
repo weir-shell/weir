@@ -5432,11 +5432,20 @@ let private debugPeekImpl: Value =
                 | null -> ""
                 | f -> f.Invoke RunPos.Current
 
-        let rendered, hint = echoValue echoPipedCap (echoPrep v)
-        let rendered = echoRender System.Console.IsErrorRedirected rendered
+        let shown = echoPrep v
         System.Console.Out.Flush()
 
-        System.Console.Error.WriteLine((if at = "" then "[peek] " else $"[{at}] ") + rendered + echoTail hint)
+        // binary refuses the terminal here as at every echo [D:binary-echo]
+        let text =
+            if not System.Console.IsErrorRedirected && echoBinary echoPipedCap shown then
+                "(binary output — the echo refuses a terminal; redirect stderr to a file to see it)"
+            else
+                let struct (rendered, tail) =
+                    echoShown System.Console.IsErrorRedirected echoPipedCap shown
+
+                rendered + tail
+
+        System.Console.Error.WriteLine((if at = "" then "[peek] " else $"[{at}] ") + text)
 
         v)
 

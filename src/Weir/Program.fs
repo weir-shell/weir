@@ -207,11 +207,9 @@ let private evalOnce (input: string) : int =
                                                 Script.partialEchoLines plainSigStyle p |> List.iter Console.WriteLine
                                             | None ->
 
-                                                let rendered, hint = Eval.echoValue Eval.echoPipedCap v
                                                 // the REPL echo's renderer [D:echo-one-renderer]
-                                                let rendered = Eval.echoRender Console.IsOutputRedirected rendered
-
-                                                let tail' = Eval.echoTail hint
+                                                let struct (rendered, tail') =
+                                                    Eval.echoShown Console.IsOutputRedirected Eval.echoPipedCap v
 
                                                 Console.WriteLine $"{rendered} : {formatEchoTy te.Ty}{tail'}"
 

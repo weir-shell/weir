@@ -2797,10 +2797,10 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                         noteCommandSeq n te bv
                         echoMeta (commandBackedEcho (echoTypes ()) n sch.Ty)
                     else
-                        let rendered, hint = Eval.echoValue cap (Eval.echoPrep bv)
+                        let struct (rendered, tail) =
+                            Eval.echoShown Console.IsOutputRedirected cap (Eval.echoPrep bv)
 
-                        Console.WriteLine
-                            $"{letEchoHead n sch.Ty} = {Eval.echoRender Console.IsOutputRedirected rendered}{Eval.echoTail hint}"
+                        Console.WriteLine $"{letEchoHead n sch.Ty} = {rendered}{tail}"
                 | _ -> Console.WriteLine(letEchoHead n sch.Ty)
 
             {
@@ -2882,11 +2882,9 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
 
                     echoMeta (letEchoMeta (echoTypes ()) name te.Ty (letSeqState v) hint)
                 | None ->
-                    let rendered, hint = Eval.echoValue cap ev
-                    let tail = Eval.echoTail hint
+                    let struct (rendered, tail) = Eval.echoShown Console.IsOutputRedirected cap ev
 
-                    Console.WriteLine
-                        $"{letEchoHead name te.Ty} = {Eval.echoRender Console.IsOutputRedirected rendered}{tail}"
+                    Console.WriteLine $"{letEchoHead name te.Ty} = {rendered}{tail}"
 
             // a `let` binds its name only — it does not rebind `it`
             // (FSI parity) [D:repl-it]
@@ -3006,8 +3004,8 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
 
                             exprEchoMeta (echoTypes ()) te.Ty hint |> Option.iter echoMeta
                         | None ->
-                            let rendered, hint = Eval.echoValue cap ev
-                            let tail = Eval.echoTail hint
+                            // one renderer with -e [D:echo-one-renderer]
+                            let struct (rendered, tail) = Eval.echoShown Console.IsOutputRedirected cap ev
 
                             // the value stays plain; the type tail recedes
                             // like every other metadata line [D:table-polish]
@@ -3017,9 +3015,8 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                                 else
                                     tail
 
-                            // one renderer with -e [D:echo-one-renderer]
                             Console.WriteLine(
-                                Eval.echoRender Console.IsOutputRedirected rendered
+                                rendered
                                 + (if meta = "" then
                                        ""
                                    else

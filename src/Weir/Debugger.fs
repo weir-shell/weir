@@ -112,17 +112,10 @@ type private Engine(channel: Stream) =
     // a value for the variables pane: never forces a lazy seq, never long
     let render (v: Eval.Value) : string =
         let text =
-            match v with
-            | Eval.VSeq items when not (items :? Collections.ICollection) && not (items :? Eval.Value list) ->
-                "<lazy seq>"
-            | Eval.VClosure _
-            | Eval.VClosurePat _
-            | Eval.VBuiltin _ -> "<fun>"
-            | v ->
-                try
-                    fst (Eval.echoValue (Some 20) v)
-                with _ ->
-                    "<unshowable>"
+            try
+                Eval.inspectValue v
+            with _ ->
+                "<unshowable>"
 
         let text = Types.quoteData text
 

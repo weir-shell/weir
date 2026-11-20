@@ -4902,3 +4902,89 @@ let framingTests =
             | other -> failtest $"{other}"
         }
     ]
+
+// the REPL's tint and the editor's tokens say the same of a command line
+// [D:tint-parity]: one reads the text as typed, the other the checked
+// tree, so no code is shared — this corpus is what holds them together
+let tintParityTests =
+    testList "the REPL's tint and the semantic tokens agree in command mode" [
+        test "head, argv and splice: every token the editor emits is tinted so, and nothing else is argv" {
+            let replClasses (line: string) : string =
+                let painted = Weir.Script.colorizeRepl (fun _ -> false) line
+                let out = System.Text.StringBuilder()
+                let mutable i = 0
+                let mutable code = ""
+
+                while i < painted.Length do
+                    if painted[i] = '\u001b' then
+                        let close = painted.IndexOf('m', i)
+                        let c = painted.Substring(i + 2, close - i - 2)
+                        code <- (if c = "0" then "" else c)
+                        i <- close + 1
+                    else
+                        out.Append(
+                            match code with
+                            | "2" -> 'a'
+                            | "36" -> 's'
+                            | "1"
+                            | "34"
+                            | "1;34" -> 'h'
+                            | _ -> '.'
+                        )
+                        |> ignore
+
+                        i <- i + 1
+
+                out.ToString()
+
+            let tokenClasses (lines: string list) (lineNo: int) : string =
+                let classes = Array.create lines[lineNo].Length '.'
+
+                for (l, c, len, ty) in Weir.Lsp.semanticTokensFor lines do
+                    if l = lineNo then
+                        for k in c .. c + len - 1 do
+                            classes[k] <-
+                                (match ty with
+                                 | 0 -> 'h'
+                                 | 1 -> 'a'
+                                 | _ -> 's')
+
+                System.String classes
+
+            for pre, line in
+                [
+                    [], "git log --oneline -n 5"
+                    [], "git tag v0.123.0"
+                    [ "let x = \"a\"" ], "git tag $x"
+                    [], "let h = git log |> Seq.head"
+                    [], "git commit -m \"msg\""
+                    [], "A=1 git status"
+                    [], "A=dkr@22ae git status"
+                    [], "git log --format=%h"
+                    [ "let files = [\"a\"]" ], "git add $@files"
+                    [ "let files = [\"a\"]" ], "git add $@(files) -v"
+                    [], "let n = $(git rev-parse HEAD) |> Seq.length"
+                    [], "^git status --short"
+                    [], "git diff -- path/to/file.txt"
+                    [], "let ok = git status | succeeds"
+                    [ "let n = 3" ], "git log -n $n --stat"
+                    [ "let d = \"x\"" ], "git -C (d) status"
+                    [ "let d = \"x\"" ], "git -C (Path.combine d (\"y\")) status"
+                    [], "let r = git status | complete"
+                    [], "git log --since=2.weeks ./src"
+                ] do
+                let repl = replClasses line
+                let tokens = tokenClasses (pre @ [ line ]) (List.length pre)
+                Expect.equal repl.Length tokens.Length line
+
+                for k in 0 .. line.Length - 1 do
+                    let t, r = tokens[k], repl[k]
+
+                    // the force prefix rides in the editor's head span; the
+                    // REPL tints it as the sigil it is
+                    let agrees = (t = '.' && r <> 'a') || t = r || (t = 'h' && line[k] = '^' && r = 's')
+
+                    if not agrees then
+                        failtest $"column {k + 1} of `{line}`: the editor says {t}, the REPL {r}\n  {tokens}\n  {repl}"
+        }
+    ]
