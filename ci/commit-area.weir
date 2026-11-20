@@ -32,17 +32,23 @@ let cli = Args.load Cli
 // entry lands in the same commit
 let areaOfSrc p =
     match p with
-    | "src/Weir/Parser.fs" | "src/Weir/Script.fs" | "src/Weir/Ast.fs" | "src/Weir/Scan.fs"
+    // Script.fs's concerns sit in a file each [D:script-by-concern], each in
+    // the area it is: Assemble is the statement grammar's first half
+    | "src/Weir/Parser.fs" | "src/Weir/Assemble.fs" | "src/Weir/Ast.fs" | "src/Weir/Scan.fs"
     // the grammar's shared half and the hand-written happy path [D:hand-parser]
     | "src/Weir/Desugar.fs" | "src/Weir/Fast.fs" -> Some "parser"
     // Effects is the ambient/mutation partition [D:pure-stage2] — Purity's
     // sibling, the classification the checker enforces (and eval consults)
     | "src/Weir/Check.fs" | "src/Weir/Purity.fs" | "src/Weir/Effects.fs"
+    // checking a statement, a module and a whole file, and what they find
+    | "src/Weir/Statements.fs" | "src/Weir/ModuleLoader.fs" | "src/Weir/Analyze.fs" | "src/Weir/Diagnostics.fs"
     | "src/Weir/Types.fs" -> Some "checker"
     | "src/Weir/Eval.fs" | "src/Weir/Session.fs" | "src/Weir/Proc.fs" -> Some "eval"
     // the module table Builtins' members answer to [D:module-table]
     | "src/Weir/Builtins.fs" | "src/Weir/Prelude.fs" | "src/Weir/Modules.fs" -> Some "builtins"
-    | "src/Weir/Repl.fs" | "src/Weir/Complete.fs" | "src/Weir/DynComplete.fs" -> Some "repl"
+    | "src/Weir/Repl.fs" | "src/Weir/Complete.fs" | "src/Weir/DynComplete.fs"
+    // the REPL's colours and its init file
+    | "src/Weir/ReplColor.fs" | "src/Weir/Init.fs" -> Some "repl"
     // the framing the language server and the debug adapter share [D:one-framing]
     | "src/Weir/Lsp.fs" | "src/Weir/Framing.fs" -> Some "lsp"
     // the editor's debugger, the language server's sibling [D:step-debugger]
@@ -54,6 +60,8 @@ let areaOfSrc p =
     // decl emitter)
     | "src/Weir/Yaml.fs" | "src/Weir/Http.fs" | "src/Weir/Serve.fs" | "src/Weir/Infer.fs"
     | "src/Weir/SchemaTypes.fs" | "src/Weir/Table.fs" | "src/Weir/Toml.fs" -> Some "adapters"
+    // the runner (Script.fs) and the signature files' two halves
+    | "src/Weir/Script.fs" | "src/Weir/Sigs.fs" | "src/Weir/SigGen.fs"
     | "src/Weir/Version.fs" | "src/Weir/Program.fs" | "src/Weir/Can.fs" | "src/Weir/Argv.fs"
     | "src/Weir/Extern.fs" | "src/Weir/Contracts.fs" | "src/Weir/Diagnose.fs"
     // the one PATH walk Extern and Contracts both make [D:one-path-walk]

@@ -100,10 +100,10 @@ let weirVerdict (src: string) : Verdict =
         src.Replace("\r\n", "\n").Split('\n')
         |> Array.toList
         |> List.mapi (fun i l -> i + 1, l)
-        |> List.filter (fun (_, raw) -> Weir.Script.classifyLine raw <> Weir.Script.LineKind.CommentOnly)
-        |> List.map (fun (n, raw) -> n, Weir.Script.stripComment raw)
+        |> List.filter (fun (_, raw) -> Weir.Assemble.classifyLine raw <> Weir.Assemble.LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, Weir.Assemble.stripComment raw)
 
-    match Weir.Script.assemble lines with
+    match Weir.Assemble.assemble lines with
     | Error _ -> Reject
     | Ok logicalLines ->
         let typeEnv0, _ =
@@ -129,9 +129,9 @@ let weirVerdict (src: string) : Verdict =
 
         // the unused-binding law rides the mirror [D:unused-bindings] — the
         // mirror replicates the runner's check phase, whole-file laws included
-        let unusedTracker = Weir.Script.UnusedTracker()
+        let unusedTracker = Weir.Statements.UnusedTracker()
 
-        let step env (ll: Weir.Script.LogicalLine) =
+        let step env (ll: Weir.Assemble.LogicalLine) =
             match env with
             | Error() -> Error()
             | Ok tenv ->
@@ -139,14 +139,14 @@ let weirVerdict (src: string) : Verdict =
                 // longer drift from the runner by construction — the incident
                 // class this file caused is retired here
                 match
-                    Weir.Script.checkStatement
+                    Weir.Statements.checkStatement
                         true
                         None
                         (fun te -> {
                             resolver with
                                 IsKnown = fun n -> Map.containsKey n te.Values || Map.containsKey n te.Modules
                         })
-                        Weir.Script.scriptOnlyImport
+                        Weir.ModuleLoader.scriptOnlyImport
                         tenv
                         ll
                 with

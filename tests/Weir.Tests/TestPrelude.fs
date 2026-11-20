@@ -159,7 +159,7 @@ let msgOf (src: string) =
     (Expect.throwsC (fun () -> run src |> ignore) id).Message
 
 let asm lines' =
-    match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+    match Weir.Assemble.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
     | Ok [ ll ] -> ll.Text
     | other -> failtest $"assembly: {other}"
 
@@ -174,7 +174,7 @@ let yamlErr lines' =
     | Ok d -> failtest $"expected an error, got {d}"
 
 let diagsIn file (lines: string list) =
-    let ds, _, _, _, _ = Weir.Script.analyzeLines file lines
+    let ds, _, _, _, _ = Weir.Analyze.analyzeLines file lines
     ds
 
 let errorsIn file lines =

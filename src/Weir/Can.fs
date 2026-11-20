@@ -19,6 +19,14 @@ module Weir.Can
 open Weir.Types
 open Weir.Ast
 open Weir.Check
+open Weir.Assemble
+open Weir.ReplColor
+open Weir.Statements
+open Weir.ModuleLoader
+open Weir.Diagnostics
+open Weir.Sigs
+open Weir.Init
+open Weir.Analyze
 open Weir.Script
 
 type Site = { File: string; Line: int; Col: int }
@@ -785,11 +793,11 @@ let run (json: bool) (strict: bool) (path: string) : int =
 
 /// per-binding purity over a checked script, in declaration order (no
 /// `let rec` exists, so a single forward pass is total)
-let pureTopBindings (stmts: (Script.LogicalLine * Script.CheckedStatement) list) : Map<string, bool> =
+let pureTopBindings (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list) : Map<string, bool> =
     stmts
     |> List.fold
         (fun (env: Map<string, bool>) (_, st) ->
             match st.Kind with
-            | Script.KLet(n, _, te) -> Map.add n (Purity.isPureExpr env te) env
+            | Statements.KLet(n, _, te) -> Map.add n (Purity.isPureExpr env te) env
             | _ -> env)
         Map.empty

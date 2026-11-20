@@ -215,7 +215,7 @@ let warningTests =
         }
         test "an unmarked init file names the marker [D:init-marker]" {
             let ic =
-                Weir.Script.checkInit Weir.Script.assumeResolver "init.weir" [ "let x = 1" ]
+                Weir.Init.checkInit Weir.Statements.assumeResolver "init.weir" [ "let x = 1" ]
 
             Expect.equal (ic.Diags |> List.map _.Code) [ "init-marker" ] ""
         }
@@ -432,35 +432,35 @@ let warningTests =
             Expect.stringContains terr.Message "regex literals are raw" ""
         }
         test "the scanner: // inside raw strings is content" {
-            Expect.equal (Weir.Script.stripComment "let s = @\"x // y\"") "let s = @\"x // y\"" "verbatim"
+            Expect.equal (Weir.Assemble.stripComment "let s = @\"x // y\"") "let s = @\"x // y\"" "verbatim"
 
             Expect.equal
-                (Weir.Script.stripComment "let s = \"\"\"x // y\"\"\" // real")
+                (Weir.Assemble.stripComment "let s = \"\"\"x // y\"\"\" // real")
                 "let s = \"\"\"x // y\"\"\""
                 "triple + a real comment after"
         }
         test "the scanner: interpolation holes nest their own strings [D:one-scanner]" {
             let src = "print $\"{\"a\" + \" // x\"}\""
-            Expect.equal (Weir.Script.stripComment src) src "a // inside a hole's string is content"
+            Expect.equal (Weir.Assemble.stripComment src) src "a // inside a hole's string is content"
 
             Expect.equal
-                (Weir.Script.stripComment "print $\"{\"\\\"\"}\" // c")
+                (Weir.Assemble.stripComment "print $\"{\"\\\"\"}\" // c")
                 "print $\"{\"\\\"\"}\""
                 "an escaped quote in a hole's string, then a real comment"
 
             Expect.equal
-                (Weir.Script.stripComment "print $\"\"\"{ \"}\" } // y\"\"\" // z")
+                (Weir.Assemble.stripComment "print $\"\"\"{ \"}\" } // y\"\"\" // z")
                 "print $\"\"\"{ \"}\" } // y\"\"\""
                 "raw interpolated: a brace in a hole's string does not close the hole"
 
-            Expect.isFalse (Weir.Script.endsInsideString "print $\"{\"}\"}\"") "closed"
-            Expect.isTrue (Weir.Script.endsInsideString "print $\"{f \"a\"") "an open hole is inside the string"
+            Expect.isFalse (Weir.Assemble.endsInsideString "print $\"{\"}\"}\"") "closed"
+            Expect.isTrue (Weir.Assemble.endsInsideString "print $\"{f \"a\"") "an open hole is inside the string"
             expectValue "$\"{\"a\" + \" // x\"}\"" (VStr "a // x")
         }
         test "the repair closers understand raw kinds" {
-            Expect.equal (Weir.Script.closers "let s = @\"dangling") "\"" "verbatim closer"
-            Expect.equal (Weir.Script.closers "let s = \"\"\"dangling") "\"\"\"" "triple closer"
-            Expect.equal (Weir.Script.closers "let s = @\"a\"\"b") "\"" "doubled quote stays inside"
+            Expect.equal (Weir.Assemble.closers "let s = @\"dangling") "\"" "verbatim closer"
+            Expect.equal (Weir.Assemble.closers "let s = \"\"\"dangling") "\"\"\"" "triple closer"
+            Expect.equal (Weir.Assemble.closers "let s = @\"a\"\"b") "\"" "doubled quote stays inside"
         }
         test "accepted matches are total: the runtime match-failure class is gone" {
             // non-exhaustive shapes are check errors, never runtime failures
@@ -727,9 +727,9 @@ let shorthandTests =
             Expect.stringContains (perr "let s = \"\\U0001F600\"") "'\\U' is not an escape" "uppercase U is unknown"
         }
         test "the scanners skip a \\u{…} whole — its braces open no hole [D:string-escapes]" {
-            let c = Weir.Script.colorizeRepl (fun _ -> false) "print $\"\\u{41}x\""
+            let c = Weir.ReplColor.colorizeRepl (fun _ -> false) "print $\"\\u{41}x\""
             Expect.stringContains c "\u001b[32m\"\\u{41}x\"\u001b[0m" "the escape paints as string, not as a hole"
-            Expect.equal (Weir.Script.closers "print $\"\\u{41}") "\"" "only the quote is open"
+            Expect.equal (Weir.Assemble.closers "print $\"\\u{41}") "\"" "only the quote is open"
         }
         test "escaped strings survive a json roundtrip" {
             let src = VSeq [ VStr """{"name":"a\"b","bytes":1048576,"readOnly":false}""" ]
@@ -1910,7 +1910,7 @@ let optionSweepTests =
             // arms it exactly like a command-headed chain
             let joined =
                 match
-                    Weir.Script.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"] | cat"; 3, "    print \"after\"" ]
+                    Weir.Assemble.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"] | cat"; 3, "    print \"after\"" ]
                 with
                 | Ok [ ll ] -> ll.Text
                 | other -> failtest $"expected one logical line, got {other}"
@@ -1928,14 +1928,14 @@ let optionSweepTests =
             // takes the whole scope — the assembler wraps `(within …)`,
             // the match-close shape [D:match-pipe-offside]
             let dedentBar =
-                match Weir.Script.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "| cat" ] with
+                match Weir.Assemble.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "| cat" ] with
                 | Ok [ ll ] -> ll.Text
                 | other -> failtest $"expected one logical line, got {other}"
 
             Expect.equal dedentBar "(within cd \"/d\" [\"x\"]) | cat" "the dedented | wraps the scope"
 
             let dedentFwd =
-                match Weir.Script.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "|> Seq.length" ] with
+                match Weir.Assemble.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "|> Seq.length" ] with
                 | Ok [ ll ] -> ll.Text
                 | other -> failtest $"expected one logical line, got {other}"
 
@@ -1943,7 +1943,7 @@ let optionSweepTests =
 
             // a pipe at body indent extends the body statement (no wrap)
             let bodyPipe =
-                match Weir.Script.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "    | cat" ] with
+                match Weir.Assemble.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "    | cat" ] with
                 | Ok [ ll ] -> ll.Text
                 | other -> failtest $"expected one logical line, got {other}"
 
@@ -2303,13 +2303,13 @@ let seqAccessTests =
 let closersTests =
     testList "Closers (the repair scanner)" [
         test "brackets, strings, interp holes at any nesting" {
-            Expect.equal (Weir.Script.closers "f (a") ")" ""
-            Expect.equal (Weir.Script.closers "{ A = (1") ")}" ""
-            Expect.equal (Weir.Script.closers "let x = \"open") "\"" ""
-            Expect.equal (Weir.Script.closers "printerr $\"q: {t") "}\"" ""
-            Expect.equal (Weir.Script.closers "$\"a{f (\"s\"") ")}\"" ""
-            Expect.equal (Weir.Script.closers "$\"esc {{ literal") "\"" ""
-            Expect.equal (Weir.Script.closers "balanced (x) done") "" ""
+            Expect.equal (Weir.Assemble.closers "f (a") ")" ""
+            Expect.equal (Weir.Assemble.closers "{ A = (1") ")}" ""
+            Expect.equal (Weir.Assemble.closers "let x = \"open") "\"" ""
+            Expect.equal (Weir.Assemble.closers "printerr $\"q: {t") "}\"" ""
+            Expect.equal (Weir.Assemble.closers "$\"a{f (\"s\"") ")}\"" ""
+            Expect.equal (Weir.Assemble.closers "$\"esc {{ literal") "\"" ""
+            Expect.equal (Weir.Assemble.closers "balanced (x) done") "" ""
         }
     ]
 
@@ -2400,14 +2400,14 @@ let binderTests =
             | Ok(SExpr e) ->
                 match Weir.Check.typecheck Weir.Builtins.typeEnv e with
                 | Ok te ->
-                    match Weir.Script.discardError te.Ty with
+                    match Weir.Statements.discardError te.Ty with
                     | Some msg -> Expect.stringContains msg "discards" ""
                     | None -> failtest "tuple statement must hit the discard rule"
                 | Error terr -> failtest (formatError terr)
             | other -> failtest $"unexpected: {other}"
         }
         test "assembler: let ( and let x, open block lets (classifier pin)" {
-            match Weir.Script.assemble [ 1, "let (a, b) ="; 2, "    (1, 2)"; 3, "a" ] with
+            match Weir.Assemble.assemble [ 1, "let (a, b) ="; 2, "    (1, 2)"; 3, "a" ] with
             | Ok [ ll; _ ] -> Expect.equal ll.Text "let (a, b) = (1, 2)" ""
             | other -> failtest $"unexpected: {other}"
         }
@@ -3048,7 +3048,7 @@ let durationTests =
             // Args.load is script-only: the Self module marks script mode
             let scriptEnv = {
                 env with
-                    Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers
+                    Modules = env.Modules |> Map.add "Self" Weir.Statements.selfMembers
             }
 
             let e =
@@ -4146,7 +4146,7 @@ let sizeTests =
         test "[<Default 10MiB>] end to end (attrArgLit's third reminder)" {
             let scriptEnv = {
                 env with
-                    Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers
+                    Modules = env.Modules |> Map.add "Self" Weir.Statements.selfMembers
             }
 
             let e = scriptEnv |> declare "type SzCli = { [<Default 10MiB>] max: Size }"
@@ -5631,7 +5631,7 @@ let portMembersTests =
                 "ends in exit or fail"
                 "the cause is named"
 
-            match Weir.Script.discardError (TVar "a1") with
+            match Weir.Statements.discardError (TVar "a1") with
             | Some m -> Expect.stringContains m "exit at the call site" "the repair is named"
             | None -> failtest "an unresolved statement type still errors"
         }
@@ -6368,14 +6368,14 @@ let jsonEscapingTests =
             // the LSP/CLI writer must send a Powerline/Nerd-Font prompt
             // icon as UTF-8 — a naive client leaves a \u escape as literal
             let glyph = System.Char.ConvertFromUtf32 0xE0A0
-            let out = Weir.Script.jsonBuild (fun w -> w.WriteStringValue glyph)
+            let out = Weir.Diagnostics.jsonBuild (fun w -> w.WriteStringValue glyph)
             Expect.stringContains out glyph "the PUA glyph is raw in the JSON"
             Expect.isFalse (out.ToLower().Contains "\\ue0a0") "no \\u escape"
             Expect.equal (System.Text.Json.JsonSerializer.Deserialize<string> out) glyph "round-trips"
         }
         test "the JSON-mandatory escapes and astral pairs stay valid" {
             let rt (s: string) =
-                let out = Weir.Script.jsonBuild (fun w -> w.WriteStringValue s)
+                let out = Weir.Diagnostics.jsonBuild (fun w -> w.WriteStringValue s)
                 System.Text.Json.JsonSerializer.Deserialize<string> out
 
             // quote/backslash/control must escape; a BMP glyph stays raw;
@@ -7437,18 +7437,21 @@ let hunt3PerfTests =
                         String.concat "" (List.init (rng.Next 8) (fun _ -> alphabet[rng.Next alphabet.Length])))
 
                 let mutable prefix = ""
-                let mutable state = Weir.Script.stringStart
+                let mutable state = Weir.Assemble.stringStart
 
                 for l in lines do
                     Expect.equal
-                        (Weir.Script.isInsideString state)
-                        (Weir.Script.endsInsideString prefix)
+                        (Weir.Assemble.isInsideString state)
+                        (Weir.Assemble.endsInsideString prefix)
                         $"after {prefix}"
 
                     prefix <- prefix + "\n" + l
-                    state <- Weir.Script.stringStep state ("\n" + l)
+                    state <- Weir.Assemble.stringStep state ("\n" + l)
 
-                Expect.equal (Weir.Script.isInsideString state) (Weir.Script.endsInsideString prefix) $"after {prefix}"
+                Expect.equal
+                    (Weir.Assemble.isInsideString state)
+                    (Weir.Assemble.endsInsideString prefix)
+                    $"after {prefix}"
         }
         test "fmt grows linearly in a statement's physical line count" {
             let heredoc n =
@@ -7513,13 +7516,13 @@ let hunt3PerfTests =
             growsWithin 6.0 "1000 checks against a 100x larger env" (checks (envOf 500)) (checks (envOf 50000))
         }
         test "a line's position index follows its own segments; equality ignores it [D:line-pos-cache]" {
-            match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.map _.name" ] with
+            match Weir.Assemble.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.map _.name" ] with
             | Ok [ ll ] ->
-                Expect.equal (Weir.Script.translate ll 9) (2, 5) "col 9 is line 2 col 5"
+                Expect.equal (Weir.Assemble.translate ll 9) (2, 5) "col 9 is line 2 col 5"
                 // re-pointed indents: the copy must not read the original's index
-                let moved = Weir.Script.withPhysicalIndents (Map [ 2, 8 ]) ll
-                Expect.equal (Weir.Script.translate moved 9) (2, 9) "the moved line reads its own indents"
-                Expect.equal (Weir.Script.translate ll 9) (2, 5) "the original is untouched"
+                let moved = Weir.Assemble.withPhysicalIndents (Map [ 2, 8 ]) ll
+                Expect.equal (Weir.Assemble.translate moved 9) (2, 9) "the moved line reads its own indents"
+                Expect.equal (Weir.Assemble.translate ll 9) (2, 5) "the original is untouched"
                 Expect.notEqual moved ll "different segments, different lines"
                 Expect.equal { ll with Ends = [||]; PosIndex = null } ll "equality is text, head and segments"
             | other -> failtest $"unexpected: {other}"
@@ -7734,8 +7737,7 @@ let replImportTests =
                     Expect.stringContains help "G.greet : string -> string" "the signature"
                     Expect.stringContains help "the greeting" "the /// doc"
 
-                    let offers =
-                        Weir.Script.suggestEntry Map.empty Map.empty (env ()) [ "G.gr" ] "G.gr" 0
+                    let offers = Weir.Sigs.suggestEntry Map.empty Map.empty (env ()) [ "G.gr" ] "G.gr" 0
 
                     Expect.contains offers "G.greet" "Tab completes the member"))
         }
@@ -7756,7 +7758,7 @@ let parallelImportTests =
 
         let errorsOf (entry: string) =
             let ds, _, _, _, _ =
-                Weir.Script.analyzeLines entry (File.ReadAllLines entry |> List.ofArray)
+                Weir.Analyze.analyzeLines entry (File.ReadAllLines entry |> List.ofArray)
 
             ds
             |> List.filter (fun d -> d.Severity = "error")
@@ -7830,13 +7832,13 @@ let parallelImportTests =
             withTempDir "weir-par-one" (fun dir ->
                 let _, _, entry = twoFailing dir
                 let pooled = errorsOf entry
-                let saved = Weir.Script.importWorkerBound
-                Weir.Script.importWorkerBound <- 1
+                let saved = Weir.ModuleLoader.importWorkerBound
+                Weir.ModuleLoader.importWorkerBound <- 1
 
                 try
                     Expect.equal (errorsOf entry) pooled "the single-worker run"
                 finally
-                    Weir.Script.importWorkerBound <- saved)
+                    Weir.ModuleLoader.importWorkerBound <- saved)
         }
 
         test "a cycle and a missing file keep the loader's messages" {
@@ -7885,7 +7887,7 @@ let parallelImportTests =
                     ]
 
                 let ds, stmts, _, _, _ =
-                    Weir.Script.analyzeLines entry (File.ReadAllLines entry |> List.ofArray)
+                    Weir.Analyze.analyzeLines entry (File.ReadAllLines entry |> List.ofArray)
 
                 Expect.isEmpty ds "clean"
 
@@ -7893,10 +7895,10 @@ let parallelImportTests =
                     stmts
                     |> List.collect (fun (_, c) ->
                         match c.Kind with
-                        | Weir.Script.KImport lm ->
+                        | Weir.Statements.KImport lm ->
                             (lm.Body
                              |> List.choose (function
-                                 | _, Weir.Script.CImport inner -> Some inner.Body
+                                 | _, Weir.Statements.CImport inner -> Some inner.Body
                                  | _ -> None))
                             @ [ lm.Body ]
                         | _ -> [])
@@ -7906,7 +7908,7 @@ let parallelImportTests =
                     |> List.filter (fun b ->
                         b
                         |> List.exists (function
-                            | _, Weir.Script.CLet("one", _) -> true
+                            | _, Weir.Statements.CLet("one", _) -> true
                             | _ -> false))
 
                 Expect.equal (List.length coreBodies) 3 "core reached through L, R and directly"

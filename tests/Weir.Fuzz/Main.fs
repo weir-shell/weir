@@ -69,7 +69,7 @@ type SpanVerdict =
     | SpanMiss of string
 
 let spanSoundCore (injected: string list) (physLine: int) (extent: int) : SpanVerdict =
-    let diags, _, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" injected
+    let diags, _, _, _, _ = Weir.Analyze.analyzeLines "fuzz.weir" injected
 
     match diags |> List.filter (fun d -> d.Severity = "error") with
     | [] -> SpanNoDiag $"no diagnostic for a bad token at line {physLine}"
@@ -163,9 +163,9 @@ let private totalityCore (timeoutMs: int) (label: string) (work: unit -> unit) :
 // not depend on the pass (a second analysis says the same) — pinned
 // structurally trivial, so it stays trivial
 let private recoveryLaws (lines: string list) =
-    let diags, stmts, _, _, partials = Weir.Script.analyzeLines "fuzz.weir" lines
+    let diags, stmts, _, _, partials = Weir.Analyze.analyzeLines "fuzz.weir" lines
 
-    let heads (xs: (Weir.Script.LogicalLine * _) list) =
+    let heads (xs: (Weir.Assemble.LogicalLine * _) list) =
         xs |> List.map (fun (ll, _) -> ll.Head) |> Set.ofList
 
     if not (Set.isEmpty (Set.intersect (heads stmts) (heads partials))) then
@@ -177,14 +177,14 @@ let private recoveryLaws (lines: string list) =
     then
         failtestf "a partial without an error diagnostic\non:\n%s" (showProgram lines)
 
-    let diags2, _, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" lines
+    let diags2, _, _, _, _ = Weir.Analyze.analyzeLines "fuzz.weir" lines
 
     if diags <> diags2 then
         failtestf "diagnostics changed between two analyses of one text\non:\n%s" (showProgram lines)
 
 // assembler/parser/checker totality on one input, with a hang bound
 let private totality (lines: string list) =
-    match totalityCore 5000 "check pipeline" (fun () -> Weir.Script.analyzeLines "fuzz.weir" lines |> ignore) with
+    match totalityCore 5000 "check pipeline" (fun () -> Weir.Analyze.analyzeLines "fuzz.weir" lines |> ignore) with
     | Ok() -> ()
     | Error m -> failtestf "%s\non:\n%s" m (showProgram lines)
 
@@ -192,10 +192,10 @@ let private totality (lines: string list) =
 // the fast parser's tree is the grammar's, or it refused — the oracle says
 // which, and any other answer fails here with the statement
 let private oracleResolver =
-    Weir.Script.assumeResolver (fst (Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value))
+    Weir.Statements.assumeResolver (fst (Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv.Value))
 
 let private agreement (lines: string list) =
-    match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+    match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
     | Error _ -> ()
     | Ok lls ->
         for ll in lls do
@@ -214,7 +214,7 @@ let private agreement (lines: string list) =
 let private depthDiagnoses (label: string) (line: string) =
     let work =
         System.Threading.Tasks.Task.Run(fun () ->
-            let diags, _, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" [ line ]
+            let diags, _, _, _, _ = Weir.Analyze.analyzeLines "fuzz.weir" [ line ]
             diags)
 
     let finished =
@@ -237,7 +237,7 @@ let private depthDiagnoses (label: string) (line: string) =
 let private diagnosesWithinBound (label: string) (boundMs: int) (lines: string list) =
     let work =
         System.Threading.Tasks.Task.Run(fun () ->
-            let diags, _, _, _, _ = Weir.Script.analyzeLines "fuzz.weir" lines
+            let diags, _, _, _, _ = Weir.Analyze.analyzeLines "fuzz.weir" lines
             diags)
 
     let finished =
@@ -262,10 +262,10 @@ let private opSpine n =
 // per-statement parse shapes under the permissive resolver — the
 // respace guard's own predicate, reused (one shape language)
 let private shapesOf (lines: string list) : string list option =
-    match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+    match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
     | Error _ -> None
     | Ok lls ->
-        let r = Weir.Script.assumeResolver Weir.Builtins.typeEnv
+        let r = Weir.Statements.assumeResolver Weir.Builtins.typeEnv
 
         Some(
             lls
@@ -760,7 +760,7 @@ let tests =
         // check agrees with run [PLAN-refactor-followups 1]: the
         // most-repeated failure shape is the assume-resolver (check)
         // and the hard resolver (run) disagreeing about what a name
-        // is — one predicate (Script.assumeResolver), so agreement
+        // is — one predicate (Statements.assumeResolver), so agreement
         // needs a standing assertion. For every
         // generated program: parse each logical line under both
         // resolvers (same sexpr), then check under both (same
@@ -773,12 +773,12 @@ let tests =
                 let lines = renderPlain p
                 let numbered = lines |> List.mapi (fun i l -> i + 1, l)
 
-                match Weir.Script.assemble numbered with
+                match Weir.Assemble.assemble numbered with
                 | Error e -> failtestf "assemble: %s\n%s" e (showProgram lines)
                 | Ok lls ->
                     Weir.Extern.refresh ()
 
-                    let noImports: Weir.Script.ImportLoader =
+                    let noImports: Weir.Statements.ImportLoader =
                         fun _ _ _ -> failwith "generated programs never import"
 
                     let mutable ta = Weir.Builtins.typeEnv
@@ -787,8 +787,8 @@ let tests =
 
                     for ll in lls do
                         if not stop then
-                            let pa = Weir.Parser.parseLine (Weir.Script.assumeResolver ta) ll.Text
-                            let pb = Weir.Parser.parseLine (Weir.Script.resolver tb) ll.Text
+                            let pa = Weir.Parser.parseLine (Weir.Statements.assumeResolver ta) ll.Text
+                            let pb = Weir.Parser.parseLine (Weir.Statements.resolver tb) ll.Text
 
                             (match pa, pb with
                              | Ok sa, Ok sb ->
@@ -818,9 +818,16 @@ let tests =
 
                             if not stop then
                                 let ca =
-                                    Weir.Script.checkStatement true None Weir.Script.assumeResolver noImports ta ll
+                                    Weir.Statements.checkStatement
+                                        true
+                                        None
+                                        Weir.Statements.assumeResolver
+                                        noImports
+                                        ta
+                                        ll
 
-                                let cb = Weir.Script.checkStatement true None Weir.Script.resolver noImports tb ll
+                                let cb =
+                                    Weir.Statements.checkStatement true None Weir.Statements.resolver noImports tb ll
 
                                 match ca, cb with
                                 | Ok a, Ok b ->
@@ -1112,7 +1119,7 @@ let renameRoundTrip (sample: int option) (path: string) (lines: string list) : s
             let renamed = applyEdits lines edits nn
             let diags1, _, _, _, _ = Weir.Lsp.analyzeCached path renamed
 
-            let key (d: Weir.Script.Diagnostic) (msg: string) = d.Line, d.Col, d.Severity, d.Code, msg
+            let key (d: Weir.Diagnostics.Diagnostic) (msg: string) = d.Line, d.Col, d.Severity, d.Code, msg
 
             let expected =
                 diags0 |> List.map (fun d -> key d ((wordRe old).Replace(d.Message, nn)))
@@ -1169,7 +1176,7 @@ let renameTests =
             let lines = [ "let abc = 1"; "print (show abc)" ]
             Expect.isEmpty (renameRoundTrip None "ctl.weir" lines) "the honest rename is clean"
             let partial = applyEdits lines [ (1, 5, 3) ] "q99"
-            let diags, _, _, _, _ = Weir.Script.analyzeLines "ctl.weir" partial
+            let diags, _, _, _, _ = Weir.Analyze.analyzeLines "ctl.weir" partial
 
             Expect.isTrue
                 (diags |> List.exists (fun d -> d.Severity = "error"))

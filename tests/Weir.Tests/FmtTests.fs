@@ -81,7 +81,10 @@ let fmtSourceTests =
             | Ok(lines, _) -> Expect.equal lines [ "print \"a\""; "print \"b\"" ] "a CR-only file"
             | Error e -> failtest e
 
-            Expect.equal (Weir.Script.splitSourceText "a\r\nb\rc\nd\n") [ "a"; "b"; "c"; "d"; "" ] "the one splitter"
+            Expect.equal
+                (Weir.ModuleLoader.splitSourceText "a\r\nb\rc\nd\n")
+                [ "a"; "b"; "c"; "d"; "" ]
+                "the one splitter"
         }
         test "a yaml block whose first line is a deeper comment formats, never crashes [D:yaml-district]" {
             // the comment is invisible to the reader's layout: the block's
@@ -634,7 +637,7 @@ let fmtRecordTests =
         }
         test "an update header anchors on its first FIELD, not the source [D:field-alignment]" {
             let asm lines =
-                Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+                Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l))
 
             match asm [ "let c = { d with host = \"x\""; "                 port = 2 }" ] with
             | Ok [ ll ] -> Expect.stringContains ll.Text "port = 2" "one statement, aligned under host"

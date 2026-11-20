@@ -715,7 +715,7 @@ let vendorClosureTests =
                     "s/sibnoext", modText "Sib" []
                 ]
 
-            match Weir.Script.walkVendorClosure fetch "s/entry.weir" with
+            match Weir.ModuleLoader.walkVendorClosure fetch "s/entry.weir" with
             | Ok files ->
                 Expect.equal
                     (files |> List.map fst)
@@ -760,7 +760,7 @@ let vendorClosureTests =
                 | Error e -> Expect.stringContains e want $"{spec} --path {p}"
         }
         test "a leaf walks to itself" {
-            match Weir.Script.walkVendorClosure (fetchFrom [ "x.weir", modText "X" [] ]) "x.weir" with
+            match Weir.ModuleLoader.walkVendorClosure (fetchFrom [ "x.weir", modText "X" [] ]) "x.weir" with
             | Ok [ ("x.weir", _) ] -> ()
             | other -> failtest $"{other}"
         }
@@ -778,7 +778,9 @@ let vendorClosureTests =
             ]
 
             for imp, wants in cases do
-                match Weir.Script.walkVendorClosure (fetchFrom [ "lib/e.weir", modText "E" [ imp ] ]) "lib/e.weir" with
+                match
+                    Weir.ModuleLoader.walkVendorClosure (fetchFrom [ "lib/e.weir", modText "E" [ imp ] ]) "lib/e.weir"
+                with
                 | Ok _ -> failtest $"{imp} must refuse"
                 | Error e ->
                     for w in wants do
@@ -786,7 +788,7 @@ let vendorClosureTests =
         }
         test "a missing import names the importing site; the entry spec cannot escape" {
             match
-                Weir.Script.walkVendorClosure
+                Weir.ModuleLoader.walkVendorClosure
                     (fetchFrom [ "e.weir", modText "E" [ "import \"./gone.weir\" as G" ] ])
                     "e.weir"
             with
@@ -795,7 +797,7 @@ let vendorClosureTests =
                 Expect.stringContains e "404" e
             | Ok _ -> failtest "a missing import must refuse"
 
-            match Weir.Script.walkVendorClosure (fetchFrom []) "../x.weir" with
+            match Weir.ModuleLoader.walkVendorClosure (fetchFrom []) "../x.weir" with
             | Error e -> Expect.stringContains e "not a file inside the repo" e
             | Ok _ -> failtest "an escaping entry must refuse"
         }
@@ -806,13 +808,13 @@ let vendorClosureTests =
                     "b.weir", modText "B" [ "import \"./a.weir\" as A" ]
                 ]
 
-            match Weir.Script.walkVendorClosure fetch "a.weir" with
+            match Weir.ModuleLoader.walkVendorClosure fetch "a.weir" with
             | Ok files -> Expect.equal (files |> List.map fst) [ "a.weir"; "b.weir" ] "each once"
             | Error e -> failtest e
         }
         test "the layout mirrors the repo under the common ancestor directory" {
             Expect.equal
-                (Weir.Script.closureAncestor [
+                (Weir.ModuleLoader.closureAncestor [
                     "starship/starship.weir"
                     "starship/lib/a.weir"
                     "starship/lib/mods/b.weir"
@@ -820,8 +822,12 @@ let vendorClosureTests =
                 "starship/"
                 "the port"
 
-            Expect.equal (Weir.Script.closureAncestor [ "lib/mods/x.weir"; "util.weir" ]) "" "an import above the entry"
-            Expect.equal (Weir.Script.closureAncestor [ "a/b/x.weir"; "a/b/c/y.weir" ]) "a/b/" "deep"
+            Expect.equal
+                (Weir.ModuleLoader.closureAncestor [ "lib/mods/x.weir"; "util.weir" ])
+                ""
+                "an import above the entry"
+
+            Expect.equal (Weir.ModuleLoader.closureAncestor [ "a/b/x.weir"; "a/b/c/y.weir" ]) "a/b/" "deep"
         }
         test "validation loads the closure: a module purity violation in a lib file names that file" {
             withTempDir "weir-closure-check" (fun dir ->
@@ -838,7 +844,7 @@ let vendorClosureTests =
                     "module A\n\nlet now = ls\n\nprint \"x\"\n"
                 )
 
-                match Weir.Script.checkVendoredClosure dir "e.weir" with
+                match Weir.ModuleLoader.checkVendoredClosure dir "e.weir" with
                 | Ok n -> failtest $"a command in a lib must refuse ({n})"
                 | Error e -> Expect.stringContains e "a.weir" e
 
@@ -849,7 +855,7 @@ let vendorClosureTests =
                     "module E\n\nimport \"./lib/a.weir\" as A\n\n/// y\nlet g : int -> int\n\nlet g x = A.f x\n"
                 )
 
-                match Weir.Script.checkVendoredClosure dir "e.weir" with
+                match Weir.ModuleLoader.checkVendoredClosure dir "e.weir" with
                 | Ok n -> Expect.equal n 1 "the entry's member count"
                 | Error e -> failtest e)
         }
@@ -1448,7 +1454,7 @@ let hunt4Tests =
             File.Delete path
 
     let caps (lines: string list) : string =
-        let _, pairs, _, _, _ = Weir.Script.analyzeLines "hunt4.weir" lines
+        let _, pairs, _, _, _ = Weir.Analyze.analyzeLines "hunt4.weir" lines
 
         Weir.Can.collect "hunt4.weir" (Weir.Can.ofChecked pairs)
         |> Weir.Can.renderHuman "hunt4.weir"

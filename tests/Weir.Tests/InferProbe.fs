@@ -20,9 +20,11 @@ let private takenBase: Set<string> =
 // same path the REPL uses produces a new env whose `from json <Name>`
 // checks. We drive checkStatement exactly as Repl.fs does.
 let private inject (tenv: TypeEnv) (line: string) : Result<TypeEnv, string> =
-    let ll = Script.singleLine line
+    let ll = Assemble.singleLine line
 
-    match Script.checkStatement false None (fun _ -> Script.resolver tenv) Script.scriptOnlyImport tenv ll with
+    match
+        Statements.checkStatement false None (fun _ -> Statements.resolver tenv) ModuleLoader.scriptOnlyImport tenv ll
+    with
     | Ok chk -> Ok chk.Env
     | Error d -> Error d.Message
 
@@ -33,18 +35,24 @@ let private injectBlock (tenv: TypeEnv) (text: string) : Result<TypeEnv, string>
         text.Split '\n'
         |> Array.toList
         |> List.mapi (fun i l -> i + 1, l)
-        |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
-        |> List.map (fun (n, raw) -> n, Script.stripComment raw)
+        |> List.filter (fun (_, raw) -> Assemble.classifyLine raw <> Assemble.LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, Assemble.stripComment raw)
 
-    match Script.assemble numbered with
+    match Assemble.assemble numbered with
     | Error msg -> Error msg
     | Ok lls ->
         let rec go env rest =
             match rest with
             | [] -> Ok env
-            | (ll: Script.LogicalLine) :: tail ->
+            | (ll: Assemble.LogicalLine) :: tail ->
                 match
-                    Script.checkStatement false None (fun _ -> Script.resolver env) Script.scriptOnlyImport env ll
+                    Statements.checkStatement
+                        false
+                        None
+                        (fun _ -> Statements.resolver env)
+                        ModuleLoader.scriptOnlyImport
+                        env
+                        ll
                 with
                 | Ok chk -> go chk.Env tail
                 | Error d -> Error d.Message
@@ -733,7 +741,7 @@ let inferRules =
 // #save's bare-alias qualifier [D:repl-save]: span-based, string-safe
 [<Tests>]
 let saveQualify =
-    let r = Script.resolver preludeTypeEnv
+    let r = Statements.resolver preludeTypeEnv
 
     testList "save qualify" [
         test "single-home bare aliases qualify" {
@@ -780,7 +788,7 @@ let saveQualify =
                 "let _r1 = sample |> from json Root |> _.items |> Seq.map _.name |> Seq.length"
             ]
 
-            let diags, _, _, _, _ = Weir.Script.analyzeLines "saved.weir" saved
+            let diags, _, _, _, _ = Weir.Analyze.analyzeLines "saved.weir" saved
             Expect.isEmpty diags (sprintf "saved script checks clean; diags: %A" diags)
         }
     ]
@@ -898,7 +906,7 @@ let tableInferRules =
                     "let _r = sample |> from table Pod |> Seq.map (fun p -> p.name) |> Seq.length"
                 ]
 
-            let diags, _, _, _, _ = Weir.Script.analyzeLines "drafted.weir" saved
+            let diags, _, _, _, _ = Weir.Analyze.analyzeLines "drafted.weir" saved
             Expect.isEmpty diags (sprintf "the draft must check and read; diags: %A" diags)
         }
     ]

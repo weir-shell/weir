@@ -8440,7 +8440,7 @@ and private finalizeYamlItem (ctx: Ctx) (item: TypedYamlTplItem) : TypedYamlTplI
 
 /// anonymous shapes in the adapter slot register their canonical defs
 /// [D:anon-records] — collected up front so field access on the result
-/// type resolves anywhere in the statement; Script.checkStatement uses
+/// type resolves anywhere in the statement; Statements.checkStatement uses
 /// the same extension to persist them into the outgoing env
 let anonDefs (expr: Expr) : (string * TypeDef) list =
     let acc = System.Collections.Generic.Dictionary<string, TypeDef>()

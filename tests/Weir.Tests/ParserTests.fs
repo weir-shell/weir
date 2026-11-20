@@ -661,14 +661,14 @@ let bracketContinuationTests =
     // [D:multiline-brackets] — fixture diversity per the standing rule:
     // headed / standalone / nested / at-boundary
     let joined lines =
-        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
         // field/element joins use the sentinel [D:field-sep-sentinel]; show
         // it back as ';' so these structural pins read (the asmSib inverse)
         | Ok [ ll ] -> ll.Text.Replace(" " + Weir.Parser.fieldSepStr + " ", " ; ")
         | other -> failtest $"unexpected: {other}"
 
     let assembleErr lines =
-        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
         | Error e -> e
         | Ok lls -> failtest $"expected an assembly error, got {lls |> List.map (fun l -> l.Text)}"
 
@@ -771,7 +771,7 @@ let bracketContinuationTests =
         }
         test "at-boundary: a col-0 statement after the close is a new statement" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "type T ="
                     2, "    { A: int"
                     3, "      B: int }"
@@ -795,7 +795,7 @@ let bracketContinuationTests =
             // fresh statement and the parser hit a stray keyword; the col-0
             // continuation gate now admits else/elif like `until`/`always`.
             let asm lines =
-                Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+                Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l))
 
             match asm [ "if x then"; "    print \"a\""; "else"; "    print \"b\"" ] with
             | Ok [ _ ] -> ()
@@ -877,7 +877,7 @@ let bracketContinuationTests =
         }
         test "compound-paren-prune: a match inside a closed lambda never wraps [D:compound-paren-prune]" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let f remote ="
                     2, "    let symref ="
                     3, "        $(git ls-remote --symref $remote HEAD)"
@@ -933,7 +933,7 @@ let blockLetCmdTests =
     testList "Block-let command RHS" [
         test "the forms: command RHS binds inside a body [D:block-let-cmd]" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let graft c ="
                     2, "    let tree = git rev-parse $c | Seq.head"
                     3, "    tree"
@@ -953,10 +953,10 @@ let blockLetCmdTests =
             // the two spellings must produce the same TypedExpr shape
             // (ELet of the same chain expression)
             let bare =
-                Weir.Script.assemble [ 1, "let f c ="; 2, "    let a = git rev-parse $c | Seq.head"; 3, "    a" ]
+                Weir.Assemble.assemble [ 1, "let f c ="; 2, "    let a = git rev-parse $c | Seq.head"; 3, "    a" ]
 
             let sigil =
-                Weir.Script.assemble [ 1, "let f c ="; 2, "    let a = $(git rev-parse $c) |> Seq.head"; 3, "    a" ]
+                Weir.Assemble.assemble [ 1, "let f c ="; 2, "    let a = $(git rev-parse $c) |> Seq.head"; 3, "    a" ]
 
             match bare, sigil with
             | Ok [ b ], Ok [ s ] -> Expect.isTrue (b.Text.Length > 0 && s.Text.Length > 0) "both assemble"
@@ -984,7 +984,7 @@ let blockLetCmdTests =
         }
         test "products: a command RHS as the LAST binding before the body" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let f c ="
                     2, "    let a = 1"
                     3, "    let b = git rev-parse $c | Seq.head"
@@ -1021,7 +1021,7 @@ let statementLetTests =
     // the run path: assemble + parse under the real resolver + check +
     // eval, statement by statement (the dedent-join fold, real heads)
     let runStmts (lines: string list) : unit =
-        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
         | Error e -> failtest $"assemble: {e}"
         | Ok lls ->
             lls
@@ -1173,7 +1173,7 @@ let statementLetTests =
             // the command and the lambda's own closer — on the spine
             // today, and unchanged by this ruling
             let assembled =
-                match Weir.Script.assemble [ 1, "let out = [1] |> Seq.map (fun _ ->"; 2, "    echo charlie)" ] with
+                match Weir.Assemble.assemble [ 1, "let out = [1] |> Seq.map (fun _ ->"; 2, "    echo charlie)" ] with
                 | Ok [ ll ] -> ll.Text
                 | other -> failtest $"unexpected assembly: {other}"
 
@@ -3314,7 +3314,7 @@ let withinEnvPairsTests =
                 "values"
         }
         test "the head builds the envPair list; a bound seq still works" {
-            match Weir.Script.assemble [ 1, "within env A=1"; 2, "    git status" ] with
+            match Weir.Assemble.assemble [ 1, "within env A=1"; 2, "    git status" ] with
             | Ok [ ll ] ->
                 match Weir.Parser.parseLineFull cmdResolver ll.Text with
                 | Ok s -> Expect.stringContains (Weir.Ast.sexprStmt s) "|envPair" "pairs"
@@ -3326,7 +3326,7 @@ let withinEnvPairsTests =
                 "bound"
         }
         test "a first body line's own prefix stays its command's" {
-            match Weir.Script.assemble [ 1, "within env A=1"; 2, "    B=2 git status"; 3, "    git log" ] with
+            match Weir.Assemble.assemble [ 1, "within env A=1"; 2, "    B=2 git status"; 3, "    git log" ] with
             | Ok [ ll ] ->
                 Expect.stringContains ll.Text (string Weir.Parser.sibSep) "the head joins sentineled"
 
@@ -3360,7 +3360,7 @@ let withinAlwaysAnyTests =
     let diagsOf = errorMsgsIn "waa.weir"
 
     let shape (lines: string list) =
-        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
         | Ok [ ll ] ->
             match Weir.Parser.parseLineFull cmdResolver ll.Text with
             | Ok s -> Weir.Ast.sexprStmt s
@@ -3586,17 +3586,17 @@ let withinAlwaysLockTests =
 let multilineLambdaTests =
     testList "Multiline lambdas" [
         test "closer alone pops at col 0 and at body indent [D:multiline-lambda]" {
-            match Weir.Script.assemble [ 1, "[\"a\"] |> Seq.iter (fun r ->"; 2, "    print r"; 3, ")" ] with
+            match Weir.Assemble.assemble [ 1, "[\"a\"] |> Seq.iter (fun r ->"; 2, "    print r"; 3, ")" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "[\"a\"] |> Seq.iter (fun r -> print r )" ""
             | other -> failtest $"unexpected: {other}"
 
-            match Weir.Script.assemble [ 1, "[\"a\"] |> Seq.iter (fun r ->"; 2, "    print r"; 3, "    )" ] with
+            match Weir.Assemble.assemble [ 1, "[\"a\"] |> Seq.iter (fun r ->"; 2, "    print r"; 3, "    )" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "[\"a\"] |> Seq.iter (fun r -> print r )" ""
             | other -> failtest $"unexpected: {other}"
         }
         test "the closer returns the statement to the opener's level: siblings sequence after" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let v ="
                     2, "    xs |> Seq.iter (fun r ->"
                     3, "        print r"
@@ -3608,12 +3608,12 @@ let multilineLambdaTests =
             | other -> failtest $"unexpected: {other}"
         }
         test "body at the opener's indent is a continuation, not a sibling (F#-parity)" {
-            match Weir.Script.assemble [ 1, "let f ="; 2, "    [1] |> Seq.map (fun x ->"; 3, "    x + 1)" ] with
+            match Weir.Assemble.assemble [ 1, "let f ="; 2, "    [1] |> Seq.map (fun x ->"; 3, "    x + 1)" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let f = [1] |> Seq.map (fun x -> x + 1)" ""
             | other -> failtest $"unexpected: {other}"
         }
         test "a line left of the opener errors naming the lambda (F# errors too: FS0058)" {
-            match Weir.Script.assemble [ 1, "let f ="; 2, "    [1] |> Seq.map (fun x ->"; 3, "  x + 1)" ] with
+            match Weir.Assemble.assemble [ 1, "let f ="; 2, "    [1] |> Seq.map (fun x ->"; 3, "  x + 1)" ] with
             | Error e -> Expect.stringContains e "left of the lambda '(' opened at line 2" ""
             | other -> failtest $"expected the leak error, got {other}"
         }
@@ -3621,17 +3621,17 @@ let multilineLambdaTests =
             // opener at col 0 makes col 0 the body floor (the
             // at-opener-indent continuation rule): nothing sits left of
             // it, so the runaway surfaces at close, named
-            match Weir.Script.assemble [ 1, "xs |> Seq.iter (fun r ->"; 2, "    print r"; 3, "let x = 1" ] with
+            match Weir.Assemble.assemble [ 1, "xs |> Seq.iter (fun r ->"; 2, "    print r"; 3, "let x = 1" ] with
             | Error e -> Expect.stringContains e "line 1: this lambda's '(' is still open" ""
             | other -> failtest $"expected the open-lambda close error, got {other}"
         }
         test "EOF with the lambda open names the opener line" {
-            match Weir.Script.assemble [ 1, "xs |> Seq.iter (fun r ->"; 2, "    print r" ] with
+            match Weir.Assemble.assemble [ 1, "xs |> Seq.iter (fun r ->"; 2, "    print r" ] with
             | Error e -> Expect.stringContains e "line 1: this lambda's '(' is still open" ""
             | other -> failtest $"expected the open-lambda error, got {other}"
         }
         test "a body let still needs its body before the paren closes" {
-            match Weir.Script.assemble [ 1, "xs |> Seq.iter (fun r ->"; 2, "    let a = 1"; 3, ")" ] with
+            match Weir.Assemble.assemble [ 1, "xs |> Seq.iter (fun r ->"; 2, "    let a = 1"; 3, ")" ] with
             | Error e -> Expect.stringContains e "needs a body" ""
             | other -> failtest $"expected noBody, got {other}"
         }
@@ -3639,7 +3639,7 @@ let multilineLambdaTests =
             // [D:compound-paren-prune]: the match must not swallow
             // the next outer stage
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let v ="
                     2, "    xs"
                     3, "    |> Seq.map (fun n ->"
@@ -3661,7 +3661,7 @@ let multilineLambdaTests =
             // the deep-indent last body line must not leave the block's
             // sibling level down there — `40` sequences, never applies
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let v ="
                     2, "    xs |> Seq.iter (fun r ->"
                     3, "        print r)"
@@ -3719,7 +3719,7 @@ let multilineLambdaTests =
 
             // the level restores: a sibling after `])` sequences
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let v ="
                     2, "    xs |> Seq.iter (fun r ->"
                     3, "        print ["
@@ -3733,7 +3733,7 @@ let multilineLambdaTests =
         }
         test "nested multiline lambdas pop innermost-first" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "rows |> Seq.iter (fun row ->"
                     2, "    row |> Seq.iter (fun c ->"
                     3, "        print c"
@@ -3840,7 +3840,7 @@ let bracketLambdaBodyTests =
     testList "Lambda bodies in bracket entries [D:bracket-lambda-body]" [
         test "a block let in a record field's lambda body closes with `in`; the next field splits at the field sentinel" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let c = {"
                     2, "    write = fun n ->"
                     3, "        let a = n + 1"
@@ -3860,7 +3860,7 @@ let bracketLambdaBodyTests =
         }
         test "body statements sequence at the statement sentinel, never as an application" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let c = {"
                     2, "    write = fun n ->"
                     3, "        print \"x\""
@@ -4042,7 +4042,7 @@ let bracketLambdaBodyTests =
         }
         test "a single-expression continuation body stays what it was" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let c = {"
                     2, "    act = (fun () ->"
                     3, "        1)"
@@ -4078,16 +4078,18 @@ let bracketLambdaBodyTests =
 let pipeAlignTests =
     testList "Pipe alignment" [
         test "off-by-one siblings error naming the column [D:pipe-alignment]" {
-            match Weir.Script.assemble [ 1, "type C ="; 2, "    | A of int"; 3, "     | B of string" ] with
+            match Weir.Assemble.assemble [ 1, "type C ="; 2, "    | A of int"; 3, "     | B of string" ] with
             | Error e -> Expect.stringContains e "they sit at column 4" ""
             | Ok _ -> failtest "expected the alignment error"
 
-            match Weir.Script.assemble [ 1, "let v ="; 2, "    match 1 with"; 3, "    | 1 -> 1"; 4, "   | _ -> 0" ] with
+            match
+                Weir.Assemble.assemble [ 1, "let v ="; 2, "    match 1 with"; 3, "    | 1 -> 1"; 4, "   | _ -> 0" ]
+            with
             | Error e -> Expect.stringContains e "align the group" ""
             | Ok _ -> failtest "expected the alignment error"
         }
         test "arms left of their match error naming the head" {
-            match Weir.Script.assemble [ 1, "let v ="; 2, "    match 3 with"; 3, "| _ -> 0" ] with
+            match Weir.Assemble.assemble [ 1, "let v ="; 2, "    match 3 with"; 3, "| _ -> 0" ] with
             | Error e -> Expect.stringContains e "left of its match (head at column 4)" ""
             | Ok _ -> failtest "expected the offside error"
         }
@@ -4114,7 +4116,9 @@ let pipeAlignTests =
 
             // the other direction: an arm genuinely left of its match
             // (no arm group at its column) keeps the offside error
-            match Weir.Script.assemble [ 1, "let v ="; 2, "    match 3 with"; 3, "    | 1 -> 0"; 4, "  | _ -> 1" ] with
+            match
+                Weir.Assemble.assemble [ 1, "let v ="; 2, "    match 3 with"; 3, "    | 1 -> 0"; 4, "  | _ -> 1" ]
+            with
             | Error e -> Expect.stringContains e "align the group" "misaligned arms still refuse"
             | Ok _ -> failtest "expected the alignment error"
         }
@@ -4124,7 +4128,7 @@ let pipeAlignTests =
         // paren depth can only be another arm
         test "the nested-match return F# reads from columns now assembles" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let v ="
                     2, "    match 1 with"
                     3, "    | 1 ->"
@@ -4145,7 +4149,7 @@ let pipeAlignTests =
             expectValue "let v = 1 in match v with | 1 -> \"a\" | _ -> \"b\"" (VStr "a")
 
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let v ="
                     2, "    match 1 with"
                     3, "        | 1 -> 1"
@@ -4163,19 +4167,19 @@ let multilineTests =
             // the keyword stands alone; glued to a dash it is a command word,
             // so the block-let still takes its body from the next line
             for rhs in [ "cat -in $k"; "openssl rsa --in $k -noout"; "cat $k -in" ] do
-                match Weir.Script.assemble [ 1, "let f k ="; 2, $"    let m = {rhs}"; 3, "    m" ] with
+                match Weir.Assemble.assemble [ 1, "let f k ="; 2, $"    let m = {rhs}"; 3, "    m" ] with
                 | Ok [ a ] ->
                     Expect.equal a.Text $"let f k = let m = {rhs} in m" $"the let closes on the next line: {rhs}"
                 | other -> failtest $"unexpected for {rhs}: {other}"
 
-            match Weir.Script.assemble [ 1, "let f k ="; 2, "    let m = 3 in m" ] with
+            match Weir.Assemble.assemble [ 1, "let f k ="; 2, "    let m = 3 in m" ] with
             | Ok [ a ] -> Expect.equal a.Text "let f k = let m = 3 in m" "a real inline in still closes the let"
             | other -> failtest $"unexpected: {other}"
         }
         test
             "an inline let…in inside an indented block is a whole expression, not a block-let head [D:inline-let-in-blocks]" {
             // function, if, lambda, match-arm bodies: the same line works at column 0
-            match Weir.Script.assemble [ 1, "let f () ="; 2, "    let q = 3 in q + 1"; 3, "print $\"{f ()}\"" ] with
+            match Weir.Assemble.assemble [ 1, "let f () ="; 2, "    let q = 3 in q + 1"; 3, "print $\"{f ()}\"" ] with
             | Ok [ a; _ ] -> Expect.equal a.Text "let f () = let q = 3 in q + 1" "no pending body, no noBody error"
             | other -> failtest $"unexpected: {other}"
 
@@ -4198,12 +4202,12 @@ let multilineTests =
         }
         test
             "a block let whose RHS only MENTIONS in (string, bracket, for) still waits for its body [D:inline-let-in-blocks]" {
-            match Weir.Script.assemble [ 1, "let f () ="; 2, "    let s = \"a in b\""; 3, "    s" ] with
+            match Weir.Assemble.assemble [ 1, "let f () ="; 2, "    let s = \"a in b\""; 3, "    s" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let f () = let s = \"a in b\" in s" "the string's in is not the let's"
             | other -> failtest $"unexpected: {other}"
 
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let f () ="
                     2, "    let n = Seq.length [for i in [1; 2] -> i]"
                     3, "    n"
@@ -4213,18 +4217,18 @@ let multilineTests =
             | other -> failtest $"unexpected: {other}"
         }
         test "block lets: implicit in at the same indentation" {
-            match Weir.Script.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, "    a + 1" ] with
+            match Weir.Assemble.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, "    a + 1" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let x = let a = 1 in a + 1" "implicit in inserted"
             | other -> failtest $"unexpected: {other}"
         }
         test "block lets: sequential bindings chain" {
-            match Weir.Script.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, "    let b = 2"; 4, "    a + b" ] with
+            match Weir.Assemble.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, "    let b = 2"; 4, "    a + b" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let x = let a = 1 in let b = 2 in a + b" "both closed"
             | other -> failtest $"unexpected: {other}"
         }
         test "block lets: nested with RHS spill" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let x ="
                     2, "    let a ="
                     3, "        [1; 2]"
@@ -4237,7 +4241,7 @@ let multilineTests =
         }
         test "block lets: arms deeper than the pending indent are plain continuations" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let x ="
                     2, "    let v ="
                     3, "        match h with"
@@ -4255,7 +4259,7 @@ let multilineTests =
         }
         test "statement-level let with indented arms assembles (the valid F# shape, verbatim)" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let category ="
                     2, "    match size with"
                     3, "    | s when s > 100 -> \"big\""
@@ -4271,7 +4275,7 @@ let multilineTests =
         }
         test "F#-rejects-this: dedented arm inside a block" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let r ="
                     2, "    let v ="
                     3, "        match h with"
@@ -4286,7 +4290,7 @@ let multilineTests =
         }
         test "F#-rejects-this: arm at exactly the pending indent" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let r ="
                     2, "    let v ="
                     3, "        match h with"
@@ -4297,13 +4301,13 @@ let multilineTests =
             | other -> failtest $"expected an error, got {other}"
         }
         test "guard: column-0 pipeline continuation outside any block survives" {
-            match Weir.Script.assemble [ 1, "git branch"; 2, "| map trim" ] with
+            match Weir.Assemble.assemble [ 1, "git branch"; 2, "| map trim" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "git branch | map trim" "the rule's real customer"
             | other -> failtest $"unexpected: {other}"
         }
         test "composition: inertness resumes after a block closes mid-script" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let x ="
                     2, "    let a = 1"
                     3, "    a + 1"
@@ -4318,34 +4322,34 @@ let multilineTests =
             | other -> failtest $"unexpected: {other}"
         }
         test "block lets: statement end with pending let errors" {
-            match Weir.Script.assemble [ 1, "let x ="; 2, "    let a = 1" ] with
+            match Weir.Assemble.assemble [ 1, "let x ="; 2, "    let a = 1" ] with
             | Error msg -> Expect.stringContains msg "needs a body" "names the gap"
             | other -> failtest $"expected an error, got {other}"
         }
         test "block lets: dedent past a bodyless let errors" {
-            match Weir.Script.assemble [ 1, "let x ="; 2, "    let a ="; 3, "        let b = 1"; 4, "    a" ] with
+            match Weir.Assemble.assemble [ 1, "let x ="; 2, "    let a ="; 3, "        let b = 1"; 4, "    a" ] with
             | Error msg -> Expect.stringContains msg "line 3" "blames the deepest let"
             | other -> failtest $"expected an error, got {other}"
         }
         test "block lets: spans translate through inserted in" {
-            match Weir.Script.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, "    a + 1" ] with
+            match Weir.Assemble.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, "    a + 1" ] with
             | Ok [ ll ] ->
                 // "let x = let a = 1" is 17 chars; " in " puts the body at 0-based 21 → 1-based col 22
-                Expect.equal (Weir.Script.translate ll 22) (3, 5) "body start maps to physical 3:5"
+                Expect.equal (Weir.Assemble.translate ll 22) (3, 5) "body start maps to physical 3:5"
             | other -> failtest $"unexpected: {other}"
         }
         test "logical line joins continuations" {
-            match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.map _.name" ] with
+            match Weir.Assemble.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.map _.name" ] with
             | Ok [ ll ] ->
                 Expect.equal ll.Text "let x = ls |> Seq.map _.name" "joined"
                 Expect.equal ll.Head 1 "head line"
-                Expect.equal (Weir.Script.translate ll 9) (2, 5) "col 9 is line 2 col 5"
-                Expect.equal (Weir.Script.translate ll 1) (1, 1) "head col maps to itself"
+                Expect.equal (Weir.Assemble.translate ll 9) (2, 5) "col 9 is line 2 col 5"
+                Expect.equal (Weir.Assemble.translate ll 1) (1, 1) "head col maps to itself"
             | other -> failtest $"unexpected: {other}"
         }
         test "pipe-headed lines continue at column 0" {
             match
-                Weir.Script.assemble [ 1, "match x with"; 2, "| Some n -> n"; 3, "| None -> 0"; 4, ""; 5, "next" ]
+                Weir.Assemble.assemble [ 1, "match x with"; 2, "| Some n -> n"; 3, "| None -> 0"; 4, ""; 5, "next" ]
             with
             | Ok [ m; n ] ->
                 Expect.equal m.Text "match x with | Some n -> n | None -> 0" ""
@@ -4354,12 +4358,12 @@ let multilineTests =
         }
         // blanks are transparent while a statement pends [D:body-blanks]
         test "blank then continuation joins (transparency)" {
-            match Weir.Script.assemble [ 1, "let x = 1"; 2, ""; 3, "    |> Seq.map f" ] with
+            match Weir.Assemble.assemble [ 1, "let x = 1"; 2, ""; 3, "    |> Seq.map f" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let x = 1 |> Seq.map f" ""
             | other -> failtest $"unexpected: {other}"
         }
         test "tabs in indentation are an error" {
-            match Weir.Script.assemble [ 1, "let x = 1"; 2, "\t|> f" ] with
+            match Weir.Assemble.assemble [ 1, "let x = 1"; 2, "\t|> f" ] with
             | Error msg -> Expect.stringContains msg "tabs are not allowed" ""
             | Ok _ -> failtest "expected error"
         }
@@ -4372,19 +4376,19 @@ let multilineTests =
             ] // yaml block scalar
 
             for lines, line, col in cases do
-                match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+                match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
                 | Error msg ->
                     Expect.stringContains msg $"line {line}: tabs are not allowed in indentation" ""
                     Expect.stringContains msg $"column {col}" ""
                 | Ok _ -> failtest $"expected the tab refusal for {lines}"
 
             // a tab after the first non-whitespace character is content
-            match Weir.Script.assemble [ 1, "let t = <<<"; 2, "    a\tb" ] with
+            match Weir.Assemble.assemble [ 1, "let t = <<<"; 2, "    a\tb" ] with
             | Ok [ _ ] -> ()
             | other -> failtest $"a mid-line tab is content, got {other}"
         }
         test "leading continuation is an error" {
-            match Weir.Script.assemble [ 1, "    orphan" ] with
+            match Weir.Assemble.assemble [ 1, "    orphan" ] with
             | Error msg -> Expect.stringContains msg "continuation without a statement" ""
             | Ok _ -> failtest "expected error"
         }
@@ -4468,13 +4472,13 @@ let unitPrintTests =
             | other -> failtest $"expected a parse error for forced [, got {other}"
         }
         test "discard gate: unit passes, values are named, seq<unit> hints iter" {
-            Expect.isNone (Weir.Script.discardError TUnit) "unit statement is fine"
+            Expect.isNone (Weir.Statements.discardError TUnit) "unit statement is fine"
 
-            match Weir.Script.discardError TStr with
+            match Weir.Statements.discardError TStr with
             | Some msg -> Expect.stringContains msg "pipe it to print" "names the fix"
             | None -> failtest "string discard must be rejected"
 
-            match Weir.Script.discardError (TSeq TUnit) with
+            match Weir.Statements.discardError (TSeq TUnit) with
             | Some msg -> Expect.stringContains msg "Seq.iter" "the trap hint"
             | None -> failtest "seq<unit> discard must be rejected"
         }
@@ -5397,17 +5401,17 @@ let agentFindingsTests =
         // fmt v2 respace [D:fmt-respace]
         test "respaceLine: collapse, brace pad, semicolon tidy" {
             Expect.equal
-                (Weir.Script.respaceLine "let l2 =  {    lomo with Lomo = 100}")
+                (Weir.Assemble.respaceLine "let l2 =  {    lomo with Lomo = 100}")
                 "let l2 = { lomo with Lomo = 100 }"
                 ""
 
             Expect.equal
-                (Weir.Script.respaceLine "type G = {Lomo: int; Bimbo: string}")
+                (Weir.Assemble.respaceLine "type G = {Lomo: int; Bimbo: string}")
                 "type G = { Lomo: int; Bimbo: string }"
                 ""
 
-            Expect.equal (Weir.Script.respaceLine "let x = {A = {B = 1}}") "let x = { A = { B = 1 } }" ""
-            Expect.equal (Weir.Script.respaceLine "let a = 1 ;  print \"x\"") "let a = 1; print \"x\"" ""
+            Expect.equal (Weir.Assemble.respaceLine "let x = {A = {B = 1}}") "let x = { A = { B = 1 } }" ""
+            Expect.equal (Weir.Assemble.respaceLine "let a = 1 ;  print \"x\"") "let a = 1; print \"x\"" ""
         }
         test "fmt never re-spaces command argv words [D:fmt-argv-verbatim]" {
             for line in
@@ -5432,11 +5436,11 @@ let agentFindingsTests =
             | Error e -> failtestf "fmt failed: %s" e
         }
         test "respaceLine: string interiors and leading indent untouched" {
-            Expect.equal (Weir.Script.respaceLine "    print \"a  {  b\"") "    print \"a  {  b\"" "plain"
-            Expect.equal (Weir.Script.respaceLine "let s = @\"a  {  b\"") "let s = @\"a  {  b\"" "verbatim"
+            Expect.equal (Weir.Assemble.respaceLine "    print \"a  {  b\"") "    print \"a  {  b\"" "plain"
+            Expect.equal (Weir.Assemble.respaceLine "let s = @\"a  {  b\"") "let s = @\"a  {  b\"" "verbatim"
 
             Expect.equal
-                (Weir.Script.respaceLine "print $\"x{  1  }\"")
+                (Weir.Assemble.respaceLine "print $\"x{  1  }\"")
                 "print $\"x{  1  }\""
                 "interp hole is string turf"
         }
@@ -5783,7 +5787,9 @@ let agentFindingsTests =
             Expect.isEmpty (diags |> List.map (fun d -> d.Message)) "the statement gate admits the diverging tail"
         }
         test "a block-let tuple binder inside a multiline lambda body assembles and checks (ported-module pin)" {
-            match Weir.Script.assemble [ 1, "xs |> Seq.iter (fun p ->"; 2, "    let a, b = p"; 3, "    print a)" ] with
+            match
+                Weir.Assemble.assemble [ 1, "xs |> Seq.iter (fun p ->"; 2, "    let a, b = p"; 3, "    print a)" ]
+            with
             | Ok [ ll ] ->
                 Expect.equal ll.Text "xs |> Seq.iter (fun p -> let a, b = p in print a)" "the in-join inside the body"
             | other -> failtest $"expected one logical line, got {other}"
@@ -5795,7 +5801,7 @@ let agentFindingsTests =
             // continuation line must not hoist it, or the second
             // argument line sequences as a block statement
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let v ="
                     2, "    combine3"
                     3, "        1"
@@ -5808,7 +5814,7 @@ let agentFindingsTests =
 
             // a block statement after a deeper continuation still
             // sequences at the block level (was a dedent-floor error)
-            match Weir.Script.assemble [ 1, "if a then"; 2, "    f"; 3, "        x"; 4, "    g" ] with
+            match Weir.Assemble.assemble [ 1, "if a then"; 2, "    f"; 3, "        x"; 4, "    g" ] with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if a then f x ; g") "the sibling after a continuation"
             | other -> failtest $"expected one logical line, got {other}"
         }
@@ -5817,7 +5823,7 @@ let agentFindingsTests =
             // statement while a plain paren is open — the lambda
             // closer's rule extended to ordinary applications
             match
-                Weir.Script.assemble [ 1, "let v ="; 2, "    YMap("; 3, "        [(\"a\", YStr \"x\")]"; 4, "    )" ]
+                Weir.Assemble.assemble [ 1, "let v ="; 2, "    YMap("; 3, "        [(\"a\", YStr \"x\")]"; 4, "    )" ]
             with
             | Ok [ ll ] -> Expect.equal ll.Text "let v = YMap( [(\"a\", YStr \"x\")] )" "the closer joins"
             | other -> failtest $"expected one logical line, got {other}"
@@ -5854,7 +5860,7 @@ let agentFindingsTests =
             // line is a sibling of the whole application (the in-join
             // for a pending block let), never an argument
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let outer ="
                     2, "    let inner = YMap("
                     3, "        [(\"a\", YStr \"x\")]"
@@ -5921,18 +5927,18 @@ let agentFindingsTests =
         }
         test "mid-token // is not a comment (URLs in command lines)" {
             Expect.equal
-                (Weir.Script.stripComment "curl https://x.y/z // real comment")
+                (Weir.Assemble.stripComment "curl https://x.y/z // real comment")
                 "curl https://x.y/z"
                 "URL survives, trailing comment stripped"
 
-            Expect.equal (Weir.Script.stripComment "let x = 1 // c") "let x = 1" "spaced comment works"
-            Expect.equal (Weir.Script.stripComment "// full line") "" "line-start comment works"
+            Expect.equal (Weir.Assemble.stripComment "let x = 1 // c") "let x = 1" "spaced comment works"
+            Expect.equal (Weir.Assemble.stripComment "// full line") "" "line-start comment works"
         }
         test "comment-only lines are transparent to assembly (runner-level filter)" {
             // assemble itself never sees them; pin the filter contract:
             // whitespace-only survives as blank, comment-only is dropped
             let commentOnly (raw: string) =
-                raw.Trim() <> "" && (Weir.Script.stripComment raw).Trim() = ""
+                raw.Trim() <> "" && (Weir.Assemble.stripComment raw).Trim() = ""
 
             Expect.isTrue (commentOnly "    // note") "comment"
             Expect.isFalse (commentOnly "   ") "whitespace stays a blank"
@@ -5940,7 +5946,7 @@ let agentFindingsTests =
         }
         // a pending let's body continues across a gap [D:body-blanks]
         test "blank line inside a block is transparent" {
-            match Weir.Script.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, ""; 4, "    a + 1" ] with
+            match Weir.Assemble.assemble [ 1, "let x ="; 2, "    let a = 1"; 3, ""; 4, "    a + 1" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let x = let a = 1 in a + 1" ""
             | other -> failtest $"unexpected: {other}"
         }
@@ -6001,7 +6007,7 @@ let assemblyRecoveryTests =
     testList "Assembly recovery (tooling)" [
         test "a broken line yields its diag AND later statements still analyze" {
             let diags, stmts, _, _, _ =
-                Weir.Script.analyzeLines "t.weir" [
+                Weir.Analyze.analyzeLines "t.weir" [
                     "type T = { A: int }"
                     ""
                     "let go = 1 > 0"
@@ -6018,7 +6024,7 @@ let assemblyRecoveryTests =
         }
         test "a misaligned field is one located diag — re-indented, its closer still closes [D:field-alignment]" {
             let diags, _, _, _, _ =
-                Weir.Script.analyzeLines "t.weir" [
+                Weir.Analyze.analyzeLines "t.weir" [
                     "type Cfg = { host: string; port: int }"
                     "let d = { host = \"h\"; port = 1 }"
                     "let c = { d with host = \"x\""
@@ -6035,17 +6041,17 @@ let assemblyRecoveryTests =
         test "an assembly error is located line:col, its message without the line lead [D:assembly-col]" {
             let numbered = [ 1, "let x = 1"; 2, "  let y = 2" ]
 
-            match Weir.Script.assemble numbered with
+            match Weir.Assemble.assemble numbered with
             | Ok _ -> failtest "must refuse"
             | Error msg ->
-                match Weir.Script.assemblyErrorAt numbered msg with
+                match Weir.Assemble.assemblyErrorAt numbered msg with
                 | Some(l, c, rest) ->
                     Expect.equal (l, c) (2, 3) "the named line, at its indentation"
                     Expect.stringStarts rest "this let needs a body" "the location carries the line"
                 | None -> failtest $"unlocated: {msg}"
 
                 Expect.stringStarts
-                    (Weir.Script.assemblyErrorLocated "t.weir" numbered msg)
+                    (Weir.Assemble.assemblyErrorLocated "t.weir" numbered msg)
                     "t.weir:2:3: this let needs a body"
                     "the runner's spelling"
 
@@ -6058,61 +6064,61 @@ let assemblyRecoveryTests =
                 Expect.stringStarts d.Message "this let needs a body" "no doubled line lead"
             | other -> failtest $"expected one assembly diag: {other |> List.map (fun d -> d.Message)}"
 
-            Expect.isNone (Weir.Script.assemblyErrorAt [] "no line named") "a lineless message stays unlocated"
+            Expect.isNone (Weir.Assemble.assemblyErrorAt [] "no line named") "a lineless message stays unlocated"
         }
     ]
 
 let scannerTests =
     testList "Scanner & classifier contract" [ // the quote-aware scanner, pinned through its consumers
         test "escaped quote inside a string hides //" {
-            Expect.equal (Weir.Script.stripComment "print \"a\\\" // x\"") "print \"a\\\" // x\"" ""
+            Expect.equal (Weir.Assemble.stripComment "print \"a\\\" // x\"") "print \"a\\\" // x\"" ""
         }
-        test "single quotes hide //" { Expect.equal (Weir.Script.stripComment "echo 'a // b'") "echo 'a // b'" "" }
+        test "single quotes hide //" { Expect.equal (Weir.Assemble.stripComment "echo 'a // b'") "echo 'a // b'" "" }
         test "comment after a closed string cuts" {
-            Expect.equal (Weir.Script.stripComment "print \"x\" // cut") "print \"x\"" ""
+            Expect.equal (Weir.Assemble.stripComment "print \"x\" // cut") "print \"x\"" ""
         }
         test "bareword URL survives (boundary rule)" {
-            Expect.equal (Weir.Script.stripComment "curl https://x//y") "curl https://x//y" ""
+            Expect.equal (Weir.Assemble.stripComment "curl https://x//y") "curl https://x//y" ""
         }
         test "mid-token // is not a comment" {
-            Expect.equal (Weir.Script.stripComment "let x = 1// c") "let x = 1// c" ""
+            Expect.equal (Weir.Assemble.stripComment "let x = 1// c") "let x = 1// c" ""
         }
         test "classifyLine: blank, comment-only (indented too), code" {
-            Expect.equal (Weir.Script.classifyLine "   ") Weir.Script.LineKind.Blank ""
-            Expect.equal (Weir.Script.classifyLine "  // note") Weir.Script.LineKind.CommentOnly ""
-            Expect.equal (Weir.Script.classifyLine "let x = 1 // t") Weir.Script.LineKind.Code ""
+            Expect.equal (Weir.Assemble.classifyLine "   ") Weir.Assemble.LineKind.Blank ""
+            Expect.equal (Weir.Assemble.classifyLine "  // note") Weir.Assemble.LineKind.CommentOnly ""
+            Expect.equal (Weir.Assemble.classifyLine "let x = 1 // t") Weir.Assemble.LineKind.Code ""
         }
         test "classifyPiece: kinds are exclusive, prefix-guarded" {
-            Expect.equal (Weir.Script.classifyPiece "let x = 1").Kind Weir.Script.PieceKind.LetHead ""
-            Expect.equal (Weir.Script.classifyPiece "| x -> 1").Kind Weir.Script.PieceKind.PipeHead ""
-            Expect.equal (Weir.Script.classifyPiece "else 2").Kind Weir.Script.PieceKind.ElseHead ""
-            Expect.equal (Weir.Script.classifyPiece "elsewhere ()").Kind Weir.Script.PieceKind.Plain ""
-            Expect.equal (Weir.Script.classifyPiece "letter x").Kind Weir.Script.PieceKind.Plain ""
+            Expect.equal (Weir.Assemble.classifyPiece "let x = 1").Kind Weir.Assemble.PieceKind.LetHead ""
+            Expect.equal (Weir.Assemble.classifyPiece "| x -> 1").Kind Weir.Assemble.PieceKind.PipeHead ""
+            Expect.equal (Weir.Assemble.classifyPiece "else 2").Kind Weir.Assemble.PieceKind.ElseHead ""
+            Expect.equal (Weir.Assemble.classifyPiece "elsewhere ()").Kind Weir.Assemble.PieceKind.Plain ""
+            Expect.equal (Weir.Assemble.classifyPiece "letter x").Kind Weir.Assemble.PieceKind.Plain ""
         }
         test "classifyPiece: retired ! markers classify as NoMarker; the assembler TEACHES [D:district-retirement]" {
             // the old Bare/Env marker pins flip: retirement makes them
             // plain pieces, and the retiredDistrictMarker predicate is
             // what routes the teaching error
-            Expect.equal (Weir.Script.classifyPiece "if c then !").Marker Weir.Script.MarkerKind.NoMarker ""
-            Expect.equal (Weir.Script.classifyPiece "if c then !e").Marker Weir.Script.MarkerKind.NoMarker ""
-            Expect.isTrue (Weir.Script.retiredDistrictMarker "if c then !") "bare spelling detected"
-            Expect.isTrue (Weir.Script.retiredDistrictMarker "!targetEnv") "env spelling detected"
-            Expect.isFalse (Weir.Script.retiredDistrictMarker "echo hello!") "a trailing ! word is not the marker"
-            Expect.isFalse (Weir.Script.retiredDistrictMarker "!e(git st)") "a glued paren is no district marker"
+            Expect.equal (Weir.Assemble.classifyPiece "if c then !").Marker Weir.Assemble.MarkerKind.NoMarker ""
+            Expect.equal (Weir.Assemble.classifyPiece "if c then !e").Marker Weir.Assemble.MarkerKind.NoMarker ""
+            Expect.isTrue (Weir.Assemble.retiredDistrictMarker "if c then !") "bare spelling detected"
+            Expect.isTrue (Weir.Assemble.retiredDistrictMarker "!targetEnv") "env spelling detected"
+            Expect.isFalse (Weir.Assemble.retiredDistrictMarker "echo hello!") "a trailing ! word is not the marker"
+            Expect.isFalse (Weir.Assemble.retiredDistrictMarker "!e(git st)") "a glued paren is no district marker"
 
             // the teaches half, observed at the assembler (the maintenance
             // sweep's M5 found only the predicate asserted — if assemble
             // stopped consulting it, this test still passed)
-            match Weir.Script.assemble [ 1, "if c then !"; 2, "    git pull" ] with
+            match Weir.Assemble.assemble [ 1, "if c then !"; 2, "    git pull" ] with
             | Error e ->
                 Expect.stringContains e "not a district marker" "the teaching fires"
                 Expect.stringContains e "within env vars" "and names the env-overlay repair"
             | Ok _ -> failtest "a retired marker must be an assembly error"
         }
         test "classifyPiece: brace deltas ignore strings and interp holes" {
-            Expect.equal (Weir.Script.classifyPiece "{ Name = $\"a{1}b\"").BraceDelta 1 ""
-            Expect.equal (Weir.Script.classifyPiece "awk '{print}' f").BraceDelta 0 ""
-            Expect.equal (Weir.Script.classifyPiece "{ X = \"}\" }").BraceDelta 0 ""
+            Expect.equal (Weir.Assemble.classifyPiece "{ Name = $\"a{1}b\"").BraceDelta 1 ""
+            Expect.equal (Weir.Assemble.classifyPiece "awk '{print}' f").BraceDelta 0 ""
+            Expect.equal (Weir.Assemble.classifyPiece "{ X = \"}\" }").BraceDelta 0 ""
         }
         test "parse failure carries its column as data (no regex scrape)" {
             match Weir.Parser.parseLineFull cmdResolver "let = 3" with
@@ -6274,7 +6280,7 @@ let childEnvTests =
             ]
 
             for shape in shapes do
-                match Weir.Script.assemble shape with
+                match Weir.Assemble.assemble shape with
                 | Error msg -> Expect.stringContains msg "aligns with no enclosing statement" $"floor fires: {shape}"
                 | Ok lls ->
                     // an Ok is fine only if the dedented line became a
@@ -6298,7 +6304,7 @@ let childEnvTests =
                     [ 1, "let f x ="; 2, "    !e"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
                     [ 1, "let f x ="; 2, "    !"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
                 ] do
-                match Weir.Script.assemble fixture with
+                match Weir.Assemble.assemble fixture with
                 | Error msg -> Expect.stringContains msg "not a district marker" ""
                 | other -> failtest $"unexpected: {other}"
         }
@@ -6319,28 +6325,28 @@ let childEnvTests =
 let productMatrixTests =
     testList "Product matrix (retroactive sweep)" [ // A x F: comment inside a compound body is transparent
         test "A x F: comment between compound-body siblings keeps grouping" {
-            match Weir.Script.assemble [ 1, "if c then"; 2, "    eff1"; 4, "    eff2" ] with
+            match Weir.Assemble.assemble [ 1, "if c then"; 2, "    eff1"; 4, "    eff2" ] with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if c then eff1 ; eff2") ""
             | other -> failtest $"unexpected: {other}"
         }
         // C x E: pipe line after a blank
         // [D:body-blanks]
         test "C x E: pipe continuation joins across a gap" {
-            match Weir.Script.assemble [ 1, "ls"; 2, ""; 3, "    |> Seq.length" ] with
+            match Weir.Assemble.assemble [ 1, "ls"; 2, ""; 3, "    |> Seq.length" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "ls |> Seq.length" ""
             | other -> failtest $"unexpected: {other}"
         }
         // C x F: comment between pipe stages (comment filtered upstream:
         // the runner drops it; assemble sees the gap in line numbers)
         test "C x F: comment between pipe stages is transparent" {
-            match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 4, "    |> Seq.length" ] with
+            match Weir.Assemble.assemble [ 1, "let x ="; 2, "    ls"; 4, "    |> Seq.length" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let x = ls |> Seq.length" ""
             | other -> failtest $"unexpected: {other}"
         }
         // E x F: comment-only after a blank stays invisible
         // [D:body-blanks]
         test "E x F: indented line after blank+comment joins" {
-            match Weir.Script.assemble [ 1, "let x = 1"; 2, ""; 4, "    + 2" ] with
+            match Weir.Assemble.assemble [ 1, "let x = 1"; 2, ""; 4, "    + 2" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let x = 1 + 2" ""
             | other -> failtest $"unexpected: {other}"
         }
@@ -6348,13 +6354,15 @@ let productMatrixTests =
         // [D:body-blanks]: the sibling rule is indent-keyed, not
         // adjacency-keyed — gap-invariant `;`
         test "E x G: sibling sequencing joins across a gap" {
-            match Weir.Script.assemble [ 1, "let f x ="; 2, "    printerr \"a\""; 3, ""; 4, "    printerr \"b\"" ] with
+            match
+                Weir.Assemble.assemble [ 1, "let f x ="; 2, "    printerr \"a\""; 3, ""; 4, "    printerr \"b\"" ]
+            with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f x = printerr \"a\" ; printerr \"b\"") ""
             | other -> failtest $"unexpected: {other}"
         }
         // F x G: sibling `;` joins across a transparent comment
         test "F x G: sibling sequencing joins across a comment line" {
-            match Weir.Script.assemble [ 1, "let f x ="; 2, "    printerr \"a\""; 4, "    printerr \"b\"" ] with
+            match Weir.Assemble.assemble [ 1, "let f x ="; 2, "    printerr \"a\""; 4, "    printerr \"b\"" ] with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f x = printerr \"a\" ; printerr \"b\"") ""
             | other -> failtest $"unexpected: {other}"
         }
@@ -6363,20 +6371,20 @@ let productMatrixTests =
 let offsideTests =
     testList "Offside close & record continuations" [ // the bicep bite: a sibling at the if's own indent closes it
         test "offside close: sibling at head indent wraps the if" {
-            match Weir.Script.assemble [ 1, "let t ="; 2, "    if c then fail \"u\""; 3, "    { Name = s }" ] with
+            match Weir.Assemble.assemble [ 1, "let t ="; 2, "    if c then fail \"u\""; 3, "    { Name = s }" ] with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let t = (if c then fail \"u\") ; { Name = s }") ""
             | other -> failtest $"unexpected: {other}"
         }
         test "offside close: the silent variant no longer swallows" {
             match
-                Weir.Script.assemble [ 1, "let f c ="; 2, "    if c then printerr \"a\""; 3, "    printerr \"b\"" ]
+                Weir.Assemble.assemble [ 1, "let f c ="; 2, "    if c then printerr \"a\""; 3, "    printerr \"b\"" ]
             with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f c = (if c then printerr \"a\") ; printerr \"b\"") ""
             | other -> failtest $"unexpected: {other}"
         }
         test "else extends the compound instead of closing it" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let f c ="
                     2, "    if c then printerr \"a\""
                     3, "    else printerr \"b\""
@@ -6387,7 +6395,7 @@ let offsideTests =
         }
         test "sibling after else closes the whole if/else" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let f c ="
                     2, "    if c then a"
                     3, "    else b"
@@ -6398,13 +6406,13 @@ let offsideTests =
             | other -> failtest $"unexpected: {other}"
         }
         test "deeper siblings still join INTO the body (the greedy protectorate)" {
-            match Weir.Script.assemble [ 1, "if c then"; 2, "    eff1"; 3, "    eff2" ] with
+            match Weir.Assemble.assemble [ 1, "if c then"; 2, "    eff1"; 3, "    eff2" ] with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if c then eff1 ; eff2") ""
             | other -> failtest $"unexpected: {other}"
         }
         test "nested dedent closes through both levels" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let f x ="
                     2, "    if c then"
                     3, "        eff1"
@@ -6416,13 +6424,13 @@ let offsideTests =
             | other -> failtest $"unexpected: {other}"
         }
         test "sequential ifs: first closes, second stays open at statement end" {
-            match Weir.Script.assemble [ 1, "let f c ="; 2, "    if a then x"; 3, "    if b then y" ] with
+            match Weir.Assemble.assemble [ 1, "let f c ="; 2, "    if a then x"; 3, "    if b then y" ] with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let f c = (if a then x) ; if b then y") ""
             | other -> failtest $"unexpected: {other}"
         }
         test "match closes at a sibling too" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let v ="
                     2, "    match x with"
                     3, "    | A -> printerr \"a\""
@@ -6435,7 +6443,7 @@ let offsideTests =
         }
         test "arming x offside: closing sibling wraps the bare-command if (retargeted [D:district-retirement])" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let f t ="
                     2, "    if c then"
                     3, "        git pull"
@@ -6446,12 +6454,12 @@ let offsideTests =
             | other -> failtest $"unexpected: {other}"
         }
         test "record continuation: bare fields get separators" {
-            match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "      Count = 2 }" ] with
+            match Weir.Assemble.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "      Count = 2 }" ] with
             | Ok [ ll ] -> Expect.equal ll.Text (asmField "let t = { Name = \"a\" ; Count = 2 }") ""
             | other -> failtest $"unexpected: {other}"
         }
         test "record continuation: trailing ; means no double separator" {
-            match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\";"; 3, "    Count = 2 }" ] with
+            match Weir.Assemble.assemble [ 1, "let t ="; 2, "    { Name = \"a\";"; 3, "    Count = 2 }" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\"; Count = 2 }" ""
             | other -> failtest $"unexpected: {other}"
         }
@@ -6618,7 +6626,7 @@ let offsideTests =
             // an unaligned attr-owned field must fail the check, not
             // surface as a runtime argv error
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "type C = {"
                     2, "    [<Short \"d\">]"
                     3, "     subdir: string"
@@ -6630,7 +6638,7 @@ let offsideTests =
             | other -> failtest $"expected the alignment error, got {other}"
 
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "type C = {"
                     2, "    [<Short \"d\">]"
                     3, "    subdir: string"
@@ -6643,7 +6651,7 @@ let offsideTests =
         }
         test "record fields off the first-field column error naming it" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let t ="
                     2, "    { Name = \"a\""
                     3, "    Count = 2"
@@ -6655,7 +6663,7 @@ let offsideTests =
         }
         test "record continuation: a field's value may open on the NEXT line (sweep catch)" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let o ="
                     2, "    { Name = \"outer\""
                     3, "      In ="
@@ -6666,33 +6674,33 @@ let offsideTests =
             | other -> failtest $"unexpected: {other}"
         }
         test "classifyPiece: StartsField is ident-guarded" {
-            Expect.isTrue (Weir.Script.classifyPiece "Count = 2").StartsField ""
-            Expect.isTrue (Weir.Script.classifyPiece "In =").StartsField ""
-            Expect.isFalse (Weir.Script.classifyPiece "{ V = 42 } }").StartsField ""
-            Expect.isFalse (Weir.Script.classifyPiece "1 + x = y").StartsField ""
+            Expect.isTrue (Weir.Assemble.classifyPiece "Count = 2").StartsField ""
+            Expect.isTrue (Weir.Assemble.classifyPiece "In =").StartsField ""
+            Expect.isFalse (Weir.Assemble.classifyPiece "{ V = 42 } }").StartsField ""
+            Expect.isFalse (Weir.Assemble.classifyPiece "1 + x = y").StartsField ""
         }
         test "record continuation: col-0 close is legal inside a brace" {
-            match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "}" ] with
+            match Weir.Assemble.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "}" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let t = { Name = \"a\" }" ""
             | other -> failtest $"unexpected: {other}"
         }
         test "interp-hole braces do not count (scanner is string-aware)" {
-            match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = $\"i{1}b\""; 3, "      Count = 2 }" ] with
+            match Weir.Assemble.assemble [ 1, "let t ="; 2, "    { Name = $\"i{1}b\""; 3, "      Count = 2 }" ] with
             | Ok [ ll ] -> Expect.equal ll.Text (asmField "let t = { Name = $\"i{1}b\" ; Count = 2 }") ""
             | other -> failtest $"unexpected: {other}"
         }
         test "blank inside an open brace is the located record error" {
-            match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "" ] with
+            match Weir.Assemble.assemble [ 1, "let t ="; 2, "    { Name = \"a\""; 3, "" ] with
             | Error e -> Expect.stringContains e "record literal" ""
             | other -> failtest $"unexpected: {other}"
         }
         test "EOF inside an open brace is the located record error" {
-            match Weir.Script.assemble [ 1, "let t ="; 2, "    { Name = \"a\"" ] with
+            match Weir.Assemble.assemble [ 1, "let t ="; 2, "    { Name = \"a\"" ] with
             | Error e -> Expect.stringContains e "record literal" ""
             | other -> failtest $"unexpected: {other}"
         }
         test "bare command lines never enter brace mode (retargeted [D:district-retirement])" {
-            match Weir.Script.assemble [ 1, "if c then"; 2, "    awk \"{print}\" f"; 3, "    git pull" ] with
+            match Weir.Assemble.assemble [ 1, "if c then"; 2, "    awk \"{print}\" f"; 3, "    git pull" ] with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if c then awk \"{print}\" f ; git pull") ""
             | other -> failtest $"unexpected: {other}"
         }
@@ -6731,13 +6739,13 @@ let sequencingTests =
             expectValue "let c = false in (if c then print \"a\" ; print \"b\") ; 7" (VInt 7L)
         }
         test "assembler: same-indent siblings sequence" {
-            match Weir.Script.assemble [ 1, "let w ="; 2, "    print \"a\""; 3, "    print \"b\"" ] with
+            match Weir.Assemble.assemble [ 1, "let w ="; 2, "    print \"a\""; 3, "    print \"b\"" ] with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let w = print \"a\" ; print \"b\"") ""
             | other -> failtest $"unexpected: {other}"
         }
         test "assembler: let-close beats sibling; sequence resumes after" {
             match
-                Weir.Script.assemble [ 1, "let w ="; 2, "    let a = 1"; 3, "    print \"x\""; 4, "    print \"y\"" ]
+                Weir.Assemble.assemble [ 1, "let w ="; 2, "    let a = 1"; 3, "    print \"x\""; 4, "    print \"y\"" ]
             with
             | Ok [ ll ] -> Expect.equal ll.Text (asmSib "let w = let a = 1 in print \"x\" ; print \"y\"") ""
             | other -> failtest $"unexpected: {other}"
@@ -6759,7 +6767,7 @@ let sequencingTests =
             | other -> failtest $"unexpected: {other}"
         }
         test "assembler: pipes stay inert to the sibling rule" {
-            match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.length" ] with
+            match Weir.Assemble.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.length" ] with
             | Ok [ ll ] -> Expect.equal ll.Text "let x = ls |> Seq.length" ""
             | other -> failtest $"unexpected: {other}"
         }
@@ -6843,7 +6851,7 @@ let siblingSentinelTests =
             | other -> failtest $"expected one command swallowing ';', got: {other}"
         }
         test "unproduceable: the sentinel in SOURCE is rejected at assembly" {
-            match Weir.Script.assemble [ 1, "print \"a\"" + Weir.Parser.sibSepStr + "print \"b\"" ] with
+            match Weir.Assemble.assemble [ 1, "print \"a\"" + Weir.Parser.sibSepStr + "print \"b\"" ] with
             | Error e -> Expect.stringContains e "illegal control character" "rejected as illegal"
             | Ok _ -> failtest "a source sentinel must not assemble"
         }
@@ -7008,14 +7016,14 @@ let sigilTests =
 let districtTests =
     testList "Command district (RETIRED [D:district-retirement])" [
         test "the line-end ! marker teaches its retirement" {
-            match Weir.Script.assemble [ 1, "if go then !"; 2, "    git pull" ] with
+            match Weir.Assemble.assemble [ 1, "if go then !"; 2, "    git pull" ] with
             | Error msg ->
                 Expect.stringContains msg "not a district marker" "the teaching, not an expecting-list"
                 Expect.stringContains msg "within env" "the overlay pointer"
             | other -> failtest $"unexpected: {other}"
         }
         test "the !name marker teaches identically" {
-            match Weir.Script.assemble [ 1, "if go then !e"; 2, "    git pull" ] with
+            match Weir.Assemble.assemble [ 1, "if go then !e"; 2, "    git pull" ] with
             | Error msg -> Expect.stringContains msg "not a district marker" ""
             | other -> failtest $"unexpected: {other}"
         }
@@ -7035,7 +7043,7 @@ let districtTests =
                 ]
                 |> List.mapi (fun i l -> i + 1, l)
 
-            match Weir.Script.assemble lines with
+            match Weir.Assemble.assemble lines with
             | Ok lls -> Expect.equal (List.length lls) 1000 "all statements assembled"
             | Error e -> failtest e
         }
@@ -7045,9 +7053,9 @@ let matchPipeOffsideTests =
     // [D:match-pipe-offside]: F#'s offside for a `|>` after a match. At the
     // arm `|` it closes the match (assembler wraps `(match …) |> f`); at or
     // past the arm's pattern column it extends the arm body; in the gap
-    // between the two it rejects. All in Script.assemble.
+    // between the two it rejects. All in Assemble.assemble.
     let assemble lines =
-        Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+        Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l))
 
     testList "match pipe offside [D:match-pipe-offside]" [
         test "a |> at the arm column wraps and pipes the whole match" {
@@ -7726,7 +7734,7 @@ let heldScopeTests =
     let errs lines = errorMsgsIn "held.weir" lines
 
     let shape (lines: string list) =
-        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
         | Ok [ ll ] ->
             match Weir.Parser.parseLineFull cmdResolver ll.Text with
             | Ok s -> Weir.Ast.sexprStmt s
@@ -7875,8 +7883,8 @@ let heldScopeTests =
                 "readonly admits a hold"
         }
         test "the REPL's smart indent opens no body after until stopped" {
-            Expect.isFalse (Weir.Script.opensIndentedBody "until stopped") "until stopped takes no block"
-            Expect.isTrue (Weir.Script.opensIndentedBody "    until r") "a loop's until binder opens its predicate"
+            Expect.isFalse (Weir.Assemble.opensIndentedBody "until stopped") "until stopped takes no block"
+            Expect.isTrue (Weir.Assemble.opensIndentedBody "    until r") "a loop's until binder opens its predicate"
         }
         test "Self has no waitForStop member: the hold is the section" {
             Expect.isNonEmpty (errs [ "Self.waitForStop ()" ]) "no Self.waitForStop"
@@ -7887,7 +7895,7 @@ let dedentJoinTests =
     // whole-script probes: assemble + check + eval; the join is proven
     // by the bindings (absorption would corrupt or reject them)
     let runScript (lines: string list) : Map<string, Value> =
-        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
         | Error e -> failtest $"assemble: {e}"
         | Ok lls ->
             lls
@@ -7970,7 +7978,7 @@ let dedentJoinTests =
         }
         test "the FLOOR stays: a genuinely unmatched column still errors, located" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let bad ="
                     2, "    within tmp d"
                     3, "        print d"
@@ -8002,7 +8010,7 @@ let dedentJoinTests =
 let trailingCommentTests =
     // one logical line's text out of the assembler
     let asm (lines: (int * string) list) : string =
-        match Weir.Script.assemble lines with
+        match Weir.Assemble.assemble lines with
         | Ok [ ll ] -> ll.Text
         | Ok lls -> failtest $"expected one logical line, got {lls.Length}"
         | Error e -> failtest $"assemble failed: {e}"
@@ -8036,7 +8044,7 @@ let trailingCommentTests =
             | Ok e -> failtest $"expected a parse rejection, got {show e}"
         }
         test "yaml district content is BYTES; a commented HEAD still opens its district" {
-            match Weir.Script.assemble [ 1, "let m = yaml // the head takes a comment"; 2, "    note: a // b" ] with
+            match Weir.Assemble.assemble [ 1, "let m = yaml // the head takes a comment"; 2, "    note: a // b" ] with
             | Ok [ ll ] ->
                 Expect.stringContains ll.Text "let m = yaml" "head stripped and armed"
                 Expect.stringContains ll.Text "a // b" "content bytes survive"
@@ -8047,10 +8055,10 @@ let trailingCommentTests =
             Expect.equal (asm [ 1, "let x = 1 /// not a doc" ]) "let x = 1" ""
         }
         test "comment-only and blank lines keep their classes (zero movement)" {
-            Expect.equal (Weir.Script.classifyLine "// whole line") Weir.Script.LineKind.CommentOnly ""
-            Expect.equal (Weir.Script.classifyLine "   ") Weir.Script.LineKind.Blank ""
+            Expect.equal (Weir.Assemble.classifyLine "// whole line") Weir.Assemble.LineKind.CommentOnly ""
+            Expect.equal (Weir.Assemble.classifyLine "   ") Weir.Assemble.LineKind.Blank ""
             // a comment-only line between statements stays transparent
-            match Weir.Script.assemble [ 1, "let f y ="; 2, "    // interior comment"; 3, "    y + 1" ] with
+            match Weir.Assemble.assemble [ 1, "let f y ="; 2, "    // interior comment"; 3, "    y + 1" ] with
             | Ok [ ll ] -> Expect.stringContains ll.Text "y + 1" "body joined through the comment"
             | other -> failtest $"unexpected: {other}"
         }
@@ -8058,9 +8066,12 @@ let trailingCommentTests =
             // the REPL pre-strips with the same stripComment the
             // assembler now applies — double-stripping is a no-op
             let l = "let x = 5 // note"
-            Expect.equal (Weir.Script.stripComment (Weir.Script.stripComment l)) (Weir.Script.stripComment l) ""
+            Expect.equal (Weir.Assemble.stripComment (Weir.Assemble.stripComment l)) (Weir.Assemble.stripComment l) ""
 
-            Expect.equal (asm [ 1, Weir.Script.stripComment l ]) (asm [ 1, l ]) "pre-stripped and raw assemble the same"
+            Expect.equal
+                (asm [ 1, Weir.Assemble.stripComment l ])
+                (asm [ 1, l ])
+                "pre-stripped and raw assemble the same"
         }
     ]
 
@@ -8197,7 +8208,7 @@ let scopedProcTests =
     // half — parse/assemble/check shapes; the live lifecycle (kill,
     // reap, sweep, watch errors) pins in e2e where processes are real
     let assembleParse (lines: string list) =
-        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
         | Ok [ st ] ->
             match Weir.Parser.parseLine cmdResolver st.Text with
             | Ok(Weir.Ast.SExpr e)
@@ -8208,7 +8219,7 @@ let scopedProcTests =
 
     testList "scoped processes [D:scoped-procs]" [
         test "the proc head's block joins SENTINELED — the command tail cannot swallow it" {
-            match Weir.Script.assemble [ 1, "within proc p = git status"; 2, "    print \"hi\"" ] with
+            match Weir.Assemble.assemble [ 1, "within proc p = git status"; 2, "    print \"hi\"" ] with
             | Ok [ st ] -> Expect.isTrue (st.Text.Contains Weir.Parser.sibSepStr) "the machine boundary, not a space"
             | other -> failtest $"unexpected: {other}"
         }
@@ -8232,7 +8243,7 @@ let scopedProcTests =
             | Ok _ -> failtest "Eq must stay excluded for Proc"
         }
         test "a pipeline in the proc slot is a parse-time refusal with the sh -c teaching" {
-            match Weir.Script.assemble [ 1, "within proc p = git status | complete"; 2, "    print \"x\"" ] with
+            match Weir.Assemble.assemble [ 1, "within proc p = git status | complete"; 2, "    print \"x\"" ] with
             | Ok [ st ] ->
                 match Weir.Parser.parseLine cmdResolver st.Text with
                 | Error m ->
@@ -8260,14 +8271,14 @@ let scopedProcTests =
             | Error m -> failtest $"must parse: {m}"
         }
         test "the proc-head detector is word-bounded and string-blind" {
-            Expect.isTrue (Weir.Script.endsInProcHead "within proc p = sh -c \"x\"") "the plain head"
+            Expect.isTrue (Weir.Assemble.endsInProcHead "within proc p = sh -c \"x\"") "the plain head"
 
             Expect.isTrue
-                (Weir.Script.endsInProcHead "xs |> Seq.pmap (fun n -> within proc w = git status")
+                (Weir.Assemble.endsInProcHead "xs |> Seq.pmap (fun n -> within proc w = git status")
                 "mid-segment"
 
-            Expect.isFalse (Weir.Script.endsInProcHead "print \"within proc p = x\"") "a string is data"
-            Expect.isFalse (Weir.Script.endsInProcHead "let awithin proc = 5") "word-bounded"
+            Expect.isFalse (Weir.Assemble.endsInProcHead "print \"within proc p = x\"") "a string is data"
+            Expect.isFalse (Weir.Assemble.endsInProcHead "let awithin proc = 5") "word-bounded"
         }
     ]
 
@@ -8783,8 +8794,8 @@ let moduleSignatureTests =
                 let main = System.IO.Path.Combine(td, "main.weir")
 
                 match
-                    Weir.Script.fileImportLoader
-                        Weir.Script.assumeResolver
+                    Weir.ModuleLoader.fileImportLoader
+                        Weir.Statements.assumeResolver
                         main
                         "./lib.weir"
                         {
@@ -9388,7 +9399,7 @@ let armBlockTests =
     // a `| pat ->` arm and an `else` take a text block as `then` does;
     // a block after an application teaches the pipe [D:arm-blocks]
     let run (lines: string list) =
-        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
         | Ok lls -> lls
         | Error e -> failtest e
 
@@ -9508,7 +9519,7 @@ let lambdaLetTests =
         }
         test "the RHS is the command; the closer stays out of argv" {
             match
-                Weir.Script.assemble [ 1, "[1] |> Seq.iter (fun _ ->"; 2, "    let r = echo hi"; 3, "    print r)" ]
+                Weir.Assemble.assemble [ 1, "[1] |> Seq.iter (fun _ ->"; 2, "    let r = echo hi"; 3, "    print r)" ]
             with
             | Ok [ ll ] ->
                 match Weir.Parser.parseLineFull cmdResolver ll.Text with
@@ -9619,7 +9630,7 @@ let reflexTeachingTests =
                 "let RHS, not the district message"
 
             Expect.isTrue
-                (Weir.Script.retiredDistrictMarker "if c then !e")
+                (Weir.Assemble.retiredDistrictMarker "if c then !e")
                 "a district header still teaches its retirement"
         }
         test "type annotations teach inference" {

@@ -210,13 +210,13 @@ let moduleTests =
 let scriptTests =
     testList "Script machinery" [
         test "comment stripper respects strings" {
-            Expect.equal (Weir.Script.stripComment "1 + 1 // note") "1 + 1" ""
+            Expect.equal (Weir.Assemble.stripComment "1 + 1 // note") "1 + 1" ""
 
-            Expect.equal (Weir.Script.stripComment "sh -c \"echo a//b\" // real") "sh -c \"echo a//b\"" ""
+            Expect.equal (Weir.Assemble.stripComment "sh -c \"echo a//b\" // real") "sh -c \"echo a//b\"" ""
 
-            Expect.equal (Weir.Script.stripComment "grep 'a//b' f") "grep 'a//b' f" ""
-            Expect.equal (Weir.Script.stripComment "\"esc \\\" // still string\"") "\"esc \\\" // still string\"" ""
-            Expect.equal (Weir.Script.stripComment "no comment") "no comment" ""
+            Expect.equal (Weir.Assemble.stripComment "grep 'a//b' f") "grep 'a//b' f" ""
+            Expect.equal (Weir.Assemble.stripComment "\"esc \\\" // still string\"") "\"esc \\\" // still string\"" ""
+            Expect.equal (Weir.Assemble.stripComment "no comment") "no comment" ""
         }
         test "strict env drops bare aliases, keeps the rest" {
             Expect.isFalse (Map.containsKey "map" Weir.Builtins.typeEnvStrict.Values) "map gone"
@@ -236,7 +236,7 @@ let scriptTests =
         }
         test "a stray directive: check and run share one message, naming unknown vs misplaced [D:directive-diagnostic]" {
             Expect.equal
-                (Weir.Script.directiveMisuses [ "#loose"; "print (show 1)" ])
+                (Weir.Analyze.directiveMisuses [ "#loose"; "print (show 1)" ])
                 [
                     1,
                     "unknown directive: #loose — a script's only directive is #sig (the REPL init file takes #init, #session and #alias)"
@@ -244,7 +244,7 @@ let scriptTests =
                 "a head-position unknown directive is unknown, not misplaced"
 
             Expect.equal
-                (Weir.Script.directiveMisuses [ "print \"a\""; "#sig git"; "#bogus x" ])
+                (Weir.Analyze.directiveMisuses [ "print \"a\""; "#sig git"; "#bogus x" ])
                 [
                     2,
                     "misplaced directive: #sig — #sig lines belong at the file head, before any code, comment or blank line"
@@ -254,7 +254,7 @@ let scriptTests =
                 "a late #sig is misplaced"
 
             Expect.equal
-                (Weir.Script.directiveMisuses [
+                (Weir.Analyze.directiveMisuses [
                     "#!/usr/bin/env weir"
                     "#sig git"
                     "print 1"
@@ -266,7 +266,7 @@ let scriptTests =
         test
             "every consumer of the analysis sees the directive message, never a dump (fmt, the LSP, init files) [D:directive-diagnostic]" {
             let diags, _, _, _, _ =
-                Weir.Script.analyzeLines "d.weir" [ "print \"a\""; "#sig git"; "print \"b\"" ]
+                Weir.Analyze.analyzeLines "d.weir" [ "print \"a\""; "#sig git"; "print \"b\"" ]
 
             Expect.equal
                 (diags |> List.map (fun d -> d.Line, d.Code, d.Message))
@@ -278,7 +278,7 @@ let scriptTests =
                 "analyzeLines names it, and the rest checks"
 
             let diags, _, _, _, _ =
-                Weir.Script.analyzeLines "init.weir" [ "#init"; "#loose"; "#sig \"abc\""; "let x = 1" ]
+                Weir.Analyze.analyzeLines "init.weir" [ "#init"; "#loose"; "#sig \"abc\""; "let x = 1" ]
 
             Expect.equal
                 (diags |> List.map (fun d -> d.Line, d.Code, d.Message))
@@ -507,16 +507,16 @@ let logLevelTests =
 let docsBinaryTests =
     let stmtMsg (line: string) =
         let ll =
-            match Weir.Script.assemble [ 1, line ] with
+            match Weir.Assemble.assemble [ 1, line ] with
             | Ok [ ll ] -> ll
             | other -> failtest $"assembly: {other}"
 
         match
-            Weir.Script.checkStatement
+            Weir.Statements.checkStatement
                 false
                 None
-                Weir.Script.resolver
-                Weir.Script.scriptOnlyImport
+                Weir.Statements.resolver
+                Weir.ModuleLoader.scriptOnlyImport
                 Weir.Builtins.typeEnvStrict
                 ll
         with
@@ -558,16 +558,16 @@ let docsBinaryTests =
 let portFindingsTests =
     let stmtDiag (line: string) =
         let ll =
-            match Weir.Script.assemble [ 1, line ] with
+            match Weir.Assemble.assemble [ 1, line ] with
             | Ok [ ll ] -> ll
             | other -> failtest $"assembly: {other}"
 
         match
-            Weir.Script.checkStatement
+            Weir.Statements.checkStatement
                 false
                 None
-                Weir.Script.resolver
-                Weir.Script.scriptOnlyImport
+                Weir.Statements.resolver
+                Weir.ModuleLoader.scriptOnlyImport
                 Weir.Builtins.typeEnvStrict
                 ll
         with
