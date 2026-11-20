@@ -39,7 +39,7 @@ let completionTests =
             // cursor (last line cut there), the cursor's line, the word start
             let entry (lines: string list) =
                 let cur = List.last lines
-                Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+                Weir.Sigs.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
 
             let fileRow = [ "bytes"; "hidden"; "kind"; "modified"; "name"; "path"; "target" ]
 
@@ -113,12 +113,12 @@ let completionTests =
             Expect.equal (ask "for p   in   ls |> map _.na") [ "_.name" ] "spaced for header"
             // the repair sees the shorthand too (the LSP's path)
             Expect.equal
-                (Weir.Script.repairedFields env "ls |> where (fun f -> f.kind == Directory) |> Seq.map _." "")
+                (Weir.Diagnostics.repairedFields env "ls |> where (fun f -> f.kind == Directory) |> Seq.map _." "")
                 (Some fileRow)
                 "repairedFields types the shorthand as a lambda over the element"
 
             Expect.equal
-                (Weir.Script.repairedFields env "ls |> where (fun f -> f.kind == Directory) |> _." "")
+                (Weir.Diagnostics.repairedFields env "ls |> where (fun f -> f.kind == Directory) |> _." "")
                 None
                 "repairedFields: a bare stage over a seq types to no record"
         }
@@ -388,7 +388,7 @@ let completionTests =
                     "let z = // a comment"
                     "retry 3 times"
                 ] do
-                Expect.isTrue (Weir.Script.opensIndentedBody t) t
+                Expect.isTrue (Weir.Assemble.opensIndentedBody t) t
 
             for t in
                 [
@@ -405,7 +405,7 @@ let completionTests =
                     "print 1"
                     ""
                 ] do
-                Expect.isFalse (Weir.Script.opensIndentedBody t) t
+                Expect.isFalse (Weir.Assemble.opensIndentedBody t) t
         }
         test "#keys prints the key bindings, keys dim only at a tty [D:repl-keys]" {
             let plain = Weir.Repl.keysText false
@@ -695,7 +695,7 @@ let completionTests =
             Expect.isTrue (known "k") "an alias head is known"
             Expect.isFalse (Weir.Repl.knownForTest "k") "…and only via the alias set"
 
-            let colorize = Weir.Script.colorizeRepl known
+            let colorize = Weir.ReplColor.colorizeRepl known
             Expect.stringContains (colorize "k get pod -A") "\x1b[1mk\x1b[0m" "alias head bold at the statement head"
             Expect.stringContains (colorize "let x = k get pod") "\x1b[1mk\x1b[0m" "alias head bold at the let-RHS"
             // the ^ sigil skips the table [D:command-head-alias]: `^k`
@@ -1761,11 +1761,11 @@ let replEchoTests =
                 "nothing to name — the caller falls back to <fun>/<builtin> : ty"
         }
         test "a named function short of arguments echoes what is bound and what is missing [D:partial-echo]" {
-            let builtins = Weir.Script.builtinParamNames Weir.Builtins.typeEnv
+            let builtins = Weir.Statements.builtinParamNames Weir.Builtins.typeEnv
 
             let lines src =
-                Weir.Script.partialApp builtins (checkOk src)
-                |> Option.map (Weir.Script.partialEchoLines plainSigStyle)
+                Weir.Statements.partialApp builtins (checkOk src)
+                |> Option.map (Weir.Statements.partialEchoLines plainSigStyle)
 
             Expect.equal
                 (lines "\"k\" |> Str.toUtf8 |> Bytes.hmacSha256")
@@ -1795,7 +1795,7 @@ let replEchoTests =
 
             // a head the resolver cannot name declines
             Expect.equal
-                (Weir.Script.partialApp (fun _ -> None) (checkOk "Seq.map (fun x -> x + 1)"))
+                (Weir.Statements.partialApp (fun _ -> None) (checkOk "Seq.map (fun x -> x + 1)"))
                 None
                 "no parameter names, no claim"
         }
@@ -1825,7 +1825,7 @@ let replEchoTests =
                 (errorMsgsIn "disc.weir" [ "let cleanup () = print \"c\""; "cleanup" ])
                 [
                     "this statement computes a unit -> unit and discards it"
-                    + Weir.Script.callItTail
+                    + Weir.Statements.callItTail
                 ]
                 "an uncalled unit function keeps its own lesson"
         }
@@ -1838,11 +1838,11 @@ let replEchoTests =
             let numbered =
                 drafted
                 |> List.mapi (fun i l -> i + 1, l)
-                |> List.filter (fun (_, raw) -> Weir.Script.classifyLine raw <> Weir.Script.LineKind.CommentOnly)
-                |> List.map (fun (n, raw) -> n, Weir.Script.stripComment raw)
+                |> List.filter (fun (_, raw) -> Weir.Assemble.classifyLine raw <> Weir.Assemble.LineKind.CommentOnly)
+                |> List.map (fun (n, raw) -> n, Weir.Assemble.stripComment raw)
 
             let lls =
-                match Weir.Script.assemble numbered with
+                match Weir.Assemble.assemble numbered with
                 | Ok lls -> lls
                 | Error m -> failtest $"drafted did not assemble: {m}"
 
@@ -1850,18 +1850,18 @@ let replEchoTests =
 
             let d =
                 match
-                    Weir.Script.checkStatement
+                    Weir.Statements.checkStatement
                         false
                         None
-                        Weir.Script.resolver
-                        Weir.Script.scriptOnlyImport
+                        Weir.Statements.resolver
+                        Weir.ModuleLoader.scriptOnlyImport
                         Weir.Builtins.typeEnvStrict
                         ll
                 with
                 | Error d -> d
                 | Ok _ -> failtest "expected the drafted type to FAIL the check"
 
-            let rendered = Weir.Script.stripAnsi (Weir.Repl.formatDraftedDiag drafted d)
+            let rendered = Weir.ReplColor.stripAnsi (Weir.Repl.formatDraftedDiag drafted d)
 
             // the offending drafted line is the second physical line
             Expect.equal d.PhysLine 2 "the error points at the drafted field line, not the header"
@@ -1887,8 +1887,8 @@ let replEchoTests =
 let replColorTests =
     // [D:repl-color] — the paint-transparency property is the load-bearing
     // pin: coloring never alters the text (strip . colorize = id)
-    let colorize = Weir.Script.colorizeRepl (fun n -> n = "ls" || n = "print")
-    let strip = Weir.Script.stripAnsi
+    let colorize = Weir.ReplColor.colorizeRepl (fun n -> n = "ls" || n = "print")
+    let strip = Weir.ReplColor.stripAnsi
 
     testList "REPL coloring" [
         test "command mode tints: head bold-blue, argv dim, splice cyan, stage undimmed [D:semantic-tokens]" {
@@ -1899,7 +1899,9 @@ let replColorTests =
             Expect.isFalse (c.Contains "\u001b[2mhead") "after | the stage is expression land"
         }
         test "a known constructor takes the constructor tint in a head slot too" {
-            let tint = Weir.Script.colorizeRepl (fun n -> n = "Node" || n = "Leaf" || n = "Seq")
+            let tint =
+                Weir.ReplColor.colorizeRepl (fun n -> n = "Node" || n = "Leaf" || n = "Seq")
+
             let c = tint "let t = Node [Leaf 1; Node []]"
             Expect.isFalse (c.Contains "\u001b[1mNode") "the let-RHS head is not bold"
             Expect.stringContains c "\u001b[33mNode\u001b[0m [\u001b[33mLeaf\u001b[0m" "head and nested agree"
@@ -1931,7 +1933,7 @@ let replColorTests =
         test "an uppercase stage word is never a program, whatever PATH holds" {
             // a case-insensitive filesystem finds `Seq` as seq — the casing
             // rule decides first
-            let c = Weir.Script.colorizeRepl (fun _ -> false) "git log | Seq.head"
+            let c = Weir.ReplColor.colorizeRepl (fun _ -> false) "git log | Seq.head"
             Expect.isFalse (c.Contains "\u001b[1;34mSeq") "not painted as a PATH head"
             Expect.isFalse (c.Contains "\u001b[31mSeq") "not painted as an unknown head"
         }
@@ -1991,7 +1993,7 @@ let replColorTests =
             let known n = n = "print"
 
             let c =
-                Weir.Script.colorizeRepl known "sh tag v0.123.0 --some-flag -la $x | Seq.head"
+                Weir.ReplColor.colorizeRepl known "sh tag v0.123.0 --some-flag -la $x | Seq.head"
 
             Expect.stringContains c "\x1b[2mv0.123.0\x1b[0m" "a version is one word"
             Expect.stringContains c "\x1b[2m--some-flag\x1b[0m" "a long flag is one word"
@@ -2001,14 +2003,14 @@ let replColorTests =
         }
         test "an alias head arms command mode: its words are dim argv [D:alias-argv-tint]" {
             let isCb n = n = "cb"
-            let c = Weir.Script.colorizeReplWith isCb isCb "cb BBDD-8900 | Seq.head"
+            let c = Weir.ReplColor.colorizeReplWith isCb isCb "cb BBDD-8900 | Seq.head"
 
             Expect.stringContains c "\x1b[1mcb\x1b[0m" "the alias keeps the known tint"
             Expect.stringContains c "\x1b[2mBBDD-8900\x1b[0m" "the argument is one argv word"
             Expect.isFalse (c.Contains "\x1b[2mhead") "after | the stage is expression land"
 
             Expect.isFalse
-                ((Weir.Script.colorizeRepl isCb "cb BBDD-8900").Contains "\x1b[2m")
+                ((Weir.ReplColor.colorizeRepl isCb "cb BBDD-8900").Contains "\x1b[2m")
                 "a known name that is no alias stays an expression"
         }
         test "the Tab listing paints a candidate without moving the columns [D:repl-color-words]" {
@@ -2023,13 +2025,13 @@ let replColorTests =
         }
         test "a module qualifier paints the same at the head and after a pipe [D:repl-color-words]" {
             let c =
-                Weir.Script.colorizeRepl (fun n -> n = "Str" || n = "Bytes") "Str.toUtf8 \"x\" |> Bytes.toHex"
+                Weir.ReplColor.colorizeRepl (fun n -> n = "Str" || n = "Bytes") "Str.toUtf8 \"x\" |> Bytes.toHex"
 
             Expect.stringContains c "\x1b[1mStr\x1b[0m" "the head qualifier"
             Expect.stringContains c "\x1b[1mBytes\x1b[0m" "the piped-into qualifier, same tint"
             // an unknown uppercase word keeps the casing-law tint
             Expect.stringContains
-                (Weir.Script.colorizeRepl (fun _ -> false) "let n = Nope.x 1")
+                (Weir.ReplColor.colorizeRepl (fun _ -> false) "let n = Nope.x 1")
                 "\x1b[33mNope\x1b[0m"
                 "not a module: casing law"
         }
@@ -2072,7 +2074,7 @@ let headSlotCompletionTests =
 
     let entry (lines: string list) =
         let cur = List.last lines
-        Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+        Weir.Sigs.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
 
     testList "head option and until-stopped completion" [
         test "a loop head offers its option keys — its options record's fields [D:head-key-complete]" {
@@ -2198,7 +2200,7 @@ let completionHuntTests =
 
     let entry (lines: string list) =
         let cur = List.last lines
-        Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+        Weir.Sigs.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
 
     let withFiles (f: unit -> unit) =
         let d = tempPath "weir-hunt"
@@ -2297,7 +2299,7 @@ let completionHunt2Tests =
 
     let entry (lines: string list) =
         let cur = List.last lines
-        Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+        Weir.Sigs.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
 
     testList "completion hunt fixes, second batch" [
         test "a match arm's case binder types from the scrutinee [D:case-binder-complete]" {
@@ -2392,7 +2394,7 @@ let completionTypeNameTests =
             let cur = List.last lines
 
             Expect.contains
-                (Weir.Script.suggestEntry
+                (Weir.Sigs.suggestEntry
                     Map.empty
                     Map.empty
                     (env ())
@@ -2441,7 +2443,7 @@ let completionPipelineTests =
 
     let entry (lines: string list) =
         let cur = List.last lines
-        Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+        Weir.Sigs.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
 
     let pre = [ "type R = { n: int; tag: string }"; "let xs = [{ n = 1; tag = \"a\" }]" ]
 
@@ -2479,7 +2481,7 @@ let completionPipelineTests =
             let entryIn (lines: string list) =
                 let cur = List.last lines
 
-                Weir.Script.suggestEntry
+                Weir.Sigs.suggestEntry
                     Map.empty
                     Map.empty
                     (envOf ())
@@ -2561,7 +2563,7 @@ let completionBatch1Tests =
                     cur
                 ]
 
-                Weir.Script.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
+                Weir.Sigs.suggestEntry Map.empty Map.empty env lines cur (Weir.Complete.wordStartAt cur cur.Length)
 
             Expect.contains (entry "echo $cl") "cli." "the record's stem"
             Expect.equal (entry "^$to") [ "tool" ] "a string at a dynamic head"
@@ -2900,11 +2902,11 @@ let sigTests =
                 "x.weir"
             ]
 
-            let files = names |> List.map Weir.Script.sigFileName
+            let files = names |> List.map Weir.Sigs.sigFileName
             Expect.equal (List.distinct files).Length names.Length $"collision in {files}"
 
             for plain in [ "curl"; "git-lfs"; "python3.12"; "add_sig"; "ü" ] do
-                Expect.equal (Weir.Script.sigFileName plain) (plain + ".weir") plain
+                Expect.equal (Weir.Sigs.sigFileName plain) (plain + ".weir") plain
 
             for f in files do
                 Expect.isFalse (f.Contains '/' || f.Contains '\\' || f.StartsWith ".") f
@@ -2916,18 +2918,18 @@ let sigTests =
 
             let long =
                 [ deep; deep2; wide; String.replicate 130 "ü" ]
-                |> List.map Weir.Script.sigFileName
+                |> List.map Weir.Sigs.sigFileName
 
             for f in long do
                 Expect.isLessThanOrEqual (System.Text.Encoding.UTF8.GetByteCount f) 255 f
                 Expect.isFalse (f.Contains '/') f
 
             Expect.equal (List.distinct long).Length long.Length $"collision in {long}"
-            Expect.equal (Weir.Script.sigFileName deep) (Weir.Script.sigFileName deep) "stable"
+            Expect.equal (Weir.Sigs.sigFileName deep) (Weir.Sigs.sigFileName deep) "stable"
             Expect.isFalse (List.exists (fun f -> List.contains f files) long) "a hashed name meets no encoded one"
 
             Expect.equal
-                (Weir.Script.sigFileName (String.replicate 250 "a"))
+                (Weir.Sigs.sigFileName (String.replicate 250 "a"))
                 (String.replicate 250 "a" + ".weir")
                 "a plain name up to the limit is its own"
         }
@@ -3319,12 +3321,12 @@ let continuedCommandTests =
             silent [ "echo a"; "    |> Seq.iter print" ] "a function stage"
         }
         test "a command that takes a command is exempt, every listed wrapper" {
-            for w in Weir.Script.commandWrappers do
+            for w in Weir.Sigs.commandWrappers do
                 silent [ $"{w} -x a"; "    echo b" ] w
         }
         test "the wrapper list is the brief's" {
             Expect.equal
-                (Set.count Weir.Script.commandWrappers)
+                (Set.count Weir.Sigs.commandWrappers)
                 19
                 "sudo doas env xargs time nice nohup timeout exec command watch ssh parallel flock chroot strace stdbuf setsid unbuffer"
         }
@@ -3856,7 +3858,7 @@ let aliasTests =
             Expect.equal (Weir.Repl.visibleWidthForTest " x> ") 5 "a private-use glyph counts one"
         }
         test "(k3) PromptStatus carries the entry's duration [D:prompt-duration]" {
-            let dom = Weir.Script.promptStatusDomain
+            let dom = Weir.Statements.promptStatusDomain
 
             Expect.isTrue
                 (dom (TRowVar("r", [ "duration", TDur ])))
@@ -3959,13 +3961,13 @@ let envPrefixTests =
     testList "env prefix [D:env-prefix]" [
         test "an env-prefix value is one inert word for the colorizer [D:repl-color-words]" {
             let c =
-                Weir.Script.colorizeRepl (fun n -> n = "rooz") "ROOZ_ALLOW=dkr@22aed5c9f6 rooz -H lambda update"
+                Weir.ReplColor.colorizeRepl (fun n -> n = "rooz") "ROOZ_ALLOW=dkr@22aed5c9f6 rooz -H lambda update"
 
             Expect.stringContains c "ROOZ_ALLOW=dkr@22aed5c9f6 " "the value carries no tint"
             Expect.isFalse (c.Contains "\x1b[31m") "nothing in it reads as a head that would fail"
 
             Expect.stringContains
-                (Weir.Script.colorizeRepl (fun n -> n = "rooz") "A=1 B=x2y rooz")
+                (Weir.ReplColor.colorizeRepl (fun n -> n = "rooz") "A=1 B=x2y rooz")
                 "A=1 B=x2y "
                 "each prefix's value"
         }
@@ -4264,7 +4266,7 @@ let helpUxTests =
         }
         test "the /// run above the module line is the module's doc [D:module-doc]" {
             Expect.equal
-                (Weir.Script.moduleDocOf [
+                (Weir.Assemble.moduleDocOf [
                     "/// Topic pub/sub."
                     "/// Call init first."
                     "module Flume"
@@ -4274,10 +4276,13 @@ let helpUxTests =
                 [ "Topic pub/sub."; "Call init first." ]
                 "the contiguous run"
 
-            Expect.equal (Weir.Script.moduleDocOf [ "/// stray"; ""; "module Flume" ]) [] "a blank line breaks the run"
+            Expect.equal
+                (Weir.Assemble.moduleDocOf [ "/// stray"; ""; "module Flume" ])
+                []
+                "a blank line breaks the run"
 
             Expect.equal
-                (Weir.Script.moduleDocOf [ "module Flume"; "/// doubles"; "let twice : int -> int" ])
+                (Weir.Assemble.moduleDocOf [ "module Flume"; "/// doubles"; "let twice : int -> int" ])
                 []
                 "a member's doc is not the module's"
         }
@@ -4374,7 +4379,7 @@ let helpUxTests =
 
             let expected =
                 ex.Split '\n'
-                |> Array.map (Weir.Script.colorizeRepl Weir.Repl.knownForTest)
+                |> Array.map (Weir.ReplColor.colorizeRepl Weir.Repl.knownForTest)
                 |> String.concat "\n"
 
             Expect.stringContains
@@ -4454,7 +4459,7 @@ let sigCompleteTests =
 
     let loadAt (path: string) (tool: string) =
         match
-            Weir.Script.loadSigs (path + ".from") [
+            Weir.Sigs.loadSigs (path + ".from") [
                 {
                     Tool = tool
                     Override = Some path
@@ -4469,20 +4474,20 @@ let sigCompleteTests =
         loadAt (Path.Combine(fixtureDir, tool + ".weir")) tool
 
     // complete at the end of `<tool><argText>`, the editor's word rule
-    let at (si: Weir.Script.SigInfo) (argText: string) =
+    let at (si: Weir.Sigs.SigInfo) (argText: string) =
         let ws = Weir.Complete.wordStartAt argText argText.Length
-        Weir.Script.SigComplete.complete si argText (argText.Substring ws)
+        Weir.Sigs.SigComplete.complete si argText (argText.Substring ws)
 
     let words si argText =
         match at si argText with
-        | Weir.Script.SigWords ws -> ws
+        | Weir.Sigs.SigWords ws -> ws
         | other -> failtest $"'{argText}': expected words, got {other}"
 
     let isPaths si argText =
-        Expect.equal (at si argText) Weir.Script.SigPaths $"'{argText}' defers to paths"
+        Expect.equal (at si argText) Weir.Sigs.SigPaths $"'{argText}' defers to paths"
 
     let isNothing si argText =
-        Expect.equal (at si argText) Weir.Script.SigNothing $"'{argText}' offers nothing"
+        Expect.equal (at si argText) Weir.Sigs.SigNothing $"'{argText}' offers nothing"
 
     let has (xs: string list) (ys: string list) =
         for y in ys do
@@ -4667,7 +4672,7 @@ let sigCompleteTests =
                 let sigOf (flag: string) = [ "module Lk"; "type Cmd = {"; $"    {flag}: bool"; "}" ]
 
                 let longs () =
-                    match Weir.Script.SigLookup.findIn sub user "lktool" with
+                    match Weir.Sigs.SigLookup.findIn sub user "lktool" with
                     | Some si -> si.Surfaces[""].Longs |> Map.keys |> List.ofSeq
                     | None -> []
 
@@ -4704,7 +4709,7 @@ let sigCompleteTests =
 
                 inCwd d (fun () ->
                     let tabWith aliases (line: string) =
-                        Weir.Script.suggestEntry
+                        Weir.Sigs.suggestEntry
                             aliases
                             Map.empty
                             env
@@ -4753,7 +4758,7 @@ let sigDynamicTests =
     let sampleDir = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "..", "sigs"))
 
     let loadAt (path: string) (tool: string) =
-        Weir.Script.loadSigs (path + ".from") [
+        Weir.Sigs.loadSigs (path + ".from") [
             {
                 Tool = tool
                 Override = Some path
@@ -4794,7 +4799,7 @@ let sigDynamicTests =
         hooks, asked, notes
 
     let tabIn hooks user aliases (line: string) =
-        Weir.Script.sigArgvCompleteWith (Some hooks) user aliases env line (Weir.Complete.wordStartAt line line.Length)
+        Weir.Sigs.sigArgvCompleteWith (Some hooks) user aliases env line (Weir.Complete.wordStartAt line line.Length)
 
     testSequenced
     <| testList "sig dynamic completion" [
@@ -4909,14 +4914,14 @@ let sigDynamicTests =
                     File.WriteAllLines(p, sigText line)
 
                     match loadAt p "dy" with
-                    | [], [ si ] -> Weir.Script.dynamicFor user si
+                    | [], [ si ] -> Weir.Sigs.dynamicFor user si
                     | ds, _ -> failtest $"{ds}"
 
-                Expect.equal (at user "let dynamic = \"cobra\"") Weir.Script.DynCobra "user-dir cobra"
-                Expect.equal (at proj "let dynamic = \"cobra\"") Weir.Script.DynRefused "project cobra"
-                Expect.equal (at user "let dynamic = \"git\"") Weir.Script.DynGit "user-dir git"
-                Expect.equal (at proj "let dynamic = \"git\"") Weir.Script.DynGit "project git"
-                Expect.equal (at proj "") Weir.Script.DynOff "none")
+                Expect.equal (at user "let dynamic = \"cobra\"") Weir.Sigs.DynCobra "user-dir cobra"
+                Expect.equal (at proj "let dynamic = \"cobra\"") Weir.Sigs.DynRefused "project cobra"
+                Expect.equal (at user "let dynamic = \"git\"") Weir.Sigs.DynGit "user-dir git"
+                Expect.equal (at proj "let dynamic = \"git\"") Weir.Sigs.DynGit "project git"
+                Expect.equal (at proj "") Weir.Sigs.DynOff "none")
         }
         test "Tab: project cobra never runs the tool, user-dir cobra does, layer 1 stays" {
             withTempDir "weir-dytab" (fun root ->
@@ -5022,9 +5027,7 @@ let sigDynamicTests =
                     let _ = tabIn hooks user Map.empty "dyuser get ~/"
                     Expect.equal asked.Count 1 "never a ~ word"
                     // no hooks (the LSP's and layer 1's path): nothing asked
-                    Expect.isNone
-                        (Weir.Script.sigArgvCompleteWith None user Map.empty env "dyuser get " 11)
-                        "no hooks"))
+                    Expect.isNone (Weir.Sigs.sigArgvCompleteWith None user Map.empty env "dyuser get " 11) "no hooks"))
         }
         test "Tab: git from any sig, through an alias — co <TAB> lists branches" {
             withTempDir "weir-dygit" (fun root ->
@@ -5202,8 +5205,8 @@ let sigDynamicTests =
                     let gen sample =
                         let tool = Path.Combine(sampleDir, sample, "exe", sample)
 
-                        match Weir.Script.SigGen.generateTo (Some d) (Path.Combine(d, ".weir")) tool with
-                        | Ok _ -> File.ReadAllLines(Path.Combine(d, Weir.Script.sigFileName tool)) |> List.ofArray
+                        match Weir.SigGen.generateTo (Some d) (Path.Combine(d, ".weir")) tool with
+                        | Ok _ -> File.ReadAllLines(Path.Combine(d, Weir.Sigs.sigFileName tool)) |> List.ofArray
                         | Error e -> failtest $"{sample}: {e}"
 
                     let cobra = gen "cobrafx"

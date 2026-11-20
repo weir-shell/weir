@@ -417,7 +417,7 @@ let typedArgvTests =
         // script mode = the Self module present [D:self-module]
         {
             env with
-                Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers
+                Modules = env.Modules |> Map.add "Self" Weir.Statements.selfMembers
         }
 
     let argvCheck input =
@@ -1911,7 +1911,7 @@ let envLoadTests =
                 // Script mode (Self present) or Args.load refuses for that reason first.
                 let scriptEnv = {
                     env with
-                        Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers
+                        Modules = env.Modules |> Map.add "Self" Weir.Statements.selfMembers
                 }
 
                 let eArgs = scriptEnv |> declare "type WArgs = { [<Wire \"X\">] flag: string }"
@@ -2739,7 +2739,7 @@ let repeatTests =
         test "a let-headed loop's body lines sequence exactly as under a bare head [D:let-loop-body-sequences]" {
             for head in [ "retry attempts=1 delay=0ms"; "poll interval=10ms"; "repeat interval=10ms" ] do
                 match
-                    Weir.Script.assemble [
+                    Weir.Assemble.assemble [
                         1, $"let n = {head}"
                         2, "    echo first"
                         3, "    echo second"

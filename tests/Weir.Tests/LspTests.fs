@@ -2239,14 +2239,14 @@ let lspRenameTests =
 
             for f in files do
                 let lines = System.IO.File.ReadAllLines f |> Array.toList
-                let _, stmts, _, _, _ = Weir.Script.analyzeLines f lines
+                let _, stmts, _, _, _ = Weir.Analyze.analyzeLines f lines
 
                 for _, chk in stmts do
                     match chk.Kind with
-                    | Weir.Script.KLet(_, _, te)
-                    | Weir.Script.KLetPat(_, _, te)
-                    | Weir.Script.KCmd te
-                    | Weir.Script.KExpr te ->
+                    | Weir.Statements.KLet(_, _, te)
+                    | Weir.Statements.KLetPat(_, _, te)
+                    | Weir.Statements.KCmd te
+                    | Weir.Statements.KExpr te ->
                         statements <- statements + 1
                         let free = Weir.Check.bindingUsage te |> fst |> Set.ofSeq
 
@@ -2995,19 +2995,19 @@ let semanticTokenTests =
             let attached = [ "/// The token env."; "/// Two lines."; "type TokenEnv = { name: string }" ]
 
             Expect.equal
-                (Weir.Script.docAttachments attached
+                (Weir.Assemble.docAttachments attached
                  |> List.map (fun d -> d.Line, d.Col, d.Len, d.Doc))
                 [ (3, 6, 8, [ "The token env."; "Two lines." ]) ]
                 "a contiguous /// run attaches to the type name at (3,6,8), lines accumulated in order"
 
             // a blank line between the doc and the declaration breaks it
             Expect.equal
-                (Weir.Script.docAttachments [ "/// orphan"; ""; "type T = { x: int }" ])
+                (Weir.Assemble.docAttachments [ "/// orphan"; ""; "type T = { x: int }" ])
                 []
                 "blank-separated /// does not attach"
 
             Expect.equal
-                (Weir.Script.docAttachments [ "/// doc"; "let inc x = x + 1" ]
+                (Weir.Assemble.docAttachments [ "/// doc"; "let inc x = x + 1" ]
                  |> List.map (fun d -> d.Line, d.Col, d.Doc))
                 [ (2, 5, [ "doc" ]) ]
                 "let binder name is the key"
@@ -3015,7 +3015,7 @@ let semanticTokenTests =
         test "doc comments: an attribute line is transparent — both doc/attribute orders attach [D:doc-help]" {
             // F#'s canonical order: /// doc, then [<...>], then the field
             Expect.equal
-                (Weir.Script.docAttachments [
+                (Weir.Assemble.docAttachments [
                     "type C = {"
                     "    /// the beta"
                     "    [<Default 3>]"
@@ -3028,7 +3028,7 @@ let semanticTokenTests =
 
             // the pre-existing attribute-then-doc order keeps working
             Expect.equal
-                (Weir.Script.docAttachments [
+                (Weir.Assemble.docAttachments [
                     "type C = {"
                     "    [<Default 3>]"
                     "    /// the beta"
@@ -3041,13 +3041,13 @@ let semanticTokenTests =
         }
         test "doc comments: a same-line attribute is transparent — the doc keys the field after it [D:doc-help]" {
             Expect.equal
-                (Weir.Script.docAttachments [ "type C = {"; "    /// the n"; "    [<Short \"n\">] n: int"; "}" ]
+                (Weir.Assemble.docAttachments [ "type C = {"; "    /// the n"; "    [<Short \"n\">] n: int"; "}" ]
                  |> List.map (fun d -> d.Line, d.Col, d.Len, d.Doc))
                 [ (3, 19, 1, [ "the n" ]) ]
                 "the field name after the attribute list"
 
             Expect.equal
-                (Weir.Script.docAttachments [ "type U ="; "    /// the a"; "    | [<Wire \"a\">] A"; "    | B" ]
+                (Weir.Assemble.docAttachments [ "type U ="; "    /// the a"; "    | [<Wire \"a\">] A"; "    | B" ]
                  |> List.map (fun d -> d.Line, d.Col, d.Doc))
                 [ (3, 20, [ "the a" ]) ]
                 "a union case after its attribute"
@@ -3315,7 +3315,7 @@ let semanticTokenTests =
             // joined text must be identical — blank interior lines, deeper
             // indents and $<<< holes included
             let evalJoined (lines: string list) : Value =
-                match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+                match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
                 | Error e -> failtest $"assemble: {e}"
                 | Ok lls ->
                     lls
@@ -3525,7 +3525,7 @@ let semanticTokenTests =
             let runExample (ex: string) =
                 let lines = ex.Split '\n' |> Array.toList
 
-                match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+                match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
                 | Error e -> failwith $"assemble: {e}"
                 | Ok lls ->
                     lls
@@ -4158,7 +4158,7 @@ let blockRecoveryTests =
             Expect.equal (m.Line, m.Col) (4, 8) "the multi-line chain: the |> Seq.sum line"
         }
         test "the receipt: one error at the bad line, the statement is a partial, never a stmt" {
-            let diags, stmts, _, _, partials = Weir.Script.analyzeLines "t.weir" receipt
+            let diags, stmts, _, _, partials = Weir.Analyze.analyzeLines "t.weir" receipt
 
             Expect.equal
                 (diags |> List.map (fun d -> d.Line, d.Col, d.Code, d.Message))
@@ -4171,7 +4171,7 @@ let blockRecoveryTests =
             match partials with
             | [ (_,
                  {
-                     Kind = Weir.Script.KLet("sub", sch, _)
+                     Kind = Weir.Statements.KLet("sub", sch, _)
                      Env = env
                  }) ] ->
                 Expect.isTrue
@@ -4209,7 +4209,7 @@ let blockRecoveryTests =
         }
         test "a statement whose body is one failing expression stays treeless (no false tree)" {
             let _, stmts, _, _, partials =
-                Weir.Script.analyzeLines "t.weir" [ "let x = 1 + \"a\""; "print (show x)" ]
+                Weir.Analyze.analyzeLines "t.weir" [ "let x = 1 + \"a\""; "print (show x)" ]
 
             Expect.equal (stmts |> List.map (fun (ll, _) -> ll.Head)) [ 2 ] "the later statement checks"
             Expect.isEmpty partials "nothing to recover"
@@ -4225,7 +4225,7 @@ let blockRecoveryTests =
                 "print (show ys)"
             ]
 
-            let diags, _, _, _, partials = Weir.Script.analyzeLines "t.weir" lam
+            let diags, _, _, _, partials = Weir.Analyze.analyzeLines "t.weir" lam
             Expect.equal (diags |> List.map (fun d -> d.Line, d.Severity)) [ 4, "error" ] "one error"
             Expect.equal (partials |> List.map (fun (ll, _) -> ll.Head)) [ 1 ] "recovered through the check twin"
             Expect.equal (Weir.Lsp.hoverType lam 5 9) (Some "int") "the line below the bad one answers"
@@ -4239,7 +4239,7 @@ let blockRecoveryTests =
                 "go"
             ]
 
-            let diags, _, _, _, partials = Weir.Script.analyzeLines "t.weir" seqEl
+            let diags, _, _, _, partials = Weir.Analyze.analyzeLines "t.weir" seqEl
             Expect.equal (diags |> List.map (fun d -> d.Line, d.Severity)) [ 3, "error" ] "one error"
             Expect.equal (partials |> List.map (fun (ll, _) -> ll.Head)) [ 1 ] "recovered"
             Expect.equal (Weir.Lsp.hoverType seqEl 4 17) (Some "int") "the line below answers"
@@ -4255,7 +4255,7 @@ let blockRecoveryTests =
                 "go"
             ]
 
-            let diags, _, _, _, partials = Weir.Script.analyzeLines "t.weir" pat
+            let diags, _, _, _, partials = Weir.Analyze.analyzeLines "t.weir" pat
             Expect.equal (diags |> List.map (fun d -> d.Line, d.Severity)) [ 3, "error" ] "one error"
             Expect.equal (partials |> List.map (fun (ll, _) -> ll.Head)) [ 1 ] "recovered"
             Expect.equal (Weir.Lsp.hoverType pat 4 17) (Some "int") "the earlier leaf answers"
@@ -4281,7 +4281,7 @@ let blockRecoveryTests =
             ]
 
             let diags, _, _, _, partials =
-                Weir.Script.analyzeLines "burn.weir" (burn 0 @ burn 1 @ [ "let later = 1 + \"y\"" ])
+                Weir.Analyze.analyzeLines "burn.weir" (burn 0 @ burn 1 @ [ "let later = 1 + \"y\"" ])
 
             let errors = diags |> List.filter (fun d -> d.Severity = "error")
             Expect.equal (errors |> List.map (fun d -> d.Line)) [ 2 ] "the first statement's own error, then the stop"
@@ -4292,12 +4292,12 @@ let blockRecoveryTests =
 
 let quickFixTests =
     let diagsOf path (lines: string list) =
-        let ds, _, _, _, _ = Weir.Script.analyzeLines path lines
+        let ds, _, _, _, _ = Weir.Analyze.analyzeLines path lines
         ds
 
     // every edit is against the unedited text [D:structured-fixes], so
     // they apply last-first
-    let applyEdits (lines: string list) (edits: Weir.Script.FixEdit list) : string list =
+    let applyEdits (lines: string list) (edits: Weir.Diagnostics.FixEdit list) : string list =
         let arr = List.toArray lines
 
         let offset (l: int) (c: int) =
@@ -4318,7 +4318,7 @@ let quickFixTests =
 
         t.Split('\n') |> Array.toList
 
-    let fixFor path lines (code: string) : Weir.Script.Fix =
+    let fixFor path lines (code: string) : Weir.Diagnostics.Fix =
         match diagsOf path lines |> List.tryFind (fun d -> d.Code = code) with
         | Some d ->
             match d.Fix with
@@ -4326,7 +4326,7 @@ let quickFixTests =
             | None -> failtest $"no fix on {code}: {d.Message}"
         | None -> failtest $"no {code} diagnostic: {diagsOf path lines |> List.map _.Message}"
 
-    let edit l c el ec (text: string) : Weir.Script.FixEdit = {
+    let edit l c el ec (text: string) : Weir.Diagnostics.FixEdit = {
         Line = l
         Col = c
         EndLine = el
@@ -4335,7 +4335,7 @@ let quickFixTests =
     }
 
     // the invariant: a fix fixes — the code is gone and nothing NEW errors
-    let fixes path lines (code: string) : Weir.Script.Fix =
+    let fixes path lines (code: string) : Weir.Diagnostics.Fix =
         let before = diagsOf path lines
         let f = fixFor path lines code
         let after = diagsOf path (applyEdits lines f.Edits)
@@ -4453,7 +4453,7 @@ let quickFixTests =
                 Expect.equal (f.Title, f.Edits) ("Replace with '--dry-run'", [ edit 2 8 2 17 "--dry-run" ]) "")
 
             Expect.equal
-                (Weir.Script.fixOf [||] "unbound" "unbound variable 'cont'. Did you mean 'count'?" 2 10 None None)
+                (Weir.Diagnostics.fixOf [||] "unbound" "unbound variable 'cont'. Did you mean 'count'?" 2 10 None None)
                 None
                 "a did-you-mean without a span offers nothing"
 
@@ -4602,7 +4602,7 @@ let quickFixTests =
         }
         test "Call it: a unit -> X statement names the function, not its result [D:structured-fixes]" {
             Expect.equal
-                (Weir.Script.discardError (TFun(TUnit, TInt)))
+                (Weir.Statements.discardError (TFun(TUnit, TInt)))
                 (Some
                     "this statement computes a unit -> int and discards it — that is the function itself, not its result: call it with ()")
                 "the teaching"
@@ -4707,7 +4707,9 @@ let quickFixTests =
             let d = List.exactlyOne diags
 
             use doc =
-                System.Text.Json.JsonDocument.Parse(Weir.Script.jsonBuild (fun w -> Weir.Script.writeDiag w d))
+                System.Text.Json.JsonDocument.Parse(
+                    Weir.Diagnostics.jsonBuild (fun w -> Weir.Diagnostics.writeDiag w d)
+                )
 
             let fix = doc.RootElement.GetProperty "fix"
             Expect.equal (fix.GetProperty("title").GetString()) "Replace with 'count'" ""
@@ -4728,7 +4730,9 @@ let quickFixTests =
             let d = List.exactlyOne (diagsOf "q.weir" [ "let n = 1 + \"a\""; "print $\"{n}\"" ])
 
             use doc =
-                System.Text.Json.JsonDocument.Parse(Weir.Script.jsonBuild (fun w -> Weir.Script.writeDiag w d))
+                System.Text.Json.JsonDocument.Parse(
+                    Weir.Diagnostics.jsonBuild (fun w -> Weir.Diagnostics.writeDiag w d)
+                )
 
             Expect.isFalse (doc.RootElement.TryGetProperty("fix") |> fst) ""
         }
@@ -4910,7 +4914,7 @@ let tintParityTests =
     testList "the REPL's tint and the semantic tokens agree in command mode" [
         test "head, argv and splice: every token the editor emits is tinted so, and nothing else is argv" {
             let replClasses (line: string) : string =
-                let painted = Weir.Script.colorizeRepl (fun _ -> false) line
+                let painted = Weir.ReplColor.colorizeRepl (fun _ -> false) line
                 let out = System.Text.StringBuilder()
                 let mutable i = 0
                 let mutable code = ""

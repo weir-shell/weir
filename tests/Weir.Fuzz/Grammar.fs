@@ -1781,7 +1781,7 @@ module Transform =
     // [D:trailing-comments]; district content is bytes (appending would
     // change output) and blanks keep their line class
     let appendTrailing (rnd: Random) (lines: string list) : string list =
-        let mask = Weir.Script.districtContentMask lines
+        let mask = Weir.Assemble.districtContentMask lines
 
         lines
         |> List.mapi (fun i l ->

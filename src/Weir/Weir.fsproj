@@ -161,6 +161,15 @@
     <Compile Include="Prelude.fs" />
     <Compile Include="Framing.fs" />
     <Compile Include="Debugger.fs" />
+    <Compile Include="Assemble.fs" />
+    <Compile Include="ReplColor.fs" />
+    <Compile Include="Statements.fs" />
+    <Compile Include="ModuleLoader.fs" />
+    <Compile Include="Diagnostics.fs" />
+    <Compile Include="Sigs.fs" />
+    <Compile Include="SigGen.fs" />
+    <Compile Include="Init.fs" />
+    <Compile Include="Analyze.fs" />
     <Compile Include="Script.fs" />
     <!-- after Script: the capability walker reads CheckedStmt trees
          [D:can-report] -->

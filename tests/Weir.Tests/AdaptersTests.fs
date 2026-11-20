@@ -537,12 +537,12 @@ let boundaryTests =
             Expect.isError (Weir.Parser.parseLine cmdResolver "let do = 1") "do reserved"
             // the word-boundary guard: a line ending in 'do' opens a block,
             // a line ending in 'sudo' does not
-            Expect.isTrue (Weir.Script.dangleOpensBlock "for x in xs do") "do dangles"
-            Expect.isFalse (Weir.Script.dangleOpensBlock "run sudo") "sudo must not dangle"
+            Expect.isTrue (Weir.Assemble.dangleOpensBlock "for x in xs do") "do dangles"
+            Expect.isFalse (Weir.Assemble.dangleOpensBlock "run sudo") "sudo must not dangle"
         }
 
         test "for/do multiline body: the layout is the then-body rule, pinned not analogized [D:for-do]" {
-            match Weir.Script.assemble [ 1, "for x in [1; 2] do"; 2, "    print \"a\""; 3, "    print (show x)" ] with
+            match Weir.Assemble.assemble [ 1, "for x in [1; 2] do"; 2, "    print \"a\""; 3, "    print (show x)" ] with
             | Ok [ ll ] ->
                 Expect.stringContains ll.Text "for x in [1; 2] do" "the head survives"
                 Expect.stringContains ll.Text "print \"a\"" "body line 1 joins"
@@ -603,14 +603,14 @@ let boundaryTests =
 
         test "pfor is reserved; its head opens a block; a bare range teaches the list [D:pfor]" {
             Expect.isError (Weir.Parser.parseLine cmdResolver "let pfor = 1") "pfor reserved"
-            Expect.isTrue (Weir.Script.dangleOpensBlock "pfor x in xs do") "the head dangles"
+            Expect.isTrue (Weir.Assemble.dangleOpensBlock "pfor x in xs do") "the head dangles"
 
             match Weir.Parser.parseLine cmdResolver "pfor i in 1..3 do print i" with
             | Error msg -> Expect.stringContains msg "pfor i in [a..b] do" "the teaching spells pfor"
             | Ok other -> failtest $"a bare range must refuse, got {other}"
 
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "pfor x in [1; 2] do"
                     2, "    print \"a\""
                     3, "    print (show x)"
@@ -1221,7 +1221,7 @@ let boundaryTests =
 
         test "the yaml district assembles: sentinel-glued verbatim lines [D:yaml-district]" {
             match
-                Weir.Script.assemble [
+                Weir.Assemble.assemble [
                     1, "let d = yaml"
                     2, "    kind: Pod"
                     3, "    metadata:"
@@ -1241,7 +1241,7 @@ let boundaryTests =
 
         test "a command head glued to the sentinel never parses as a command [D:yaml-district]" {
             // the machine boundary: only the assembler's yaml wrap glues them
-            match Weir.Script.assemble [ 1, "let d = yaml"; 2, "    x: 1" ] with
+            match Weir.Assemble.assemble [ 1, "let d = yaml"; 2, "    x: 1" ] with
             | Ok [ ll ] ->
                 match Weir.Parser.parseLine cmdResolver ll.Text with
                 | Ok(SLet("d", { Kind = EYaml _ })) -> ()
@@ -1257,7 +1257,7 @@ let boundaryTests =
             // Assert the assembly verdict (armed-error vs clean), never
             // a PATH completion — these are command-shaped lines.
             let assemblesClean line =
-                match Weir.Script.assemble [ 1, line ] with
+                match Weir.Assemble.assemble [ 1, line ] with
                 | Ok [ ll ] -> Expect.equal ll.Text line $"'{line}' assembles as one plain command line, unarmed"
                 | Ok other -> failtest $"'{line}': expected one logical line, got {other}"
                 | Error e -> failtest $"'{line}' must not arm a district: {e}"
@@ -1270,7 +1270,7 @@ let boundaryTests =
             // and the district still arms for the real forms: a bare
             // `= yaml` with no block below is the armed-district error
             // (proves the arm fires, the block demand included)
-            match Weir.Script.assemble [ 1, "let d = yaml" ] with
+            match Weir.Assemble.assemble [ 1, "let d = yaml" ] with
             | Error e -> Expect.stringContains e "indented block" "a bare `= yaml` arms and demands its block"
             | Ok other -> failtest $"expected the armed-district error, got {other}"
         }
@@ -1667,7 +1667,7 @@ let boundaryTests =
         }
 
         test "the heredoc district assembles exactly as yaml's does [D:text-block]" {
-            match Weir.Script.assemble [ 1, "let t = <<<"; 2, "    echo $HOME {x}"; 3, ""; 4, "        deep" ] with
+            match Weir.Assemble.assemble [ 1, "let t = <<<"; 2, "    echo $HOME {x}"; 3, ""; 4, "        deep" ] with
             | Ok [ ll ] ->
                 Expect.stringContains ll.Text "let t = <<<" "the marker glyph survives"
                 Expect.stringContains ll.Text "echo $HOME {x}" "content is bytes"
@@ -1681,7 +1681,7 @@ let boundaryTests =
             // the negative pin [D:text-block]: a glyph marker steals no
             // identifier — `text` binds and ends a line freely (the
             // word-marker's soft-reserve, retired by the glyph ruling)
-            match Weir.Script.assemble [ 1, "let text = \"x\""; 2, "print text" ] with
+            match Weir.Assemble.assemble [ 1, "let text = \"x\""; 2, "print text" ] with
             | Ok [ _; ll ] ->
                 Expect.isFalse (ll.Text.Contains Weir.Parser.sibSepStr) "no district arms on a binding named text"
             | other -> failtest $"expected two logical lines, got {other}"
@@ -1721,7 +1721,7 @@ let boundaryTests =
 
         test "an outdented comment inside a heredoc is an outdent error, after it a comment ends the block" {
             let assembled lines =
-                Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+                Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l))
 
             for comment in [ "  // outdented"; "// col0" ] do
                 match assembled [ "let t = <<<"; "    one"; comment; "    two"; "print t" ] with
@@ -1886,7 +1886,7 @@ let boundaryTests =
         }
 
         test "heredoc errors: no block, outdent, the }-teaching, empty [D:text-block]" {
-            match Weir.Script.assemble [ 1, "let t = <<<"; 2, "print \"x\"" ] with
+            match Weir.Assemble.assemble [ 1, "let t = <<<"; 2, "print \"x\"" ] with
             | Error e -> Expect.stringContains e "'<<<' needs an indented block" "the no-block error names the glyph"
             | other -> failtest $"expected an assembly error, got {other}"
 
@@ -1894,7 +1894,7 @@ let boundaryTests =
             // before, a pipe after the block glued into the last content
             // line as bytes (`alpha |> Seq.length`, silent corruption);
             // now the assembler terminates the content and the pipe pipes
-            match Weir.Script.assemble [ 1, "let t = <<<"; 2, "    alpha"; 3, "|> Seq.length" ] with
+            match Weir.Assemble.assemble [ 1, "let t = <<<"; 2, "    alpha"; 3, "|> Seq.length" ] with
             | Ok [ ll ] ->
                 Expect.isTrue (ll.Text.Contains Weir.Parser.districtClose) "the content carries the close terminator"
 
@@ -1908,16 +1908,16 @@ let boundaryTests =
             | other -> failtest $"expected the block to compose, got {other}"
 
             // the yaml twin composes the same way
-            match Weir.Script.assemble [ 1, "let d = yaml"; 2, "    k: v"; 3, "|> to yaml" ] with
+            match Weir.Assemble.assemble [ 1, "let d = yaml"; 2, "    k: v"; 3, "|> to yaml" ] with
             | Ok [ ll ] ->
                 Expect.isTrue (ll.Text.Contains Weir.Parser.districtClose) "the yaml block carries the terminator too"
             | other -> failtest $"expected the yaml block to compose, got {other}"
 
-            match Weir.Script.assemble [ 1, "let t = $<<<"; 2, "        a"; 3, "    b" ] with
+            match Weir.Assemble.assemble [ 1, "let t = $<<<"; 2, "        a"; 3, "    b" ] with
             | Error e -> Expect.stringContains e "this heredoc line outdents" "the outdent error names the form"
             | other -> failtest $"expected an assembly error, got {other}"
 
-            match Weir.Script.assemble [ 1, "let t = $<<<"; 2, "    a } b" ] with
+            match Weir.Assemble.assemble [ 1, "let t = $<<<"; 2, "    a } b" ] with
             | Ok [ ll ] ->
                 match Weir.Parser.parseLine cmdResolver ll.Text with
                 | Error e -> Expect.stringContains e "a literal } in a $<<< line is }}" "the brace teaching"
@@ -1935,60 +1935,60 @@ let boundaryTests =
             "piped-REPL accumulation: statementCount + pipedAttaches are the assembler's own boundary [D:repl-multiline]" {
             // the count is the assembler's statement count, comment-filtered.
             // A pending/open buffer is not-yet-countable (None).
-            Expect.equal (Weir.Script.statementCount [ "let x = 1" ]) (Some 1) "one complete statement"
-            Expect.equal (Weir.Script.statementCount [ "let x = 1"; "x + 1" ]) (Some 2) "two independent statements"
+            Expect.equal (Weir.Assemble.statementCount [ "let x = 1" ]) (Some 1) "one complete statement"
+            Expect.equal (Weir.Assemble.statementCount [ "let x = 1"; "x + 1" ]) (Some 2) "two independent statements"
             // assemble reports structure: an armed district with no body
             // is an assembly error (None); an open `match with` is
             // structurally one statement (Some 1) — the parse-completeness
             // half is bufferComplete's, layered on top in the REPL
-            Expect.equal (Weir.Script.statementCount [ "let block = <<<" ]) None "an armed heredoc with no body pends"
+            Expect.equal (Weir.Assemble.statementCount [ "let block = <<<" ]) None "an armed heredoc with no body pends"
 
             // a leading-|> continuation merges: the count does not rise ->
             // pipedAttaches true (the pipeline stays one statement)
-            Expect.isTrue (Weir.Script.pipedAttaches [ "xs" ] "|> Seq.sum") "a |> tail attaches to the value above"
+            Expect.isTrue (Weir.Assemble.pipedAttaches [ "xs" ] "|> Seq.sum") "a |> tail attaches to the value above"
             // a heredoc body line attaches (district content keeps count 1)
             Expect.isTrue
-                (Weir.Script.pipedAttaches [ "let block = <<<"; "    a" ] "    b")
+                (Weir.Assemble.pipedAttaches [ "let block = <<<"; "    a" ] "    b")
                 "a second heredoc body line attaches"
             // an offside else attaches to the pending if under a let
             Expect.isTrue
-                (Weir.Script.pipedAttaches [ "let r ="; "  if 1 > 0 then"; "    \"y\"" ] "  else")
+                (Weir.Assemble.pipedAttaches [ "let r ="; "  if 1 > 0 then"; "    \"y\"" ] "  else")
                 "an offside else attaches"
 
             // an independent statement does not attach — the count rises
             Expect.isFalse
-                (Weir.Script.pipedAttaches [ "let x = 1" ] "x + 1")
+                (Weir.Assemble.pipedAttaches [ "let x = 1" ] "x + 1")
                 "an independent statement does not attach"
 
             Expect.isFalse
-                (Weir.Script.pipedAttaches [ "type P = {"; "  x: int"; "}" ] "{ x = 1 }.x")
+                (Weir.Assemble.pipedAttaches [ "type P = {"; "  x: int"; "}" ] "{ x = 1 }.x")
                 "a value after a complete type is its own statement"
             // a blank/comment line breaks a completed statement (no attach)
-            Expect.isFalse (Weir.Script.pipedAttaches [ "let x = 1" ] "") "a blank line breaks a completed statement"
+            Expect.isFalse (Weir.Assemble.pipedAttaches [ "let x = 1" ] "") "a blank line breaks a completed statement"
 
             Expect.isFalse
-                (Weir.Script.pipedAttaches [ "let x = 1" ] "// c")
+                (Weir.Assemble.pipedAttaches [ "let x = 1" ] "// c")
                 "a comment line breaks a completed statement"
             // a directive is one line: it never joins a block whose next
             // line could still continue it (match arms, a |> chain)
             Expect.isFalse
-                (Weir.Script.pipedAttaches [ "match 1 with"; "| 1 -> \"one\""; "| _ -> \"other\"" ] "#echo")
+                (Weir.Assemble.pipedAttaches [ "match 1 with"; "| 1 -> \"one\""; "| _ -> \"other\"" ] "#echo")
                 "a directive after match arms does not attach"
 
             Expect.isFalse
-                (Weir.Script.pipedAttaches [ "let xs ="; "    [1]"; "    |> Seq.map id" ] "#help")
+                (Weir.Assemble.pipedAttaches [ "let xs ="; "    [1]"; "    |> Seq.map id" ] "#help")
                 "a directive after a |> chain does not attach"
 
             Expect.isTrue
-                (Weir.Script.pipedAttaches [ "let block = <<<"; "    a" ] "    #b")
+                (Weir.Assemble.pipedAttaches [ "let block = <<<"; "    a" ] "    #b")
                 "an indented # line in a heredoc body still attaches"
             // a column-0 opener that pends on its own starts its own
             // statement: the line above never joins its entry
             Expect.isFalse
-                (Weir.Script.pipedAttaches [ "let a = nope" ] "let t = <<<")
+                (Weir.Assemble.pipedAttaches [ "let a = nope" ] "let t = <<<")
                 "a heredoc opener does not glue the line above"
 
-            Expect.isFalse (Weir.Script.pipedAttaches [ "1 + 1" ] "let y = yaml") "nor does a yaml opener"
+            Expect.isFalse (Weir.Assemble.pipedAttaches [ "1 + 1" ] "let y = yaml") "nor does a yaml opener"
         }
 
         test "block scalars read: | and |- chomp semantically; content is bytes [D:block-scalars]" {
@@ -5157,7 +5157,7 @@ let floatBoundaryTests =
         test "[<Default 0.5>] end to end: attrArgLit lexes the float, help renders it" {
             let scriptEnv = {
                 env with
-                    Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers
+                    Modules = env.Modules |> Map.add "Self" Weir.Statements.selfMembers
             }
 
             let e = scriptEnv |> declare "type FCli = { [<Default 0.5>] rate: float }"
@@ -5791,7 +5791,7 @@ let mapStringTests =
             // Args.load is script-only: the Self module marks script mode
             let scriptEnv = {
                 env with
-                    Modules = env.Modules |> Map.add "Self" Weir.Script.selfMembers
+                    Modules = env.Modules |> Map.add "Self" Weir.Statements.selfMembers
             }
 
             let e = scriptEnv |> declare "type MCfg = { home: Map<string, int> }"
@@ -6051,7 +6051,7 @@ let serveTests =
         "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
 
     let shape (lines: string list) =
-        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        match Weir.Assemble.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
         | Ok [ ll ] ->
             match Weir.Parser.parseLineFull cmdResolver ll.Text with
             | Ok s -> Weir.Ast.sexprStmt s
@@ -8075,7 +8075,7 @@ let validatedTypeTests =
                     let path = Path.Combine(td, "vt.weir")
 
                     match
-                        Weir.Script.loadSigs (path + ".from") [
+                        Weir.Sigs.loadSigs (path + ".from") [
                             {
                                 Tool = "vt"
                                 Override = Some path
@@ -8085,13 +8085,13 @@ let validatedTypeTests =
                     with
                     | [], [ si ] ->
                         Expect.equal
-                            (Weir.Script.SigComplete.complete si " --conf " "")
-                            Weir.Script.SigPaths
+                            (Weir.Sigs.SigComplete.complete si " --conf " "")
+                            Weir.Sigs.SigPaths
                             "ConfigFile → paths"
 
                         Expect.equal
-                            (Weir.Script.SigComplete.complete si " --label " "")
-                            Weir.Script.SigNothing
+                            (Weir.Sigs.SigComplete.complete si " --label " "")
+                            Weir.Sigs.SigNothing
                             "string → nothing"
                     | ds, _ -> failtest $"the sig did not load: {ds}")
         }
