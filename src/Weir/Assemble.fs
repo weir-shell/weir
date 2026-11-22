@@ -1395,8 +1395,10 @@ let bracketFold
 // the binder heads of a pending statement's last segment
 // [D:assemble-quadratic]: `endsInBinderHeadSeg`'s verdict for each marker,
 // kept as the text arrives — every appended char is read once, so a long
-// space-joined statement is not searched again at each join. A buffer
-// edited in place takes a fresh tracker
+// space-joined statement is not searched again at each join. A compound's
+// paren-wrap moves what is recorded by the inserted char (`Inserted`), so a
+// statement that wraps at every line keeps the bound; the district joins
+// that cut the buffer's end take a fresh tracker
 type private HeadTrack() =
     static member val Markers = [| "within proc ", true; "within serve ", false; "within env ", true |]
     member val SegStart = -1 with get, set
@@ -1406,6 +1408,49 @@ type private HeadTrack() =
     member val Ends = [| -1; -1; -1 |]
     // 0 no head, 1 a head awaiting its `=`, 2 not a binder, 3 a binder head
     member val Verdicts = [| 0; 0; 0 |]
+    // where a settled marker's `=` sits, or -1
+    member val EqAt = [| -1; -1; -1 |]
+
+    /// one char is about to go in at `ts`, a token's start outside strings
+    /// and holding none of a marker's chars: what was read keeps its
+    /// verdicts, moved by one. An insert that could change a verdict some
+    /// other way starts the tracker over
+    member t.Inserted(sb: System.Text.StringBuilder, ts: int, c: char) =
+        if t.SegStart >= 0 && ts < t.Scanned then
+            let ident (x: char) =
+                System.Char.IsLetterOrDigit x || x = '_'
+
+            let splits =
+                (ts > 0 && ident sb[ts - 1] && ident sb[ts])
+                || (HeadTrack.Markers
+                    |> Array.mapi (fun m (marker, _) ->
+                        t.Ends[m] >= 0 && ts > t.Ends[m] - marker.Length && ts < t.Ends[m])
+                    |> Array.exists id)
+
+            if splits then
+                t.SegStart <- -1
+            else
+                HeadTrack.Markers
+                |> Array.iteri (fun m (marker, _) ->
+                    let e = t.Ends[m]
+
+                    if e >= 0 then
+                        if ts <= e - marker.Length then
+                            t.Ends[m] <- e + 1
+
+                            if t.EqAt[m] >= 0 then
+                                t.EqAt[m] <- t.EqAt[m] + 1
+                        elif t.EqAt[m] >= ts then
+                            // the char lands in the binder's name
+                            t.EqAt[m] <- t.EqAt[m] + 1
+
+                            if not (ident c) && c <> ' ' then
+                                t.Verdicts[m] <- 2)
+
+                if t.SegStart >= ts then
+                    t.SegStart <- t.SegStart + 1
+
+                t.Scanned <- t.Scanned + 1
 
     member t.Advance(sb: System.Text.StringBuilder, segStart: int) =
         if t.SegStart <> segStart || t.Scanned > sb.Length || t.Scanned < segStart then
@@ -1414,6 +1459,7 @@ type private HeadTrack() =
             t.Str <- stringStart
             System.Array.Fill(t.Ends, -1)
             System.Array.Fill(t.Verdicts, 0)
+            System.Array.Fill(t.EqAt, -1)
 
         if t.Scanned < sb.Length then
             let from = t.Scanned
@@ -1445,6 +1491,7 @@ type private HeadTrack() =
                                         || not (System.Char.IsLetterOrDigit(at (start - 1)) || at (start - 1) = '_'))
                                 then
                                     t.Ends[m] <- from + i + 1
+                                    t.EqAt[m] <- -1
                                     t.Verdicts[m] <- (if needsEq then 1 else 3)))
                     ()
                     chunk
@@ -1456,6 +1503,7 @@ type private HeadTrack() =
                     | -1 -> ()
                     | eq ->
                         let name = sb.ToString(t.Ends[m], from + eq - t.Ends[m]).Trim()
+                        t.EqAt[m] <- from + eq
 
                         t.Verdicts[m] <-
                             if name |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_') then
@@ -1994,22 +2042,31 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
         // Insert/Append is byte-identical to the old Substring algebra; the
         // trailing ")" becomes the last non-white char [D:assemble-quadratic]
         let wrapFrom (b: PendBuf) (ts: int) : PendBuf =
+            b.Heads.Inserted(b.Sb, ts, '(')
             b.Sb.Insert(ts, "(") |> ignore
             b.Sb.Append ")" |> ignore
 
+            // the segments run latest first and in text order, so those
+            // the paren moves are a prefix of the list: the rest is shared,
+            // and a wrap costs what it wraps
+            let rec moved segs ends (accS: (int * int * int) list) (accE: int list) =
+                match segs, ends with
+                | (js, l, i) :: srest, e :: erest when js >= ts || e > ts ->
+                    moved srest erest (((if js >= ts then js + 1 else js), l, i) :: accS) ((e + 1) :: accE)
+                | _ -> List.fold (fun t x -> x :: t) segs accS, List.fold (fun t x -> x :: t) ends accE
+
+            let segments, ends = moved b.Segments b.Ends [] []
+
             {
                 b with
-                    Heads = HeadTrack()
                     LastNonWs = b.Sb.Length - 1
                     LastSegStart =
                         (if b.LastSegStart >= ts then
                              b.LastSegStart + 1
                          else
                              b.LastSegStart)
-                    Segments =
-                        b.Segments
-                        |> List.map (fun (js, l, i) -> (if js >= ts then js + 1 else js), l, i)
-                    Ends = List.map2 (fun (js, _, _) e -> if js >= ts || e > ts then e + 1 else e) b.Segments b.Ends
+                    Segments = segments
+                    Ends = ends
             }
 
         let folded =
