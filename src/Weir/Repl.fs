@@ -190,7 +190,7 @@ let private knownIn (env: TypeEnv) : string -> bool =
 // the prompt's colorizer: the session's alias heads arm command mode
 // [D:alias-argv-tint]
 let private colorizeSession (isKnown: string -> bool) : string -> string =
-    Script.colorizeReplWith (fun n -> (currentAliasHead.Value n).IsSome) isKnown
+    ReplColor.colorizeReplWith (fun n -> (currentAliasHead.Value n).IsSome) isKnown
 
 // The session transcript [D:repl-save]: the accepted statements, in
 // order, that `#save` distills into a runnable .weir file (option B — a
@@ -238,10 +238,10 @@ let private recordDef (name: string) (physText: string) (text: string) =
     }
 
 // record a checked definition: a union decl carries its constructors
-let private recordChecked (chk: Script.CheckedStatement) (name: string) (physText: string) (text: string) =
+let private recordChecked (chk: Statements.CheckedStatement) (name: string) (physText: string) (text: string) =
     let binds =
         match chk.Kind with
-        | Script.KType({ Body = DUnion cases }, _) -> cases |> List.map (fun (c, _, _) -> c)
+        | Statements.KType({ Body = DUnion cases }, _) -> cases |> List.map (fun (c, _, _) -> c)
         | _ -> []
 
     transcript.Add {
@@ -275,7 +275,7 @@ let private recordOther (physText: string) (text: string) =
 // segment carries its physical line number, so the real source is those
 // lines, in order, from the dedented `srcLines` the submission built.
 // One physical line (the REPL's common case) is just its own text.
-let private physicalSource (srcLines: string[]) (ll: Script.LogicalLine) : string =
+let private physicalSource (srcLines: string[]) (ll: Assemble.LogicalLine) : string =
     let lineNos =
         [ for (_, lineNo, _) in ll.Segments -> lineNo ]
         |> List.append [ ll.Head ]
@@ -299,10 +299,10 @@ let private physicalSource (srcLines: string[]) (ll: Script.LogicalLine) : strin
 // with `_`, so both drop from the distilled file)
 let private isNamedBinder (name: string) = name <> "" && not (name.StartsWith "_")
 
-let private recordKind (chk: Script.CheckedStatement) : TranscriptKind option =
+let private recordKind (chk: Statements.CheckedStatement) : TranscriptKind option =
     match chk.Kind with
-    | Script.KLet(name, _, _) -> Some(if isNamedBinder name then TDef name else TDiscard)
-    | Script.KLetPat(_, schemes, _) ->
+    | Statements.KLet(name, _, _) -> Some(if isNamedBinder name then TDef name else TDiscard)
+    | Statements.KLetPat(_, schemes, _) ->
         // a destructuring binds several names (the schemes list); keep
         // it as a definition when any binder is real (the line reads its
         // RHS once). Dedup keys on the first real name — a destructuring
@@ -313,12 +313,12 @@ let private recordKind (chk: Script.CheckedStatement) : TranscriptKind option =
         match names |> List.filter isNamedBinder with
         | first :: _ -> Some(TDef first)
         | [] -> Some TDiscard
-    | Script.KType(decl, _) -> Some(TDef decl.Name)
-    | Script.KCmd te
-    | Script.KExpr te -> Some(if te.Ty = TUnit then TOther else TDiscard)
-    | Script.KModule _
-    | Script.KImport _
-    | Script.KSig _ -> None
+    | Statements.KType(decl, _) -> Some(TDef decl.Name)
+    | Statements.KCmd te
+    | Statements.KExpr te -> Some(if te.Ty = TUnit then TOther else TDiscard)
+    | Statements.KModule _
+    | Statements.KImport _
+    | Statements.KSig _ -> None
 
 // the init file's /// docs [D:repl-init]: position-keyed attachments
 // mapped to binding names at load, so #help on a session name answers
@@ -331,7 +331,7 @@ let mutable private initDocs: Map<string, string list> = Map.empty
 let mutable private importPaths: Map<string, string> = Map.empty
 
 // a module's own doc rides initDocs under its alias [D:module-doc]
-let private withModuleDoc (lm: Script.LoadedModule) (docs: Map<string, string list>) =
+let private withModuleDoc (lm: Statements.LoadedModule) (docs: Map<string, string list>) =
     importPaths <- Map.add lm.Alias lm.AbsPath importPaths
 
     match lm.ModuleDoc with
@@ -340,9 +340,9 @@ let private withModuleDoc (lm: Script.LoadedModule) (docs: Map<string, string li
 
 // the prompt's import loader [D:repl-import]: the session cwd anchors the
 // path, and an alias an earlier import holds may be rebound (a reload)
-let private sessionImport: Script.ImportLoader =
+let private sessionImport: Statements.ImportLoader =
     fun p span alias ->
-        Script.sessionImportLoader p span alias
+        ModuleLoader.sessionImportLoader p span alias
         |> Result.map (fun lm -> { lm with MayRebind = true })
 
 // a prompt import records for #save [D:repl-import], keyed by alias and
@@ -350,11 +350,11 @@ let private sessionImport: Script.ImportLoader =
 // cwd, not the saved file's directory; a weir: name keeps its spelling).
 // A re-import replaces the earlier line in place, so it still precedes
 // the lets that use it
-let private recordImport (chk: Script.CheckedStatement) (text: string) =
+let private recordImport (chk: Statements.CheckedStatement) (text: string) =
     match chk.Kind with
-    | Script.KImport lm ->
+    | Statements.KImport lm ->
         let path =
-            match Parser.parseLineFull (Script.resolver chk.Env) text with
+            match Parser.parseLineFull (Statements.resolver chk.Env) text with
             | Ok(SImport(p, _, _)) when p.StartsWith "weir:" -> p
             | _ -> lm.AbsPath
 
@@ -484,11 +484,11 @@ let private ttyIo (f: unit -> 'a) : 'a =
         ttyGone ()
 
 // a command-head alias [D:command-head-alias] — the type and its parser
-// live with the init rules (Script.checkInit), one definition for the
+// live with the init rules (Init.checkInit), one definition for the
 // loader, `weir check` and the live #alias directive
-type private Alias = Script.CommandAlias
+type private Alias = Init.CommandAlias
 
-let private parseAliasLine = Script.parseAliasLine
+let private parseAliasLine = Init.parseAliasLine
 
 /// a test seam over parseAliasLine [D:command-head-alias]: the private
 /// Alias record is flattened to a public (exe, prefix) pair so unit tests
@@ -553,8 +553,8 @@ let docsJson () : string =
 
     // Self is script-only [D:self-module] — absent from the REPL env this
     // dump reads, but the reference documents the language, so it joins
-    // the module walk from its one source (Script.selfMembers)
-    let modules = te.Modules |> Map.add "Self" Script.selfMembers
+    // the module walk from its one source (Statements.selfMembers)
+    let modules = te.Modules |> Map.add "Self" Statements.selfMembers
 
     for KeyValue(m, members) in modules do
         w.WriteStartObject()
@@ -1454,22 +1454,22 @@ let private bufferComplete (bufLines: string list) : bool =
     let numbered =
         dedentEntry bufLines
         |> List.mapi (fun i l -> i + 1, l)
-        |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
-        |> List.map (fun (n, raw) -> n, Script.stripComment raw)
+        |> List.filter (fun (_, raw) -> Assemble.classifyLine raw <> Assemble.LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, Assemble.stripComment raw)
 
     if List.isEmpty numbered then
         true
     // weir strings are single-line: a line ending inside one can never
     // be completed by more input — submit (the parse error shows) rather
     // than trap the user growing an unfixable buffer
-    elif bufLines |> List.exists Script.endsInsideString then
+    elif bufLines |> List.exists Assemble.endsInsideString then
         true
     else
-        match Script.assemble numbered with
+        match Assemble.assemble numbered with
         | Error _ -> false
         | Ok lls ->
             let r = {
-                Script.resolver currentEnv.Value with
+                Statements.resolver currentEnv.Value with
                     AliasHead = currentAliasHead.Value
             }
 
@@ -1523,7 +1523,7 @@ let private readKey () =
 /// what a statement binds, through the step every front end shares
 /// [D:statement-exec]: the values after it and the names it made; a
 /// statement that binds nothing leaves the values as they were
-let private boundBy (values: Eval.Env) (kind: Script.CheckedKind) : Eval.Env * (string * Eval.Value) list =
+let private boundBy (values: Eval.Env) (kind: Statements.CheckedKind) : Eval.Env * (string * Eval.Value) list =
     match Script.bindStatement values kind with
     | Script.Binds(bound, names) -> bound, names
     | Script.Runs _
@@ -1799,7 +1799,7 @@ let private readLineTty () : string option =
                 let carried =
                     before.Substring(0, before.Length - before.TrimStart([| ' '; '\t' |]).Length)
                 // smart indent: one level more after a body opener
-                (if Script.opensIndentedBody before then
+                (if Assemble.opensIndentedBody before then
                      carried + "    "
                  else
                      carried),
@@ -2119,7 +2119,7 @@ let private readLineTty () : string option =
                     // bounded by the timeout and the next key, which stays
                     // queued for the editor
                     let all =
-                        Script.suggestEntryWith
+                        Sigs.suggestEntryWith
                             (Some {
                                 Run =
                                     DynComplete.ask (fun () ->
@@ -2379,7 +2379,7 @@ let private setupLineEditor () =
 // lines from weir's one stdin reader. A statement that spans lines (heredoc, a
 // multi-line `type`, an open `if`/`for`/`match` block, a leading-`|>`
 // pipeline, an unbalanced bracket) must assemble the way a script does
-// — Script.assemble is the one authority (never a second parser). The
+// — Assemble.assemble is the one authority (never a second parser). The
 // tty editor cannot look ahead (the user types), so it submits on the
 // first complete buffer; a pipe has the rest of the input, so it reads
 // script-like: keep the current statement open while the next physical
@@ -2449,7 +2449,7 @@ let private readRedirected () : string =
             let firstLineComplete =
                 List.isEmpty acc
                 && (line.TrimStart().StartsWith "#"
-                    || Script.classifyLine line <> Script.LineKind.Code)
+                    || Assemble.classifyLine line <> Assemble.LineKind.Code)
 
             if firstLineComplete then
                 ret buf
@@ -2464,7 +2464,7 @@ let private readRedirected () : string =
                 // complete as-is; peek whether the next line continues it
                 match readLine () with
                 | null -> ret buf
-                | next when Script.pipedAttaches buf next -> step next acc'
+                | next when Assemble.pipedAttaches buf next -> step next acc'
                 | next ->
                     pushBack next
                     ret buf
@@ -2650,7 +2650,7 @@ let private functionEcho (env: TypeEnv) (values: Eval.Env) (te: Check.TypedExpr)
         | _ ->
             // a named function short of arguments [D:partial-echo]
             let names (head: string) =
-                match Script.builtinParamNames env head with
+                match Statements.builtinParamNames env head with
                 | Some r -> Some r
                 | None ->
                     Eval.lookupValue head values
@@ -2662,7 +2662,7 @@ let private functionEcho (env: TypeEnv) (values: Eval.Env) (te: Check.TypedExpr)
                 else
                     plainSigStyle
 
-            Script.partialApp names te |> Option.map (Script.partialEchoLines style)
+            Statements.partialApp names te |> Option.map (Statements.partialEchoLines style)
     | _ -> None
 
 // a name bound by the session (a let, an init declaration) — not a
@@ -2678,7 +2678,7 @@ let private isSessionBinding (state: State) (n: string) : bool =
     | None, _ -> false
 
 let private resolver (state: State) : Parser.Resolver = {
-    Script.resolver state.TypeEnv with
+    Statements.resolver state.TypeEnv with
         // the session alias table beats PATH in command-head position
         // [D:command-head-alias]; `^` skips it (parser-side). Single-hop:
         // the stored Exe is a real program, never another alias name.
@@ -2736,12 +2736,12 @@ let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
 
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
-let private evalCheckedBody (source: string) (state: State) (chk: Script.CheckedStatement) : State =
+let private evalCheckedBody (source: string) (state: State) (chk: Statements.CheckedStatement) : State =
     lastErrored <- false
     lastExit <- None
 
     match chk.Kind with
-    | Script.KType(decl, validator) ->
+    | Statements.KType(decl, validator) ->
 
         // the REPL replaces on redeclaration [D:dup-type-decl] —
         // scripts error instead; the note exists because the confusing
@@ -2772,7 +2772,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 TypeEnv = chk.Env
                 Values = fst (boundBy state.Values chk.Kind)
         }
-    | Script.KLetPat(_, schemes, te) ->
+    | Statements.KLetPat(_, schemes, te) ->
         printWarnings state te
 
         (try
@@ -2821,7 +2821,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
              )
 
              state)
-    | Script.KLet(name, _, te) ->
+    | Statements.KLet(name, _, te) ->
         printWarnings state te
 
         (try
@@ -2906,8 +2906,8 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
              )
 
              state)
-    | Script.KExpr te
-    | Script.KCmd te ->
+    | Statements.KExpr te
+    | Statements.KCmd te ->
         printWarnings state te
 
         // the bare command statement at a tty inherits stdout
@@ -3046,11 +3046,11 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                  )
 
                  state)
-    | Script.KModule _ ->
+    | Statements.KModule _ ->
         Console.WriteLine "the REPL has no file to be a module of; 'module' belongs at the top of a script file"
 
         state
-    | Script.KImport lm ->
+    | Statements.KImport lm ->
         // replay and bind `Alias.member`, as init imports do; a rebound
         // alias drops its old members and docs first [D:repl-import]
         (try
@@ -3097,7 +3097,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
              )
 
              state)
-    | Script.KSig _ ->
+    | Statements.KSig _ ->
         // unreachable: the REPL passes no sig context, so the form
         // already refused with the scripts-infer teaching
         // [D:module-signatures]
@@ -3107,25 +3107,25 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
 /// checking the whole entry before any statement runs: the fold threads
 /// each statement's checked env and evaluates nothing. A statement that
 /// does not check ends the search — the real fold reports it
-let private entryContinuedCommand (state: State) (lls: Script.LogicalLine list) : Script.ContinuedCommand option =
+let private entryContinuedCommand (state: State) (lls: Assemble.LogicalLine list) : Sigs.ContinuedCommand option =
     let resolves (w: string) =
-        Script.resolvesAsProgram w || ((resolver state).AliasHead w).IsSome
+        Sigs.resolvesAsProgram w || ((resolver state).AliasHead w).IsSome
 
-    let rec go (tenv: TypeEnv) (rest: Script.LogicalLine list) =
+    let rec go (tenv: TypeEnv) (rest: Assemble.LogicalLine list) =
         match rest with
         | [] -> None
         | ll :: tail ->
             let st = { state with TypeEnv = tenv }
 
-            match Script.checkStatement false None (fun _ -> resolver st) Script.scriptOnlyImport tenv ll with
+            match Statements.checkStatement false None (fun _ -> resolver st) ModuleLoader.scriptOnlyImport tenv ll with
             | Error _ -> None
             | Ok chk ->
                 let hit =
                     match chk.Kind with
-                    | Script.KLet(_, _, te)
-                    | Script.KLetPat(_, _, te)
-                    | Script.KCmd te
-                    | Script.KExpr te -> Script.continuedCommands resolves [] ll te |> List.tryHead
+                    | Statements.KLet(_, _, te)
+                    | Statements.KLetPat(_, _, te)
+                    | Statements.KCmd te
+                    | Statements.KExpr te -> Sigs.continuedCommands resolves [] ll te |> List.tryHead
                     | _ -> None
 
                 match hit with
@@ -3144,10 +3144,10 @@ let continuedCommandForTest (entry: string) : string option =
         entry.Split '\n'
         |> Array.toList
         |> List.mapi (fun i l -> i + 1, l)
-        |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
-        |> List.map (fun (n, raw) -> n, Script.stripComment raw)
+        |> List.filter (fun (_, raw) -> Assemble.classifyLine raw <> Assemble.LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, Assemble.stripComment raw)
 
-    match Script.assemble numbered with
+    match Assemble.assemble numbered with
     | Error _ -> None
     | Ok lls ->
         entryContinuedCommand initial lls
@@ -3167,10 +3167,16 @@ let itSchemeForTest (statements: string list) : string option =
             statements
             |> List.fold
                 (fun st line ->
-                    let ll = Script.singleLine (Script.stripComment line)
+                    let ll = Assemble.singleLine (Assemble.stripComment line)
 
                     match
-                        Script.checkStatement false None (fun _ -> resolver st) Script.scriptOnlyImport st.TypeEnv ll
+                        Statements.checkStatement
+                            false
+                            None
+                            (fun _ -> resolver st)
+                            ModuleLoader.scriptOnlyImport
+                            st.TypeEnv
+                            ll
                     with
                     | Ok chk -> evalCheckedBody line st chk
                     | Error _ -> st)
@@ -3186,7 +3192,7 @@ let itSchemeForTest (statements: string list) : string option =
 // (#help, #quit) executed now — one glyph, two lifetimes.
 
 // simple flow-wrap for name lists
-let private evalChecked (source: string) (state: State) (chk: Script.CheckedStatement) : State =
+let private evalChecked (source: string) (state: State) (chk: Statements.CheckedStatement) : State =
     enterTtyEval ()
     Session.beginReplEval ()
 
@@ -3241,7 +3247,7 @@ let private glanceTable (width: int) (rows: (string * string) list) : string =
 /// plus renderBuiltinDoc. A hover improvement lifts #help for free.
 /// `color` [D:help-tint]: at a tty the signature tints structurally at
 /// composition (sigTintStyle — the input colorizer's palette) and the
-/// Example renders through Script.colorizeRepl itself — an example is
+/// Example renders through ReplColor.colorizeRepl itself — an example is
 /// weir code, so the live prompt and #help share one renderer; false
 /// is the pinned piped/--repl-doc byte surface, untouched.
 let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string option =
@@ -3252,7 +3258,7 @@ let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string optio
         if color then
             fun ex ->
                 ex.Split '\n'
-                |> Array.map (Script.colorizeRepl (knownIn te))
+                |> Array.map (ReplColor.colorizeRepl (knownIn te))
                 |> String.concat "\n"
         else
             id
@@ -3606,10 +3612,10 @@ let sessionForTest () : (string -> string) * (unit -> TypeEnv) =
             if entry.StartsWith "#help " then
                 Console.WriteLine(helpDirective false st.Value.TypeEnv (entry.Substring 6))
             else
-                let ll = Script.singleLine (Script.stripComment entry)
+                let ll = Assemble.singleLine (Assemble.stripComment entry)
 
                 match
-                    Script.checkStatement false None (fun _ -> resolver st.Value) sessionImport st.Value.TypeEnv ll
+                    Statements.checkStatement false None (fun _ -> resolver st.Value) sessionImport st.Value.TypeEnv ll
                 with
                 | Ok chk -> st.Value <- evalCheckedBody entry st.Value chk
                 | Error d ->
@@ -3664,16 +3670,18 @@ let private parseInfer (rest: string) : Result<string * string * string, string>
 /// evaluate a source expression to a seq<string> for the adapter (checked
 /// against the session env, evaluated once); teaches on a non-seq<string>
 let private evalSource (state: State) (source: string) : Result<string list, string> =
-    let ll = Script.singleLine (Script.stripComment source)
+    let ll = Assemble.singleLine (Assemble.stripComment source)
 
-    match Script.checkStatement false None (fun _ -> resolver state) Script.scriptOnlyImport state.TypeEnv ll with
+    match
+        Statements.checkStatement false None (fun _ -> resolver state) ModuleLoader.scriptOnlyImport state.TypeEnv ll
+    with
     | Error d -> Error $"#infer: the source does not check: {d.Message}"
     | Ok chk ->
         let teOpt =
             match chk.Kind with
-            | Script.KExpr te
-            | Script.KCmd te
-            | Script.KLet(_, _, te) -> Some te
+            | Statements.KExpr te
+            | Statements.KCmd te
+            | Statements.KLet(_, _, te) -> Some te
             | _ -> None
 
         match teOpt with
@@ -3715,7 +3723,7 @@ let private evalSource (state: State) (source: string) : Result<string list, str
 /// offending one with a caret, the same shape weir's normal parse/type
 /// errors use (line:col + snippet), so the user can tell which
 /// generated field is bad.
-let formatDraftedDiag (physical: string list) (d: Script.StmtDiag) : string =
+let formatDraftedDiag (physical: string list) (d: Statements.StmtDiag) : string =
     let line = physical |> List.tryItem (d.PhysLine - 1) |> Option.defaultValue ""
 
     let caretWidth =
@@ -3743,21 +3751,29 @@ let private injectDecls (state: State) (declText: string list) : Result<State * 
     let numbered =
         physical
         |> List.mapi (fun i l -> i + 1, l)
-        |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
-        |> List.map (fun (n, raw) -> n, Script.stripComment raw)
+        |> List.filter (fun (_, raw) -> Assemble.classifyLine raw <> Assemble.LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, Assemble.stripComment raw)
 
-    match Script.assemble numbered with
+    match Assemble.assemble numbered with
     | Error msg -> Error $"#infer: the drafted types did not assemble: {msg}"
     | Ok lls ->
         let rec go (st: State) (defined: string list) rest =
             match rest with
             | [] -> Ok(st, List.rev defined)
-            | (ll: Script.LogicalLine) :: tail ->
-                match Script.checkStatement false None (fun _ -> resolver st) Script.scriptOnlyImport st.TypeEnv ll with
+            | (ll: Assemble.LogicalLine) :: tail ->
+                match
+                    Statements.checkStatement
+                        false
+                        None
+                        (fun _ -> resolver st)
+                        ModuleLoader.scriptOnlyImport
+                        st.TypeEnv
+                        ll
+                with
                 | Error d -> Error(formatDraftedDiag physical d)
                 | Ok chk ->
                     match chk.Kind with
-                    | Script.KType(decl, validator) ->
+                    | Statements.KType(decl, validator) ->
                         let st' = {
                             st with
                                 TypeEnv = chk.Env
@@ -3879,9 +3895,17 @@ let private bindParsed
 
     let adapter = $"from {fmtWord} {spelling}"
     let stmt = $"let {binder} = {hidden} |> {adapter}"
-    let ll = Script.singleLine stmt
+    let ll = Assemble.singleLine stmt
 
-    match Script.checkStatement false None (fun _ -> resolver scratch) Script.scriptOnlyImport scratch.TypeEnv ll with
+    match
+        Statements.checkStatement
+            false
+            None
+            (fun _ -> resolver scratch)
+            ModuleLoader.scriptOnlyImport
+            scratch.TypeEnv
+            ll
+    with
     | Error d ->
         Console.WriteLine $"#infer: the binding does not check: {d.Message}"
         state
@@ -4133,7 +4157,7 @@ let private dedupLast (stmts: DistillStmt list) : Set<int> =
 // treats it as a drop trigger — the `let x = it` the guarantee must
 // remove. The message is `command not found on PATH: it{. hint | — …}`,
 // so a `PATH: it` followed by a word boundary is the exact signal.
-let private namesSessionIt (d: Script.Diagnostic) : bool =
+let private namesSessionIt (d: Diagnostics.Diagnostic) : bool =
     d.Code = "cmd-not-found"
     && (let marker = "command not found on PATH: it"
 
@@ -4146,7 +4170,7 @@ let private namesSessionIt (d: Script.Diagnostic) : bool =
 // was dropped, or a redeclaration moved below its reader by the dedup),
 // which a script reads as a phantom command — check warns, run fails.
 // The guarantee treats it as `it` is treated [D:repl-save].
-let private namesSessionBinding (sessionNames: Set<string>) (d: Script.Diagnostic) : bool =
+let private namesSessionBinding (sessionNames: Set<string>) (d: Diagnostics.Diagnostic) : bool =
     d.Code = "cmd-not-found"
     && (let m =
             Text.RegularExpressions.Regex.Match(d.Message, @"^command not found on PATH: ([A-Za-z_][A-Za-z0-9_]*)")
@@ -4155,7 +4179,7 @@ let private namesSessionBinding (sessionNames: Set<string>) (d: Script.Diagnosti
 
 // the name a dangling-reference diagnostic is about: a phantom command
 // (`f x`, `xs |> …`) or an unbound variable (`[a; 2]`)
-let private danglingName (d: Script.Diagnostic) : string option =
+let private danglingName (d: Diagnostics.Diagnostic) : string option =
     let pattern =
         match d.Code with
         | "cmd-not-found" -> Some @"^command not found on PATH: ([A-Za-z_][A-Za-z0-9_]*)"
@@ -4173,13 +4197,13 @@ let private danglingName (d: Script.Diagnostic) : string option =
 // Distill-fatal = any error-severity diagnostic, a session-only `it`
 // reference, or a dangling reference to a session-bound name (warnings
 // the guarantee still must act on).
-let private candidateErrors (sessionNames: Set<string>) (stmts: DistillStmt list) : Script.Diagnostic list =
+let private candidateErrors (sessionNames: Set<string>) (stmts: DistillStmt list) : Diagnostics.Diagnostic list =
     let lines = stmts |> List.collect (fun s -> s.Lines)
 
     if List.isEmpty lines then
         []
     else
-        let diags, _, _, _, _ = Script.analyzeLines "#save" lines
+        let diags, _, _, _, _ = Analyze.analyzeLines "#save" lines
 
         diags
         |> List.filter (fun d -> d.Severity = "error" || namesSessionIt d || namesSessionBinding sessionNames d)
@@ -4244,7 +4268,7 @@ let private ownerAt (kept: DistillStmt list) (fileLine: int) : (int * int) optio
 let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option = ownerAt kept fileLine |> Option.map fst
 
 // the binder an unused-binding finding names: 'b' is bound but never used
-let private unusedName (d: Script.Diagnostic) : string =
+let private unusedName (d: Diagnostics.Diagnostic) : string =
     let m = Text.RegularExpressions.Regex.Match(d.Message, "^'([^']+)'")
     if m.Success then m.Groups[1].Value else ""
 
@@ -4353,7 +4377,7 @@ let private restoreChains (all: DistillStmt list) (kept0: Set<int>) : Set<int> =
             if List.isEmpty lines then
                 []
             else
-                let ds, _, _, _, _ = Script.analyzeLines "#save" lines
+                let ds, _, _, _, _ = Analyze.analyzeLines "#save" lines
                 ds
 
         let additions =
@@ -4601,7 +4625,7 @@ let rec private loop (state: State) =
     if
         not (isNull entry)
         && entry.Split '\n'
-           |> Array.exists (fun l -> Script.classifyLine l = Script.LineKind.Code)
+           |> Array.exists (fun l -> Assemble.classifyLine l = Assemble.LineKind.Code)
     then
         entryStarted <- Some(Diagnostics.Stopwatch.GetTimestamp())
 
@@ -4609,7 +4633,7 @@ let rec private loop (state: State) =
     | null -> ()
     | line when
         line.Split '\n'
-        |> Array.forall (fun l -> Script.classifyLine l <> Script.LineKind.Code)
+        |> Array.forall (fun l -> Assemble.classifyLine l <> Assemble.LineKind.Code)
         ->
         // blank and comment-only entries are a no-op at the prompt
         // [D:repl-directives]: nothing follows for a comment to be
@@ -4779,10 +4803,10 @@ let rec private loop (state: State) =
             srcLines
             |> Array.toList
             |> List.mapi (fun i l -> i + 1, l)
-            |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
-            |> List.map (fun (n, raw) -> n, Script.stripComment raw)
+            |> List.filter (fun (_, raw) -> Assemble.classifyLine raw <> Assemble.LineKind.CommentOnly)
+            |> List.map (fun (n, raw) -> n, Assemble.stripComment raw)
 
-        let assembled = Script.assemble numbered
+        let assembled = Assemble.assemble numbered
 
         // a continued command refuses the whole entry before anything runs
         // [D:continued-command]
@@ -4809,7 +4833,7 @@ let rec private loop (state: State) =
             | Error msg, None ->
                 // the named line under a caret at its indentation
                 // [D:assembly-col], as a parse error shows its line
-                match Script.assemblyErrorAt numbered msg with
+                match Assemble.assemblyErrorAt numbered msg with
                 | Some(l, c, _) when l >= 1 && l <= srcLines.Length ->
                     diagLine srcLines[l - 1]
                     Console.WriteLine(String(' ', c - 1) + "^")
@@ -4818,8 +4842,8 @@ let rec private loop (state: State) =
                 diagLine msg
                 state
             | Ok lls, None ->
-                let entryStatement (st: State) (ll: Script.LogicalLine) =
-                    match Script.checkStatement false None (fun _ -> resolver st) sessionImport st.TypeEnv ll with
+                let entryStatement (st: State) (ll: Assemble.LogicalLine) =
+                    match Statements.checkStatement false None (fun _ -> resolver st) sessionImport st.TypeEnv ll with
                     | Error({ File = Some mf } as d) ->
                         // a prompt import's module error, at the module's
                         // own site [D:repl-import]
@@ -4925,9 +4949,9 @@ let rec private loop (state: State) =
             // multiline arm strips via the assembler, this arm here
             // [D:repl-directives]; a district cannot occur here (marker
             // lines open the multiline buffer)
-            let ll = Script.singleLine (Script.stripComment line)
+            let ll = Assemble.singleLine (Assemble.stripComment line)
 
-            match Script.checkStatement false None (fun _ -> resolver state) sessionImport state.TypeEnv ll with
+            match Statements.checkStatement false None (fun _ -> resolver state) sessionImport state.TypeEnv ll with
             | Error d when d.Parse ->
                 lastErrored <- true
                 lastExit <- None
@@ -4980,7 +5004,7 @@ let rec private loop (state: State) =
                 // hint only for expression and let forms;
                 // type/binder-pattern errors stay bare
                 (match d.Tag with
-                 | Some(Script.StmtTag.Let | Script.StmtTag.Expr | Script.StmtTag.Cmd) when d.Span.IsSome ->
+                 | Some(Statements.StmtTag.Let | Statements.StmtTag.Expr | Statements.StmtTag.Cmd) when d.Span.IsSome ->
                      printHint state line
                  | _ -> ())
 
@@ -5023,15 +5047,15 @@ let private initDiag (path: string) (line: int) (col: int) (srcLine: string) (ms
         Console.Error.WriteLine(String(' ', max 0 (col - 1)) + "^")
 
 /// judge one checked #session setting — the static rules (key, type,
-/// command-free) already held in Script.checkInit [D:repl-init]; what is
+/// command-free) already held in Init.checkInit [D:repl-init]; what is
 /// left needs the value: a cwd that exists, and the value rules
-/// (Script.sessionValueRefusal) on a computed value. Returns the
+/// (Init.sessionValueRefusal) on a computed value. Returns the
 /// setting's apply, run only once every field judged clean
 /// [D:init-all-or-nothing]
 let private prepareSessionField
     (path: string)
     (lines: string[])
-    (ll: Script.LogicalLine)
+    (ll: Assemble.LogicalLine)
     (name: string)
     (te: Check.TypedExpr)
     (venv: Eval.Env)
@@ -5050,7 +5074,7 @@ let private prepareSessionField
         | v -> v
 
     // the value rules check runs too [D:session-value-one-home]
-    match Script.sessionValueRefusal name value with
+    match Init.sessionValueRefusal name value with
     | Some msg -> err msg
     | None ->
 
@@ -5121,7 +5145,7 @@ let private loadInit (baseState: State) : State =
 
         // every static rule, shared with `weir check` and the LSP
         // [D:repl-init] — the loader only applies what checked
-        let ic = Script.checkInit Script.resolver path (List.ofArray lines)
+        let ic = Init.checkInit Statements.resolver path (List.ofArray lines)
 
         match ic.DeclDiags @ ic.Diags with
         | _ :: _ as ds ->
@@ -5191,7 +5215,8 @@ let private loadInit (baseState: State) : State =
                 // binds them in its own env, where bare names stay available at the
                 // prompt [D:init-check-one-home] — strict-clean means this re-check
                 // passes
-                let importer = Script.fileImportLoader Script.resolver (Script.importAnchor path)
+                let importer =
+                    ModuleLoader.fileImportLoader Statements.resolver (ModuleLoader.importAnchor path)
 
                 let sessionDecls =
                     ic.Decls
@@ -5200,7 +5225,7 @@ let private loadInit (baseState: State) : State =
                             match acc with
                             | Error _ -> acc
                             | Ok(env, done') ->
-                                match Script.checkStatement false None Script.resolver importer env ll with
+                                match Statements.checkStatement false None Statements.resolver importer env ll with
                                 | Ok chk -> Ok(chk.Env, (ll, chk) :: done')
                                 | Error d -> Error d)
                         (Ok(baseState.TypeEnv, []))
@@ -5212,7 +5237,7 @@ let private loadInit (baseState: State) : State =
                     notLoaded ()
                 | Ok sessionDecls ->
 
-                    let attachments = Script.docAttachments (List.ofArray lines)
+                    let attachments = Assemble.docAttachments (List.ofArray lines)
                     let mutable venv = baseState.Values
                     let mutable tenv = baseState.TypeEnv
                     let mutable names = 0
@@ -5232,18 +5257,18 @@ let private loadInit (baseState: State) : State =
                                 venv <- bound
 
                                 match chk.Kind with
-                                | Script.KType _ -> names <- names + 1
-                                | Script.KLet(name, _, te) ->
+                                | Statements.KType _ -> names <- names + 1
+                                | Statements.KLet(name, _, te) ->
                                     names <- names + 1
                                     noteCommandSeq name te (snd bindings.Head)
 
                                     (match
-                                        attachments |> List.tryFind (fun (a: Script.DocAttach) -> a.Line = ll.Head)
+                                        attachments |> List.tryFind (fun (a: Assemble.DocAttach) -> a.Line = ll.Head)
                                      with
                                      | Some a -> docs <- Map.add name a.Doc docs
                                      | None -> ())
-                                | Script.KLetPat _ -> names <- names + bindings.Length
-                                | Script.KImport lm ->
+                                | Statements.KLetPat _ -> names <- names + bindings.Length
+                                | Statements.KImport lm ->
                                     docs <-
                                         lm.MemberDocs
                                         |> Map.fold (fun acc n d -> Map.add $"{lm.Alias}.{n}" d acc) docs

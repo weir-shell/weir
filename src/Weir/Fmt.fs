@@ -40,12 +40,12 @@ let private canonicalizeDocs (out: string list) : string list =
     let isDoc (s: string) = s.TrimStart(parserWs).StartsWith "///"
 
     let isCode (s: string) =
-        (Script.stripComment s).Trim(parserWs) <> ""
+        (Assemble.stripComment s).Trim(parserWs) <> ""
 
     let arr = List.toArray out
     // district content is bytes [D:content-bytes] — a ///-shaped line
     // inside one is data, never re-anchored
-    let masked = Script.districtContentMask out
+    let masked = Assemble.districtContentMask out
 
     for i in 0 .. arr.Length - 1 do
         if not masked[i] && isDoc arr[i] then
@@ -86,9 +86,9 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
     // its marker-line modifiers (`patch`, `by=`, `schema=`), nothing
     // else
     let markerOnly (piece: string) =
-        match (Script.classifyPiece piece).Marker with
-        | Script.MarkerKind.NoMarker -> false
-        | Script.MarkerKind.Heredoc -> piece = "<<<" || piece = "$<<<"
+        match (Assemble.classifyPiece piece).Marker with
+        | Assemble.MarkerKind.NoMarker -> false
+        | Assemble.MarkerKind.Heredoc -> piece = "<<<" || piece = "$<<<"
         | _ -> Parser.yamlMarkerLen piece = piece.Length
 
     let out = ResizeArray<string>()
@@ -107,7 +107,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
     for i in 0 .. arr.Length - 1 do
         let raw = arr[i]
-        let code = Script.stripComment raw
+        let code = Assemble.stripComment raw
 
         if isBlank raw then
             out.Add raw
@@ -136,7 +136,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
                  | _ -> ())
 
                 let raw = shifted raw ind
-                let code = Script.stripComment raw
+                let code = Assemble.stripComment raw
                 let ind = indentOf code
                 let piece = code.TrimStart(parserWs)
 
@@ -151,9 +151,9 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
                         if
                             not (isBlank prevRaw)
-                            && (Script.stripComment prevRaw).Trim(parserWs) <> ""
-                            && indentOf (Script.stripComment prev) < ind
-                            && (Script.stripComment prev).TrimEnd(parserWs) = prev.TrimEnd(parserWs)
+                            && (Assemble.stripComment prevRaw).Trim(parserWs) <> ""
+                            && indentOf (Assemble.stripComment prev) < ind
+                            && (Assemble.stripComment prev).TrimEnd(parserWs) = prev.TrimEnd(parserWs)
                         then
                             Some prev
                         else
@@ -165,11 +165,11 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
                 | Some prev ->
                     out[out.Count - 1] <- prev.TrimEnd(parserWs) + " " + raw.TrimStart(parserWs).TrimEnd(parserWs)
                     armed <- Some ind // the OLD marker indent still bounds the content
-                    pendingShift <- Some(indentOf (Script.stripComment prev))
+                    pendingShift <- Some(indentOf (Assemble.stripComment prev))
                 | None ->
                     out.Add raw
 
-                    if Script.isMarkerPiece piece then
+                    if Assemble.isMarkerPiece piece then
                         armed <- Some ind
 
     List.ofSeq out
@@ -236,18 +236,18 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
     // trailing whitespace is never significant (strings are single-line and
     // close with a quote), so both equivalence passes compare TrimEnd'd code
     let commentOnly (raw: string) =
-        Script.classifyLine raw = Script.LineKind.CommentOnly
+        Assemble.classifyLine raw = Assemble.LineKind.CommentOnly
 
     let logicalAt (off: int) (ls: string list) =
         ls
         |> List.mapi (fun i l -> i + 1 + off, l)
         |> List.filter (fun (_, raw) -> not (commentOnly raw))
-        |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd(parserWs))
-        |> Script.assemble
+        |> List.map (fun (n, raw) -> n, (Assemble.stripComment raw).TrimEnd(parserWs))
+        |> Assemble.assemble
 
     let logicalOf = logicalAt 0
 
-    let texts (lls: Script.LogicalLine list) = lls |> List.map (fun ll -> ll.Text)
+    let texts (lls: Assemble.LogicalLine list) = lls |> List.map (fun ll -> ll.Text)
 
     let body =
         // adopt the canonical marker layout only under proof: the
@@ -268,7 +268,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
     let gate =
         match logicalAt lineOffset body with
         | Ok lls ->
-            match body |> List.mapi (fun i l -> i + 1 + lineOffset, l) |> Script.assemble with
+            match body |> List.mapi (fun i l -> i + 1 + lineOffset, l) |> Assemble.assemble with
             | Error e -> Error e
             | Ok _ -> Ok lls
         | Error e -> Error e
@@ -276,7 +276,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
     match gate with
     | Error e ->
         // located as a parse refusal is, line:col [D:assembly-col]
-        match Script.assemblyErrorAt (body |> List.mapi (fun i l -> i + 1 + lineOffset, l)) e with
+        match Assemble.assemblyErrorAt (body |> List.mapi (fun i l -> i + 1 + lineOffset, l)) e with
         | Some(l, c, rest) -> Error $"cannot format: line {l}:{c}: {rest} (fix errors first)"
         | None -> Error $"cannot format: {e} (fix errors first)"
     | Ok originalLogical ->
@@ -328,7 +328,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
 
             for i in arr.Length - 1 .. -1 .. 0 do
                 out[i] <-
-                    if Script.classifyLine arr[i] = Script.LineKind.Code then
+                    if Assemble.classifyLine arr[i] = Assemble.LineKind.Code then
                         arr[i] |> Seq.takeWhile ((=) ' ') |> Seq.length
                     else
                         out[i + 1]
@@ -345,12 +345,12 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
             let found = System.Collections.Generic.HashSet<int>()
 
             while not stop && j < arr.Length do
-                if Script.classifyLine arr[j] = Script.LineKind.Code then
+                if Assemble.classifyLine arr[j] = Assemble.LineKind.Code then
                     let i = arr[j] |> Seq.takeWhile ((=) ' ') |> Seq.length
 
                     if i <= parent then
                         stop <- true
-                    elif i < indent && Script.continuesOpenIf (arr[j].TrimStart ' ') then
+                    elif i < indent && Assemble.continuesOpenIf (arr[j].TrimStart ' ') then
                         found.Add i |> ignore
 
                 j <- j + 1
@@ -360,7 +360,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
         let formatted =
             body
             |> List.mapi (fun lineIdx raw ->
-                let code = Script.stripComment raw
+                let code = Assemble.stripComment raw
                 let content = raw.TrimStart(parserWs).TrimEnd(parserWs)
 
                 if raw.Trim(parserWs) = "" then
@@ -456,7 +456,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                             match armColOf () with
                             | Some col ->
                                 armBody <-
-                                    Script.armArrowIndex piece
+                                    Assemble.armArrowIndex piece
                                     |> Option.bind (fun a ->
                                         let mutable j = a + 2
 
@@ -572,15 +572,15 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
 
                         let formatted = String.replicate col " " + content
 
-                        match (Script.classifyPiece piece).Marker with
-                        | Script.MarkerKind.NoMarker -> ()
+                        match (Assemble.classifyPiece piece).Marker with
+                        | Assemble.MarkerKind.NoMarker -> ()
                         | marker ->
                             district <- Some(indent, col / 4)
                             // heredoc districts are content-bytes exactly as
                             // yaml's are [D:text-block] — the flag means
                             // "district content is verbatim", not "is yaml"
-                            yamlDistrict <- (marker = Script.MarkerKind.Yaml || marker = Script.MarkerKind.Heredoc)
-                            heredocDistrict <- (marker = Script.MarkerKind.Heredoc)
+                            yamlDistrict <- (marker = Assemble.MarkerKind.Yaml || marker = Assemble.MarkerKind.Heredoc)
+                            heredocDistrict <- (marker = Assemble.MarkerKind.Heredoc)
 
                             yamlBase <- None
 
@@ -598,16 +598,16 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                             // a match head later on its line (`let r = match
                             // x with`, `if c then match x with`) opens its arm
                             // set too [D:fmt-arm-pipe]
-                            match midLineMatchHead (Script.stripComment piece) with
+                            match midLineMatchHead (Assemble.stripComment piece) with
                             | Some at -> matches <- (indent, col + at, None) :: matches
                             | None -> ()
 
                         // re-annotate: brackets pushed on this line learn
                         // their style from where the line leaves its opener
                         // (comments carry no brackets)
-                        let code = Script.stripComment formatted
+                        let code = Assemble.stripComment formatted
                         let raw = braces |> List.map (fun b -> b.Kind, b.Col)
-                        let newRaw = Script.braceStack raw code
+                        let newRaw = Assemble.braceStack raw code
 
                         let survived =
                             let rec common j =
@@ -676,10 +676,10 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                 // [D:fmt-respace] — a fixed permissive resolver on
                 // both sides, so sexpr differences can only come from
                 // the respacing itself.
-                // Script.assumeResolver: command-shaped heads only —
+                // Statements.assumeResolver: command-shaped heads only —
                 // an always-true IsExternal would claim `{Lomo` as a
                 // head and make every let-RHS a command
-                let shapeResolver = Script.assumeResolver Builtins.typeEnv
+                let shapeResolver = Statements.assumeResolver Builtins.typeEnv
 
                 // the expression-only twin [D:fmt-respace]: under it no
                 // head is a command, so an ident-headed RHS (`dirty ||
@@ -725,19 +725,19 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                 // respaced hole (`{a}` → `{ a }` keeps the sexpr)
                 let frozen =
                     let arr = List.toArray formatted
-                    let mask = Script.districtContentMask formatted
+                    let mask = Assemble.districtContentMask formatted
 
                     for ll in formattedLogical do
-                        let mutable prefix = Script.stringStart
+                        let mutable prefix = Assemble.stringStart
 
                         for (_, pl, _) in ll.Segments do
                             let i = pl - 1 - lineOffset
 
                             if i >= 0 && i < arr.Length then
-                                if Script.isInsideString prefix then
+                                if Assemble.isInsideString prefix then
                                     mask[i] <- true
 
-                                prefix <- Script.stringStep prefix ("\n" + Script.stripComment arr[i])
+                                prefix <- Assemble.stringStep prefix ("\n" + Assemble.stripComment arr[i])
 
                     mask
 
@@ -749,10 +749,10 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                         else
                             // respace the code only; the gap before a
                             // trailing comment is alignment and survives
-                            let code = Script.stripComment raw
+                            let code = Assemble.stripComment raw
                             let codeTrim = code.TrimEnd(parserWs)
 
-                            Script.respaceLine codeTrim
+                            Assemble.respaceLine codeTrim
                             + code.Substring codeTrim.Length
                             + raw.Substring code.Length)
 
@@ -842,7 +842,7 @@ let private alignSessionFields (body: string list) : string list =
             elif t = "}" then
                 inBlock <- false
                 l
-            elif t = "" || Script.classifyLine l <> Script.LineKind.Code then
+            elif t = "" || Assemble.classifyLine l <> Assemble.LineKind.Code then
                 l
             elif fieldStart.IsMatch t then
                 delta <- 4 - indentOf l
@@ -873,14 +873,14 @@ let formatSource (path: string) (text: string) : Result<string list * bool, stri
         if text = "" then
             []
         else
-            let all = Script.splitSourceText text
+            let all = ModuleLoader.splitSourceText text
 
-            if Script.endsWithLineBreak text then
+            if ModuleLoader.endsWithLineBreak text then
                 List.take (all.Length - 1) all
             else
                 all
 
-    let finalNewline = text = "" || Script.endsWithLineBreak text
+    let finalNewline = text = "" || ModuleLoader.endsWithLineBreak text
 
     let header, body =
         match lines with
@@ -891,7 +891,7 @@ let formatSource (path: string) (text: string) : Result<string list * bool, stri
     // parse decides whether it is a script fmt may rewrite — a parse
     // error in this file (an import's is its own) refuses, located
     let parseError () =
-        let diags, _, _, _, _ = Script.analyzeLines path lines
+        let diags, _, _, _, _ = Analyze.analyzeLines path lines
 
         diags
         |> List.tryFind (fun d ->
@@ -900,11 +900,11 @@ let formatSource (path: string) (text: string) : Result<string list * bool, stri
             && d.Severity = "error")
 
     // an init file's #session fields are separate settings, each read on
-    // its own (Script.splitInit) — so any field indent loads; fmt seats
+    // its own (Init.splitInit) — so any field indent loads; fmt seats
     // every field start at 4, its continuation lines riding along
     // [D:init-session-fields]
     let body =
-        if Script.isInitMarked lines then
+        if Assemble.isInitMarked lines then
             alignSessionFields body
         else
             body
@@ -927,7 +927,7 @@ let formatSource (path: string) (text: string) : Result<string list * bool, stri
                 let assembled (ls: string list) =
                     ls
                     |> List.mapi (fun i l -> i + 1, l)
-                    |> Script.assemble
+                    |> Assemble.assemble
                     |> Result.map (List.map _.Text)
 
                 match assembled formattedBody, assembled kept with
@@ -1063,7 +1063,7 @@ let desugarAliasHeads (r: Parser.Resolver) (aliasOf: string -> (string * string 
             line
 
 let formatFile (checkOnly: bool) (path: string) : int =
-    match Script.readEntryScript path with
+    match ModuleLoader.readEntryScript path with
     | Error msg ->
         System.Console.Error.WriteLine $"weir: {msg}"
         2

@@ -168,7 +168,7 @@ let mutable private lastAnswered: MsgId option = None
 
 let private respond (id: MsgId) (writeResult: Text.Json.Utf8JsonWriter -> unit) =
     send (
-        Script.jsonBuild (fun w ->
+        Diagnostics.jsonBuild (fun w ->
             w.WriteStartObject()
             w.WriteString("jsonrpc", "2.0")
             writeId w id
@@ -191,7 +191,7 @@ let private requestFailed = -32803
 
 let private respondError (id: MsgId option) (code: int) (message: string) =
     send (
-        Script.jsonBuild (fun w ->
+        Diagnostics.jsonBuild (fun w ->
             w.WriteStartObject()
             w.WriteString("jsonrpc", "2.0")
 
@@ -211,7 +211,7 @@ let private respondError (id: MsgId option) (code: int) (message: string) =
 
 let private notify (method: string) (writeParams: Text.Json.Utf8JsonWriter -> unit) =
     send (
-        Script.jsonBuild (fun w ->
+        Diagnostics.jsonBuild (fun w ->
             w.WriteStartObject()
             w.WriteString("jsonrpc", "2.0")
             w.WriteString("method", method)
@@ -238,13 +238,13 @@ let tokenLegend = [| "weirCommandHead"; "weirArgv"; "weirSplice" |]
 // O(lines) (the sig table reads sig files from disk)
 type private Analysis = {
     Result:
-        Script.Diagnostic list *
-        (Script.LogicalLine * Script.CheckedStatement) list *
+        Diagnostics.Diagnostic list *
+        (Assemble.LogicalLine * Statements.CheckedStatement) list *
         TypeEnv *
-        Script.LogicalLine list *
-        (Script.LogicalLine * Script.CheckedStatement) list
-    Docs: Lazy<Script.DocAttach list>
-    Sigs: Lazy<Script.SigInfo list>
+        Assemble.LogicalLine list *
+        (Assemble.LogicalLine * Statements.CheckedStatement) list
+    Docs: Lazy<Assemble.DocAttach list>
+    Sigs: Lazy<Sigs.SigInfo list>
 }
 
 let private analysisCache =
@@ -263,9 +263,9 @@ let private analysisEntry (asInit: bool) (path: string) (lines: string list) : A
     | Some r -> r
     | None ->
         let r = {
-            Result = Script.analyzeLinesAs asInit path lines
-            Docs = lazy (Script.docAttachments lines)
-            Sigs = lazy (Script.sigInfosForFile path lines)
+            Result = Analyze.analyzeLinesAs asInit path lines
+            Docs = lazy (Assemble.docAttachments lines)
+            Sigs = lazy (Sigs.sigInfosForFile path lines)
         }
 
         lock analysisCache (fun () -> analysisCache[key] <- (lines, r))
@@ -293,10 +293,10 @@ let dropAnalyses () =
 /// Compared against the RAW buffer lines, never effectiveLines: an init
 /// file's rewritten `#session` field (`let _nv = v`, [D:init-marker])
 /// is no binder of the user's.
-let verbatimAt (raw: string[]) (ll: Script.LogicalLine) (startCol: int) (len: int) : (int * int) option =
+let verbatimAt (raw: string[]) (ll: Assemble.LogicalLine) (startCol: int) (len: int) : (int * int) option =
     if len > 0 && startCol >= 1 && startCol - 1 + len <= ll.Text.Length then
-        let l1, c1 = Script.translate ll startCol
-        let l2, c2 = Script.translate ll (startCol + len - 1)
+        let l1, c1 = Assemble.translate ll startCol
+        let l2, c2 = Assemble.translate ll (startCol + len - 1)
 
         if l1 = l2 && c2 = c1 + len - 1 && l1 >= 1 && l1 <= raw.Length then
             let phys = raw[l1 - 1]
@@ -325,12 +325,12 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     // logical slice appears verbatim at its translated physical home —
     // spans anchored on inserted join/wrap text emit nothing rather
     // than a mislocated token
-    let emitSpan (ll: Script.LogicalLine) (startCol: int) (len: int) (ty: int) =
+    let emitSpan (ll: Assemble.LogicalLine) (startCol: int) (len: int) (ty: int) =
         match verbatimAt lineArr ll startCol len with
         | Some(l1, c1) -> out.Add(l1 - 1, c1 - 1, len, ty)
         | None -> ()
 
-    let charAt (ll: Script.LogicalLine) (col: int) =
+    let charAt (ll: Assemble.LogicalLine) (col: int) =
         if col >= 1 && col <= ll.Text.Length then
             Some ll.Text[col - 1]
         else
@@ -339,7 +339,7 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     // the head token: a span may open on sigil glyphs ($(, $e()
     // — scan past them to the program name; a ^ force prefix rides in
     // the span. Defensive: emit only when the text really is the prog.
-    let emitHead (ll: Script.LogicalLine) (spanStart: int) (prog: string) =
+    let emitHead (ll: Assemble.LogicalLine) (spanStart: int) (prog: string) =
         let mutable j = spanStart
 
         (match charAt ll j with
@@ -364,7 +364,7 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
         then
             emitSpan ll j (prog.Length + (if forced then 1 else 0)) 0
 
-    let emitArg (ll: Script.LogicalLine) (a: Check.TypedExpr) =
+    let emitArg (ll: Assemble.LogicalLine) (a: Check.TypedExpr) =
         let s = a.Span.Start.Col
         let len = a.Span.End.Col - s
 
@@ -403,7 +403,7 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     // part is a splat interior carrying the full `$@...` span, tokened
     // like the TESplat arms (whole token for $@name, delimiters for
     // $@(expr))
-    let rec emitArgv (ll: Script.LogicalLine) (te: Check.TypedExpr) =
+    let rec emitArgv (ll: Assemble.LogicalLine) (te: Check.TypedExpr) =
         match te.Kind with
         | Check.TEList args -> args |> List.iter (emitArg ll)
         | Check.TEApp({
@@ -426,7 +426,7 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
                 else
                     emitSpan ll s len 2
 
-    let rec walk (ll: Script.LogicalLine) (te: Check.TypedExpr) =
+    let rec walk (ll: Assemble.LogicalLine) (te: Check.TypedExpr) =
         (match te.Kind with
          | Check.TECmd(head, args, _) ->
              (match head with
@@ -452,14 +452,14 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
 
     for (ll, chk) in stmts do
         match chk.Kind with
-        | Script.KType _
-        | Script.KSig _
-        | Script.KModule _
-        | Script.KImport _ -> ()
-        | Script.KLet(_, _, te)
-        | Script.KLetPat(_, _, te)
-        | Script.KCmd te
-        | Script.KExpr te -> walk ll te
+        | Statements.KType _
+        | Statements.KSig _
+        | Statements.KModule _
+        | Statements.KImport _ -> ()
+        | Statements.KLet(_, _, te)
+        | Statements.KLetPat(_, _, te)
+        | Statements.KCmd te
+        | Statements.KExpr te -> walk ll te
 
     out |> Seq.sortBy (fun (l, c, _, _) -> l, c) |> Seq.distinct |> List.ofSeq
 
@@ -550,15 +550,15 @@ let private isReplInitPath (path: string) : bool =
 /// the lines the checker/completer should see for a document — init
 /// directives rewritten for the REPL init file, the raw text otherwise
 let private effectiveLines (uri: string) (text: string) : string list =
-    let raw = Script.splitSourceText text
+    let raw = ModuleLoader.splitSourceText text
 
     // directives rewrite for every init file [D:init-marker]: a marked
     // one anywhere, and the canonical path even unmarked (so its only
     // actionable diagnostic, add #init, is not buried under script-law
     // noise). All downstream consumers — diagnostics, hover, completion
     // — read this stripped form, column-preserving.
-    if Script.isInitMarked raw || isReplInitPath (uriToPath uri) then
-        Script.stripInitDirectives raw
+    if Assemble.isInitMarked raw || isReplInitPath (uriToPath uri) then
+        Assemble.stripInitDirectives raw
     else
         raw
 
@@ -574,7 +574,7 @@ let private sessionFieldHover (path: string) (rawLines: string list) (line: int)
     let raw = List.toArray rawLines
 
     if
-        not (isReplInitPath path || Script.isInitMarked rawLines)
+        not (isReplInitPath path || Assemble.isInitMarked rawLines)
         || line < 1
         || line > raw.Length
     then
@@ -610,9 +610,9 @@ let private sessionFieldHover (path: string) (rawLines: string list) (line: int)
                 if
                     colZ >= keyStart
                     && colZ < keyStart + key.Length
-                    && Set.contains key Script.knownSessionKeys
+                    && Set.contains key Init.knownSessionKeys
                 then
-                    let tys = Script.expectedFieldTypes key |> List.map formatTy |> String.concat " | "
+                    let tys = Init.expectedFieldTypes key |> List.map formatTy |> String.concat " | "
                     Some $"{key} : {tys}"
                 else
                     None
@@ -621,7 +621,7 @@ let private analyze (uri: string) (text: string) =
     // analyze against the real path so imports resolve relative to the file;
     // diagnostics come back File-identified (the entry + its modules)
     let path = uriToPath uri
-    let raw = Script.splitSourceText text
+    let raw = ModuleLoader.splitSourceText text
     let canonical = isReplInitPath path
 
     // an init file (marked anywhere, or the canonical path) checks as the
@@ -629,7 +629,7 @@ let private analyze (uri: string) (text: string) =
     // exactly what `weir check` and the loader do (checkInit [D:repl-init]),
     // the missing marker included
     let diags, stmts, env0, lls, partials =
-        if canonical || Script.isInitMarked raw then
+        if canonical || Assemble.isInitMarked raw then
             analyzeCachedAs true path raw
         else
             analyzeCached path raw
@@ -649,12 +649,12 @@ let private inYamlBlock (lines: string[]) (idx: int) : bool =
             j <- j - 1
 
         j >= 0
-        && (Parser.isYamlMarkerPiece ((Script.stripComment lines[j]).Trim()) || under j)
+        && (Parser.isYamlMarkerPiece ((Assemble.stripComment lines[j]).Trim()) || under j)
 
     lines[idx].Trim() <> "" && under idx
 
 // find the containing logical line among all assembled lines
-let private logicalAt (lls: Script.LogicalLine list) (line: int) (col: int) =
+let private logicalAt (lls: Assemble.LogicalLine list) (line: int) (col: int) =
     lls
     |> List.tryPick (fun ll ->
         ll.Segments
@@ -668,15 +668,15 @@ let private logicalAt (lls: Script.LogicalLine list) (line: int) (col: int) =
 // checked ones and the partials (errored, with a recovered tree), in
 // file order — diagnostics never read this union
 let private withPartials
-    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
-    (partials: (Script.LogicalLine * Script.CheckedStatement) list)
+    (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list)
+    (partials: (Assemble.LogicalLine * Statements.CheckedStatement) list)
     =
     match partials with
     | [] -> stmts
     | _ -> stmts @ partials |> List.sortBy (fun (ll, _) -> ll.Head)
 
 // physical (1-based line, 1-based col) -> logical (LogicalLine, 1-based joined col)
-let private toLogical (stmts: (Script.LogicalLine * Script.CheckedStatement) list) (line: int) (col: int) =
+let private toLogical (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list) (line: int) (col: int) =
     stmts
     |> List.tryPick (fun (ll, chk) ->
         ll.Segments
@@ -695,7 +695,7 @@ let private toLogical (stmts: (Script.LogicalLine * Script.CheckedStatement) lis
 /// completion and signature help [D:signature-help]
 let private statementUpTo
     (env: TypeEnv)
-    (lls: Script.LogicalLine list)
+    (lls: Assemble.LogicalLine list)
     (lines: string[])
     (line: int)
     (col: int)
@@ -718,21 +718,21 @@ let private statementUpTo
 
         let stmtLines = [ for i in start .. line - 2 -> lines[i] ] @ [ upto ]
 
-        match Script.entryContext env stmtLines with
+        match Diagnostics.entryContext env stmtLines with
         | ctxEnv, Some stmt -> Some(ctxEnv, stmt, "")
         | _, None -> None
     | None -> None
 
-let private teOf (chk: Script.CheckedStatement) =
+let private teOf (chk: Statements.CheckedStatement) =
     match chk.Kind with
-    | Script.KType _
-    | Script.KSig _
-    | Script.KModule _
-    | Script.KImport _ -> None
-    | Script.KLet(_, _, te)
-    | Script.KLetPat(_, _, te)
-    | Script.KCmd te
-    | Script.KExpr te -> Some te
+    | Statements.KType _
+    | Statements.KSig _
+    | Statements.KModule _
+    | Statements.KImport _ -> None
+    | Statements.KLet(_, _, te)
+    | Statements.KLetPat(_, _, te)
+    | Statements.KCmd te
+    | Statements.KExpr te -> Some te
 
 // smallest node whose span contains the (1-based, logical) column
 let private nodeAt (te: TypedExpr) (col: int) : TypedExpr option =
@@ -753,7 +753,7 @@ let private nodeAt (te: TypedExpr) (col: int) : TypedExpr option =
     go None te
 
 // is the (logical) column inside a recovered hole [D:block-recovery]
-let private inHole (chk: Script.CheckedStatement) (col: int) : bool =
+let private inHole (chk: Statements.CheckedStatement) (col: int) : bool =
     let rec go (te: TypedExpr) =
         match te.Kind with
         | Check.TEHole sp -> sp.Start.Col <= col && col < sp.End.Col
@@ -978,7 +978,7 @@ let private onSilentToken (text: string) (jcol: int) : bool =
 /// an import alias — on its import line, or qualifying a member —
 /// hovers the module and its own doc [D:module-doc]
 let private moduleAliasHover
-    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list)
     (text: string)
     (jcol: int)
     : string option =
@@ -999,7 +999,7 @@ let private moduleAliasHover
             stmts
             |> List.tryPick (fun (_, c) ->
                 match c.Kind with
-                | Script.KImport lm when lm.Alias = w -> Some lm
+                | Statements.KImport lm when lm.Alias = w -> Some lm
                 | _ -> None)
             |> Option.map (fun lm ->
                 match lm.ModuleDoc with
@@ -1123,7 +1123,7 @@ let rec private patFieldHoverAt (env: TypeEnv) (jcol: int) (te: Check.TypedExpr)
 // every other request
 
 let private targetStmts (absPath: string) =
-    Script.targetSourceLines absPath
+    Sigs.targetSourceLines absPath
     |> Option.map (fun lines ->
         let _, stmts, _, _, _ = analyzeCached absPath lines
         lines, stmts)
@@ -1134,14 +1134,14 @@ let private targetStmts (absPath: string) =
 // text spans the whole multi-line declaration; translate maps back to
 // physical)
 let private typeSiteIn
-    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list)
     (tyName: string)
     (member_: string option)
     : (int * int * int) option =
     stmts
     |> List.tryPick (fun (ll, c) ->
         match c.Kind with
-        | Script.KType(d, _) when d.Name = tyName ->
+        | Statements.KType(d, _) when d.Name = tyName ->
             let eq = ll.Text.IndexOf '='
 
             let jc =
@@ -1151,14 +1151,14 @@ let private typeSiteIn
 
             jc
             |> Option.map (fun jcol ->
-                let pl, pc = Script.translate ll jcol
+                let pl, pc = Assemble.translate ll jcol
                 (pl, pc, (member_ |> Option.defaultValue tyName).Length))
         | _ -> None)
 
 // the last top-level binder `n` among stmts; the entry file bounds the
 // search by the use site, a module file has no use site to bound by
 let private letSiteIn
-    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list)
     (bound: int option)
     (n: string)
     : (int * int * int) option =
@@ -1169,10 +1169,10 @@ let private letSiteIn
             | Some b -> ll.Head < b
             | None -> true)
 
-    let site (ll: Script.LogicalLine) =
+    let site (ll: Assemble.LogicalLine) =
         binderCol n ll.Text
         |> Option.map (fun bc ->
-            let pl, pc = Script.translate ll bc
+            let pl, pc = Assemble.translate ll bc
             (pl, pc, n.Length))
 
     // the signature is the declaration a member reference lands on
@@ -1182,7 +1182,7 @@ let private letSiteIn
         inScope
         |> List.tryPick (fun (ll, c) ->
             match c.Kind with
-            | Script.KSig(bn, _) when bn = n -> site ll
+            | Statements.KSig(bn, _) when bn = n -> site ll
             | _ -> None)
 
     sigSite
@@ -1192,8 +1192,8 @@ let private letSiteIn
         |> List.tryPick (fun (ll, c) ->
             let binds =
                 match c.Kind with
-                | Script.KLet(bn, _, _) -> bn = n
-                | Script.KLetPat(_, schemes, _) -> schemes |> List.exists (fun (bn, _) -> bn = n)
+                | Statements.KLet(bn, _, _) -> bn = n
+                | Statements.KLetPat(_, schemes, _) -> schemes |> List.exists (fun (bn, _) -> bn = n)
                 | _ -> false
 
             if binds then site ll else None))
@@ -1258,7 +1258,7 @@ let rec private cmdSurfaceAt (jcol: int) (te: Check.TypedExpr) : (string * int *
 /// non-dash word): (record name, field, field type, sig lines, sig stmts)
 // the record a line's flags live in: the longest run of leading sub
 // words, kebab-joined — the checker's own rule [D:scoped-sigs]
-let private sigRecordFor (si: Script.SigInfo) (words: string list) : (string * int) option =
+let private sigRecordFor (si: Sigs.SigInfo) (words: string list) : (string * int) option =
     match Map.tryFind "" si.SubRecords with
     | Some rn -> Some(rn, 0)
     | None ->
@@ -1273,7 +1273,7 @@ let private sigRecordFor (si: Script.SigInfo) (words: string list) : (string * i
             Map.tryFind (String.concat "-" (run |> List.truncate n)) si.SubRecords
             |> Option.map (fun rn -> rn, n))
 
-let private sigFlagField (si: Script.SigInfo) (words: string list) (w: string) =
+let private sigFlagField (si: Sigs.SigInfo) (words: string list) (w: string) =
     let rn =
         match sigRecordFor si words with
         | Some(rn, _) -> Some rn
@@ -1290,7 +1290,7 @@ let private sigFlagField (si: Script.SigInfo) (words: string list) (w: string) =
             sigStmts
             |> List.tryPick (fun (_, c) ->
                 match c.Kind with
-                | Script.KType(d, _) when d.Name = rn -> Map.tryFind rn c.Env.Types
+                | Statements.KType(d, _) when d.Name = rn -> Map.tryFind rn c.Env.Types
                 | _ -> None)
             |> Option.bind (function
                 | Record rd ->
@@ -1320,7 +1320,7 @@ let private sigFlagDoc
     (rn: string)
     (f: string)
     (sigLines: string list)
-    (sigStmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (sigStmts: (Assemble.LogicalLine * Statements.CheckedStatement) list)
     : string option =
     typeSiteIn sigStmts rn (Some f)
     |> Option.bind (fun (dl, dc, _) ->
@@ -1351,7 +1351,7 @@ let private onSchemaToken (name: string) (text: string) (jcol: int) : bool =
 // the declared schema name when the cursor sits on its token: off the
 // TEYaml node itself — the name is a vendored file, not an env.Types
 // entry, so the type-argument arm cannot render it [D:schema-hover]
-let private schemaTokenAt (chk: Script.CheckedStatement) (text: string) (jcol: int) : string option =
+let private schemaTokenAt (chk: Statements.CheckedStatement) (text: string) (jcol: int) : string option =
     teOf chk
     |> Option.bind (fun te -> nodeAt te jcol)
     |> Option.bind (fun nd ->
@@ -1379,7 +1379,7 @@ let definitionTarget
         stmts
         |> List.choose (fun (_, c) ->
             match c.Kind with
-            | Script.KImport lm -> Some lm
+            | Statements.KImport lm -> Some lm
             | _ -> None)
 
     // local KType first; else the import that declared the type — a
@@ -1461,7 +1461,7 @@ let definitionTarget
     |> Option.filter (fun (_, chk, jcol) -> not (inHole chk jcol))
     |> Option.bind (fun (useLl, chk, jcol) ->
         match chk.Kind with
-        | Script.KImport lm ->
+        | Statements.KImport lm ->
             // definition on the import path opens the imported file; a
             // path that does not resolve never reaches here (the failed
             // import leaves no KImport statement) [D:lsp-cross-file]
@@ -1568,7 +1568,7 @@ let definitionTarget
                             // [PLAN-diagnostics-arc C]
                             match teOf chk |> Option.bind (localDef n jcol) with
                             | Some(Some bspan) ->
-                                let pl, pc = Script.translate useLl bspan.Start.Col
+                                let pl, pc = Assemble.translate useLl bspan.Start.Col
                                 Some(None, pl, pc, n.Length)
                             | _ -> letSite useLl.Head n |> Option.map (fun (pl, pc, len) -> None, pl, pc, len)
                     | Check.TEField(target, field) when jcol > target.Span.End.Col ->
@@ -1630,7 +1630,7 @@ let definitionTarget
                     // — the checker's own resolution; a not-vendored name
                     // stays quiet (the hover carries the teaching)
                     | Check.TEYaml(_, Some sname, _) when onSchemaToken sname useLl.Text jcol ->
-                        (match Script.resolveSchemaFile path sname with
+                        (match Diagnostics.resolveSchemaFile path sname with
                          | Ok(_, file) -> Some(Some file, 1, 1, 0)
                          | Error _ -> None)
                     | _ -> None)
@@ -1695,14 +1695,14 @@ type private FileOcc = {
     OStmt: int
 }
 
-let private valueOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatement) list) : FileOcc list =
+let private valueOccurrences (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list) : FileOcc list =
     let arr = List.toArray stmts
     let lastTop = Collections.Generic.Dictionary<string, int>()
     let found = ResizeArray<FileOcc>()
 
     let isSigOf (n: string) (j: int) =
         match (snd arr[j]).Kind with
-        | Script.KSig(bn, _) -> bn = n
+        | Statements.KSig(bn, _) -> bn = n
         | _ -> false
 
     for i in 0 .. arr.Length - 1 do
@@ -1716,7 +1716,7 @@ let private valueOccurrences (stmts: (Script.LogicalLine * Script.CheckedStateme
 
             wordFind name ll.Text lo hi
             |> Option.map (fun jc ->
-                let pl, pc = Script.translate ll jc
+                let pl, pc = Assemble.translate ll jc
                 pl, pc)
 
         let add (name: string) (key: BinderKey) (site: bool) (pos: (int * int) option) =
@@ -1748,12 +1748,12 @@ let private valueOccurrences (stmts: (Script.LogicalLine * Script.CheckedStateme
                 add o.Name key o.IsBinderSite (locate o.Name o.Span))
 
         // then this statement's own top-level binder sites
-        let siteOf (ll: Script.LogicalLine) (n: string) =
-            binderCol n ll.Text |> Option.map (Script.translate ll)
+        let siteOf (ll: Assemble.LogicalLine) (n: string) =
+            binderCol n ll.Text |> Option.map (Assemble.translate ll)
 
         let bound =
             match chk.Kind with
-            | Script.KLet(n, _, _) when Check.occurrenceName n ->
+            | Statements.KLet(n, _, _) when Check.occurrenceName n ->
                 // the implementation of a signed member shares its sig's key
                 let key =
                     match lastTop.TryGetValue n with
@@ -1762,10 +1762,10 @@ let private valueOccurrences (stmts: (Script.LogicalLine * Script.CheckedStateme
 
                 add n key true (siteOf ll n)
                 [ n, key ]
-            | Script.KSig(n, _) when Check.occurrenceName n ->
+            | Statements.KSig(n, _) when Check.occurrenceName n ->
                 add n (TopKey(n, i)) true (siteOf ll n)
                 [ n, TopKey(n, i) ]
-            | Script.KLetPat(pat, _, _) ->
+            | Statements.KLetPat(pat, _, _) ->
                 Check.patNameSpans pat
                 |> List.filter (fun (n, _) -> Check.occurrenceName n)
                 |> List.map (fun (n, sp) ->
@@ -1910,7 +1910,7 @@ let private firstUnmasked (ch: char) (text: string) (mask: bool[]) : int =
 /// cannot pin to one record: name, physical line and col of the field
 /// word, and the access's spelling
 let private memberOccurrences
-    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list)
     : FileOcc list * (string * int * int * string) list =
     let arr = List.toArray stmts
     let found = ResizeArray<FileOcc>()
@@ -1926,7 +1926,7 @@ let private memberOccurrences
         let add (name: string) (key: BinderKey) (site: bool) (jc: int option) =
             jc
             |> Option.iter (fun jc ->
-                let pl, pc = Script.translate ll jc
+                let pl, pc = Assemble.translate ll jc
 
                 found.Add {
                     OName = name
@@ -1938,7 +1938,7 @@ let private memberOccurrences
                 })
 
         let row (name: string) (jc: int) (display: string) =
-            let pl, pc = Script.translate ll jc
+            let pl, pc = Assemble.translate ll jc
             rows.Add(name, pl, pc, display)
 
         let spanText (sp: Span) =
@@ -2285,7 +2285,7 @@ let private memberOccurrences
                             add t (MemberKey(t, None)) false (Some jc)
 
         match chk.Kind with
-        | Script.KType(d, validator) ->
+        | Statements.KType(d, validator) ->
             let mask = stringMask text
 
             let eq = firstUnmasked '=' text mask
@@ -2331,13 +2331,13 @@ let private memberOccurrences
                 walkPat payload v.Binder)
 
             validator |> Option.iter (snd >> walk)
-        | Script.KSig _ ->
+        | Statements.KSig _ ->
             let mask = stringMask text
 
             match firstUnmasked ':' text mask with
             | -1 -> ()
             | colon -> typeRefs (colon + 1) text.Length []
-        | Script.KLetPat(pat, _, te) ->
+        | Statements.KLetPat(pat, _, te) ->
             walkPat (Some te.Ty) pat
             walk te
         | _ -> teOf chk |> Option.iter walk
@@ -2346,7 +2346,7 @@ let private memberOccurrences
 
 // one table per request: the value occurrences first — a position is
 // a value's before it is a member's — then the member occurrences
-let private fileOccurrences (stmts: (Script.LogicalLine * Script.CheckedStatement) list) : FileOcc list =
+let private fileOccurrences (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list) : FileOcc list =
     valueOccurrences stmts @ fst (memberOccurrences stmts)
 
 /// the occurrence under the cursor (physical 1-based line, col), with
@@ -2464,7 +2464,7 @@ let private renameTarget
 
     if isSigFile path then
         Error "rename is not available in a signature file — its members are the contract a #sig reads by name"
-    elif isReplInitPath path || Script.isInitMarked lines then
+    elif isReplInitPath path || Assemble.isInitMarked lines then
         Error "rename is not available in an init file — its #session and #alias lines bind names the loader owns"
     else
         match values |> List.tryFind under, members |> List.tryFind under with
@@ -2537,7 +2537,7 @@ let private renameTarget
                 arr
                 |> Array.tryFindIndex (fun (_, c) ->
                     match c.Kind with
-                    | Script.KType(d, _) -> d.Name = key
+                    | Statements.KType(d, _) -> d.Name = key
                     | _ -> false)
 
             match declIdx with
@@ -2572,7 +2572,7 @@ let private renameTarget
                         stmts
                         |> List.tryPick (fun (_, c) ->
                             match c.Kind with
-                            | Script.KImport lm when List.contains key lm.TypeNames -> Some lm.Alias
+                            | Statements.KImport lm when List.contains key lm.TypeNames -> Some lm.Alias
                             | _ -> None)
 
                 match member_, importAlias with
@@ -2617,7 +2617,7 @@ let prepareRenameFor (path: string) (lines: string list) (line: int) (col: int) 
 // bare use); a type is uppercase and no visible type or module; none
 // may be a same-kind member word anywhere in the extent
 let private memberNameCheck
-    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list)
     (table: FileOcc list)
     (key: string)
     (member_: string option)
@@ -2643,7 +2643,7 @@ let private memberNameCheck
         stmts
         |> List.choose (fun (_, c) ->
             match c.Kind with
-            | Script.KImport lm -> Some lm.Alias
+            | Statements.KImport lm -> Some lm.Alias
             | _ -> None)
 
     // the same-kind member word in the extent
@@ -3074,8 +3074,8 @@ let private inStringOrComment (lines: string list) (line: int) (col: int) : bool
     else
         let text = List.item (line - 1) lines
 
-        (col >= 1 && col <= text.Length && (Script.inStringMask text)[col - 1])
-        || col - 1 >= (Script.stripComment text).Length
+        (col >= 1 && col <= text.Length && (Assemble.inStringMask text)[col - 1])
+        || col - 1 >= (Assemble.stripComment text).Length
 
 /// the type argument's own hover: `Config` in `from json Config` (and
 /// from yaml / Env.load / Args.load) is no expression node — the bespoke
@@ -3112,18 +3112,18 @@ let private typeDefHover (env: TypeEnv) (tyName: string) : string option =
 /// the declared name among that file's statements
 let private validateDocIn
     (lines: string list)
-    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    (stmts: (Assemble.LogicalLine * Statements.CheckedStatement) list)
     (tyName: string)
     : string option =
     stmts
     |> List.tryPick (fun (ll, chk) ->
         match chk.Kind with
-        | Script.KType(d, Some _) when d.Name = tyName ->
+        | Statements.KType(d, Some _) when d.Name = tyName ->
             d.Validate
             |> Option.bind (fun v ->
-                let pl, pc = Script.translate ll v.Span.Start.Col
+                let pl, pc = Assemble.translate ll v.Span.Start.Col
 
-                Script.docAttachments lines
+                Assemble.docAttachments lines
                 |> List.tryPick (fun a ->
                     if a.Line = pl && a.Col = pc then
                         List.tryHead a.Doc
@@ -3138,7 +3138,7 @@ let private validateDocIn
 // cache, the stateless discipline. A miss or an unusable file renders
 // the checker's words for that state, never a second phrasing.
 let private schemaHover (path: string) (name: string) : string option =
-    match Script.resolveSchemaFile path name with
+    match Diagnostics.resolveSchemaFile path name with
     | Error e -> Some e
     | Ok(weirDir, file) ->
         match
@@ -3242,7 +3242,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         // RHS use of the same name keeps its expression hover
         let patBinderTy =
             match chk.Kind with
-            | Script.KLetPat(_, schemes, _) ->
+            | Statements.KLetPat(_, schemes, _) ->
                 wordAt ll.Text jcol
                 |> Option.bind (fun w ->
                     let eq = ll.Text.IndexOf '='
@@ -3285,7 +3285,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         // at the type declaration, where declHover renders it instead.
         let constructorSig =
             match chk.Kind with
-            | Script.KType _ -> None
+            | Statements.KType _ -> None
             | _ ->
                 wordAt ll.Text jcol
                 |> Option.bind (fun w ->
@@ -3328,7 +3328,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         let validatedKey =
             match createKey, chk.Kind with
             | Some(key, _), _ -> Some key
-            | None, Script.KType(d, Some _) when word = Some d.Name -> Some d.Name
+            | None, Statements.KType(d, Some _) when word = Some d.Name -> Some d.Name
             | None, _ ->
                 word
                 |> Option.filter (fun w ->
@@ -3389,12 +3389,12 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                          stmts
                          |> List.tryPick (fun (_, c) ->
                              match c.Kind with
-                             | Script.KImport lm when lm.Alias = alias -> Some lm
+                             | Statements.KImport lm when lm.Alias = alias -> Some lm
                              | _ -> None)
                          |> Option.bind (fun lm ->
                              lm.Body
                              |> List.tryPick (function
-                                 | _, Script.CLet(bn, te) when bn = mem -> Some te
+                                 | _, Statements.CLet(bn, te) when bn = mem -> Some te
                                  | _ -> None))
                          |> Option.bind (fun te ->
                              match te.Ty, Check.lambdaParamNames te with
@@ -3443,7 +3443,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         // its type is not known until the statement checks
         let topLetSig () =
             match chk.Kind with
-            | Script.KLet(name, sch, te) when
+            | Statements.KLet(name, sch, te) when
                 word = Some name
                 && (match sch.Ty with
                     | TVar v -> not (v.StartsWith "__hole")
@@ -3526,11 +3526,11 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.orElseWith (fun () -> node |> Option.map (fun n -> formatTy n.Ty))
             |> Option.orElseWith (fun () ->
                 match chk.Kind with
-                | Script.KLet _ -> topLetSig ()
+                | Statements.KLet _ -> topLetSig ()
                 // a member signature line hovers the sig verbatim
                 // [D:module-signatures]
-                | Script.KSig(name, sd) when word = Some name -> Some $"{name} : {formatTy sd.Ty}"
-                | Script.KType(decl, _) -> word |> Option.bind (declHover decl)
+                | Statements.KSig(name, sd) when word = Some name -> Some $"{name} : {formatTy sd.Ty}"
+                | Statements.KType(decl, _) -> word |> Option.bind (declHover decl)
                 | _ -> None)
             // a referenced type name anywhere hovers its shape
             // [D:lsp-typename]: a field's type in a record decl, the
@@ -3592,7 +3592,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 |> Option.bind (fun (fileOpt, dl, dc, _) ->
                     (match fileOpt with
                      | None -> Some(path, lines)
-                     | Some f -> Script.targetSourceLines f |> Option.map (fun ls -> f, ls))
+                     | Some f -> Sigs.targetSourceLines f |> Option.map (fun ls -> f, ls))
                     |> Option.bind (fun (docPath, docSrc) ->
                         docAttachmentsCached docPath docSrc
                         |> List.tryPick (fun d ->
@@ -3726,13 +3726,13 @@ let inlayHintsFor
         stmts
         |> List.choose (fun (_, c) ->
             match c.Kind with
-            | Script.KSig(n, _) -> Some n
+            | Statements.KSig(n, _) -> Some n
             | _ -> None)
         |> Set.ofList
 
     // the viewport filter runs before any walk: a statement is visible
     // when its physical lines overlap the range
-    let overlaps (ll: Script.LogicalLine) =
+    let overlaps (ll: Assemble.LogicalLine) =
         let last = ll.Segments |> List.fold (fun m (_, pl, _) -> max m pl) ll.Head
         last >= fromLine && ll.Head <= toLine
 
@@ -3759,7 +3759,7 @@ let inlayHintsFor
             }
 
     // after the word at the logical column, when it is verbatim there
-    let afterWord (ll: Script.LogicalLine) (jcol: int) (word: string) (ty: Ty) (kind: int) =
+    let afterWord (ll: Assemble.LogicalLine) (jcol: int) (word: string) (ty: Ty) (kind: int) =
         if word <> "()" && word <> "_" then
             match verbatimAt raw ll jcol word.Length with
             | Some(l, c) -> place l (c + word.Length) ty kind false false
@@ -3768,7 +3768,7 @@ let inlayHintsFor
     // the return type sits before the `=` that follows the last param
     // (so it never collides with that param's own hint); `let f = fun…`
     // has no such `=` and gets no return hint
-    let returnHint (ll: Script.LogicalLine) (te: Check.TypedExpr) (bodyStart: int) =
+    let returnHint (ll: Assemble.LogicalLine) (te: Check.TypedExpr) (bodyStart: int) =
         if opts.BindingTypes then
             match lastParam te with
             | Some(pspan, ret) ->
@@ -3782,7 +3782,7 @@ let inlayHintsFor
 
     let pipeLines = System.Collections.Generic.HashSet<int>()
 
-    let rec walk (ll: Script.LogicalLine) (te: Check.TypedExpr) =
+    let rec walk (ll: Assemble.LogicalLine) (te: Check.TypedExpr) =
         match te.Kind with
         | Check.TELet(name, nameSpan, value, body) ->
             (match value.Kind with
@@ -3806,13 +3806,13 @@ let inlayHintsFor
         // would land mid-line and gets nothing
         | Check.TEPipe(arg, fn) ->
             (if opts.PipelineTypes then
-                 let la, _ = Script.translate ll arg.Span.Start.Col
-                 let lf, _ = Script.translate ll fn.Span.Start.Col
+                 let la, _ = Assemble.translate ll arg.Span.Start.Col
+                 let lf, _ = Assemble.translate ll fn.Span.Start.Col
 
                  // one hint a line: the walk meets the line's last stage
                  // first, and its type is the line's [D:pipeline-hint-line]
                  if lf <> la && lf >= 1 && lf <= raw.Length && pipeLines.Add lf then
-                     let code = (Script.stripComment raw[lf - 1]).TrimEnd()
+                     let code = (Assemble.stripComment raw[lf - 1]).TrimEnd()
                      place lf (code.Length + 1) te.Ty 1 true false)
 
             walk ll arg
@@ -3829,8 +3829,8 @@ let inlayHintsFor
 
     for (ll, chk) in stmts |> List.filter (fun (ll, _) -> overlaps ll) do
         match chk.Kind with
-        | Script.KLet(name, _, _) when Set.contains name signed -> ()
-        | Script.KLet(name, sch, te) ->
+        | Statements.KLet(name, _, _) when Set.contains name signed -> ()
+        | Statements.KLet(name, sch, te) ->
             (match te.Kind with
              | Check.TELambda _ -> returnHint ll te (lambdaBodyStart te)
              | _ ->
@@ -3838,7 +3838,7 @@ let inlayHintsFor
                      binderCol name ll.Text |> Option.iter (fun jc -> afterWord ll jc name sch.Ty 1))
 
             walk ll te
-        | Script.KLetPat(pat, schemes, te) ->
+        | Statements.KLetPat(pat, schemes, te) ->
             if opts.BindingTypes then
                 for n, span in Check.patNameSpans pat do
                     schemes
@@ -3847,7 +3847,7 @@ let inlayHintsFor
 
             walk ll te
         // the `validate s =` binder is the payload [D:validated-types]
-        | Script.KType(decl, Some(_, te)) ->
+        | Statements.KType(decl, Some(_, te)) ->
             (match decl.Validate, decl.Body with
              | Some v, Ast.DUnion [ (_, Some payload, _) ] when opts.BindingTypes ->
                  (match v.Binder.PKind with
@@ -3856,12 +3856,12 @@ let inlayHintsFor
              | _ -> ())
 
             walk ll te
-        | Script.KType _
-        | Script.KSig _
-        | Script.KModule _
-        | Script.KImport _ -> ()
-        | Script.KCmd te
-        | Script.KExpr te -> walk ll te
+        | Statements.KType _
+        | Statements.KSig _
+        | Statements.KModule _
+        | Statements.KImport _ -> ()
+        | Statements.KCmd te
+        | Statements.KExpr te -> walk ll te
 
     out |> Seq.sortBy (fun h -> h.Line, h.Col) |> List.ofSeq
 
@@ -3889,10 +3889,10 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
     let lineLen (l: int) =
         if l >= 1 && l <= raw.Length then raw[l - 1].Length else 0
 
-    let lastLine (ll: Script.LogicalLine) =
+    let lastLine (ll: Assemble.LogicalLine) =
         ll.Segments |> List.fold (fun m (_, pl, _) -> max m pl) ll.Head
 
-    let rangeOf (ll: Script.LogicalLine) =
+    let rangeOf (ll: Assemble.LogicalLine) =
         let l2 = lastLine ll
         ll.Head, 1, l2, lineLen l2 + 1
 
@@ -3900,7 +3900,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
 
     // the name's own span when verbatim, else the statement's first
     // column (a selection must sit inside its range)
-    let selAt (ll: Script.LogicalLine) (jcol: int option) (len: int) =
+    let selAt (ll: Assemble.LogicalLine) (jcol: int option) (len: int) =
         match jcol |> Option.bind (fun jc -> verbatimAt raw ll jc len) with
         | Some(l, c) -> l, c, l, c + len
         | None -> ll.Head, 1, ll.Head, 1
@@ -3920,15 +3920,15 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
         | _ -> false
 
     // nested functions as children (inner value lets are not) [R5]
-    let rec nestedFns (ll: Script.LogicalLine) (te: Check.TypedExpr) : DocSymbol list =
+    let rec nestedFns (ll: Assemble.LogicalLine) (te: Check.TypedExpr) : DocSymbol list =
         match te.Kind with
         | Check.TELet(n, nspan, value, body) when
             (match value.Kind with
              | Check.TELambda _ -> true
              | _ -> false)
             ->
-            let l1, c1 = Script.translate ll nspan.Start.Col
-            let l2, c2 = Script.translate ll (max nspan.Start.Col (value.Span.End.Col - 1))
+            let l1, c1 = Assemble.translate ll nspan.Start.Col
+            let l2, c2 = Assemble.translate ll (max nspan.Start.Col (value.Span.End.Col - 1))
 
             let sel =
                 match verbatimAt raw ll nspan.Start.Col n.Length with
@@ -3946,7 +3946,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
         | _ -> Check.childExprs te |> List.collect (nestedFns ll)
 
     // a member word after the declaration's first `=` (typeSiteIn's rule)
-    let memberSym (ll: Script.LogicalLine) (eq: int) (word: string) (detail: string option) (kind: int) =
+    let memberSym (ll: Assemble.LogicalLine) (eq: int) (word: string) (detail: string option) (kind: int) =
         let jc = wordFind word ll.Text (if eq >= 0 then eq else 0) ll.Text.Length
 
         let sel = selAt ll jc word.Length
@@ -3960,7 +3960,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
         stmts
         |> List.choose (fun (ll, c) ->
             match c.Kind with
-            | Script.KSig(n, ms) -> Some(n, (ll, ms))
+            | Statements.KSig(n, ms) -> Some(n, (ll, ms))
             | _ -> None)
         |> Map.ofList
 
@@ -3994,7 +3994,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
         (stmts
          |> List.choose (fun (_, c) ->
              match c.Kind with
-             | Script.KLet(n, _, _) -> Some n
+             | Statements.KLet(n, _, _) -> Some n
              | _ -> None))
         @ (fallback |> List.filter (fun f -> f.Kind = 13) |> List.map (fun f -> f.Name))
         |> Set.ofList
@@ -4003,7 +4003,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
         stmts
         |> List.collect (fun (ll, chk) ->
             match chk.Kind with
-            | Script.KModule(name, kwSpan) -> [
+            | Statements.KModule(name, kwSpan) -> [
                 sym
                     (name |> Option.defaultValue "module")
                     (Some "module header")
@@ -4012,7 +4012,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                     (selAt ll (Some kwSpan.Start.Col) "module".Length)
                     []
               ]
-            | Script.KImport lm ->
+            | Statements.KImport lm ->
                 let q1 = ll.Text.IndexOf '"'
                 let q2 = (if q1 >= 0 then ll.Text.IndexOf('"', q1 + 1) else -1)
 
@@ -4030,7 +4030,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                     | None -> selAt ll (if q1 >= 0 then Some(q1 + 1) else None) (q2 - q1 + 1)
 
                 [ sym lm.Alias written 2 (rangeOf ll) sel [] ]
-            | Script.KType(decl, validator) ->
+            | Statements.KType(decl, validator) ->
                 let eq = ll.Text.IndexOf '='
 
                 let detail =
@@ -4074,7 +4074,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                             decl.Name.Length)
                         (members @ validate)
                 ]
-            | Script.KLet(name, sch, te) ->
+            | Statements.KLet(name, sch, te) ->
                 let ps = Check.lambdaParamNames te
                 let kind = if isFun sch.Ty || not ps.IsEmpty then 12 else 13
                 let l1, c1, l2, c2 = rangeOf ll
@@ -4087,7 +4087,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                 [
                     sym name (Some detail) kind range (selAt ll (binderCol name ll.Text) name.Length) (nestedFns ll te)
                 ]
-            | Script.KLetPat(pat, schemes, _) ->
+            | Statements.KLetPat(pat, schemes, _) ->
                 Check.patNameSpans pat
                 |> List.sortBy (fun (_, sp) -> sp.Start.Col)
                 |> List.map (fun (n, sp) ->
@@ -4096,7 +4096,7 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                         |> List.tryPick (fun (sn, sc) -> if sn = n then Some(formatTy sc.Ty) else None)
 
                     sym n detail 13 (rangeOf ll) (selAt ll (Some sp.Start.Col) n.Length) [])
-            | Script.KSig(name, ms) when not (Set.contains name implemented) -> [
+            | Statements.KSig(name, ms) when not (Set.contains name implemented) -> [
                 sym
                     name
                     (Some "signature — no implementation")
@@ -4105,9 +4105,9 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
                     (selAt ll (binderCol name ll.Text) name.Length)
                     []
               ]
-            | Script.KSig _
-            | Script.KCmd _
-            | Script.KExpr _ -> [])
+            | Statements.KSig _
+            | Statements.KCmd _
+            | Statements.KExpr _ -> [])
 
     // `#sig` heads are no statements: read off the sig table
     let sigHeads =
@@ -4166,7 +4166,7 @@ let foldingRangesFor (path: string) (lines: string list) : (int * int * string o
     let _, _, _, lls, _ = analyzeCached path lines
     let raw = List.toArray lines
     let n = raw.Length
-    let mask = Script.districtContentMask lines
+    let mask = Assemble.districtContentMask lines
     let out = ResizeArray<int * int * string option>()
     let blank (l: int) = raw[l - 1].Trim() = ""
 
@@ -4174,7 +4174,7 @@ let foldingRangesFor (path: string) (lines: string list) : (int * int * string o
         raw[l - 1].Length - raw[l - 1].TrimStart().Length
 
     let codeOf (l: int) =
-        (Script.stripComment raw[l - 1]).TrimStart()
+        (Assemble.stripComment raw[l - 1]).TrimStart()
 
     // trailing blank lines never fold
     let trimEnd (s: int) (e: int) =
@@ -4251,7 +4251,7 @@ let foldingRangesFor (path: string) (lines: string list) : (int * int * string o
             0
         elif raw[l - 1].TrimStart().StartsWith "///" then
             1
-        elif Script.classifyLine raw[l - 1] = Script.LineKind.CommentOnly then
+        elif Assemble.classifyLine raw[l - 1] = Assemble.LineKind.CommentOnly then
             2
         else
             0
@@ -4306,7 +4306,7 @@ let documentLinksFor (path: string) (lines: string list) : (int * int * int * st
 
     for (ll, chk) in stmts do
         match chk.Kind with
-        | Script.KImport lm ->
+        | Statements.KImport lm ->
             let q1 = ll.Text.IndexOf '"'
             let q2 = (if q1 >= 0 then ll.Text.IndexOf('"', q1 + 1) else -1)
 
@@ -4320,7 +4320,7 @@ let documentLinksFor (path: string) (lines: string list) : (int * int * int * st
                      let idx = ll.Text.IndexOf("schema=" + name)
 
                      if idx >= 0 then
-                         match Script.resolveSchemaFile path name with
+                         match Diagnostics.resolveSchemaFile path name with
                          | Ok(_, file) ->
                              verbatimAt raw ll (idx + "schema=".Length + 1) name.Length
                              |> Option.iter (fun (l, c) -> out.Add(l, c, name.Length, file, file))
@@ -4351,19 +4351,19 @@ let documentLinksFor (path: string) (lines: string list) : (int * int * int * st
 /// unread binder — never the bare `_` discard, which is misnamed, not
 /// unnecessary — and on an unreachable arm. Nothing is Deprecated: the
 /// retired-name teachings are hard errors, not deprecations.
-let diagnosticTags (d: Script.Diagnostic) : int list =
+let diagnosticTags (d: Diagnostics.Diagnostic) : int list =
     match d.Code with
-    | "unused-binding" when d.Message <> Script.bareDiscardMessage -> [ 1 ]
+    | "unused-binding" when d.Message <> Statements.bareDiscardMessage -> [ 1 ]
     | "unreachable-arm" -> [ 1 ]
     | _ -> []
 // a code action [D:structured-fixes]: the editor's rendering of a
-// Script.Fix — Diagnostics carries the ones it resolves, Edits the
+// Diagnostics.Fix — Diagnostics carries the ones it resolves, Edits the
 // repair in the document the diagnostics were published for
 type CodeAction = {
     Title: string
     Kind: string // "quickfix" | "source.fixAll"
-    Diagnostics: Script.Diagnostic list
-    Edits: Script.FixEdit list
+    Diagnostics: Diagnostics.Diagnostic list
+    Edits: Diagnostics.FixEdit list
 }
 
 // the source.fixAll titles per family [D:structured-fixes]; R8 keeps the
@@ -4378,8 +4378,8 @@ let private fixAllTitle (family: string) =
 /// quickfix per diagnostic with a Fix inside the requested line range
 /// (None = whole file), plus one source.fixAll per family present
 /// anywhere in the file
-let codeActionsFor (diags: Script.Diagnostic list) (range: (int * int) option) : CodeAction list =
-    let inRange (d: Script.Diagnostic) =
+let codeActionsFor (diags: Diagnostics.Diagnostic list) (range: (int * int) option) : CodeAction list =
+    let inRange (d: Diagnostics.Diagnostic) =
         match range with
         | Some(a, b) -> d.Line >= a && d.Line <= b
         | None -> true
@@ -4521,7 +4521,7 @@ let private typingInStringOrComment (lines: string list) (line: int) (col: int) 
         let text = List.item (line - 1) lines
         let cut = Scan.commentAt text
 
-        (col >= 1 && col <= text.Length && (Script.inStringMask text)[col - 1])
+        (col >= 1 && col <= text.Length && (Assemble.inStringMask text)[col - 1])
         || (cut >= 0 && col - 1 >= cut)
 
 let private isOperatorAtom (a: string) =
@@ -4551,7 +4551,7 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
             |> Option.defaultValue env0
 
         let docAt (src: string list) (dl: int) (dc: int) =
-            Script.docAttachments src
+            Assemble.docAttachments src
             |> List.tryPick (fun d ->
                 if d.Line = dl && d.Col = dc then
                     Some(reflowDoc d.Doc)
@@ -4565,10 +4565,10 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
         let commandHelp (ctxEnv: TypeEnv) (pre: string) : SigHelp option =
             Complete.commandArgvAt ctxEnv pre
             |> Option.bind (fun (head, argText) ->
-                Script.sigInfosForFile path lines
+                Sigs.sigInfosForFile path lines
                 |> List.tryFind (fun si -> si.Tool = head)
                 |> Option.bind (fun si ->
-                    let before, cur = Script.SigComplete.split argText
+                    let before, cur = Sigs.SigComplete.split argText
                     let words = before @ (if cur = "" then [] else [ cur ])
                     let isFlag (w: string) = w.Length > 1 && w[0] = '-'
 
@@ -4669,12 +4669,12 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                     stmts
                     |> List.tryPick (fun (_, c) ->
                         match c.Kind with
-                        | Script.KImport lm when lm.Alias = alias -> Some lm
+                        | Statements.KImport lm when lm.Alias = alias -> Some lm
                         | _ -> None)
                     |> Option.bind (fun lm ->
                         lm.Body
                         |> List.tryPick (function
-                            | _, Script.CLet(bn, te) when bn = mem -> Some te
+                            | _, Statements.CLet(bn, te) when bn = mem -> Some te
                             | _ -> None)
                         |> Option.map (fun te ->
                             let doc =
@@ -4691,7 +4691,7 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                         |> List.rev
                         |> List.tryPick (fun (_, c) ->
                             match c.Kind with
-                            | Script.KLet(n, sch, te) when n = head -> Some(Check.lambdaParamNames te, sch.Ty)
+                            | Statements.KLet(n, sch, te) when n = head -> Some(Check.lambdaParamNames te, sch.Ty)
                             | _ -> None)
                         |> Option.map (fun (ps, ty) ->
                             let doc =
@@ -4833,7 +4833,7 @@ let run (debug: bool) : int =
 
     // buffer-over-disk [D:modules-v1]: an imported file open in the editor is
     // read from its (possibly unsaved) buffer, else disk (decision 14)
-    Script.importSourceOverride.Value <-
+    ModuleLoader.importSourceOverride.Value <-
         Some(fun absPath ->
             // match by decoded path, not a re-derived URI spelling — a
             // dependency open under the client's own spelling (%6C…) must
@@ -4843,7 +4843,7 @@ let run (debug: bool) : int =
                 |> Seq.tryPick (fun kv -> if uriToPath kv.Key = absPath then Some kv.Value else None)
 
             match buffered with
-            | Some text -> Some(Script.splitSourceText text)
+            | Some text -> Some(ModuleLoader.splitSourceText text)
             | None ->
                 if IO.File.Exists absPath then
                     Some(IO.File.ReadAllLines absPath |> Array.toList)
@@ -4874,7 +4874,8 @@ let run (debug: bool) : int =
 
     // the last published set per URI — the code-action handler reads its
     // fixes from here [D:structured-fixes]
-    let lastPublished = Collections.Generic.Dictionary<string, Script.Diagnostic list>()
+    let lastPublished =
+        Collections.Generic.Dictionary<string, Diagnostics.Diagnostic list>()
 
     // what the client declared at initialize [D:diagnostic-tags]: tags
     // and related information go out only when it asked for them; the
@@ -4909,7 +4910,7 @@ let run (debug: bool) : int =
         w.WriteEndObject()
         w.WriteEndObject()
 
-    let publishFor (uri: string) (diags: Script.Diagnostic list) =
+    let publishFor (uri: string) (diags: Diagnostics.Diagnostic list) =
         lastPublished[uri] <- diags
 
         if debug then
@@ -4988,7 +4989,8 @@ let run (debug: bool) : int =
     // importer re-checks when a dependency it reads changes. Files that went
     // clean since last cycle are published empty (cleared).
     let refreshAll () =
-        let byUri = Collections.Generic.Dictionary<string, ResizeArray<Script.Diagnostic>>()
+        let byUri =
+            Collections.Generic.Dictionary<string, ResizeArray<Diagnostics.Diagnostic>>()
 
         // the client's spelling per open path [D:lsp-uri-spelling]
         let clientUris = Collections.Generic.Dictionary<string, string>()
@@ -5028,7 +5030,8 @@ let run (debug: bool) : int =
 
         // one publish per relevant URI: a file with diagnostics, every open
         // doc (empty if clean), and any previously-diagnosed file now clean
-        let toPublish = Collections.Generic.Dictionary<string, Script.Diagnostic list>()
+        let toPublish =
+            Collections.Generic.Dictionary<string, Diagnostics.Diagnostic list>()
 
         for kv in byUri do
             // the same file can be diagnosed both directly (open) and as a
@@ -5230,7 +5233,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(_, text) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
                                 let toks = semanticTokensFor lines
                                 w.WriteStartObject()
                                 w.WritePropertyName "data"
@@ -5353,7 +5356,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
 
                                 // a #session field key reports the key + its
                                 // schema type, never the rewritten binder
@@ -5382,7 +5385,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
 
                                 match definitionTarget (uriToPath uri) lines line col with
                                 | Some(fileOpt, pl, pc, len) ->
@@ -5415,7 +5418,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
 
                                 match referencesFor (uriToPath uri) lines line col includeDeclaration with
                                 | Some occs ->
@@ -5436,7 +5439,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
 
                                 match documentHighlightFor (uriToPath uri) lines line col with
                                 | Some occs ->
@@ -5460,7 +5463,7 @@ let run (debug: bool) : int =
                         let outcome =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
 
                                 prepareRenameFor (uriToPath uri) lines line col
                                 |> Result.map (fun (pl, pc, len) -> lines, pl, pc, len)
@@ -5480,7 +5483,7 @@ let run (debug: bool) : int =
                         let outcome =
                             match docOf (), posOf (), jStr "newName" ps with
                             | Some(uri, text), Some(line, col), Some newName ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
 
                                 renameFor (uriToPath uri) lines line col newName
                                 |> Result.map (fun edits -> uri, newName, edits)
@@ -5518,7 +5521,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(uri, text) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
 
                                 match Fmt.formatSource (uriToPath uri) text with
                                 | Ok(formatted, true) ->
@@ -5568,7 +5571,7 @@ let run (debug: bool) : int =
                                 // column-preserving) so a #session field value
                                 // completes as the let-RHS it becomes [D:session-prompt]
                                 let effLines = effectiveLines uri text |> Array.ofList
-                                let origLines = (Script.splitSourceText text |> Array.ofList)
+                                let origLines = (ModuleLoader.splitSourceText text |> Array.ofList)
 
                                 // a #alias line is blanked in effectiveLines, so
                                 // its command completes off the ORIGINAL line
@@ -5629,7 +5632,7 @@ let run (debug: bool) : int =
                                     if word.Contains '.' then
                                         match statementUpTo env allLls lines line col with
                                         | Some(ctxEnv, pre, post) when pre.EndsWith word ->
-                                            Script.repairedFields ctxEnv pre post
+                                            Diagnostics.repairedFields ctxEnv pre post
                                         | _ -> None
                                     else
                                         None
@@ -5648,7 +5651,7 @@ let run (debug: bool) : int =
                                         with _ ->
                                             uri
 
-                                    Script.sigInfosForFile path (List.ofArray lines)
+                                    Sigs.sigInfosForFile path (List.ofArray lines)
                                     |> List.choose (fun si ->
                                         let m =
                                             Text.RegularExpressions.Regex.Matches(
@@ -5672,10 +5675,10 @@ let run (debug: bool) : int =
                                         if argText = "" || not (Char.IsWhiteSpace argText[0]) then
                                             None
                                         else
-                                            match Script.SigComplete.complete si argText word with
-                                            | Script.SigWords ws -> Some ws
-                                            | Script.SigNothing -> Some []
-                                            | Script.SigPaths -> None)
+                                            match Sigs.SigComplete.complete si argText word with
+                                            | Sigs.SigWords ws -> Some ws
+                                            | Sigs.SigNothing -> Some []
+                                            | Sigs.SigPaths -> None)
 
                                 // #session key slot [D:session-prompt]: at a
                                 // field-name position inside the block (init file
@@ -5685,7 +5688,7 @@ let run (debug: bool) : int =
                                     if not (isReplInitPath (uriToPath uri)) then
                                         []
                                     else
-                                        let orig = (Script.splitSourceText text |> Array.ofList)
+                                        let orig = (ModuleLoader.splitSourceText text |> Array.ofList)
                                         let mutable inBlock = false
 
                                         for i in 0 .. min (line - 2) (orig.Length - 1) do
@@ -5762,7 +5765,7 @@ let run (debug: bool) : int =
                                         let env =
                                             match statementUpTo env allLls lines line col with
                                             | Some(ctxEnv, pre, _) when sigil > 0 && pre.EndsWith word ->
-                                                Script.withSpliceLocals ctxEnv pre word
+                                                Diagnostics.withSpliceLocals ctxEnv pre word
                                             | _ -> env
 
                                         Complete.suggestScoped env text upto wordStart
@@ -5787,7 +5790,7 @@ let run (debug: bool) : int =
                                 // completion item is a name; last-wins on a shared
                                 // name) — the position-keyed map stays for hover
                                 let docByName =
-                                    Script.docAttachments (List.ofArray lines)
+                                    Assemble.docAttachments (List.ofArray lines)
                                     |> List.choose (fun d ->
                                         if
                                             d.Line - 1 < lines.Length && d.Col - 1 + d.Len <= lines[d.Line - 1].Length
@@ -5901,7 +5904,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(uri, text) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
                                 w.WriteStartArray()
 
                                 for (s, e, kind) in foldingRangesFor (uriToPath uri) lines do
@@ -5923,7 +5926,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(uri, text) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
                                 let syms = documentSymbolsFor (uriToPath uri) lines
 
                                 let rec writeSymbol (sy: DocSymbol) =
@@ -6002,7 +6005,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(uri, text) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
                                 w.WriteStartArray()
 
                                 for (l, c, len, target, tip) in documentLinksFor (uriToPath uri) lines do
@@ -6030,7 +6033,7 @@ let run (debug: bool) : int =
 
                             match docOf (), range with
                             | Some(uri, text), Some(fromLine, toLine) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
                                 w.WriteStartArray()
 
                                 for h in inlayHintsFor inlayOptions (uriToPath uri) lines fromLine toLine do
@@ -6059,7 +6062,7 @@ let run (debug: bool) : int =
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
                             | Some(uri, text), Some(line, col) ->
-                                let lines = Script.splitSourceText text
+                                let lines = ModuleLoader.splitSourceText text
 
                                 match signatureHelpAt (uriToPath uri) lines line col with
                                 | Some sh ->

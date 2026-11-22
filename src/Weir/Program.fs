@@ -29,7 +29,7 @@ let private evalOnce (input: string) : int =
 
     // blank or comment-only input has no statement to point at — say so,
     // never a bare caret under nothing
-    if srcLines |> List.forall (fun l -> (Script.stripComment l).Trim() = "") then
+    if srcLines |> List.forall (fun l -> (Assemble.stripComment l).Trim() = "") then
         Console.Error.WriteLine "weir -e: nothing to evaluate — give it an expression: weir -e '1 + 2'"
         2
     elif srcLines |> List.exists (fun l -> l.StartsWith "#") then
@@ -47,17 +47,17 @@ let private evalOnce (input: string) : int =
     else
         let assembled =
             if normalized.Contains '\n' then
-                Script.assemble (srcLines |> List.mapi (fun i l -> i + 1, l))
+                Assemble.assemble (srcLines |> List.mapi (fun i l -> i + 1, l))
             else
                 // the single-line spelling keeps its exact path (stripComment
                 // up front [D:trailing-comments]); multi-line strips inside
                 // assembly, as files do
-                Ok [ Script.singleLine (Script.stripComment input) ]
+                Ok [ Assemble.singleLine (Assemble.stripComment input) ]
 
         let srcLine (n: int) =
             srcLines |> List.tryItem (n - 1) |> Option.defaultValue ""
 
-        let showDiag (d: Script.StmtDiag) =
+        let showDiag (d: Statements.StmtDiag) =
             let line = srcLine d.PhysLine
 
             (if d.Parse then
@@ -98,7 +98,7 @@ let private evalOnce (input: string) : int =
         | Error msg ->
             // the named line under a caret at its indentation
             // [D:assembly-col], as a parse error shows its line
-            match Script.assemblyErrorAt (srcLines |> List.mapi (fun i l -> i + 1, l)) msg with
+            match Assemble.assemblyErrorAt (srcLines |> List.mapi (fun i l -> i + 1, l)) msg with
             | Some(l, c, _) ->
                 Console.Error.WriteLine(srcLine l)
                 Console.Error.WriteLine(Types.Color.red Types.Color.onStderr.Value (String(' ', c - 1) + "^"))
@@ -110,8 +110,16 @@ let private evalOnce (input: string) : int =
             let rec checkAll tenv acc rest =
                 match rest with
                 | [] -> Ok(List.rev acc)
-                | (ll: Script.LogicalLine) :: tail ->
-                    match Script.checkStatement false None Script.resolver Script.sessionImportLoader tenv ll with
+                | (ll: Assemble.LogicalLine) :: tail ->
+                    match
+                        Statements.checkStatement
+                            false
+                            None
+                            Statements.resolver
+                            ModuleLoader.sessionImportLoader
+                            tenv
+                            ll
+                    with
                     | Error d -> Error d
                     | Ok chk -> checkAll chk.Env ((ll, chk) :: acc) tail
 
@@ -127,17 +135,17 @@ let private evalOnce (input: string) : int =
                     match checked' |> List.tryLast with
                     | Some(_, chk) ->
                         match chk.Kind with
-                        | Script.KType _ -> Some "-e takes an expression, not a declaration"
-                        | Script.KLet _ -> Some "-e takes an expression, not a let statement"
-                        | Script.KLetPat _ -> Some "-e evaluates one expression; use 'let (x, y) = ... in ...'"
-                        | Script.KModule _ -> Some "-e takes an expression, not a module declaration"
-                        | Script.KImport _ -> Some "-e takes an expression, not an import — follow it with one"
-                        | Script.KSig _ ->
+                        | Statements.KType _ -> Some "-e takes an expression, not a declaration"
+                        | Statements.KLet _ -> Some "-e takes an expression, not a let statement"
+                        | Statements.KLetPat _ -> Some "-e evaluates one expression; use 'let (x, y) = ... in ...'"
+                        | Statements.KModule _ -> Some "-e takes an expression, not a module declaration"
+                        | Statements.KImport _ -> Some "-e takes an expression, not an import — follow it with one"
+                        | Statements.KSig _ ->
                             // unreachable: -e passes no sig context, so the
                             // form already refused [D:module-signatures]
                             Some "signatures belong to module APIs — scripts infer"
-                        | Script.KExpr _
-                        | Script.KCmd _ -> None
+                        | Statements.KExpr _
+                        | Statements.KCmd _ -> None
                     | None -> None
 
                 match lastKindError with
@@ -157,7 +165,7 @@ let private evalOnce (input: string) : int =
                     let rec execAll (venv: Eval.Env) idx rest =
                         match rest with
                         | [] -> 0
-                        | (_, (chk: Script.CheckedStatement)) :: tail ->
+                        | (_, (chk: Statements.CheckedStatement)) :: tail ->
                             try
                                 match Script.bindStatement venv chk.Kind with
                                 | Script.Binds(bound, _) -> execAll bound (idx + 1) tail
@@ -169,7 +177,7 @@ let private evalOnce (input: string) : int =
                                     // mid-program statements behave as in a file:
                                     // commands stream, expression values discard
                                     (if command then
-                                         Script.printResult (Eval.eval venv te)
+                                         Statements.printResult (Eval.eval venv te)
                                      else
                                          Eval.eval venv te |> ignore)
 
@@ -196,15 +204,16 @@ let private evalOnce (input: string) : int =
                                             // a named function short of arguments
                                             // echoes what it lacks [D:partial-echo]
                                             let names (head: string) =
-                                                match Script.builtinParamNames chk.Env head with
+                                                match Statements.builtinParamNames chk.Env head with
                                                 | Some r -> Some r
                                                 | None ->
                                                     Eval.lookupValue head venv
                                                     |> Option.map (fun f -> head, Eval.closureParamNames f)
 
-                                            match Script.partialApp names te with
+                                            match Statements.partialApp names te with
                                             | Some p ->
-                                                Script.partialEchoLines plainSigStyle p |> List.iter Console.WriteLine
+                                                Statements.partialEchoLines plainSigStyle p
+                                                |> List.iter Console.WriteLine
                                             | None ->
 
                                                 // the REPL echo's renderer [D:echo-one-renderer]
@@ -369,7 +378,7 @@ let main argv =
                 elif has "--can" then
                     Can.run (has "--json") (has "--strict") path
                 else
-                    Script.checkOnly (has "--json") path
+                    Analyze.checkOnly (has "--json") path
 
         // fmt's one flag in either position, one script — a flag is
         // never read as a script path, as check does
@@ -425,11 +434,11 @@ let main argv =
             // --global: the user dir, no lock [D:sig-arg-complete]
             let globalDir =
                 if Array.contains "--global" argv then
-                    Some(Script.SigLookup.userDir ())
+                    Some(Sigs.SigLookup.userDir ())
                 else
                     None
 
-            (match Script.SigGen.generateTo globalDir weirDir tool with
+            (match SigGen.generateTo globalDir weirDir tool with
              | Ok line ->
                  // the line quotes the tool's --version [D:sig-text-sanitize]
                  Console.WriteLine(lockText line)
@@ -513,7 +522,7 @@ let main argv =
                     let checked' =
                         try
                             IO.File.WriteAllBytes(tmp, bytes)
-                            Script.checkVendoredModule tmp
+                            ModuleLoader.checkVendoredModule tmp
                         finally
                             try
                                 IO.Directory.Delete(scratch, true)
@@ -552,7 +561,7 @@ let main argv =
                 // a scratch directory, then vendored under modules/<name>/
                 let addClosure (src: Contracts.ResolvedModuleSource) (rawBase: string) (files: (string * byte[]) list) =
                     let entryRepo = fst files.Head
-                    let ancestor = Script.closureAncestor (files |> List.map fst)
+                    let ancestor = ModuleLoader.closureAncestor (files |> List.map fst)
                     let rel (p: string) = p.Substring ancestor.Length
                     let baseUrl = rawBase + ancestor
                     let scratch = IO.Directory.CreateTempSubdirectory($"weir-add-{name}-").FullName
@@ -564,7 +573,7 @@ let main argv =
                                 IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest) |> ignore
                                 IO.File.WriteAllBytes(dest, b)
 
-                            Script.checkVendoredClosure scratch (rel entryRepo)
+                            ModuleLoader.checkVendoredClosure scratch (rel entryRepo)
                         finally
                             try
                                 IO.Directory.Delete(scratch, true)
@@ -642,7 +651,7 @@ let main argv =
                      match Contracts.fetchBytesWith src.FetchHeaders src.Url with
                      | Error e -> fetchFail src e
                      | Ok(bytes, _) ->
-                         match Script.importsOfSource bytes with
+                         match ModuleLoader.importsOfSource bytes with
                          | (l, _, p) :: _ ->
                              // one raw URL has no repo root to fetch an import from
                              Console.Error.WriteLine
@@ -654,7 +663,7 @@ let main argv =
                      let fetch (p: string) =
                          Contracts.fetchBytesWith src.FetchHeaders (rawBase + p) |> Result.map fst
 
-                     match Script.walkVendorClosure fetch entry with
+                     match ModuleLoader.walkVendorClosure fetch entry with
                      | Error e -> fetchFail src e
                      | Ok [ (p, bytes) ] -> addLeaf (rawBase + p) bytes
                      | Ok files -> addClosure src rawBase files)
@@ -821,7 +830,7 @@ let main argv =
                                                          )
 
                                                      IO.File.WriteAllText(tmp, gen.Text)
-                                                     let checked' = Script.checkVendoredModule tmp
+                                                     let checked' = ModuleLoader.checkVendoredModule tmp
 
                                                      (try
                                                          IO.File.Delete tmp

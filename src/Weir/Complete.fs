@@ -445,7 +445,7 @@ let private letRhsCut (stmt: string) : string option =
 // the command head slot, one source [D:let-rhs-head]: where a live
 // head verdict and the head-completion pool apply — the statement
 // start, and a top-level let's RHS. Both surfaces read this predicate
-// (the Tab pool here, the live colorizer in Script.colorizeRepl), so
+// (the Tab pool here, the live colorizer in ReplColor.colorizeRepl), so
 // tint and completion cannot disagree about where a head stands. The
 // two head flavours stay distinct for the colorizer's red: an unknown
 // uppercase statement head would fail ([D:constructors-not-heads]),
