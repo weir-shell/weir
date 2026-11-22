@@ -629,26 +629,32 @@ let h3r4p04 d =
     let second = a.sent |> Seq.tryItem 1 |> Option.defaultValue 0
     let aMs = if a.exitMs < 0 then 99999 else a.exitMs - second
     // (b) piter arms in pure computation: the join must hold the exit until
-    // they reach a boundary (calibrated by the same fixture unsignalled; the
-    // workload doubles until the unsignalled run takes 2s, so a fast runner
-    // still has the ^C land mid-compute)
+    // they reach a boundary. The fixture unsignalled calibrates it, the
+    // faster of two runs at each size — one run alone is at times half
+    // again slower than the next (both arms on one core's two threads) —
+    // and the workload doubles until that takes 2.2s, so the grace's own
+    // exit (1.1s after the ^C) falls well short of the hold asked for
     let calibrate n =
         let p = put cdir $"compute-{n}.weir" (p04Compute n)
-        (p, ptyRun cdir "30" [cli.bin; p; $"{cdir}/calib.log"] [])
-    let (p1, c1) = calibrate 250000000
+        let once () = ptyRun cdir "30" [cli.bin; p; $"{cdir}/calib.log"] []
+        let first = once ()
+        let again = once ()
+        (p, (if again.code == "0" && again.exitMs < first.exitMs then again else first))
+    let settled c = c.code <> "0" || c.exitMs >= 2200
+    let (p1, c1) = calibrate 300000000
     let (p, calib) =
-        if c1.code <> "0" || c1.exitMs >= 2000 then
+        if settled c1 then
             (p1, c1)
         else
-            let (p2, c2) = calibrate 500000000
-            if c2.code <> "0" || c2.exitMs >= 2000 then (p2, c2) else calibrate 1000000000
+            let (p2, c2) = calibrate 600000000
+            if settled c2 then (p2, c2) else calibrate 1200000000
     let b = ptyRun cdir "30" [cli.bin; p; $"{cdir}/log"] ["WAIT computing"; "WAIT computing"; ctrlC; "SLEEP 500"]
     let landed = linesOf $"{cdir}/log"
     let calibLog = linesOf $"{cdir}/calib.log" |> joined
     failing [
         ($"a second terminal ^C while the child ignores ^C: weir exits {aMs}ms after it (limit 1000ms, EXIT {a.code})", (Seq.length a.sent) == 2 && a.exitMs >= 0 && aMs <= 1000)
-        ($"""the calibration run (EXIT {calib.code}, {calib.exitMs}ms, '{calibLog}')""", calib.code == "0" && calib.exitMs >= 2000)
-        ($"""a terminal ^C while piter arms compute: weir exits at {b.exitMs}ms, before the arms reach a boundary (unsignalled {calib.exitMs}ms; must hold until {calib.exitMs * 6 / 10}ms; EXIT {b.code}, log '{joined landed}')""", b.exitMs * 10 >= calib.exitMs * 6 && Seq.isEmpty landed && b.code <> "0")
+        ($"""the calibration run (EXIT {calib.code}, {calib.exitMs}ms, '{calibLog}')""", calib.code == "0" && calib.exitMs >= 2200)
+        ($"""a terminal ^C while piter arms compute: weir exits at {b.exitMs}ms (^C at {b.sent |> Seq.tryHead |> Option.defaultValue -1}ms), before the arms reach a boundary (unsignalled {calib.exitMs}ms; must hold until {calib.exitMs * 6 / 10}ms; EXIT {b.code}, log '{joined landed}')""", b.exitMs >= calib.exitMs * 6 / 10 && Seq.isEmpty landed && b.code <> "0")
     ]
 
 // ---- H3R4-05: a closed stdout kills no child until the command ends ------------
