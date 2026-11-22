@@ -1253,6 +1253,31 @@ let bracketFold
     (stack: (char * int * int option) list)
     (piece: string)
     : Result<(char * int * int option) list, string> =
+    // `(` -> its matching `)` outside strings, -1 when unmatched: the
+    // `with`-anchor scan below steps over a parenthesised source in one
+    // jump, so no opener walks it again [D:assemble-quadratic]
+    let parenMatch =
+        lazy
+            (let m = Array.create piece.Length -1
+
+             foldOutsideStrings
+                 (fun opens x ch ->
+                     if ch = '(' then
+                         x :: opens
+                     elif ch = ')' then
+                         match opens with
+                         | o :: rest ->
+                             m[o] <- x
+                             rest
+                         | [] -> opens
+                     else
+                         opens)
+                 []
+                 piece
+             |> ignore
+
+             m)
+
     foldOutsideStrings
         (fun acc i c ->
             match acc with
@@ -1278,15 +1303,15 @@ let bracketFold
                         // anchors, on this line or (dangling `with`) the next
                         // [D:field-alignment] [D:record-update]. Only a record
                         // brace can carry a `with`. The scan is bounded: it
-                        // stops at the first top-level `=`, `;`, opener or
-                        // closer, so a bracket-heavy single line stays linear
+                        // stops at the first `=`, `;`, opener or closer and
+                        // at an unmatched `(`, and jumps a matched one, so a
+                        // bracket-heavy single line stays linear
                         // [D:assemble-quadratic].
                         let withField =
                             if c <> '{' then
                                 None
                             else
                                 let mutable k = j
-                                let mutable depth = 0
                                 let mutable found = None
                                 let mutable stop = false
 
@@ -1302,20 +1327,22 @@ let bracketFold
 
                                             k <- k + 1
                                     elif ch = '(' then
-                                        depth <- depth + 1
-                                    elif ch = ')' then
-                                        depth <- depth - 1
-
-                                        if depth < 0 then
+                                        if parenMatch.Value[k] < 0 then
                                             stop <- true
+                                        else
+                                            k <- parenMatch.Value[k]
                                     elif
-                                        depth = 0
-                                        && (ch = '=' || ch = ';' || ch = '{' || ch = '}' || ch = '[' || ch = ']')
+                                        ch = ')'
+                                        || ch = '='
+                                        || ch = ';'
+                                        || ch = '{'
+                                        || ch = '}'
+                                        || ch = '['
+                                        || ch = ']'
                                     then
                                         stop <- true
                                     elif
-                                        depth = 0
-                                        && ch = 'w'
+                                        ch = 'w'
                                         && k > j
                                         && piece[k - 1] = ' '
                                         && k + 3 < piece.Length
@@ -1365,6 +1392,84 @@ let bracketFold
 // assembler in record-continuation mode: line breaks separate fields,
 // every other joining rule is inert (records are expressions).
 
+// the binder heads of a pending statement's last segment
+// [D:assemble-quadratic]: `endsInBinderHeadSeg`'s verdict for each marker,
+// kept as the text arrives — every appended char is read once, so a long
+// space-joined statement is not searched again at each join. A buffer
+// edited in place takes a fresh tracker
+type private HeadTrack() =
+    static member val Markers = [| "within proc ", true; "within serve ", false; "within env ", true |]
+    member val SegStart = -1 with get, set
+    member val Scanned = 0 with get, set
+    member val Str = stringStart with get, set
+    // just past each marker's last occurrence outside strings, or -1
+    member val Ends = [| -1; -1; -1 |]
+    // 0 no head, 1 a head awaiting its `=`, 2 not a binder, 3 a binder head
+    member val Verdicts = [| 0; 0; 0 |]
+
+    member t.Advance(sb: System.Text.StringBuilder, segStart: int) =
+        if t.SegStart <> segStart || t.Scanned > sb.Length || t.Scanned < segStart then
+            t.SegStart <- segStart
+            t.Scanned <- segStart
+            t.Str <- stringStart
+            System.Array.Fill(t.Ends, -1)
+            System.Array.Fill(t.Verdicts, 0)
+
+        if t.Scanned < sb.Length then
+            let from = t.Scanned
+            let chunk = sb.ToString(from, sb.Length - from)
+
+            let at (x: int) =
+                if x >= from then chunk[x - from] else sb[x]
+
+            let struct (_, str) =
+                Scan.foldOutsideStringsFrom
+                    t.Str
+                    (fun () i c ->
+                        if c = ' ' then
+                            HeadTrack.Markers
+                            |> Array.iteri (fun m (marker, needsEq) ->
+                                let start = from + i - marker.Length + 1
+
+                                if
+                                    start >= segStart
+                                    && (let mutable same = true
+                                        let mutable x = marker.Length - 2
+
+                                        while same && x >= 0 do
+                                            same <- at (start + x) = marker[x]
+                                            x <- x - 1
+
+                                        same)
+                                    && (start = segStart
+                                        || not (System.Char.IsLetterOrDigit(at (start - 1)) || at (start - 1) = '_'))
+                                then
+                                    t.Ends[m] <- from + i + 1
+                                    t.Verdicts[m] <- (if needsEq then 1 else 3)))
+                    ()
+                    chunk
+
+            HeadTrack.Markers
+            |> Array.iteri (fun m _ ->
+                if t.Verdicts[m] = 1 then
+                    match chunk.IndexOf('=', max 0 (t.Ends[m] - from)) with
+                    | -1 -> ()
+                    | eq ->
+                        let name = sb.ToString(t.Ends[m], from + eq - t.Ends[m]).Trim()
+
+                        t.Verdicts[m] <-
+                            if name |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_') then
+                                3
+                            else
+                                2)
+
+            t.Str <- str
+            t.Scanned <- sb.Length
+
+    member t.IsHead(m: int, sb: System.Text.StringBuilder, segStart: int) : bool =
+        t.Advance(sb, segStart)
+        t.Verdicts[m] = 3
+
 // The pending statement's growing text [D:assemble-quadratic]: a single
 // StringBuilder mutated in place, so a continuation-line flood joins in
 // amortized-linear time (the old `ll.Text + sep + piece` rebuilt the whole
@@ -1394,6 +1499,8 @@ type private PendBuf = {
     LastNonWs: int
     // index just past the last sibling sentinel (Parser.sibSep) in Sb, or 0
     LastSegStart: int
+    // the binder heads seen in the last segment, read as the text arrives
+    Heads: HeadTrack
 }
 
 type private District = {
@@ -1622,31 +1729,6 @@ let private bufIsTypeDecl (b: PendBuf) : bool =
 
             found))
 
-// the buffer's last segment (after the last sibling sentinel), O(segment)
-// via the tracked LastSegStart — the proc/serve binder-head scan reads
-// this instead of LastIndexOf over the whole growing text [D:assemble-quadratic]
-let private bufLastSeg (b: PendBuf) : string =
-    b.Sb.ToString(b.LastSegStart, b.Sb.Length - b.LastSegStart)
-
-let private bufLastSegContains (b: PendBuf) (marker: string) : bool =
-    let len = b.Sb.Length - b.LastSegStart
-
-    len >= marker.Length
-    && (let pool = System.Buffers.ArrayPool<char>.Shared
-        let chars = pool.Rent len
-
-        try
-            b.Sb.CopyTo(b.LastSegStart, System.Span<char>(chars, 0, len), len)
-
-            System.MemoryExtensions.IndexOf(
-                System.ReadOnlySpan<char>(chars, 0, len),
-                System.MemoryExtensions.AsSpan marker,
-                System.StringComparison.Ordinal
-            )
-            >= 0
-        finally
-            pool.Return chars)
-
 // a bare `repeat` head (no options) [D:repeat-missing-interval]: its body
 // joins sentineled, so the parser sees the options are missing instead of
 // reading the first body line as the options atom
@@ -1655,21 +1737,17 @@ let private bufEndsInBareRepeat (b: PendBuf) : bool =
     || bufTrimEndEndsWith b " repeat"
     || bufTrimEndEndsWith b "(repeat"
 
-let private bufEndsInProcHead (b: PendBuf) : bool =
-    bufLastSegContains b "within proc "
-    && endsInBinderHeadSeg true "within proc " (bufLastSeg b)
+let private bufIsHead (b: PendBuf) (m: int) : bool = b.Heads.IsHead(m, b.Sb, b.LastSegStart)
 
-let private bufEndsInServeHead (b: PendBuf) : bool =
-    bufLastSegContains b "within serve "
-    && endsInBinderHeadSeg false "within serve " (bufLastSeg b)
+let private bufEndsInProcHead (b: PendBuf) : bool = bufIsHead b 0
+
+let private bufEndsInServeHead (b: PendBuf) : bool = bufIsHead b 1
 
 // `within env A=1 …` [D:within-env-pairs]: its block joins sentineled too,
 // so a first body line that is itself `B=2 cmd` stays that command's own
 // prefix instead of widening the scope (the binder-head shape: an
 // identifier glued to `=`; a bound `within env e` keeps the space join)
-let private bufEndsInEnvHead (b: PendBuf) : bool =
-    bufLastSegContains b "within env "
-    && endsInBinderHeadSeg true "within env " (bufLastSeg b)
+let private bufEndsInEnvHead (b: PendBuf) : bool = bufIsHead b 2
 
 // materialize a LogicalLine from a finished pending buffer (segments are
 // reversed at the boundary exactly as before)
@@ -1712,6 +1790,7 @@ let private bufNew (text: string) (lineNo: int) (indent: int) : PendBuf =
         Ends = [ text.Length ]
         LastNonWs = nonWs
         LastSegStart = segStart
+        Heads = HeadTrack()
     }
 
 let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (indent: int) : PendBuf =
@@ -1761,6 +1840,7 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
                     LastNonWs = nonWs
                     LastSegStart = segStart
                     Ends = b.Ends |> List.map (min b.Sb.Length)
+                    Heads = HeadTrack()
             }
 
             let from = b.Sb.Length
@@ -1781,6 +1861,7 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
                     LastNonWs = nonWs
                     LastSegStart = segStart
                     Ends = b.Ends |> List.map (min b.Sb.Length)
+                    Heads = HeadTrack()
             }
 
             let from = b.Sb.Length
@@ -1918,6 +1999,7 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
 
             {
                 b with
+                    Heads = HeadTrack()
                     LastNonWs = b.Sb.Length - 1
                     LastSegStart =
                         (if b.LastSegStart >= ts then

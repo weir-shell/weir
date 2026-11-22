@@ -236,6 +236,17 @@ let foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a 
     let struct (st, _) = stringScanFrom [] f init s
     st
 
+/// `foldOutsideStrings` over one chunk of a longer text, from the state
+/// the chunks before it left
+let foldOutsideStringsFrom
+    (StringState modes)
+    (f: 'a -> int -> char -> 'a)
+    (init: 'a)
+    (chunk: string)
+    : struct ('a * StringState) =
+    let struct (st, modes) = stringScanFrom modes f init chunk
+    struct (st, StringState modes)
+
 /// where a line's `//` comment starts, or -1
 let commentAt (line: string) : int =
     // comment only at line start or after whitespace: bareword URLs

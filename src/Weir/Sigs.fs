@@ -1247,11 +1247,21 @@ let continuedCommands
     // logical index -> true when it is the first character of a physical
     // line the assembler joined with a plain space (a sibling, `in`, or
     // district join is never an argv continuation)
-    let spaceJoined (idx: int) =
-        ll.Ends.Length = segs.Length
-        && segs
-           |> Array.indexed
-           |> Array.exists (fun (i, (js, _, _)) -> i > 0 && js = idx && ll.Ends[i - 1] + 1 = js)
+    // (one set for the statement: a per-word walk of its lines is
+    // quadratic in them [D:assemble-quadratic])
+    let spaceJoins =
+        lazy
+            (let starts = System.Collections.Generic.HashSet<int>()
+
+             if ll.Ends.Length = segs.Length then
+                 segs
+                 |> Array.iteri (fun i (js, _, _) ->
+                     if i > 0 && ll.Ends[i - 1] + 1 = js then
+                         starts.Add js |> ignore)
+
+             starts)
+
+    let spaceJoined (idx: int) = spaceJoins.Value.Contains idx
 
     let byTool = infos |> List.map (fun i -> i.Tool, i) |> Map.ofList
 
