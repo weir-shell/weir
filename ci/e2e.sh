@@ -536,6 +536,18 @@ timeout 20 $BIN check "$asmdir/openers.weir" >/dev/null 2>&1 || acode=$?
 # failure this fixture guards against
 [ "$acode" -ne 124 ] || fail "assembler DoS: 200k bracket-opener single line did not settle within 20s (quadratic regression?)"
 echo "e2e ok: assembler — 200k bracket-opener single line settles in linear time"
+# (c) the same line with a `(` after each opener: the with-header scan
+# must not walk the parenthesised run once per opener
+{ printf 'let xs = '; for _ in $(seq 1 200000); do printf '{('; done; printf '\n'; echo 'print "done"'; } > "$asmdir/parens.weir"
+acode=0
+timeout 20 $BIN check "$asmdir/parens.weir" >/dev/null 2>&1 || acode=$?
+[ "$acode" -ne 124 ] || fail "assembler DoS: 200k '{(' single line did not settle within 20s (quadratic regression?)"
+echo "e2e ok: assembler — 200k '{(' single line settles in linear time"
+# (d) 60k space-joined continuation lines of one command: no bracket and
+# no sibling join, so the statement's last segment is all of it
+{ echo "echo a"; for _ in $(seq 1 60000); do echo " b"; done; echo 'print "done"'; } > "$asmdir/argv.weir"
+timeout 20 $BIN check "$asmdir/argv.weir" >/dev/null 2>&1 || fail "assembler DoS: 60k space-joined continuation lines did not check within 20s (quadratic regression?)"
+echo "e2e ok: assembler — 60k space-joined continuation lines check in linear time"
 rm -rf "$asmdir"
 
 rangedir=$(mkweirtmp)
