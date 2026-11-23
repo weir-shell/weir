@@ -41,6 +41,12 @@
   thousands of `if` lines took minutes; each now takes under a second.
 - **The REPL colors `cd`'s argument as a path.** In `cd /Users/me` the
   capitalised part was colored as a type name.
+- **A request with a fractional or very large id no longer stops the
+  language server.** It is answered under the id as the client wrote
+  it.
+- **`^tool` beside a binding named `tool` no longer suggests `tool`.**
+  The warning now says the name is a binding and that `^$tool` runs
+  the program it names.
 
 ## v0.0.95
 

@@ -153,15 +153,18 @@ let private send (payload: string) =
     Framing.write stdout' bytes bytes.Length
 
 // message ids are numbers or strings per JSON-RPC; carried as a value
-// so the writer quotes them, never interpolation
+// so the writer quotes them, never interpolation. A number that is no
+// int32 (a fraction, a wider integer) is echoed as the client wrote it
 type private MsgId =
     | IdNum of int
+    | IdRaw of string
     | IdStr of string
 
 let private writeId (id: MsgId) : Node =
     jfields {
         match id with
         | IdNum n -> "id", n
+        | IdRaw raw -> "id", (fun (w: Text.Json.Utf8JsonWriter) -> w.WriteRawValue raw)
         | IdStr s -> "id", s
     }
 
@@ -4963,7 +4966,10 @@ let run (debug: bool) : int =
                     tryProp "id" msg
                     |> Option.bind (fun v ->
                         match v.ValueKind with
-                        | JsonValueKind.Number -> Some(IdNum(v.GetInt32()))
+                        | JsonValueKind.Number ->
+                            match v.TryGetInt32() with
+                            | true, n -> Some(IdNum n)
+                            | _ -> Some(IdRaw(v.GetRawText()))
                         | JsonValueKind.String -> Some(IdStr(v.GetString()))
                         | _ -> None)
 
