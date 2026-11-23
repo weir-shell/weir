@@ -262,21 +262,12 @@ let private helpAtArgs (label: string) (def: RecordDef) : string option =
             None)
 
 let fieldProblems (label: string) (def: RecordDef) : string option =
-    match positionalAtArgs label def with
-    | Some m -> Some m
-    | None ->
-
-        match helpAtArgs label def with
-        | Some m -> Some m
-        | None ->
-
-            match wireAtArgs label def with
-            | Some m -> Some m
-            | None ->
-
-                match badArgsDefault label def with
-                | Some m -> Some m
-                | None ->
-                    match badArgsShape label def with
-                    | Some m -> Some m
-                    | None -> dupFlag label def
+    [
+        positionalAtArgs
+        helpAtArgs
+        wireAtArgs
+        badArgsDefault
+        badArgsShape
+        dupFlag
+    ]
+    |> List.tryPick (fun check -> check label def)

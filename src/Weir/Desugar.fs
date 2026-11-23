@@ -175,20 +175,17 @@ let binOp op l r = {
 // `x |> try` folds into one node [D:try-form]: the form captures its left
 // side, so it is not an application of the left's value
 let pipeOp l r =
-    match r.Kind with
-    | ETryForm asResult -> {
-        Kind = ETry(l, asResult)
+    let kind =
+        match r.Kind with
+        | ETryForm asResult -> ETry(l, asResult)
+        // and its inverse [D:orfail-form]: the form's own span is the raise site
+        | EOrFailForm msg -> EOrFail(l, msg, r.Span)
+        | _ -> EPipe(l, r)
+
+    {
+        Kind = kind
         Span = Span.union l.Span r.Span
-      }
-    // and its inverse [D:orfail-form]: the form's own span is the raise site
-    | EOrFailForm msg -> {
-        Kind = EOrFail(l, msg, r.Span)
-        Span = Span.union l.Span r.Span
-      }
-    | _ -> {
-        Kind = EPipe(l, r)
-        Span = Span.union l.Span r.Span
-      }
+    }
 
 let curryParams (ps: Pattern list) (value: Expr) : Expr =
     List.foldBack
@@ -208,55 +205,27 @@ let curryParams (ps: Pattern list) (value: Expr) : Expr =
         ps
         value
 
+let private itemDesugar (fn: string) (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
+    let span = {
+        Start = target.Span.Start
+        End = endPos
+    }
+
+    let at k = { Kind = k; Span = span }
+    at (EApp(at (EApp(at (EVar fn), idx)), target))
+
 // xs[i] desugars to Seq.item i xs — F# 6 dotless-indexing whitespace
 // rule: no space = indexing; a space means application (f [1; 2] stays
 // an application of a list). Immediacy is checked against the target's
 // span end (spans record positions before trailing whitespace).
 let indexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
-    let span = {
-        Start = target.Span.Start
-        End = endPos
-    }
-
-    let seqItem = { Kind = EVar "|seqItem"; Span = span }
-
-    {
-        Kind =
-            EApp(
-                {
-                    Kind = EApp(seqItem, idx)
-                    Span = span
-                },
-                target
-            )
-        Span = span
-    }
+    itemDesugar "|seqItem" target idx endPos
 
 // xs[^n] — F#'s from-the-end single index [D:range-slicing]: the element
 // n from the end (`^1` is the last), `|seqItemFromEnd n xs` — its own
 // desugar, so an out-of-range raise names the `^n` and the length.
 let fromEndIndexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
-    let span = {
-        Start = target.Span.Start
-        End = endPos
-    }
-
-    let fromEnd = {
-        Kind = EVar "|seqItemFromEnd"
-        Span = span
-    }
-
-    {
-        Kind =
-            EApp(
-                {
-                    Kind = EApp(fromEnd, idx)
-                    Span = span
-                },
-                target
-            )
-        Span = span
-    }
+    itemDesugar "|seqItemFromEnd" target idx endPos
 
 // [a..s..b] is pure sugar for Seq.range a s b; [a; b; c] stays an eager list.
 let rangeExpr (span: Span) (start: Expr) (step: Expr) (stop: Expr) : Expr =
@@ -395,16 +364,12 @@ let pipeOpError (got: string) : string =
 // the armed |print (stream + raise); a builtin command (cd) or a nested
 // and/or returns a value or unit, so it runs for effect and is discarded
 let streamOf (e: Expr) =
+    let at k = { Kind = k; Span = e.Span }
+
     match e.Kind with
     | ECmd _
-    | EPipe(_, { Kind = ECmd _ }) -> {
-        Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
-        Span = e.Span
-      }
-    | _ -> {
-        Kind = ELet("_chain", e.Span, e, { Kind = EUnit; Span = e.Span })
-        Span = e.Span
-      }
+    | EPipe(_, { Kind = ECmd _ }) -> at (EPipe(e, at (EVar "|print")))
+    | _ -> at (ELet("_chain", e.Span, e, at EUnit))
 
 // a chain head is command-ish (an external segment or a command→command
 // pipe); a value head is anything else
@@ -580,18 +545,17 @@ let rec foldChain
                             |> Result.mapError (fun _ -> orLeftMsg, sp)
                         | _ -> Result.Error(orLeftMsg, sp)
 
-                    match codeResult with
-                    | Result.Error e -> Result.Error e
-                    | Result.Ok codeExpr ->
+                    codeResult
+                    |> Result.map (fun codeExpr ->
                         let cond = {
                             Kind = EBinOp("==", codeExpr, { Kind = EInt 0L; Span = sp })
                             Span = sp
                         }
 
-                        Result.Ok {
+                        {
                             Kind = EIf(cond, { Kind = EUnit; Span = sp }, Some(streamOf rhs))
                             Span = Span.union acc.Span rhs.Span
-                        }
+                        })
                 | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ | LineMarker _ | TextMarker _ as marker) ->
                     let stageName, mspan, extraArgs =
                         match marker with

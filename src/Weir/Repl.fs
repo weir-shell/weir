@@ -228,14 +228,16 @@ type private TranscriptLine = {
 
 let private transcript = System.Collections.Generic.List<TranscriptLine>()
 
+let private mkLine (kind: TranscriptKind) (binds: string list) (physText: string) (text: string) : TranscriptLine = {
+    Text = text
+    PhysText = physText
+    Kind = kind
+    Binds = binds
+}
+
 // record a kept definition (type or named let) with its physical source
 let private recordDef (name: string) (physText: string) (text: string) =
-    transcript.Add {
-        Text = text
-        PhysText = physText
-        Kind = TDef name
-        Binds = []
-    }
+    transcript.Add(mkLine (TDef name) [] physText text)
 
 // record a checked definition: a union decl carries its constructors
 let private recordChecked (chk: Statements.CheckedStatement) (name: string) (physText: string) (text: string) =
@@ -244,30 +246,15 @@ let private recordChecked (chk: Statements.CheckedStatement) (name: string) (phy
         | Statements.KType({ Body = DUnion cases }, _) -> cases |> List.map (fun (c, _, _) -> c)
         | _ -> []
 
-    transcript.Add {
-        Text = text
-        PhysText = physText
-        Kind = TDef name
-        Binds = binds
-    }
+    transcript.Add(mkLine (TDef name) binds physText text)
 
 // record a bare non-unit echo — scratch, dropped by #save
 let private recordDiscard (physText: string) (text: string) =
-    transcript.Add {
-        Text = text
-        PhysText = physText
-        Kind = TDiscard
-        Binds = []
-    }
+    transcript.Add(mkLine TDiscard [] physText text)
 
 // record a unit statement — an effect echo, dropped by #save
 let private recordOther (physText: string) (text: string) =
-    transcript.Add {
-        Text = text
-        PhysText = physText
-        Kind = TOther
-        Binds = []
-    }
+    transcript.Add(mkLine TOther [] physText text)
 
 // the physical source of a logical line [D:repl-save]: a multi-line
 // statement (a heredoc, a `type` decl, a block let) assembled `ll.Text`
@@ -363,15 +350,16 @@ let private recordImport (chk: Statements.CheckedStatement) (text: string) =
         let key = $"import {lm.Alias}"
 
         match transcript |> Seq.tryFindIndex (fun t -> t.Kind = TDef key) with
-        | Some i ->
-            transcript[i] <- {
-                Text = line
-                PhysText = line
-                Kind = TDef key
-                Binds = []
-            }
+        | Some i -> transcript[i] <- mkLine (TDef key) [] line line
         | None -> recordDef key line line
     | _ -> ()
+
+let private recordAccepted (chk: Statements.CheckedStatement) (phys: string) (text: string) =
+    match recordKind chk with
+    | Some(TDef name) -> recordChecked chk name phys text
+    | Some TDiscard -> recordDiscard phys text
+    | Some TOther -> recordOther phys text
+    | None -> recordImport chk text
 
 // the cooked-terminal trap [D:repl-cooked-trap]: when a child that shares
 // the terminal runs long enough, .NET restores cooked mode for it and can
@@ -405,9 +393,7 @@ module private Term =
     /// first snapshot and on Windows
     let reassert () =
         if not (System.OperatingSystem.IsWindows()) then
-            match raw with
-            | Some buf -> tcsetattr (0, 0, buf) |> ignore
-            | None -> ()
+            raw |> Option.iter (fun buf -> tcsetattr (0, 0, buf) |> ignore)
 
     // the shell's cooked termios, captured at run() before the editor's
     // first raw entry — ISIG included. Eval runs under this disposition
@@ -426,9 +412,7 @@ module private Term =
 
     let restoreCooked () =
         if not (System.OperatingSystem.IsWindows()) then
-            match cooked with
-            | Some buf -> tcsetattr (0, 0, buf) |> ignore
-            | None -> ()
+            cooked |> Option.iter (fun buf -> tcsetattr (0, 0, buf) |> ignore)
 
     /// the editor-active gate for the watchdog below — children run
     /// during eval, when this is false, so the watchdog never fights an
@@ -804,14 +788,13 @@ let private historyOffNote (why: string) =
 
 let private historyPath =
     lazy
-        (match config.HistoryPath with
-         | Some p -> Some p
-         | None ->
+        (config.HistoryPath
+         |> Option.orElseWith (fun () ->
              try
                  Some(Path.Combine(stateHome (), "weir", "history"))
              with ex ->
                  historyOffNote ex.Message
-                 None)
+                 None))
 
 let private historyFile () =
     match historyPath.Force() with
@@ -1450,12 +1433,14 @@ let private dedentEntry (bufLines: string list) : string list =
             l.Substring(min n indent))
     | _ -> bufLines
 
+let private numberedCode (lines: string list) : (int * string) list =
+    lines
+    |> List.mapi (fun i l -> i + 1, l)
+    |> List.filter (fun (_, raw) -> Assemble.classifyLine raw <> Assemble.LineKind.CommentOnly)
+    |> List.map (fun (n, raw) -> n, Assemble.stripComment raw)
+
 let private bufferComplete (bufLines: string list) : bool =
-    let numbered =
-        dedentEntry bufLines
-        |> List.mapi (fun i l -> i + 1, l)
-        |> List.filter (fun (_, raw) -> Assemble.classifyLine raw <> Assemble.LineKind.CommentOnly)
-        |> List.map (fun (n, raw) -> n, Assemble.stripComment raw)
+    let numbered = numberedCode (dedentEntry bufLines)
 
     if List.isEmpty numbered then
         true
@@ -1477,10 +1462,7 @@ let private bufferComplete (bufLines: string list) : bool =
             |> List.forall (fun ll ->
                 match Parser.parseLineFull r ll.Text with
                 | Ok _ -> true
-                | Error f ->
-                    match f.Col with
-                    | Some c -> c <= ll.Text.TrimEnd().Length
-                    | None -> true)
+                | Error f -> f.Col |> Option.forall (fun c -> c <= ll.Text.TrimEnd().Length))
 
 // the continuation prompt — the same DISPLAY width as the prompt in
 // effect so column math is uniform across rows [D:repl-multiline]. One
@@ -1720,6 +1702,17 @@ let private readLineTty () : string option =
         let c = min c (cur().Length)
         if pairAt (cur ()) c then c - 1 else c
 
+    let wordLeft (t: string) =
+        let mutable p = col
+
+        while p > 0 && not (isWordChar t[p - 1]) do
+            p <- p - 1
+
+        while p > 0 && isWordChar t[p - 1] do
+            p <- p - 1
+
+        p
+
     let redraw () =
         // region repaint [D:repl-multiline]: climb to the region top (the
         // tracked cursor offset), clear to screen end, repaint every line
@@ -1858,20 +1851,43 @@ let private readLineTty () : string option =
         col <- lines[row].Length
         redraw ()
 
-    // F1 [D:repl-f1-keys]: #keys' text below the buffer, then the
-    // prompt and the whole buffer repainted with the cursor where it was
-    // (the Tab listing's park-and-restore)
-    let showKeys () =
+    let below (print: unit -> unit) =
+        // park at the region end so the list prints below
+        // the buffer — but the tracked (row, col) must
+        // survive: toEnd() mutates them, and without the
+        // restore the repaint would leave the real cursor
+        // at end-of-buffer, past any text after the cursor,
+        // so a second Tab would complete from the wrong
+        // place [D:windows-findings]
         let keepRow, keepCol = row, col
         toEnd ()
         Console.WriteLine()
-        Console.WriteLine(keysText Types.Color.onStdout.Value)
+        print ()
         row <- keepRow
         col <- keepCol
         lastCursorDisplay <- 0
         redraw ()
 
+    // F1 [D:repl-f1-keys]: #keys' text below the buffer, then the
+    // prompt and the whole buffer repainted with the cursor where it was
+    // (the Tab listing's park-and-restore)
+    let showKeys () =
+        below (fun () -> Console.WriteLine(keysText Types.Color.onStdout.Value))
+
     let mutable result: string option option = None
+
+    let deleteOrEof () =
+        if lines.Count = 1 && lines[0].Length = 0 then
+            Console.WriteLine()
+            result <- Some None // EOF
+        elif col < cur().Length then
+            cur().Remove(col, stepFwd ()) |> ignore // readline delete-char
+            redraw ()
+        elif row < lines.Count - 1 then
+            // delete at line end joins the next line
+            cur().Append(lines[row + 1].ToString()) |> ignore
+            lines.RemoveAt(row + 1)
+            redraw ()
 
     // a slow child's exit can leave the terminal cooked (ICRNL on)
     // behind .NET's cached config — every later Enter then arrives as
@@ -1937,32 +1953,11 @@ let private readLineTty () : string option =
                 insertNewline ()
         // some terminals deliver control chords as bare KeyChars —
         // match the codes as well as the (Key, Modifier) pairs
-        | _ when k.KeyChar = '' ->
-            if lines.Count = 1 && lines[0].Length = 0 then
-                Console.WriteLine()
-                result <- Some None
-            elif col < cur().Length then
-                cur().Remove(col, stepFwd ()) |> ignore
-                redraw ()
-            elif row < lines.Count - 1 then
-                cur().Append(lines[row + 1].ToString()) |> ignore
-                lines.RemoveAt(row + 1)
-                redraw ()
+        | _ when k.KeyChar = '' -> deleteOrEof ()
         | _ when k.KeyChar = '' ->
             Console.WriteLine "^C"
             result <- Some(Some "")
-        | ConsoleKey.D when ctrl ->
-            if lines.Count = 1 && lines[0].Length = 0 then
-                Console.WriteLine()
-                result <- Some None // EOF
-            elif col < cur().Length then
-                cur().Remove(col, stepFwd ()) |> ignore // readline delete-char
-                redraw ()
-            elif row < lines.Count - 1 then
-                // delete at line end joins the next line
-                cur().Append(lines[row + 1].ToString()) |> ignore
-                lines.RemoveAt(row + 1)
-                redraw ()
+        | ConsoleKey.D when ctrl -> deleteOrEof ()
         | ConsoleKey.C when ctrl ->
             // abandon the whole buffer, keep the session
             toEnd ()
@@ -2010,16 +2005,7 @@ let private readLineTty () : string option =
                 redraw ()
         | ConsoleKey.LeftArrow when ctrl ->
             // readline word-wise: skip separators, then the word
-            let t = cur().ToString()
-            let mutable p = col
-
-            while p > 0 && not (isWordChar t[p - 1]) do
-                p <- p - 1
-
-            while p > 0 && isWordChar t[p - 1] do
-                p <- p - 1
-
-            col <- p
+            col <- wordLeft (cur().ToString())
             redraw ()
         | ConsoleKey.RightArrow when ctrl ->
             let t = cur().ToString()
@@ -2078,13 +2064,7 @@ let private readLineTty () : string option =
             // kill the previous word → the ring [D:repl-killring] — the
             // Ctrl+Left range (skip separators, then the word)
             let t = cur().ToString()
-            let mutable p = col
-
-            while p > 0 && not (isWordChar t[p - 1]) do
-                p <- p - 1
-
-            while p > 0 && isWordChar t[p - 1] do
-                p <- p - 1
+            let p = wordLeft t
 
             if p < col then
                 killRing <- t.Substring(p, col - p)
@@ -2190,17 +2170,9 @@ let private readLineTty () : string option =
 
             // a note under the buffer, the Tab listing's park-and-restore
             if notes.Count > 0 then
-                let keepRow, keepCol = row, col
-                toEnd ()
-                Console.WriteLine()
-
-                for n in notes do
-                    Console.WriteLine(Types.Color.dim Types.Color.onStdout.Value n)
-
-                row <- keepRow
-                col <- keepCol
-                lastCursorDisplay <- 0
-                redraw ()
+                below (fun () ->
+                    for n in notes do
+                        Console.WriteLine(Types.Color.dim Types.Color.onStdout.Value n))
 
             (match suggestions with
              | [] -> ()
@@ -2268,37 +2240,22 @@ let private readLineTty () : string option =
                      col <- ws + caret
                      redraw ()
                  | None ->
-                     // park at the region end so the list prints below
-                     // the buffer — but the tracked (row, col) must
-                     // survive: toEnd() mutates them, and without the
-                     // restore the repaint would leave the real cursor
-                     // at end-of-buffer, past any text after the cursor,
-                     // so a second Tab would complete from the wrong
-                     // place [D:windows-findings]
-                     let keepRow, keepCol = row, col
-                     toEnd ()
-                     Console.WriteLine()
+                     below (fun () ->
+                         // head candidates take the tint they would have
+                         // typed — the input colorizer's own verdict
+                         // [D:repl-color-words]
+                         let paint =
+                             if
+                                 Types.Color.onStdout.Value
+                                 && sigil = 0
+                                 && Complete.headSlotAt (text.Substring(0, ws)) <> Complete.HeadSlot.No
+                             then
+                                 colorizeSession (knownIn currentEnv.Value)
+                             else
+                                 id
 
-                     // head candidates take the tint they would have
-                     // typed — the input colorizer's own verdict
-                     // [D:repl-color-words]
-                     let paint =
-                         if
-                             Types.Color.onStdout.Value
-                             && sigil = 0
-                             && Complete.headSlotAt (text.Substring(0, ws)) <> Complete.HeadSlot.No
-                         then
-                             colorizeSession (knownIn currentEnv.Value)
-                         else
-                             id
-
-                     for l in completionListingWith paint (termWidth ()) many do
-                         Console.WriteLine l
-
-                     row <- keepRow
-                     col <- keepCol
-                     lastCursorDisplay <- 0
-                     redraw ())
+                         for l in completionListingWith paint (termWidth ()) many do
+                             Console.WriteLine l))
         | _ when k.KeyChar >= ' ' ->
             cur().Insert(col, k.KeyChar) |> ignore
             col <- col + 1
@@ -2306,10 +2263,9 @@ let private readLineTty () : string option =
             // a paste paints once, at its end [D:repl-paste-repaint]: with
             // more input already queued the line is left unpainted, and the
             // loop paints it before any key that is not another character
-            if typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable) then
-                unpainted <- true
-            else
-                unpainted <- false
+            unpainted <- typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable)
+
+            if not unpainted then
                 redraw ()
         | _ -> ()
 
@@ -2633,6 +2589,11 @@ let private lastDefLine (name: string) : (string * bool) option =
             Some(lines[0], lines.Length > 1)
         | _ -> None)
 
+let private schemeOf (te: TypeEnv) (n: string) =
+    match n.Split '.' with
+    | [| m; mem |] -> te.Modules |> Map.tryFind m |> Option.bind (Map.tryFind mem)
+    | _ -> Map.tryFind n te.Values
+
 /// the deterministic composition, seamed for the unit pins: the lines a
 /// named function value echoes, or None (the caller falls back to the
 /// plain value echo). `defLine` is the transcript lookup, injected so
@@ -2647,21 +2608,11 @@ let functionEchoLines
     // a bare alias echoes as its home — the qualified spelling is the
     // one #help documents [D:bare-partition]
     let qualified =
-        if name.Contains "." then
-            name
-        elif Builtins.bareAliases.Contains name then
-            match Map.tryFind name Builtins.bareAliasHomes with
-            | Some m -> $"{m}.{name}"
-            | None -> name
-        else
-            name
+        match Map.tryFind name Builtins.bareAliasHomes with
+        | Some m when not (name.Contains ".") && Builtins.bareAliases.Contains name -> $"{m}.{name}"
+        | _ -> name
 
-    let schemeOf (n: string) =
-        match n.Split '.' with
-        | [| m; mem |] -> te.Modules |> Map.tryFind m |> Option.bind (Map.tryFind mem)
-        | _ -> Map.tryFind n te.Values
-
-    match Map.tryFind qualified Builtins.builtinDocs.Value, schemeOf qualified with
+    match Map.tryFind qualified Builtins.builtinDocs.Value, schemeOf te qualified with
     | Some d, Some sch ->
         // the #help composition: the annotated signature + the glance
         let style = if color then sigTintStyle else plainSigStyle
@@ -2691,11 +2642,10 @@ let private functionEcho (env: TypeEnv) (values: Eval.Env) (te: Check.TypedExpr)
         | _ ->
             // a named function short of arguments [D:partial-echo]
             let names (head: string) =
-                match Statements.builtinParamNames env head with
-                | Some r -> Some r
-                | None ->
+                Statements.builtinParamNames env head
+                |> Option.orElseWith (fun () ->
                     Eval.lookupValue head values
-                    |> Option.map (fun f -> head, Eval.closureParamNames f)
+                    |> Option.map (fun f -> head, Eval.closureParamNames f))
 
             let style =
                 if Types.Color.onStdout.Value then
@@ -2733,6 +2683,9 @@ let private resolver (state: State) : Parser.Resolver = {
                 else
                     Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix))
 }
+
+let private checkWith (importer: Statements.ImportLoader) (st: State) (ll: Assemble.LogicalLine) =
+    Statements.checkStatement false None (fun _ -> resolver st) importer st.TypeEnv ll
 
 // a diagnostic line echoes the entry, a path, a pattern
 // [D:tty-diag-sanitize]
@@ -2774,6 +2727,35 @@ let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
             }
             Values = Map.add "it" v env.Values
     }
+
+let private evalError (state: State) (ex: exn) : State =
+    lastErrored <- true
+    lastExit <- None
+
+    Console.WriteLine(
+        Types.Color.red Types.Color.onStdout.Value "error"
+        + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
+    )
+
+    state
+
+let private ttyPresentation (cap: int option) (ty: Ty) ev =
+    if Console.IsOutputRedirected then
+        None
+    // binary refuses the terminal [D:binary-echo] —
+    // zero body lines, the reason rides the footer
+    elif Eval.echoBinary cap ev then
+        Some([], Some "binary output — the echo refuses a terminal; redirect to a file, or print deliberately")
+    elif ty = TSeq TStr then
+        Eval.echoLines cap ev
+    else
+        Eval.echoTable cap (termWidth ()) ev
+
+let private printPresented (ty: Ty) (lines: string list) =
+    if ty = TSeq TStr then
+        lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyEcho l))
+    else
+        printTable lines
 
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
@@ -2852,16 +2834,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
          with
          | Eval.ExitRequest _ -> reraise ()
          | :? Session.Interrupted -> reraise ()
-         | ex ->
-             lastErrored <- true
-             lastExit <- None
-
-             Console.WriteLine(
-                 Types.Color.red Types.Color.onStdout.Value "error"
-                 + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
-             )
-
-             state)
+         | ex -> evalError state ex)
     | Statements.KLet(name, _, te) ->
         printWarnings state te
 
@@ -2887,22 +2860,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
                 // one cap at a tty and piped [D:echo-cap-100]: #echo moves both
                 let cap = echoCap
 
-                match
-                    (if Console.IsOutputRedirected then
-                         None
-                     // binary refuses the terminal [D:binary-echo] —
-                     // zero body lines, the reason rides the footer
-                     elif Eval.echoBinary cap ev then
-                         Some(
-                             [],
-                             Some
-                                 "binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
-                         )
-                     elif te.Ty = TSeq TStr then
-                         Eval.echoLines cap ev
-                     else
-                         Eval.echoTable cap (termWidth ()) ev)
-                with
+                match ttyPresentation cap te.Ty ev with
                 | Some(lines, hint) ->
                     // the lines/table first, the meta+teaching last
                     // [D:echo-teaching-consistency]: a truncation footer
@@ -2916,10 +2874,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
                     // carrying ANSI/CR must not wreck the terminal (the
                     // table's tint is added inside printTable, around
                     // sanitized cells)
-                    (if te.Ty = TSeq TStr then
-                         lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyEcho l))
-                     else
-                         printTable lines)
+                    printPresented te.Ty lines
 
                     echoMeta (letEchoMeta (echoTypes ()) name te.Ty (letSeqState v) hint)
                 | None ->
@@ -2937,16 +2892,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
          with
          | Eval.ExitRequest _ -> reraise ()
          | :? Session.Interrupted -> reraise ()
-         | ex ->
-             lastErrored <- true
-             lastExit <- None
-
-             Console.WriteLine(
-                 Types.Color.red Types.Color.onStdout.Value "error"
-                 + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
-             )
-
-             state)
+         | ex -> evalError state ex)
     | Statements.KExpr te
     | Statements.KCmd te ->
         printWarnings state te
@@ -2992,16 +2938,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
                  lastExit <- Some cf.Code
                  echoMeta $"↳ exit {cf.Code}{cf.SignalNote}"
                  bindIt TUnit Eval.VUnit state
-             | ex ->
-                 lastErrored <- true
-                 lastExit <- None
-
-                 Console.WriteLine(
-                     Types.Color.red Types.Color.onStdout.Value "error"
-                     + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
-                 )
-
-                 state)
+             | ex -> evalError state ex)
         | _ ->
 
             (try
@@ -3022,26 +2959,10 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
                     | Some lines -> lines |> List.iter Console.WriteLine
                     | None ->
 
-                        match
-                            (if Console.IsOutputRedirected then
-                                 None
-                             elif Eval.echoBinary cap ev then
-                                 Some(
-                                     [],
-                                     Some
-                                         "binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
-                                 )
-                             elif te.Ty = TSeq TStr then
-                                 Eval.echoLines cap ev
-                             else
-                                 Eval.echoTable cap (termWidth ()) ev)
-                        with
+                        match ttyPresentation cap te.Ty ev with
                         | Some(lines, hint) ->
                             // data at the tty is sanitized [D:binary-echo]
-                            (if te.Ty = TSeq TStr then
-                                 lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyEcho l))
-                             else
-                                 printTable lines)
+                            printPresented te.Ty lines
 
                             exprEchoMeta (echoTypes ()) te.Ty hint |> Option.iter echoMeta
                         | None ->
@@ -3077,16 +2998,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
              with
              | Eval.ExitRequest _ -> reraise ()
              | :? Session.Interrupted -> reraise ()
-             | ex ->
-                 lastErrored <- true
-                 lastExit <- None
-
-                 Console.WriteLine(
-                     Types.Color.red Types.Color.onStdout.Value "error"
-                     + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
-                 )
-
-                 state)
+             | ex -> evalError state ex)
     | Statements.KModule _ ->
         Console.WriteLine "the REPL has no file to be a module of; 'module' belongs at the top of a script file"
 
@@ -3128,16 +3040,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
          with
          | Eval.ExitRequest _ -> reraise ()
          | :? Session.Interrupted -> reraise ()
-         | ex ->
-             lastErrored <- true
-             lastExit <- None
-
-             Console.WriteLine(
-                 Types.Color.red Types.Color.onStdout.Value "error"
-                 + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
-             )
-
-             state)
+         | ex -> evalError state ex)
     | Statements.KSig _ ->
         // unreachable: the REPL passes no sig context, so the form
         // already refused with the scripts-infer teaching
@@ -3158,7 +3061,7 @@ let private entryContinuedCommand (state: State) (lls: Assemble.LogicalLine list
         | ll :: tail ->
             let st = { state with TypeEnv = tenv }
 
-            match Statements.checkStatement false None (fun _ -> resolver st) ModuleLoader.scriptOnlyImport tenv ll with
+            match checkWith ModuleLoader.scriptOnlyImport st ll with
             | Error _ -> None
             | Ok chk ->
                 let hit =
@@ -3181,12 +3084,7 @@ let private entryContinuedCommand (state: State) (lls: Assemble.LogicalLine list
 /// the REPL's continued-command refusal seam [D:continued-command]: the
 /// message a fresh session refuses this multi-line entry with, or None
 let continuedCommandForTest (entry: string) : string option =
-    let numbered =
-        entry.Split '\n'
-        |> Array.toList
-        |> List.mapi (fun i l -> i + 1, l)
-        |> List.filter (fun (_, raw) -> Assemble.classifyLine raw <> Assemble.LineKind.CommentOnly)
-        |> List.map (fun (n, raw) -> n, Assemble.stripComment raw)
+    let numbered = numberedCode (entry.Split '\n' |> Array.toList)
 
     match Assemble.assemble numbered with
     | Error _ -> None
@@ -3210,15 +3108,7 @@ let itSchemeForTest (statements: string list) : string option =
                 (fun st line ->
                     let ll = Assemble.singleLine (Assemble.stripComment line)
 
-                    match
-                        Statements.checkStatement
-                            false
-                            None
-                            (fun _ -> resolver st)
-                            ModuleLoader.scriptOnlyImport
-                            st.TypeEnv
-                            ll
-                    with
+                    match checkWith ModuleLoader.scriptOnlyImport st ll with
                     | Ok chk -> evalCheckedBody line st chk
                     | Error _ -> st)
                 initial
@@ -3304,12 +3194,7 @@ let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string optio
         else
             id
 
-    let schemeOf (n: string) =
-        match n.Split '.' with
-        | [| m; mem |] -> te.Modules |> Map.tryFind m |> Option.bind (Map.tryFind mem)
-        | _ -> Map.tryFind n te.Values
-
-    match Map.tryFind name Builtins.builtinDocs.Value, schemeOf name with
+    match Map.tryFind name Builtins.builtinDocs.Value, schemeOf te name with
     | Some d, sch ->
         let sigLine =
             sch
@@ -3474,10 +3359,7 @@ let private renderHelpDirective (te: TypeEnv) (arg: string) : string =
 /// when that fits the screen, else the member names in a grid and where
 /// the descriptions are. `height` None (no terminal) takes the full text.
 let moduleEchoText (full: string) (height: int option) (width: int) (name: string) (members: string list) : string =
-    let fits =
-        match height with
-        | Some h -> full.Split('\n').Length <= h - 2
-        | None -> true
+    let fits = height |> Option.forall (fun h -> full.Split('\n').Length <= h - 2)
 
     if fits then
         full
@@ -3655,9 +3537,7 @@ let sessionForTest () : (string -> string) * (unit -> TypeEnv) =
             else
                 let ll = Assemble.singleLine (Assemble.stripComment entry)
 
-                match
-                    Statements.checkStatement false None (fun _ -> resolver st.Value) sessionImport st.Value.TypeEnv ll
-                with
+                match checkWith sessionImport st.Value ll with
                 | Ok chk -> st.Value <- evalCheckedBody entry st.Value chk
                 | Error d ->
                     let at =
@@ -3713,9 +3593,7 @@ let private parseInfer (rest: string) : Result<string * string * string, string>
 let private evalSource (state: State) (source: string) : Result<string list, string> =
     let ll = Assemble.singleLine (Assemble.stripComment source)
 
-    match
-        Statements.checkStatement false None (fun _ -> resolver state) ModuleLoader.scriptOnlyImport state.TypeEnv ll
-    with
+    match checkWith ModuleLoader.scriptOnlyImport state ll with
     | Error d -> Error $"#infer: the source does not check: {d.Message}"
     | Ok chk ->
         let teOpt =
@@ -3789,11 +3667,7 @@ let private injectDecls (state: State) (declText: string list) : Result<State * 
     // the assembler groups them (the multiline-submission path)
     let physical = declText |> List.collect (fun d -> d.Split '\n' |> List.ofArray)
 
-    let numbered =
-        physical
-        |> List.mapi (fun i l -> i + 1, l)
-        |> List.filter (fun (_, raw) -> Assemble.classifyLine raw <> Assemble.LineKind.CommentOnly)
-        |> List.map (fun (n, raw) -> n, Assemble.stripComment raw)
+    let numbered = numberedCode physical
 
     match Assemble.assemble numbered with
     | Error msg -> Error $"#infer: the drafted types did not assemble: {msg}"
@@ -3802,15 +3676,7 @@ let private injectDecls (state: State) (declText: string list) : Result<State * 
             match rest with
             | [] -> Ok(st, List.rev defined)
             | (ll: Assemble.LogicalLine) :: tail ->
-                match
-                    Statements.checkStatement
-                        false
-                        None
-                        (fun _ -> resolver st)
-                        ModuleLoader.scriptOnlyImport
-                        st.TypeEnv
-                        ll
-                with
+                match checkWith ModuleLoader.scriptOnlyImport st ll with
                 | Error d -> Error(formatDraftedDiag physical d)
                 | Ok chk ->
                     match chk.Kind with
@@ -3938,15 +3804,7 @@ let private bindParsed
     let stmt = $"let {binder} = {hidden} |> {adapter}"
     let ll = Assemble.singleLine stmt
 
-    match
-        Statements.checkStatement
-            false
-            None
-            (fun _ -> resolver scratch)
-            ModuleLoader.scriptOnlyImport
-            scratch.TypeEnv
-            ll
-    with
+    match checkWith ModuleLoader.scriptOnlyImport scratch ll with
     | Error d ->
         Console.WriteLine $"#infer: the binding does not check: {d.Message}"
         state
@@ -3962,33 +3820,60 @@ let private bindParsed
 
         st
 
+let private inferNameRefusal (name: string) : string option =
+    if name <> "_" && (name = "" || not (Char.IsUpper name[0])) then
+        Some $"#infer: the type name '{name}' must start with an uppercase letter ('_' auto-names)"
+    elif
+        name <> "_"
+        && Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys)
+    then
+        // the 'as'-name is the user's choice [D:repl-infer]: a
+        // builtin name could never be referenced (the builtin
+        // wins every use), and renaming their choice silently
+        // would be worse — refuse with the teaching
+        Some
+            $"#infer: '{name}' is a built-in type — a drafted '{name}' could never be referenced (the built-in wins every use); pick another 'as' name"
+    else
+        None
+
+let private reportDrafted (decls: string list) (defined: string list) (notes: Infer.Note list) =
+    // the drafted types are session declarations —
+    // record each as a `TDef` carrying its clean
+    // multi-line text (not the assembler's
+    // control-char-joined logical line) so #save
+    // distills runnable `type` decls, deduped by name
+    for d in decls do
+        // "type <Name> = …" — the name keys dedup
+        let declName =
+            match d.Trim().Split([| ' '; '\n' |]) with
+            | arr when arr.Length >= 2 -> arr[1]
+            | _ -> ""
+
+        recordDef declName d d
+
+    let count = List.length defined
+
+    Console.WriteLine $"""defined: {String.concat ", " defined} ({count} type{if count = 1 then "" else "s"})"""
+
+    for n in notes do
+        Console.WriteLine $"  note: {n}"
+
 let private inferLetDirective (state: State) (rest: string) : State =
-    match parseInferLet rest with
-    | Error msg ->
+    let fail (msg: string) =
         Console.WriteLine msg
         state
+
+    match parseInferLet rest with
+    | Error msg -> fail msg
     | Ok(binder, source, fmtStr, name) ->
         match Infer.parseFormat fmtStr with
-        | Error msg ->
-            Console.WriteLine msg
-            state
+        | Error msg -> fail msg
         | Ok fmt ->
-            if name <> "_" && (name = "" || not (Char.IsUpper name[0])) then
-                Console.WriteLine $"#infer: the type name '{name}' must start with an uppercase letter ('_' auto-names)"
-                state
-            elif
-                name <> "_"
-                && Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys)
-            then
-                Console.WriteLine
-                    $"#infer: '{name}' is a built-in type — a drafted '{name}' could never be referenced (the built-in wins every use); pick another 'as' name"
-
-                state
-            else
+            match inferNameRefusal name with
+            | Some msg -> fail msg
+            | None ->
                 match evalSource state source with
-                | Error msg ->
-                    Console.WriteLine msg
-                    state
+                | Error msg -> fail msg
                 | Ok lines ->
                     let taken =
                         Infer.takenTypeNames (Seq.append Check.builtinTypeNames.Keys (Map.keys state.TypeEnv.Types))
@@ -4018,31 +3903,12 @@ let private inferLetDirective (state: State) (rest: string) : State =
                                 decls, notes, spelling)
 
                     match inferred with
-                    | Error msg ->
-                        Console.WriteLine msg
-                        state
+                    | Error msg -> fail msg
                     | Ok(decls, notes, spelling) ->
                         match injectDecls state decls with
-                        | Error msg ->
-                            Console.WriteLine msg
-                            state
+                        | Error msg -> fail msg
                         | Ok(state', defined) ->
-                            for d in decls do
-                                let declName =
-                                    match d.Trim().Split([| ' '; '\n' |]) with
-                                    | [| _typeKw; nm |] -> nm
-                                    | arr when arr.Length >= 2 -> arr[1]
-                                    | _ -> ""
-
-                                recordDef declName d d
-
-                            let count = List.length defined
-
-                            Console.WriteLine
-                                $"""defined: {String.concat ", " defined} ({count} type{if count = 1 then "" else "s"})"""
-
-                            for n in notes do
-                                Console.WriteLine $"  note: {n}"
+                            reportDrafted decls defined notes
 
                             // no root record to read into (a scalar or
                             // open-map top) — the notes above carry the
@@ -4061,16 +3927,15 @@ let private inferDirective (state: State) (rest: string) : State =
     if rest = "let" || rest.StartsWith "let " then
         inferLetDirective state rest
     else
-
-        match parseInfer rest with
-        | Error msg ->
+        let fail (msg: string) =
             Console.WriteLine msg
             state
+
+        match parseInfer rest with
+        | Error msg -> fail msg
         | Ok(source, fmtStr, name) ->
             match Infer.parseFormat fmtStr with
-            | Error msg ->
-                Console.WriteLine msg
-                state
+            | Error msg -> fail msg
             | Ok fmt ->
                 // an empty source defaults to `it` — the last result
                 let sourceExpr, sourceMissing =
@@ -4082,33 +3947,18 @@ let private inferDirective (state: State) (rest: string) : State =
                     else
                         source, false
 
-                if sourceMissing then
-                    Console.WriteLine
-                        "#infer: no prior result — write '#infer <source> from … as <Name>', or run an expression first (it binds 'it')"
+                let refusal =
+                    if sourceMissing then
+                        Some
+                            "#infer: no prior result — write '#infer <source> from … as <Name>', or run an expression first (it binds 'it')"
+                    else
+                        inferNameRefusal name
 
-                    state
-                elif name <> "_" && (name = "" || not (Char.IsUpper name[0])) then
-                    Console.WriteLine
-                        $"#infer: the type name '{name}' must start with an uppercase letter ('_' auto-names)"
-
-                    state
-                elif
-                    name <> "_"
-                    && Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys)
-                then
-                    // the 'as'-name is the user's choice [D:repl-infer]: a
-                    // builtin name could never be referenced (the builtin
-                    // wins every use), and renaming their choice silently
-                    // would be worse — refuse with the teaching
-                    Console.WriteLine
-                        $"#infer: '{name}' is a built-in type — a drafted '{name}' could never be referenced (the built-in wins every use); pick another 'as' name"
-
-                    state
-                else
+                match refusal with
+                | Some msg -> fail msg
+                | None ->
                     match evalSource state sourceExpr with
-                    | Error msg ->
-                        Console.WriteLine msg
-                        state
+                    | Error msg -> fail msg
                     | Ok lines ->
                         // derived names dodge every name the session already
                         // resolves [D:repl-infer] — a taken landing would be
@@ -4121,38 +3971,12 @@ let private inferDirective (state: State) (rest: string) : State =
                         let name = if name = "_" then autoTypeName taken else name
 
                         match Infer.infer Parser.keywords taken fmt name lines with
-                        | Error msg ->
-                            Console.WriteLine msg
-                            state
+                        | Error msg -> fail msg
                         | Ok(decls, notes) ->
                             match injectDecls state decls with
-                            | Error msg ->
-                                Console.WriteLine msg
-                                state
+                            | Error msg -> fail msg
                             | Ok(state', defined) ->
-                                // the drafted types are session declarations —
-                                // record each as a `TDef` carrying its clean
-                                // multi-line text (not the assembler's
-                                // control-char-joined logical line) so #save
-                                // distills runnable `type` decls, deduped by name
-                                for d in decls do
-                                    // "type <Name> = …" — the name keys dedup
-                                    let declName =
-                                        match d.Trim().Split([| ' '; '\n' |]) with
-                                        | [| _typeKw; nm |] -> nm
-                                        | arr when arr.Length >= 2 -> arr[1]
-                                        | _ -> ""
-
-                                    recordDef declName d d
-
-                                let count = List.length defined
-
-                                Console.WriteLine
-                                    $"""defined: {String.concat ", " defined} ({count} type{if count = 1 then "" else "s"})"""
-
-                                for n in notes do
-                                    Console.WriteLine $"  note: {n}"
-
+                                reportDrafted decls defined notes
                                 state'
 
 // ---- #save [D:repl-save]: distill the session to a runnable script ----
@@ -4380,11 +4204,7 @@ let rec private guaranteeChecks
                     let victim =
                         unusedOwners |> List.tryHead |> Option.defaultValue (List.length kept - 1)
 
-                    let kept' =
-                        kept
-                        |> List.mapi (fun j s -> j, s)
-                        |> List.filter (fun (j, _) -> j <> victim)
-                        |> List.map snd
+                    let kept' = List.removeAt victim kept
 
                     guaranteeChecks sessionNames kept' (dropped + 1)
 
@@ -4620,23 +4440,20 @@ let private saveDirective (state: State) (arg: string) : unit =
                 Console.WriteLine
                     "#save: nothing left to save after distilling — every definition referenced session-only state"
             else
+                let write (ls: string list) (suffix: string) =
+                    match saveWrite path ls with
+                    | Ok() ->
+                        note ()
+                        Console.WriteLine $"#save: wrote {List.length ls} line(s) to {path}{suffix}"
+                    | Error msg -> Console.WriteLine msg
+
                 match Fmt.formatLines distilled with
                 | Error msg ->
                     // the distilled lines still failed to format — write them
                     // raw rather than lose the session, and say what happened
                     Console.WriteLine $"#save: formatting failed ({msg}); writing unformatted"
-
-                    match saveWrite path distilled with
-                    | Ok() ->
-                        note ()
-                        Console.WriteLine $"#save: wrote {distilled.Length} line(s) to {path} (unformatted)"
-                    | Error msg -> Console.WriteLine msg
-                | Ok formatted ->
-                    match saveWrite path formatted with
-                    | Ok() ->
-                        note ()
-                        Console.WriteLine $"#save: wrote {List.length formatted} line(s) to {path}"
-                    | Error msg -> Console.WriteLine msg
+                    write distilled " (unformatted)"
+                | Ok formatted -> write formatted ""
 
 let rec private loop (state: State) =
     // an anonymous record bound last line completes its fields now
@@ -4840,21 +4657,14 @@ let rec private loop (state: State) =
         // or Enter's verdict and the submission's meaning split
         let srcLines = entry.Split '\n' |> Array.toList |> dedentEntry |> Array.ofList
 
-        let numbered =
-            srcLines
-            |> Array.toList
-            |> List.mapi (fun i l -> i + 1, l)
-            |> List.filter (fun (_, raw) -> Assemble.classifyLine raw <> Assemble.LineKind.CommentOnly)
-            |> List.map (fun (n, raw) -> n, Assemble.stripComment raw)
+        let numbered = numberedCode (Array.toList srcLines)
 
         let assembled = Assemble.assemble numbered
 
         // a continued command refuses the whole entry before anything runs
         // [D:continued-command]
         let continued =
-            match assembled with
-            | Ok lls -> entryContinuedCommand state lls
-            | Error _ -> None
+            assembled |> Result.toOption |> Option.bind (entryContinuedCommand state)
 
         let next =
             match assembled, continued with
@@ -4884,7 +4694,7 @@ let rec private loop (state: State) =
                 state
             | Ok lls, None ->
                 let entryStatement (st: State) (ll: Assemble.LogicalLine) =
-                    match Statements.checkStatement false None (fun _ -> resolver st) sessionImport st.TypeEnv ll with
+                    match checkWith sessionImport st ll with
                     | Error({ File = Some mf } as d) ->
                         // a prompt import's module error, at the module's
                         // own site [D:repl-import]
@@ -4940,11 +4750,7 @@ let rec private loop (state: State) =
                              // round-trip through `weir check` [D:repl-save]
                              let phys = physicalSource srcLines ll
 
-                             match recordKind chk with
-                             | Some(TDef name) -> recordChecked chk name phys ll.Text
-                             | Some TDiscard -> recordDiscard phys ll.Text
-                             | Some TOther -> recordOther phys ll.Text
-                             | None -> recordImport chk ll.Text)
+                             recordAccepted chk phys ll.Text)
 
                         st'
 
@@ -4992,7 +4798,7 @@ let rec private loop (state: State) =
             // lines open the multiline buffer)
             let ll = Assemble.singleLine (Assemble.stripComment line)
 
-            match Statements.checkStatement false None (fun _ -> resolver state) sessionImport state.TypeEnv ll with
+            match checkWith sessionImport state ll with
             | Error d when d.Parse ->
                 lastErrored <- true
                 lastExit <- None
@@ -5055,11 +4861,7 @@ let rec private loop (state: State) =
 
                 (if not lastErrored then
                      // a single-line entry: physical source is its own text
-                     match recordKind chk with
-                     | Some(TDef name) -> recordChecked chk name ll.Text ll.Text
-                     | Some TDiscard -> recordDiscard ll.Text ll.Text
-                     | Some TOther -> recordOther ll.Text ll.Text
-                     | None -> recordImport chk ll.Text)
+                     recordAccepted chk ll.Text ll.Text)
 
                 next
 
@@ -5304,11 +5106,9 @@ let private loadInit (baseState: State) : State =
                                     names <- names + 1
                                     noteCommandSeq name te (snd bindings.Head)
 
-                                    (match
-                                        attachments |> List.tryFind (fun (a: Assemble.DocAttach) -> a.Line = ll.Head)
-                                     with
-                                     | Some a -> docs <- Map.add name a.Doc docs
-                                     | None -> ())
+                                    attachments
+                                    |> List.tryFind (fun (a: Assemble.DocAttach) -> a.Line = ll.Head)
+                                    |> Option.iter (fun a -> docs <- Map.add name a.Doc docs)
                                 | Statements.KLetPat _ -> names <- names + bindings.Length
                                 | Statements.KImport lm ->
                                     docs <-

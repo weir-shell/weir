@@ -71,10 +71,10 @@ let rec private ofJsonElement (el: System.Text.Json.JsonElement) : INode =
         // (an `int` field could never read the sample it was drafted from)
         if raw.Contains '.' || raw.Contains 'e' || raw.Contains 'E' then
             IFloat
+        else if fst (Int64.TryParse raw) then
+            IInt
         else
-            match Int64.TryParse raw with
-            | true, _ -> IInt
-            | _ -> IFloat
+            IFloat
     | _ -> IStr
 
 // where System.Text.Json stopped, in the author's terms — its own
@@ -142,9 +142,7 @@ let private classifyYamlScalar (text: string) : INode =
             $"{t} has a leading zero (YAML 1.2 reads decimal, 1.1 readers such as PyYAML and kubectl octal) — an int field refuses it"
     elif isMatch "^[-+]?[0-9]+$" then
         // past int64 the yaml reader types it float; the draft agrees
-        match Int64.TryParse t with
-        | true, _ -> IInt
-        | _ -> IFloat
+        if fst (Int64.TryParse t) then IInt else IFloat
     elif isMatch "^0x[0-9a-fA-F]+$|^0o[0-7]+$" then
         let radix = if t.StartsWith "0x" then 16 else 8
 
@@ -422,8 +420,8 @@ let rec private mergeTwo (note: Note -> unit) (path: string) (a: INode) (b: INod
     | a, b when a = b -> a
     | INull, b -> iopt b
     | a, INull -> iopt a
-    | IOpt x, IOpt y -> iopt (mergeTwo note path x y)
-    | IOpt x, y -> iopt (mergeTwo note path x y)
+    | IOpt x, IOpt y
+    | IOpt x, y
     | x, IOpt y -> iopt (mergeTwo note path x y)
     | IObj xs, IObj ys -> mergeObjs note path xs ys
     // arrays pool their elements; the enclosing seq walk merges the pool
@@ -625,28 +623,26 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
                         reg.Depth <- reg.Depth - 1
 
                 reg.Claim desired srcKey parentStem rendered
+    | IArr [] ->
+        reg.AddNote $"an empty array under '{srcKey}' — element type unknown, inferred seq<string> (edit if known)"
+        "seq<string>"
     | IArr items ->
-        match items with
-        | [] ->
-            reg.AddNote $"an empty array under '{srcKey}' — element type unknown, inferred seq<string> (edit if known)"
-            "seq<string>"
-        | _ ->
-            // array elements merge [D:repl-infer]: the element type is
-            // the union of every element's shape — absent keys draft
-            // Option, conflicts keep the first with a verify note
-            match mergeElems reg.AddNote srcKey items with
-            | None ->
-                reg.AddNote $"an all-null array under '{srcKey}' — inferred seq<Option<string>> (edit if known)"
-                "seq<Option<string>>"
-            | Some elem ->
-                // the element of a seq-of-record takes the singularised
-                // field name; a seq of scalars is seq<scalar>. The
-                // element's collision prefix is the record enclosing
-                // the seq field (parentStem), so two same-named seqs
-                // under different parents disambiguate.
-                let elemDesired = capitalize (singularize (identStem desired))
-                let inner = shapeOf reg elemDesired srcKey parentStem elem
-                $"seq<{inner}>"
+        // array elements merge [D:repl-infer]: the element type is
+        // the union of every element's shape — absent keys draft
+        // Option, conflicts keep the first with a verify note
+        match mergeElems reg.AddNote srcKey items with
+        | None ->
+            reg.AddNote $"an all-null array under '{srcKey}' — inferred seq<Option<string>> (edit if known)"
+            "seq<Option<string>>"
+        | Some elem ->
+            // the element of a seq-of-record takes the singularised
+            // field name; a seq of scalars is seq<scalar>. The
+            // element's collision prefix is the record enclosing
+            // the seq field (parentStem), so two same-named seqs
+            // under different parents disambiguate.
+            let elemDesired = capitalize (singularize (identStem desired))
+            let inner = shapeOf reg elemDesired srcKey parentStem elem
+            $"seq<{inner}>"
 
 // ---- the public surface -----------------------------------------------
 
@@ -665,6 +661,41 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
 let private isCleanFieldName (reserved: Set<string>) (f: string) : bool =
     isIdentShaped f && not (Set.contains f reserved)
 
+let private camelJoin (segs: string[]) : string =
+    segs
+    |> Array.mapi (fun i s ->
+        if i = 0 then
+            string (Char.ToLowerInvariant s[0]) + s.Substring 1
+        else
+            string (Char.ToUpperInvariant s[0]) + s.Substring 1)
+    |> String.concat ""
+
+let private repairIdent (reserved: Set<string>) (camel: string) : string =
+    let camel =
+        if camel = "" || not (isIdentStart camel[0]) then
+            "f" + camel
+        else
+            camel
+
+    // any other reserved word (`in`, `let`, `match`, …) — or a camel
+    // result that lands on one (`in-` camelizes to `in`) — takes the
+    // parser's repair spelling: `in` → `inField`
+    if Set.contains camel reserved then
+        camel + "Field"
+    else
+        camel
+
+let private freshName (used: System.Collections.Generic.HashSet<string>) (baseName: string) : string =
+    if used.Add baseName then
+        baseName
+    else
+        let mutable n = 2
+
+        while not (used.Add(baseName + string n)) do
+            n <- n + 1
+
+        baseName + string n
+
 /// derive a valid weir identifier from an arbitrary wire key: camelCase
 /// the alnum segments (split on every non-alnum run), lower the first
 /// segment, capitalize the rest — `k8s-app`→`k8sApp`,
@@ -681,14 +712,7 @@ let private toIdent (reserved: Set<string>) (key: string) : string =
         )
         |> Array.filter (fun s -> s <> "")
 
-    let camel =
-        segs
-        |> Array.mapi (fun i s ->
-            if i = 0 then
-                string (System.Char.ToLowerInvariant s[0]) + s.Substring 1
-            else
-                string (System.Char.ToUpperInvariant s[0]) + s.Substring 1)
-        |> String.concat ""
+    let camel = camelJoin segs
 
     let camel =
         // the reserved-word landings keep their historical spellings so
@@ -699,19 +723,7 @@ let private toIdent (reserved: Set<string>) (key: string) : string =
         | "from" -> "source"
         | _ -> camel
 
-    let camel =
-        if camel = "" || not (isIdentStart camel[0]) then
-            "f" + camel
-        else
-            camel
-
-    // any other reserved word (`in`, `let`, `match`, …) — or a camel
-    // result that lands on one (`in-` camelizes to `in`) — takes the
-    // parser's repair spelling: `in` → `inField`
-    if Set.contains camel reserved then
-        camel + "Field"
-    else
-        camel
+    repairIdent reserved camel
 
 /// a record's fields as (fieldName, wireKeyOrNone, ty): clean keys keep
 /// their name and carry no wire attribute; others sanitize to a deduped
@@ -737,20 +749,7 @@ let resolveFieldNames
         if isCleanFieldName reserved key then
             key, None, ty
         else
-            let baseName = toIdent reserved key
-
-            let name =
-                if used.Add baseName then
-                    baseName
-                else
-                    let mutable n = 2
-
-                    while not (used.Add(baseName + string n)) do
-                        n <- n + 1
-
-                    baseName + string n
-
-            name, Some key, ty)
+            freshName used (toIdent reserved key), Some key, ty)
 
 /// a wire key as the body of a weir string literal — the escapes weir
 /// strings take (\\ \" \n \t); wireSpellable dropped the other controls
@@ -758,24 +757,26 @@ let resolveFieldNames
 let private wireLiteral (k: string) : string =
     k.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t")
 
+let private renderRecord (name: string) (fields: (string * string option * string) list) : string =
+    let body =
+        fields
+        |> List.map (fun (fname, wire, t) ->
+            // a key weir cannot spell as a field name rides the
+            // wire attribute over a sanitized identifier
+            // [D:infer-wire-sanitize]
+            match wire with
+            | Some k -> $"    [<Wire \"{wireLiteral k}\">]\n    {fname}: {t}"
+            | None -> $"    {fname}: {t}")
+        |> String.concat "\n"
+
+    $"type {name} = {{\n{body}\n}}"
+
 /// render claimed records as `type` decls, house style — the single
 /// emitter tail, shared by #infer and the schema→types generator
 /// [D:schema-types] (field names ride the Wire sanitizer either way)
 let renderDecls (reserved: Set<string>) (decls: (string * (string * string) list) list) : string list =
     decls
-    |> List.map (fun (name, fields) ->
-        let body =
-            resolveFieldNames reserved fields
-            |> List.map (fun (fname, wire, t) ->
-                // a key weir cannot spell as a field name rides the
-                // wire attribute over a sanitized identifier
-                // [D:infer-wire-sanitize]
-                match wire with
-                | Some k -> $"    [<Wire \"{wireLiteral k}\">]\n    {fname}: {t}"
-                | None -> $"    {fname}: {t}")
-            |> String.concat "\n"
-
-        $"type {name} = {{\n{body}\n}}")
+    |> List.map (fun (name, fields) -> renderRecord name (resolveFieldNames reserved fields))
 
 /// the inferred declarations plus printed notes, for a sample already
 /// lowered to an INode with a chosen top name. A top object is the
@@ -846,12 +847,7 @@ let private tableFieldName (reserved: Set<string>) (header: string) : string =
                 s.ToLowerInvariant()
             else
                 s)
-        |> Array.mapi (fun i s ->
-            if i = 0 then
-                string (Char.ToLowerInvariant s[0]) + s.Substring 1
-            else
-                string (Char.ToUpperInvariant s[0]) + s.Substring 1)
-        |> String.concat ""
+        |> camelJoin
 
     let camel =
         match camel with
@@ -860,16 +856,7 @@ let private tableFieldName (reserved: Set<string>) (header: string) : string =
         | "from" -> "source"
         | c -> c
 
-    let camel =
-        if camel = "" || not (isIdentStart camel[0]) then
-            "f" + camel
-        else
-            camel
-
-    if Set.contains camel reserved then
-        camel + "Field"
-    else
-        camel
+    repairIdent reserved camel
 
 let private tableIntRx = System.Text.RegularExpressions.Regex "^-?[0-9]+$"
 
@@ -934,18 +921,7 @@ let private tableDecls
                         else
                             scanned
 
-                let baseName = tableFieldName reserved c.Header
-
-                let name =
-                    if used.Add baseName then
-                        baseName
-                    else
-                        let mutable n = 2
-
-                        while not (used.Add(baseName + string n)) do
-                            n <- n + 1
-
-                        baseName + string n
+                let name = freshName used (tableFieldName reserved c.Header)
 
                 // the Wire decision is the read-side recovery test: a
                 // field whose normalized name still matches the header
@@ -959,15 +935,7 @@ let private tableDecls
 
                 name, wire, tyText)
 
-        let body =
-            fields
-            |> List.map (fun (fname, wire, t) ->
-                match wire with
-                | Some k -> $"    [<Wire \"{wireLiteral k}\">]\n    {fname}: {t}"
-                | None -> $"    {fname}: {t}")
-            |> String.concat "\n"
-
-        Ok([ $"type {topName} = {{\n{body}\n}}" ], List.ofSeq notes)
+        Ok([ renderRecord topName fields ], List.ofSeq notes)
 
 // ---- format dispatch --------------------------------------------------
 
@@ -1029,7 +997,7 @@ let inferShapeText
         // the script's caller names the failure, not the REPL directive
         let caller =
             match fmt with
-            | Json -> "Json.inferShape"
+            | Json
             | Jsonl -> "Json.inferShape"
             | Yaml -> "Yaml.inferShape"
             | Table -> "Table.inferShape"

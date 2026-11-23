@@ -338,22 +338,14 @@ let private parseScalar (lineNo: int) (raw: string) : Result<Node, string> =
 // justifies block-only cannot fire. Populated flow stays rejected by
 // scalarCore's teaching. `{}` → empty mapping, `[]` → empty sequence.
 let private emptyFlow (lineNo: int) (raw: string) : Node option =
-    match raw.Trim yamlWs with
-    | "{}" -> Some(NMap([], lineNo))
-    | "[]" -> Some(NSeq([], lineNo))
-    | t when
-        t.StartsWith "{"
-        && t.EndsWith "}"
-        && t.Substring(1, t.Length - 2).Trim yamlWs = ""
-        ->
-        Some(NMap([], lineNo))
-    | t when
-        t.StartsWith "["
-        && t.EndsWith "]"
-        && t.Substring(1, t.Length - 2).Trim yamlWs = ""
-        ->
-        Some(NSeq([], lineNo))
-    | _ -> None
+    let t = raw.Trim yamlWs
+
+    let empty (o: string) (c: string) =
+        t.StartsWith o && t.EndsWith c && t.Substring(1, t.Length - 2).Trim yamlWs = ""
+
+    if empty "{" "}" then Some(NMap([], lineNo))
+    elif empty "[" "]" then Some(NSeq([], lineNo))
+    else None
 
 // split `key: value` / `key:` at the first unquoted `: ` (or `:` at EOL);
 // keys may be plain (k8s dotted/slashed labels) or quoted — a quoted key
@@ -411,10 +403,7 @@ let splitKeyR (s: string) : Result<(string * string) option, string> =
         else
             Ok(Some(rawKey, rest))
 
-let splitKey (s: string) : (string * string) option =
-    match splitKeyR s with
-    | Ok r -> r
-    | Error _ -> None
+let splitKey (s: string) : (string * string) option = splitKeyR s |> Result.defaultValue None
 
 // a document key written plain keeps that spelling [D:yaml-key-spelling]:
 // the parsed key string itself is remembered (by identity, weakly), so
@@ -491,11 +480,7 @@ let private multilineQuoted
                 let no, line = raw[i]
                 let l = (line.TrimEnd '\r')
 
-                if l.Trim(yamlWs) = "" then
-                    frag <- ""
-                    fragNo <- no
-                    i <- i + 1
-                elif indentOf l <= parentIndent then
+                if l.Trim(yamlWs) <> "" && indentOf l <= parentIndent then
                     result <- Some unterminated
                 else
                     frag <- l.TrimStart(yamlWs)
@@ -574,15 +559,14 @@ let blockHeaderIndicated (rest: string) : Result<bool * int option, string> opti
 /// `blockHeaderIndicated` for weir's own `yaml` blocks, which detect
 /// content indentation from the first line and take no indicator
 let blockHeader (rest: string) : Result<bool, string> option =
-    match blockHeaderIndicated rest with
-    | Some(Ok(_, Some _)) ->
-        Some(
-            Error
-                "explicit indentation indicators are not needed in a yaml block — content indentation is detected from the first line"
-        )
-    | Some(Ok(keep, None)) -> Some(Ok keep)
-    | Some(Error e) -> Some(Error e)
-    | None -> None
+    blockHeaderIndicated rest
+    |> Option.map (
+        Result.bind (function
+            | _, Some _ ->
+                Error
+                    "explicit indentation indicators are not needed in a yaml block — content indentation is detected from the first line"
+            | keep, None -> Ok keep)
+    )
 
 /// Content comes from the raw lines (blank lines and `#`-shaped lines
 /// are bytes inside a block scalar — the filtered view already dropped
@@ -608,13 +592,10 @@ let private blockScalar
     while not stop && i < raw.Length do
         let no, line = raw[i]
 
-        if line.Trim(yamlWs) = "" then
-            // a whitespace-only line is kept raw: bytes beyond the
-            // block's indentation are content (PyYAML agrees), bytes
-            // at-or-below it are an empty line — extraction decides
-            content.Add(no, line.TrimEnd '\r')
-            i <- i + 1
-        elif indentOf line > parentIndent then
+        // a whitespace-only line is kept raw: bytes beyond the
+        // block's indentation are content (PyYAML agrees), bytes
+        // at-or-below it are an empty line — extraction decides
+        if line.Trim(yamlWs) = "" || indentOf line > parentIndent then
             content.Add(no, line.TrimEnd '\r')
             i <- i + 1
         else
@@ -690,6 +671,9 @@ let private blockLastNo (raw: (int * string)[]) (headerNo: int) (parentIndent: i
 // re-scan within the cap is a known follow-up, not fixed here.
 let private maxDepth = 500
 
+let private isDashItem (b: string) =
+    b.StartsWith "- " || b.TrimEnd(yamlWs) = "-"
+
 // numbered content lines (blank and full-line-comment lines already
 // dropped, trailing comments stripped) → one document node. `raw` is
 // the unfiltered source — block scalar content reads from it
@@ -764,8 +748,7 @@ let rec private parseBlock
         let isSeqAt (col: int) (k: int) =
             k < fin
             && indentOf (snd lines[k]) = col
-            && (let b = (snd lines[k]).Substring col
-                b.StartsWith "- " || b.TrimEnd(yamlWs) = "-")
+            && isDashItem ((snd lines[k]).Substring col)
 
         // the extent of a same-indent block sequence starting at `k`: the
         // run of lines at indent >= col, stopping at the first line that
@@ -809,7 +792,7 @@ let rec private parseBlock
 
             if tabAt firstRaw (indentOf firstRaw) then
                 Error(tabIndented firstNo)
-            elif firstBody.StartsWith "- " || firstBody.TrimEnd(yamlWs) = "-" then
+            elif isDashItem firstBody then
                 // a block sequence: items at exactly this indent
                 let rec items i acc =
                     if i >= fin then
@@ -824,12 +807,7 @@ let rec private parseBlock
                             Error(misIndented no indent)
                         elif ind > indent then
                             Error $"line {no}: unexpected indentation (a sequence item line must start with '- ')"
-                        elif
-                            not (
-                                raw.Substring(indent).StartsWith "- "
-                                || raw.Substring(indent).TrimEnd(yamlWs) = "-"
-                            )
-                        then
+                        elif not (isDashItem (raw.Substring indent)) then
                             Error $"line {no}: expected a '- ' sequence item at this indentation"
                         else
                             // the item's content: rest of this line at virtual
@@ -854,11 +832,19 @@ let rec private parseBlock
                                     else
                                         let inlineT = inline'.TrimStart(yamlWs)
 
+                                        let nested col =
+                                            let shifted =
+                                                Array.append
+                                                    [| no, String.replicate col " " + inlineT |]
+                                                    lines[i + 1 .. j - 1]
+
+                                            parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
+
                                         match (if j = i + 1 then emptyFlow no inline' else None) with
                                         | Some node ->
                                             // an empty flow collection as a sequence item
                                             Ok node
-                                        | None when inlineT.StartsWith "- " || inlineT.TrimEnd(yamlWs) = "-" ->
+                                        | None when isDashItem inlineT ->
                                             // a sequence nested on the dash line, `- - x`, any
                                             // depth — PyYAML's reading [D:yaml-inline-nested-seq]:
                                             // the inner sequence's column is the one after the
@@ -872,12 +858,7 @@ let rec private parseBlock
                                                 Error
                                                     $"line {no}: yaml nesting is too deep for a line this long — split the item over several lines"
                                             else
-                                                let shifted =
-                                                    Array.append
-                                                        [| no, String.replicate col " " + inlineT |]
-                                                        lines[i + 1 .. j - 1]
-
-                                                parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
+                                                nested col
                                         | None when
                                             // populated flow in item position: `- {a: 1}`
                                             // would otherwise be mis-split into a compact
@@ -895,14 +876,7 @@ let rec private parseBlock
                                                 // entry lives on this line at the column
                                                 // after the dash's gap (`-   x: 1` puts its
                                                 // siblings at indent+4, the 4-indent style)
-                                                let col = indent + 2 + indentOf inline'
-
-                                                let shifted =
-                                                    Array.append
-                                                        [| no, String.replicate col " " + inline'.TrimStart(yamlWs) |]
-                                                        lines[i + 1 .. j - 1]
-
-                                                parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
+                                                nested (indent + 2 + indentOf inline')
                                             | Ok None ->
                                                 match quotedValue no indent i j inline' with
                                                 | Some r -> r
@@ -986,9 +960,9 @@ let rec private parseBlock
                                                             Error
                                                                 $"line {no}: '{key}' has both an inline value and a nested block"
                                                         else
-                                                            match emptyFlow no rest with
-                                                            | Some node -> Ok node
-                                                            | None -> parseScalar no rest
+                                                            emptyFlow no rest
+                                                            |> Option.map Ok
+                                                            |> Option.defaultWith (fun () -> parseScalar no rest)
 
                                         match valueR with
                                         | Error e -> Error e
@@ -1005,9 +979,9 @@ let rec private parseBlock
                         if fin > start + 1 then
                             Error $"line {firstNo}: expected 'key:' or '- ' at this indentation"
                         else
-                            match emptyFlow firstNo firstBody with
-                            | Some node -> Ok node
-                            | None -> parseScalar firstNo firstBody
+                            emptyFlow firstNo firstBody
+                            |> Option.map Ok
+                            |> Option.defaultWith (fun () -> parseScalar firstNo firstBody)
 
 /// Parse numbered raw lines into documents (`---` separated, indent-0
 /// separators only; a leading `---` is allowed, a `...` ends a document)

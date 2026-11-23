@@ -31,10 +31,7 @@ type CommandAlias = { Exe: string; Prefix: string list }
 /// whole table.
 let parseAliasLine (body: string) : Result<string * CommandAlias, string> =
     // body is the text after `#alias`
-    match
-        body.Trim()
-        |> fun s -> System.Text.RegularExpressions.Regex.Match(s, @"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
-    with
+    match System.Text.RegularExpressions.Regex.Match(body.Trim(), @"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$") with
     | m when m.Success && Parser.isKeyword m.Groups.[1].Value ->
         // a keyword heads its own statement form, never a command — the
         // alias could never resolve
@@ -54,14 +51,12 @@ let parseAliasLine (body: string) : Result<string * CommandAlias, string> =
             rhsWords
             |> List.tryFind (fun w -> List.contains w [ "|"; "|>"; "||"; "&&"; ";" ])
 
-        match rhsWords with
-        | [] -> Error "#alias needs a target: '#alias name = command [args...]'"
-        | _ when chainGlyph.IsSome ->
-            let g = chainGlyph.Value
-
+        match rhsWords, chainGlyph with
+        | [], _ -> Error "#alias needs a target: '#alias name = command [args...]'"
+        | _, Some g ->
             Error
                 $"#alias {name}: '{g}' in an alias target is a literal argument, not a chain — an alias is one program plus fixed words; for a pipeline or a chain write a function: let {name} () = …"
-        | exe :: prefix ->
+        | exe :: prefix, None ->
             // `#alias ls = ls` (or `= ls --color`) is a legal shadow (bash
             // allows it), bypassable with `^ls` — register as-is
             Ok(name, { Exe = exe; Prefix = prefix })
@@ -337,6 +332,9 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
 
             None
 
+    let keyValueOnly (line: int) =
+        diags.Add(initError file line 1 None "session-shape" "a #session block takes 'key = value' lines only")
+
     // the #alias table [D:command-head-alias] — single-hop: a target naming
     // a different alias is refused (a self-shadow, `#alias ls = ls --color`,
     // targets the real binary and is legal)
@@ -432,19 +430,17 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                     $"#alias {name}: '{name}' is also declared in this file — the binding shadows the alias, so it would never resolve; pick another name"
             )
 
-    let rawArr = List.toArray lines
-
     let keyCol (lineNo: int) =
-        if lineNo >= 1 && lineNo <= rawArr.Length then
-            rawArr[lineNo - 1].Length - rawArr[lineNo - 1].TrimStart().Length + 1
+        if lineNo >= 1 && lineNo <= ownLines.Length then
+            ownLines[lineNo - 1].Length - ownLines[lineNo - 1].TrimStart().Length + 1
         else
             1
 
     // the value's column: past `key =` on the field's head line
     let valCol (lineNo: int) (key: string) =
-        if lineNo >= 1 && lineNo <= rawArr.Length then
+        if lineNo >= 1 && lineNo <= ownLines.Length then
             let m =
-                System.Text.RegularExpressions.Regex.Match(rawArr[lineNo - 1], @"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*")
+                System.Text.RegularExpressions.Regex.Match(ownLines[lineNo - 1], @"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*")
 
             if m.Success then
                 m.Length + 1
@@ -498,28 +494,16 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                         let kc = keyCol ll.Head
                         let vc = valCol ll.Head key
 
+                        let keyError (msg: string) =
+                            diags.Add(initError file ll.Head kc (Some(kc + key.Length)) "session-key" msg)
+
                         if not (Set.contains key knownSessionKeys) then
                             let hint = didYouMean key knownSessionKeys
 
-                            diags.Add(
-                                initError
-                                    file
-                                    ll.Head
-                                    kc
-                                    (Some(kc + key.Length))
-                                    "session-key"
-                                    $"unknown #session key '{key}'{hint} (the keys: cwd, env, logLevel, echoCap, prompt, continuationPrompt)"
-                            )
+                            keyError
+                                $"unknown #session key '{key}'{hint} (the keys: cwd, env, logLevel, echoCap, prompt, continuationPrompt)"
                         elif Set.contains key seen then
-                            diags.Add(
-                                initError
-                                    file
-                                    ll.Head
-                                    kc
-                                    (Some(kc + key.Length))
-                                    "session-key"
-                                    $"duplicate #session key '{key}'"
-                            )
+                            keyError $"duplicate #session key '{key}'"
                         elif Check.runsCommandT te then
                             diags.Add(
                                 initError
@@ -564,16 +548,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                 match valueMsg () with
                                 | Some msg -> diags.Add(initError file ll.Head vc None "session-value" msg)
                                 | None -> acc.Add(ll, key, te)
-                    | _ ->
-                        diags.Add(
-                            initError
-                                file
-                                ll.Head
-                                1
-                                None
-                                "session-shape"
-                                "a #session block takes 'key = value' lines only"
-                        )
+                    | _ -> keyValueOnly ll.Head
 
             List.ofSeq acc
 
@@ -628,27 +603,14 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                         "session-type"
                                         $"prompt expects a string, a unit -> string, or a PromptStatus -> string function (ok, a bare command's exit code, the entry's duration), got {formatTy ty}"
                                 )
-                        | _ ->
-                            diags.Add(
-                                initError
-                                    file
-                                    ll.Head
-                                    1
-                                    None
-                                    "session-shape"
-                                    "a #session block takes 'key = value' lines only"
-                            ))
+                        | _ -> keyValueOnly ll.Head)
 
                 match checkedPrompt with
                 | (ll, Ok { Kind = KLet("prompt", _, te) }) :: _ -> Some(ll, te)
                 | _ -> None
 
     let byPosition (ds: seq<Diagnostic>) =
-        ds
-        |> List.ofSeq
-        |> List.sortWith (fun a b ->
-            let byLine = compare a.Line b.Line
-            if byLine <> 0 then byLine else compare a.Col b.Col)
+        ds |> List.ofSeq |> List.sortBy (fun d -> d.Line, d.Col)
 
     {
         Diags = byPosition diags

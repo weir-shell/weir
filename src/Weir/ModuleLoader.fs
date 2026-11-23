@@ -374,10 +374,7 @@ let internal readImportSource (absPath: string) : ImportRead =
     else
 
         match importSourceOverride.Value with
-        | Some f ->
-            match f absPath with
-            | Some lines -> ISource lines
-            | None -> IAbsent
+        | Some f -> f absPath |> Option.map ISource |> Option.defaultValue IAbsent
         | None ->
             // present but unreadable — permission denied, a directory, a
             // device, an IO fault; name the path and the reason, located
@@ -574,13 +571,11 @@ type ModuleLoads() =
         (compute: unit -> Result<LoadedModule, ImportError>)
         : Result<LoadedModule, ImportError> =
         let realias (r: Result<LoadedModule, ImportError>) =
-            match r with
-            | Ok cached ->
-                Ok {
-                    cached with
-                        Alias = importAs |> Option.defaultValue cached.NaturalName
-                }
-            | Error _ -> r
+            r
+            |> Result.map (fun cached -> {
+                cached with
+                    Alias = importAs |> Option.defaultValue cached.NaturalName
+            })
 
         let claim =
             lock gate (fun () ->
@@ -762,27 +757,21 @@ let rec loadModuleCachedWith
                                         // a deeper module's error (File already set)
                                         // propagates unchanged; this module's own error
                                         // takes this module's site
-                                        match d.File with
-                                        | Some _ ->
-                                            Error {
-                                                File = d.File
-                                                Line = d.PhysLine
-                                                Col = d.PhysCol
-                                                Message = d.Message
-                                            }
-                                        | None -> at d.PhysLine d.PhysCol d.Message
+                                        Error {
+                                            File = d.File |> Option.orElse (Some absPath)
+                                            Line = d.PhysLine
+                                            Col = d.PhysCol
+                                            Message = d.Message
+                                        }
                                     | Ok chk ->
-                                        let eagerHelper =
+                                        let letRhs =
                                             match chk.Kind with
                                             | KLet(_, _, te)
-                                            | KLetPat(_, _, te) -> Check.eagerCommandHelper helpers te
+                                            | KLetPat(_, _, te) -> Some te
                                             | _ -> None
 
-                                        let runsNow =
-                                            match chk.Kind with
-                                            | KLet(_, _, te)
-                                            | KLetPat(_, _, te) -> Check.commandRunsNow helpers te
-                                            | _ -> None
+                                        let eagerHelper = letRhs |> Option.bind (Check.eagerCommandHelper helpers)
+                                        let runsNow = letRhs |> Option.bind (Check.commandRunsNow helpers)
 
                                         match chk.Kind with
                                         | KType(decl, _) when declaredTypes.ContainsKey decl.Name ->
@@ -906,9 +895,9 @@ let rec loadModuleCachedWith
                                         | None when not sigContract ->
                                             // an unsigned member the module never reads is
                                             // dead private code [D:unused-bindings]
-                                            match moduleUnused.Flush sc.Signed true |> List.tryHead with
-                                            | Some f -> Some(f.ULine, f.UCol, f.UMessage)
-                                            | None -> None
+                                            moduleUnused.Flush sc.Signed true
+                                            |> List.tryHead
+                                            |> Option.map (fun f -> f.ULine, f.UCol, f.UMessage)
                                         | None -> None
 
                                 match lawError with
@@ -957,15 +946,10 @@ let rec loadModuleCachedWith
                                         |> Map.toList
                                         |> List.filter (fun (n, _) -> declared.Contains n)
 
-                                    let members =
+                                    let members, privateMembers =
                                         ownMembers
-                                        |> List.filter (fun (n, _) ->
+                                        |> List.partition (fun (n, _) ->
                                             Set.contains n sc.Signed || Set.contains n ctorNames)
-
-                                    let privateMembers =
-                                        ownMembers
-                                        |> List.filter (fun (n, _) ->
-                                            not (Set.contains n sc.Signed) && not (Set.contains n ctorNames))
 
                                     // an imported type reachable from what this module
                                     // exports (a signature, an own type's field or case)
@@ -1091,6 +1075,15 @@ let internal bindsOf (venv: Eval.Env) (stmt: CheckedStmt) : (Eval.Env * (string 
     | CNoop
     | CImport _ -> None
 
+let private expose (alias: string) (members: (string * Scheme) list) (from: Eval.Env) (into: Eval.Env) =
+    members
+    |> List.fold
+        (fun acc (n, _) ->
+            match Map.tryFind n from with
+            | Some v -> Map.add $"{alias}.{n}" v acc
+            | None -> acc)
+        into
+
 let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) : Eval.Env =
     let key = realPath lm.AbsPath
 
@@ -1112,25 +1105,13 @@ and private replayModuleBody (procFacts: (string * Eval.Value) list) (lm: Loaded
     let _, mBase0 = moduleBaseEnvs lm.AbsPath
     let mBase = procFacts |> List.fold (fun m (k, v) -> Map.add k v m) mBase0
 
-    let expose (alias: string) (members: (string * Scheme) list) (from: Eval.Env) (into: Eval.Env) =
-        members
-        |> List.fold
-            (fun acc (n, _) ->
-                match Map.tryFind n from with
-                | Some v -> Map.add $"{alias}.{n}" v acc
-                | None -> acc)
-            into
-
     let rec replay (mv: Eval.Env) body =
         match body with
         | [] -> mv
         | (_, CImport nested) :: t ->
             let nestedVenv = replayModule procFacts nested
             replay (expose nested.Alias nested.Members nestedVenv mv) t
-        | (_, stmt) :: t ->
-            match bindsOf mv stmt with
-            | Some(bound, _) -> replay bound t
-            | None -> replay mv t
+        | (_, stmt) :: t -> replay (bindsOf mv stmt |> Option.map fst |> Option.defaultValue mv) t
 
     replay mBase lm.Body
 
@@ -1142,14 +1123,18 @@ let importInto (venv: Eval.Env) (lm: LoadedModule) : Eval.Env =
         |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
 
     let moduleVenv = replayModule procFacts lm
+    expose lm.Alias lm.Members moduleVenv venv
 
-    lm.Members
-    |> List.fold
-        (fun acc (n, _) ->
-            match Map.tryFind n moduleVenv with
-            | Some v -> Map.add $"{lm.Alias}.{n}" v acc
-            | None -> acc)
-        venv
+let private memberCountOf (r: Result<LoadedModule, ImportError>) : Result<int, string> =
+    match r with
+    | Ok lm -> Ok(List.length lm.Members)
+    | Error e ->
+        let where =
+            match e.File with
+            | Some f -> $"{quoteData f}:{e.Line}:{e.Col}: "
+            | None -> ""
+
+        Error $"{where}{e.Message}"
 
 /// add-time validation for a single fetched module file [D:add-module]:
 /// the same loader imports use — is-a-module, the module purity rules, a
@@ -1171,15 +1156,8 @@ let checkVendoredModule (absPath: string) : Result<int, string> =
             // absPath, so the self-import guard stays quiet
             let phantom = absPath + ".add"
 
-            match loadModuleCachedWith false resolver loads [] phantom absPath None with
-            | Ok lm -> Ok(List.length lm.Members)
-            | Error e ->
-                let where =
-                    match e.File with
-                    | Some f -> $"{quoteData f}:{e.Line}:{e.Col}: "
-                    | None -> ""
-
-                Error $"{where}{e.Message}"
+            loadModuleCachedWith false resolver loads [] phantom absPath None
+            |> memberCountOf
 
 // ---- vendoring a module's closure [D:add-module-closure] ------------------
 
@@ -1313,15 +1291,8 @@ let checkVendoredClosure (dir: string) (entryRel: string) : Result<int, string> 
     let entryAbs = IO.Path.GetFullPath(IO.Path.Combine(dir, entryRel))
     let loads = ModuleLoads()
 
-    match loadModuleCachedWith false resolver loads [] (entryAbs + ".add") entryAbs None with
-    | Ok lm -> Ok(List.length lm.Members)
-    | Error e ->
-        let where =
-            match e.File with
-            | Some f -> $"{quoteData f}:{e.Line}:{e.Col}: "
-            | None -> ""
-
-        Error $"{where}{e.Message}"
+    loadModuleCachedWith false resolver loads [] (entryAbs + ".add") entryAbs None
+    |> memberCountOf
 
 // where a file's imports resolve from: its real location, through a
 // symlink [D:init-import] — a linked dotfile or ~/bin script finds its

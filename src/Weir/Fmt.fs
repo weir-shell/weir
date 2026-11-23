@@ -7,6 +7,9 @@ open Weir.Ast
 // trimming it would change whether the file checks
 let private parserWs = [| ' '; '\t'; '\r'; '\n' |]
 
+let private indentOf (s: string) =
+    s |> Seq.takeWhile ((=) ' ') |> Seq.length
+
 let collectBareUses (e: Expr) : (Span * string) list =
     // traversal is Ast.exprChildren's job; only EVar collects
     let acc = ResizeArray<Span * string>()
@@ -76,9 +79,6 @@ let private canonicalizeDocs (out: string list) : string list =
 // uniform shift.
 let private canonicalizeDistrictMarkers (body: string list) : string list =
     let arr = List.toArray body
-
-    let indentOf (s: string) =
-        s |> Seq.takeWhile ((=) ' ') |> Seq.length
 
     let isBlank (s: string) = s.Trim(parserWs) = ""
 
@@ -266,12 +266,12 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
     // the gate reads comment lines as the script reader does: inside a
     // heredoc they are content and can break its layout [D:one-pipeline]
     let gate =
-        match logicalAt lineOffset body with
-        | Ok lls ->
-            match body |> List.mapi (fun i l -> i + 1 + lineOffset, l) |> Assemble.assemble with
-            | Error e -> Error e
-            | Ok _ -> Ok lls
-        | Error e -> Error e
+        logicalAt lineOffset body
+        |> Result.bind (fun lls ->
+            body
+            |> List.mapi (fun i l -> i + 1 + lineOffset, l)
+            |> Assemble.assemble
+            |> Result.map (fun _ -> lls))
 
     match gate with
     | Error e ->
@@ -329,7 +329,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
             for i in arr.Length - 1 .. -1 .. 0 do
                 out[i] <-
                     if Assemble.classifyLine arr[i] = Assemble.LineKind.Code then
-                        arr[i] |> Seq.takeWhile ((=) ' ') |> Seq.length
+                        indentOf arr[i]
                     else
                         out[i + 1]
 
@@ -346,7 +346,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
 
             while not stop && j < arr.Length do
                 if Assemble.classifyLine arr[j] = Assemble.LineKind.Code then
-                    let i = arr[j] |> Seq.takeWhile ((=) ' ') |> Seq.length
+                    let i = indentOf arr[j]
 
                     if i <= parent then
                         stop <- true
@@ -374,7 +374,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                     // — except inside a yaml district, where the line
                     // is content [D:content-bytes] and rides the
                     // re-anchor
-                    let cIndent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
+                    let cIndent = indentOf raw
 
                     match district with
                     | Some(m, mDepth) when yamlDistrict && cIndent > m ->
@@ -394,7 +394,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                         + raw.Substring(min cIndent raw.Length)
                     | _ -> raw.TrimEnd(parserWs)
                 else
-                    let indent = code |> Seq.takeWhile ((=) ' ') |> Seq.length
+                    let indent = indentOf code
                     let piece = code.TrimStart(parserWs)
 
                     match district with
@@ -696,9 +696,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                 }
 
                 let shapeWith (r: Parser.Resolver) (text: string) =
-                    match Parser.parseLine r text with
-                    | Ok stmt -> Some(sexprStmt stmt)
-                    | Error _ -> None
+                    Parser.parseLine r text |> Result.toOption |> Option.map sexprStmt
 
                 let shape = shapeWith shapeResolver
                 let shapeExpr = shapeWith exprResolver
@@ -823,9 +821,6 @@ let formatLines (body: string list) : Result<string list, string> = formatSettle
 let private alignSessionFields (body: string list) : string list =
     let fieldStart = System.Text.RegularExpressions.Regex @"^[A-Za-z_][A-Za-z0-9_]*\s*="
 
-    let indentOf (l: string) =
-        l |> Seq.takeWhile ((=) ' ') |> Seq.length
-
     let mutable inBlock = false
     let mutable delta = 0
 
@@ -937,6 +932,26 @@ let formatSource (path: string) (text: string) : Result<string list * bool, stri
             let result = header @ trimmed
             Ok(result, (result <> lines || not finalNewline)))
 
+let private rewriteUses (replacementOf: string -> string option) (uses: (Span * string) list) (line: string) : string =
+    uses
+    // right-to-left so earlier column offsets stay valid
+    |> List.sortByDescending (fun (sp, _) -> sp.Start.Col)
+    |> List.fold
+        (fun (acc: string) (sp, name) ->
+            let col = sp.Start.Col - 1 // 1-based -> 0-based
+
+            if
+                col >= 0
+                && col + name.Length <= acc.Length
+                && acc.Substring(col, name.Length) = name
+            then
+                match replacementOf name with
+                | Some replacement -> acc.Substring(0, col) + replacement + acc.Substring(col + name.Length)
+                | None -> acc
+            else
+                acc)
+        line
+
 // #save's bare-alias qualifier [D:repl-save]: a saved script is
 // strict, where bare aliases (`map`, `where`, `startsWith`) do not
 // exist — so each single-home bare name is rewritten to its qualified
@@ -957,24 +972,12 @@ let qualifyBareAliasesExcept (bound: Set<string>) (r: Parser.Resolver) (line: st
             Parser.stmtExprs stmt
             |> List.collect collectBareUses
             |> List.filter (fun (_, name) -> not (bound.Contains name))
-            // right-to-left so earlier column offsets stay valid
-            |> List.sortByDescending (fun (sp, _) -> sp.Start.Col)
 
-        uses
-        |> List.fold
-            (fun (acc: string) (sp, name) ->
-                let col = sp.Start.Col - 1 // 1-based -> 0-based
-
-                if
-                    col >= 0
-                    && col + name.Length <= acc.Length
-                    && acc.Substring(col, name.Length) = name
-                then
-                    match Map.tryFind name Builtins.bareAliasHomes with
-                    | Some home -> acc.Substring(0, col) + $"{home}.{name}" + acc.Substring(col + name.Length)
-                    | None -> acc
-                else
-                    acc)
+        rewriteUses
+            (fun name ->
+                Map.tryFind name Builtins.bareAliasHomes
+                |> Option.map (fun home -> $"{home}.{name}"))
+            uses
             line
 
 let qualifyBareAliases (r: Parser.Resolver) (line: string) : string =
@@ -1024,42 +1027,23 @@ let desugarAliasHeads (r: Parser.Resolver) (aliasOf: string -> (string * string 
     match Parser.parseLineFull r line with
     | Error _ -> line
     | Ok stmt ->
-        let heads =
-            Parser.stmtExprs stmt
-            |> List.collect collectCmdHeads
-            // right-to-left so earlier column offsets stay valid
-            |> List.sortByDescending (fun (sp, _) -> sp.Start.Col)
+        let heads = Parser.stmtExprs stmt |> List.collect collectCmdHeads
 
-        heads
-        |> List.fold
-            (fun (acc: string) (sp, name) ->
-                let col = sp.Start.Col - 1 // 1-based -> 0-based
+        rewriteUses
+            (fun name ->
+                aliasOf name
+                |> Option.map (fun (exe, prefix) ->
+                    // a target that names a weir value (`ls`) would read
+                    // as that value in a script: force the PATH binary,
+                    // as the alias did (`cd` stays — it is command-callable)
+                    let exe =
+                        if r.IsKnown exe && not (r.IsCommandCallable exe) then
+                            "^" + exe
+                        else
+                            exe
 
-                if
-                    col >= 0
-                    && col + name.Length <= acc.Length
-                    && acc.Substring(col, name.Length) = name
-                then
-                    match aliasOf name with
-                    | Some(exe, prefix) ->
-                        // a target that names a weir value (`ls`) would read
-                        // as that value in a script: force the PATH binary,
-                        // as the alias did (`cd` stays — it is command-callable)
-                        let exe =
-                            if r.IsKnown exe && not (r.IsCommandCallable exe) then
-                                "^" + exe
-                            else
-                                exe
-
-                        let replacement =
-                            match prefix with
-                            | [] -> exe
-                            | _ -> exe + " " + String.concat " " prefix
-
-                        acc.Substring(0, col) + replacement + acc.Substring(col + name.Length)
-                    | None -> acc
-                else
-                    acc)
+                    String.concat " " (exe :: prefix)))
+            heads
             line
 
 let formatFile (checkOnly: bool) (path: string) : int =

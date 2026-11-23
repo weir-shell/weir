@@ -161,10 +161,7 @@ let getEnvIn (layers: (string * string) list list) (name: string) : string optio
     layers
     |> List.tryPick (fun layer -> layer |> List.rev |> List.tryFind (fun (k, _) -> envNameCmp.Equals(k, name)))
     |> Option.map snd
-    |> Option.orElseWith (fun () ->
-        match System.Environment.GetEnvironmentVariable name with
-        | null -> None
-        | v -> Some v)
+    |> Option.orElseWith (fun () -> Option.ofObj (System.Environment.GetEnvironmentVariable name))
 
 /// one var under the live overlay
 let getEnv (name: string) : string option = getEnvIn (envOverlay ()) name
@@ -2271,6 +2268,13 @@ let markUndecided (at: int -> byte) (n: int) : bool =
 
                same))
 
+/// a child's pipe end as an fd the poller can watch, or -1
+let pipeFd (s: System.IO.Stream) : int =
+    match s with
+    | :? System.IO.Pipes.PipeStream as ps when not (System.OperatingSystem.IsWindows()) ->
+        int (ps.SafePipeHandle.DangerousGetHandle())
+    | _ -> -1
+
 type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Process) =
     inherit System.IO.Stream()
 
@@ -2280,11 +2284,7 @@ type private CutStream(inner: System.IO.Stream, child: System.Diagnostics.Proces
     let mutable headLen = 0
     let mutable headAt = -1
 
-    let fd =
-        match inner with
-        | :? System.IO.Pipes.PipeStream as ps when not (System.OperatingSystem.IsWindows()) ->
-            int (ps.SafePipeHandle.DangerousGetHandle())
-        | _ -> -1
+    let fd = pipeFd inner
 
     // a cut this read honours: any but the soft teardown's, and that one
     // too once the child has exited
@@ -2619,13 +2619,6 @@ let pipesReady (streams: System.IO.Stream[]) : System.Threading.Tasks.Task =
             |> ignore
 
         w.Done.Task
-
-/// a child's pipe end as an fd the poller can watch, or -1
-let pipeFd (s: System.IO.Stream) : int =
-    match s with
-    | :? System.IO.Pipes.PipeStream as ps when not (System.OperatingSystem.IsWindows()) ->
-        int (ps.SafePipeHandle.DangerousGetHandle())
-    | _ -> -1
 
 /// completes once a write of up to PIPE_BUF bytes to `fd` would not wait
 /// (or the pipe broke — the write then reports it)

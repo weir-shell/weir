@@ -108,6 +108,24 @@ let private ws (st: St) =
 
     st.I <- i
 
+let inline private finish (st: St) (start: int) (kind: ExprKind) : Expr =
+    let e = {
+        Kind = kind
+        Span = { Start = at start; End = here st }
+    }
+
+    ws st
+    e
+
+let inline private finishPat (st: St) (start: int) (kind: PatternKind) : Pattern =
+    let p = {
+        PKind = kind
+        PSpan = { Start = at start; End = here st }
+    }
+
+    ws st
+    p
+
 let private matches (st: St) (s: string) =
     String.CompareOrdinal(st.Text, st.I, s, 0, s.Length) = 0
 
@@ -161,6 +179,9 @@ let private strWs (st: St) (s: string) : bool =
 let private expect (st: St) (s: string) : unit =
     if not (strWs st s) then
         st.Ok <- false
+
+let private atEnd (st: St) : bool =
+    st.Ok && (st.I = st.Text.Length || refuse st)
 
 // the record/list field separator: `;` or the assembler's sentinel
 let private fieldSepP (st: St) : bool = strWs st ";" || strWs st fieldSepStr
@@ -366,7 +387,6 @@ let private headOf (st: St) (builtinHeads: bool) : Head =
 // the statement-position guards that fire before the expression grammar
 // gets a look: foreign keywords, `NAME=value` env prefixes, `\`-heads
 let private guardedHead (st: St) : bool =
-    let t = st.Text
     let c = peek st
 
     if c = '\\' then
@@ -377,9 +397,8 @@ let private guardedHead (st: St) : bool =
         if w = "while" || w = "return" || w = "try" || w = "def" then
             true
         else
-            let j = st.I + w.Length
             // an env prefix is `ident=` glued, never `==`
-            j < t.Length && t[j] = '=' && not (j + 1 < t.Length && t[j + 1] = '=')
+            envPrefixAhead st
     else
         false
 
@@ -580,13 +599,7 @@ let private intLit (st: St) : Expr =
         if not st.Ok then
             Unchecked.defaultof<_>
         else
-            let e = {
-                Kind = kind
-                Span = { Start = at start; End = here st }
-            }
-
-            ws st
-            e
+            finish st start kind
 
 // the one escape decoder, plain strings and interpolation text alike
 let private escape (st: St) (sb: Text.StringBuilder) : unit =
@@ -594,20 +607,15 @@ let private escape (st: St) (sb: Text.StringBuilder) : unit =
     st.I <- st.I + 1
 
     match peek st with
-    | '"' ->
-        sb.Append '"' |> ignore
-        st.I <- st.I + 1
-    | '\\' ->
-        sb.Append '\\' |> ignore
-        st.I <- st.I + 1
-    | 'n' ->
-        sb.Append '\n' |> ignore
-        st.I <- st.I + 1
-    | 't' ->
-        sb.Append '\t' |> ignore
-        st.I <- st.I + 1
-    | 'e' ->
-        sb.Append '\u001b' |> ignore
+    | ('"' | '\\' | 'n' | 't' | 'e') as c ->
+        let decoded =
+            match c with
+            | 'n' -> '\n'
+            | 't' -> '\t'
+            | 'e' -> '\u001b'
+            | c -> c
+
+        sb.Append decoded |> ignore
         st.I <- st.I + 1
     | 'u' ->
         st.I <- st.I + 1
@@ -727,13 +735,7 @@ let private stringAtom (st: St) : Expr =
     if not st.Ok then
         Unchecked.defaultof<_>
     else
-        let e = {
-            Kind = EStr body
-            Span = { Start = at start; End = here st }
-        }
-
-        ws st
-        e
+        finish st start (EStr body)
 
 // ---- types -----------------------------------------------------------------
 let rec private tySyn (st: St) : Ty =
@@ -986,14 +988,7 @@ let private singleQuotedArg (st: St) : Expr =
         refuse st
     else
         st.I <- j + 1
-
-        let e = {
-            Kind = EStr(st.Text.Substring(s + 1, j - s - 1))
-            Span = { Start = at s; End = here st }
-        }
-
-        ws st
-        e
+        finish st s (EStr(st.Text.Substring(s + 1, j - s - 1)))
 
 let private bareword (st: St) : Expr =
     let t = st.Text
@@ -1070,6 +1065,11 @@ let private armSeq (st: St) (items: struct (Expr * bool) list) : Expr =
                 e)
 
     if st.Ok then foldSeqExpr armed else Unchecked.defaultof<_>
+
+let private foldOrRefuse (st: St) (lhs: Expr) rest : Expr =
+    match foldChain st.R.BareHome lhs rest with
+    | Result.Ok e -> e
+    | Result.Error _ -> refuse st
 
 // ---- the expression grammar ------------------------------------------------
 let rec private seqExpr (st: St) : Expr =
@@ -1438,10 +1438,9 @@ and private indexOrSlice (st: St) (target: Expr) : Expr =
 
             if st.Ok then
                 e
-            elif retry st (if loCaret then save + 1 else save) then
-                // no expression here: the chain ends (`f[` + a list, say)
-                Unchecked.defaultof<Expr>
             else
+                // no expression here: the chain ends (`f[` + a list, say)
+                retry st (if loCaret then save + 1 else save) |> ignore
                 Unchecked.defaultof<Expr>
 
     if not st.Ok then
@@ -1460,10 +1459,8 @@ and private indexOrSlice (st: St) (target: Expr) : Expr =
                 if st.Ok then e else Unchecked.defaultof<Expr>
 
         if not st.Ok then
-            if retry st save then
-                Unchecked.defaultof<_>
-            else
-                Unchecked.defaultof<_>
+            retry st save |> ignore
+            Unchecked.defaultof<_>
         elif peek st = ']' then
             st.I <- st.I + 1
             let endP = here st
@@ -1625,14 +1622,7 @@ and private parenAtom (st: St) : Expr =
 
     if peek st = ')' then
         st.I <- st.I + 1
-
-        let e = {
-            Kind = EUnit
-            Span = { Start = at start; End = here st }
-        }
-
-        ws st
-        e
+        finish st start EUnit
     else
         // `(op)`: an operator value, or one of the refused spellings
         let opText =
@@ -1685,14 +1675,7 @@ and private parenAtom (st: St) : Expr =
                     | "="
                     | "!="
                     | "<|" -> refuse st
-                    | op ->
-                        let e = {
-                            Kind = EOpValue op
-                            Span = { Start = at start; End = here st }
-                        }
-
-                        ws st
-                        e
+                    | op -> finish st start (EOpValue op)
                 else
                     st.I <- save
                     Unchecked.defaultof<_>
@@ -1779,14 +1762,7 @@ and private recordLit (st: St) : Expr =
             refuse st
         else
             st.I <- st.I + 1
-
-            let e = {
-                Kind = ERecord(List.rev fields)
-                Span = { Start = at start; End = here st }
-            }
-
-            ws st
-            e
+            finish st start (ERecord(List.rev fields))
     else
         // copy-and-update: a compound-free source, `with`, paths
         let src = opp st appChain 1
@@ -1840,14 +1816,7 @@ and private recordLit (st: St) : Expr =
                 refuse st
             else
                 st.I <- st.I + 1
-
-                let e = {
-                    Kind = EUpdate(src, List.rev ups)
-                    Span = { Start = at start; End = here st }
-                }
-
-                ws st
-                e
+                finish st start (EUpdate(src, List.rev ups))
 
 and private anonRecordLit (st: St) : Expr =
     let start = st.I
@@ -1898,14 +1867,7 @@ and private anonRecordLit (st: St) : Expr =
             refuse st
         else
             st.I <- st.I + 2
-
-            let e = {
-                Kind = EAnonRecord(List.rev fields)
-                Span = { Start = at start; End = here st }
-            }
-
-            ws st
-            e
+            finish st start (EAnonRecord(List.rev fields))
 
 // a range endpoint: a negative literal, or an atom with field suffixes
 and private rangeTerm (st: St) : Expr =
@@ -1918,14 +1880,7 @@ and private rangeTerm (st: St) : Expr =
         st.I <- st.I + digits.Length
 
         match Int64.TryParse("-" + digits) with
-        | true, n ->
-            let e = {
-                Kind = EInt n
-                Span = { Start = at start; End = here st }
-            }
-
-            ws st
-            e
+        | true, n -> finish st start (EInt n)
         | _ -> refuse st
     else
         let a = atom st
@@ -2019,14 +1974,7 @@ and private listLit (st: St) : Expr =
         asRange
     elif peek st = ']' then
         st.I <- st.I + 1
-
-        let e = {
-            Kind = EList []
-            Span = { Start = at start; End = here st }
-        }
-
-        ws st
-        e
+        finish st start (EList [])
     else
         let mutable items = []
         let mutable go = true
@@ -2046,14 +1994,7 @@ and private listLit (st: St) : Expr =
             refuse st
         else
             st.I <- st.I + 1
-
-            let e = {
-                Kind = EList(List.rev items)
-                Span = { Start = at start; End = here st }
-            }
-
-            ws st
-            e
+            finish st start (EList(List.rev items))
 
 and private interpLit (st: St) : Expr =
     let start = st.I
@@ -2103,14 +2044,7 @@ and private interpLit (st: St) : Expr =
             Unchecked.defaultof<_>
         else
             st.I <- st.I + 3
-
-            let e = {
-                Kind = EInterp(List.rev parts)
-                Span = { Start = at start; End = here st }
-            }
-
-            ws st
-            e
+            finish st start (EInterp(List.rev parts))
     else
         st.I <- st.I + 2
         let t = st.Text
@@ -2164,14 +2098,7 @@ and private interpLit (st: St) : Expr =
             Unchecked.defaultof<_>
         else
             st.I <- st.I + 1
-
-            let e = {
-                Kind = EInterp(List.rev parts)
-                Span = { Start = at start; End = here st }
-            }
-
-            ws st
-            e
+            finish st start (EInterp(List.rev parts))
 
 // ---- binders and patterns ----------------------------------------------
 and private binderParam (st: St) : Pattern =
@@ -2179,14 +2106,7 @@ and private binderParam (st: St) : Pattern =
     if matches st "()" then
         let s = st.I
         st.I <- st.I + 2
-
-        let p = {
-            PKind = PUnit
-            PSpan = { Start = at s; End = here st }
-        }
-
-        ws st
-        p
+        finishPat st s PUnit
     else
         let c = peek st
 
@@ -2330,14 +2250,7 @@ and private patAt (st: St) (withArg: bool) : Pattern =
 
     if matches st "()" then
         st.I <- st.I + 2
-
-        let p = {
-            PKind = PUnit
-            PSpan = { Start = at start; End = here st }
-        }
-
-        ws st
-        p
+        finishPat st start PUnit
     elif isDigit c || (c = '-' && isDigit (peekAt st 1)) then
         let neg = c = '-'
 
@@ -2348,14 +2261,7 @@ and private patAt (st: St) (withArg: bool) : Pattern =
         st.I <- st.I + digits.Length
 
         match Int64.TryParse((if neg then "-" else "") + digits) with
-        | true, n ->
-            let p = {
-                PKind = PInt n
-                PSpan = { Start = at start; End = here st }
-            }
-
-            ws st
-            p
+        | true, n -> finishPat st start (PInt n)
         | _ -> refuse st
     elif c = '"' || (c = '@' && peekAt st 1 = '"') then
         let s = patString st
@@ -2363,13 +2269,7 @@ and private patAt (st: St) (withArg: bool) : Pattern =
         if not st.Ok then
             Unchecked.defaultof<_>
         else
-            let p = {
-                PKind = PStr s
-                PSpan = { Start = at start; End = here st }
-            }
-
-            ws st
-            p
+            finishPat st start (PStr s)
     elif c = '(' then
         st.I <- st.I + 1
         ws st
@@ -2385,14 +2285,7 @@ and private patAt (st: St) (withArg: bool) : Pattern =
 
         if peek st = ']' then
             st.I <- st.I + 1
-
-            let p = {
-                PKind = PSeqNil
-                PSpan = { Start = at start; End = here st }
-            }
-
-            ws st
-            p
+            finishPat st start PSeqNil
         else
             let mutable items = []
             let mutable go = true
@@ -2412,14 +2305,7 @@ and private patAt (st: St) (withArg: bool) : Pattern =
                 refuse st
             else
                 st.I <- st.I + 1
-
-                let p = {
-                    PKind = PSeqList(List.rev items)
-                    PSpan = { Start = at start; End = here st }
-                }
-
-                ws st
-                p
+                finishPat st start (PSeqList(List.rev items))
     elif c = '{' then
         st.I <- st.I + 1
         ws st
@@ -2448,14 +2334,7 @@ and private patAt (st: St) (withArg: bool) : Pattern =
             refuse st
         else
             st.I <- st.I + 1
-
-            let p = {
-                PKind = PRecord(List.rev fields)
-                PSpan = { Start = at start; End = here st }
-            }
-
-            ws st
-            p
+            finishPat st start (PRecord(List.rev fields))
     elif isIdentStart c then
         let w = wordAhead st
 
@@ -2799,17 +2678,7 @@ and private matchArm (st: St) : (Pattern * Expr option * Expr) list =
     if not st.Ok then
         Unchecked.defaultof<_>
     else
-        let mutable alts = []
-
-        while st.Ok && peek st = '|' && peekAt st 1 <> '|' && peekAt st 1 <> '>' do
-            st.I <- st.I + 1
-            ws st
-            let a = commaPats st
-
-            if st.Ok then
-                alts <- a :: alts
-
-        let alts = List.rev alts
+        let alts = List.rev (orAlts st)
 
         if not st.Ok then
             Unchecked.defaultof<_>
@@ -2843,6 +2712,20 @@ and private matchArm (st: St) : (Pattern * Expr option * Expr) list =
                     (p :: alts) |> List.map (fun pat -> pat, guard, body)
                 else
                     Unchecked.defaultof<_>
+
+// an or-pattern's alternatives, last first
+and private orAlts (st: St) : Pattern list =
+    let mutable alts = []
+
+    while st.Ok && peek st = '|' && peekAt st 1 <> '|' && peekAt st 1 <> '>' do
+        st.I <- st.I + 1
+        ws st
+        let a = commaPats st
+
+        if st.Ok then
+            alts <- a :: alts
+
+    alts
 
 and private matchArms (st: St) : (Pattern * Expr option * Expr) list =
     strWs st "|" |> ignore
@@ -2966,13 +2849,7 @@ and private fromExpr (st: St) : Expr =
     if isNull' fmt then
         refuse st
     else
-        let streamW =
-            if matches st "stream" && not (isIdentCont (peekAt st 6)) then
-                st.I <- st.I + 6
-                ws st
-                true
-            else
-                false
+        let streamW = keyword st "stream"
 
         let arg: (FromShape * bool) option =
             if matches st "{|" then
@@ -3059,13 +2936,7 @@ and private toExpr (st: St) : Expr =
     if isNull' fmt then
         refuse st
     else
-        let streamW =
-            if matches st "stream" && not (isIdentCont (peekAt st 6)) then
-                st.I <- st.I + 6
-                ws st
-                true
-            else
-                false
+        let streamW = keyword st "stream"
 
         {
             Kind = ETo(fmt, streamW)
@@ -3076,13 +2947,7 @@ and private tryForm (st: St) : Expr =
     let s = st.I
     keyword st "try" |> ignore
 
-    let asResult =
-        if matches st "result" && not (isIdentCont (peekAt st 6)) then
-            st.I <- st.I + 6
-            ws st
-            true
-        else
-            false
+    let asResult = keyword st "result"
 
     {
         Kind = ETryForm asResult
@@ -3159,13 +3024,7 @@ and private cmdArgs (st: St) (stops: int) : Expr list =
                         if not st.Ok then
                             Unchecked.defaultof<_>
                         else
-                            let e = {
-                                Kind = ESplat inner
-                                Span = { Start = at s; End = here st }
-                            }
-
-                            ws st
-                            e
+                            finish st s (ESplat inner)
                 elif isIdentStart d then
                     if midWord () then
                         refuse st
@@ -3467,15 +3326,7 @@ and private armBoundaryAhead (st: St) : bool =
             false
         else
             let p = commaPats st
-            let mutable alts = []
-
-            while st.Ok && peek st = '|' && peekAt st 1 <> '|' && peekAt st 1 <> '>' do
-                st.I <- st.I + 1
-                ws st
-                let a = commaPats st
-
-                if st.Ok then
-                    alts <- a :: alts
+            let alts = orAlts st
 
             let boundary =
                 st.Ok
@@ -3604,9 +3455,7 @@ and private cmdLine (st: St) (builtinHeads: bool) (stops: int) (sigilEnv: Expr o
         if not st.Ok then
             Unchecked.defaultof<_>
         else
-            match foldChain st.R.BareHome head rest with
-            | Result.Ok e -> e
-            | Result.Error _ -> refuse st
+            foldOrRefuse st head rest
 
 // a value-headed pipeline [D:value-headed-pipe]: `xs | prog …`, the gate
 // (a single `|`, no chain word or reifier, an external head) then the
@@ -3647,10 +3496,7 @@ and private valueHeaded (st: St) (lhs: Expr) : Expr =
         match stages with
         | _ when not st.Ok -> Unchecked.defaultof<_>
         | [] -> lhs
-        | (_, Stage { Kind = ECmd _ }) :: _ ->
-            match foldChain st.R.BareHome lhs stages with
-            | Result.Ok e -> e
-            | Result.Error _ -> refuse st
+        | (_, Stage { Kind = ECmd _ }) :: _ -> foldOrRefuse st lhs stages
         | _ -> refuse st
 
 // within <kind> … [D:within-scopes]: cd/env/lock take one atom (env its
@@ -3946,10 +3792,7 @@ and private retryForm (st: St) : Expr =
                 Unchecked.defaultof<_>
             else
                 (strWs st ";" || strWs st sibSepStr) |> ignore
-                let savedParen = st.ExprParen
-                st.ExprParen <- false
-                let body = withStmtLetCmd st seqExpr
-                st.ExprParen <- savedParen
+                let body = stmtBody st
 
                 if not st.Ok then
                     Unchecked.defaultof<_>
@@ -3966,13 +3809,7 @@ and private retryForm (st: St) : Expr =
                             else
                                 (strWs st ";" || strWs st sibSepStr) |> ignore
 
-                                let pred =
-                                    withLocals st [ b ] (fun st ->
-                                        let savedParen = st.ExprParen
-                                        st.ExprParen <- false
-                                        let e = withStmtLetCmd st seqExpr
-                                        st.ExprParen <- savedParen
-                                        e)
+                                let pred = withLocals st [ b ] stmtBody
 
                                 if st.Ok then Some((b, bspan), pred) else None
                         else
@@ -4112,17 +3949,21 @@ let private attrArg (st: St) : AttrArg option =
                     else
                         n * factor
 
+                let scaledTo (mk: int64 -> AttrArg) (factor: int64) =
+                    let v = scaled factor
+                    if st.Ok then Some(mk v) else None
+
                 match unit with
                 | null -> Some(AInt n)
                 | "ms" -> Some(ADur n)
-                | "s" -> let v = scaled 1000L in if st.Ok then Some(ADur v) else None
-                | "m" -> let v = scaled 60000L in if st.Ok then Some(ADur v) else None
-                | "h" -> let v = scaled 3600000L in if st.Ok then Some(ADur v) else None
+                | "s" -> scaledTo ADur 1000L
+                | "m" -> scaledTo ADur 60000L
+                | "h" -> scaledTo ADur 3600000L
                 | "B" -> Some(ASize n)
-                | "KiB" -> let v = scaled 1024L in if st.Ok then Some(ASize v) else None
-                | "MiB" -> let v = scaled (1024L * 1024L) in if st.Ok then Some(ASize v) else None
-                | "GiB" -> let v = scaled (1024L * 1024L * 1024L) in if st.Ok then Some(ASize v) else None
-                | _ -> let v = scaled (1024L * 1024L * 1024L * 1024L) in if st.Ok then Some(ASize v) else None
+                | "KiB" -> scaledTo ASize 1024L
+                | "MiB" -> scaledTo ASize (1024L * 1024L)
+                | "GiB" -> scaledTo ASize (1024L * 1024L * 1024L)
+                | _ -> scaledTo ASize (1024L * 1024L * 1024L * 1024L)
     elif keywordAhead st "true" then
         st.I <- st.I + 4
         Some(ABool true)
@@ -4351,9 +4192,10 @@ let private importDecl (st: St) : Stmt =
                 else
                     None
 
-            if not st.Ok then Unchecked.defaultof<_>
-            elif st.I <> st.Text.Length then refuse st
-            else SImport(path, pathSpan, alias)
+            if atEnd st then
+                SImport(path, pathSpan, alias)
+            else
+                Unchecked.defaultof<_>
 
 let private letStmt (st: St) : Stmt =
     keyword st "let" |> ignore
@@ -4375,9 +4217,10 @@ let private letStmt (st: St) : Stmt =
 
         let value = seqExpr st
 
-        if not st.Ok then Unchecked.defaultof<_>
-        elif st.I <> st.Text.Length then refuse st
-        else SLetPat(binder, value)
+        if atEnd st then
+            SLetPat(binder, value)
+        else
+            Unchecked.defaultof<_>
     elif not (retry st save) then
         Unchecked.defaultof<_>
     else
@@ -4412,9 +4255,10 @@ let private letStmt (st: St) : Stmt =
                     ws st
                     let ty = tySyn st
 
-                    if not st.Ok then Unchecked.defaultof<_>
-                    elif st.I <> st.Text.Length then refuse st
-                    else SSig(name, ty, nameSpan)
+                    if atEnd st then
+                        SSig(name, ty, nameSpan)
+                    else
+                        Unchecked.defaultof<_>
             else
                 let ps = binderParams st
 
@@ -4458,10 +4302,8 @@ let private letStmt (st: St) : Stmt =
                             st.LetCmd <- savedLet
                             e)
 
-                    if not st.Ok then
+                    if not (atEnd st) then
                         Unchecked.defaultof<_>
-                    elif st.I <> st.Text.Length then
-                        refuse st
                     else
                         let curried = curryParams ps rhs
 
@@ -4496,16 +4338,10 @@ let private statement (st: St) : Stmt =
             refuse st
         elif h.K <> HeadK.NotCmd then
             let e = cmdLine st true 0 None h
-
-            if not st.Ok then Unchecked.defaultof<_>
-            elif st.I <> st.Text.Length then refuse st
-            else SCmd e
+            if atEnd st then SCmd e else Unchecked.defaultof<_>
         else
             let e = seqExpr st
-
-            if not st.Ok then Unchecked.defaultof<_>
-            elif st.I <> st.Text.Length then refuse st
-            else SExpr e
+            if atEnd st then SExpr e else Unchecked.defaultof<_>
 
 // ---- the entry and its counters --------------------------------------------
 let mutable private taken = 0L
@@ -4515,6 +4351,28 @@ let mutable private refused = 0L
 let stats () =
     Threading.Interlocked.Read &taken, Threading.Interlocked.Read &refused
 
+let private newSt (r: Resolver) (input: string) (ok: bool) (pendingAt: int) : St = {
+    Text = input
+    R = r
+    I = 0
+    Ok = ok
+    Fatal = false
+    Depth = 0
+    Locals = Set.empty
+    AliasMasked = Set.empty
+    InArm = 0
+    ExprParen = false
+    LetCmd = false
+    LetCmdStmt = false
+    IfCond = false
+    IfBody = false
+    LastChain = false
+    RefusedAt = (if ok then -1 else 0)
+    PendingAt = pendingAt
+    WordAt = -1
+    Word = null
+}
+
 /// The statement's tree, when every piece of it is within this parser's
 /// subset and the command grammar could claim none of it; None otherwise,
 /// with no trace left (pending anonymous shapes pushed on the way are
@@ -4523,53 +4381,10 @@ let private parse (r: Resolver) (input: string) : Stmt * St =
     if input.IndexOfAny [| '\n'; '\r'; districtClose |] >= 0 then
         Threading.Interlocked.Increment &refused |> ignore
 
-        Unchecked.defaultof<Stmt>,
-        {
-            Text = input
-            R = r
-            I = 0
-            Ok = false
-            Fatal = false
-            Depth = 0
-            Locals = Set.empty
-            AliasMasked = Set.empty
-            InArm = 0
-            ExprParen = false
-            LetCmd = false
-            LetCmdStmt = false
-            IfCond = false
-            IfBody = false
-            LastChain = false
-            RefusedAt = 0
-            PendingAt = 0
-            WordAt = -1
-            Word = null
-        }
+        Unchecked.defaultof<Stmt>, newSt r input false 0
     else
         let pending = pendingAnonDefs.Value
-
-        let st = {
-            Text = input
-            R = r
-            I = 0
-            Ok = true
-            Fatal = false
-            Depth = 0
-            Locals = Set.empty
-            AliasMasked = Set.empty
-            InArm = 0
-            ExprParen = false
-            LetCmd = false
-            LetCmdStmt = false
-            IfCond = false
-            IfBody = false
-            LastChain = false
-            RefusedAt = -1
-            PendingAt = pending.Count
-            WordAt = -1
-            Word = null
-        }
-
+        let st = newSt r input true pending.Count
         let s = statement st
 
         if st.Ok then

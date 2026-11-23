@@ -227,6 +227,14 @@ type Diagnostic = {
     Fix: Fix option
 }
 
+let private replaceEdit (line: int) (col: int) (len: int) (text: string) : FixEdit = {
+    Line = line
+    Col = col
+    EndLine = line
+    EndCol = col + len
+    NewText = text
+}
+
 let internal codeOf (parse: bool) (msg: string) : string =
     if parse then
         "parse"
@@ -263,8 +271,8 @@ let internal codeOf (parse: bool) (msg: string) : string =
 // message, located inside the span's own text; a span that does not
 // carry the typo verbatim gets no fix
 let internal replaceWithFix (spanText: string) (msg: string) (line: int) (col: int) : Fix option =
-    match didYouMeanTarget msg with
-    | Some(typo, suggestion) ->
+    didYouMeanTarget msg
+    |> Option.bind (fun (typo, suggestion) ->
         let m =
             Text.RegularExpressions.Regex.Match(
                 spanText,
@@ -274,20 +282,11 @@ let internal replaceWithFix (spanText: string) (msg: string) (line: int) (col: i
         if m.Success then
             Some {
                 Title = $"Replace with '{suggestion}'"
-                Edits = [
-                    {
-                        Line = line
-                        Col = col + m.Index
-                        EndLine = line
-                        EndCol = col + m.Index + typo.Length
-                        NewText = suggestion
-                    }
-                ]
+                Edits = [ replaceEdit line (col + m.Index) typo.Length suggestion ]
                 Family = None
             }
         else
-            None
-    | None -> None
+            None)
 
 // the fix inverse [D:structured-fixes]: the one conversion point reads a
 // repair back out of (code, message, span) — each message's inverse
@@ -331,11 +330,17 @@ let fixOf
             Some((lineText line).Substring(col - 1, ec - col))
         | _ -> None
 
+    let afterSpan (el: int) (ec: int) =
+        let t = lineText el
+        (if ec - 1 <= t.Length then t.Substring(ec - 1) else "").TrimStart()
+
+    let beforeSpan () =
+        (lineText line).Substring(0, min (lineText line).Length (col - 1)).TrimEnd()
+
     // the rest of the span's last line past the span: blank or a comment
     // means the span closes its line
     let closesLine (el: int) (ec: int) =
-        let t = lineText el
-        let after = (if ec - 1 <= t.Length then t.Substring(ec - 1) else "").TrimStart()
+        let after = afterSpan el ec
         after = "" || after.StartsWith "//"
 
     let placeholder = "fail \"todo\""
@@ -369,15 +374,7 @@ let fixOf
                 else
                     string (Char.ToLowerInvariant name[0]) + name.Substring 1
 
-            one $"Rename to '{renamed}'" [
-                {
-                    Line = line
-                    Col = col
-                    EndLine = line
-                    EndCol = col + name.Length
-                    NewText = renamed
-                }
-            ]
+            one $"Rename to '{renamed}'" [ replaceEdit line col name.Length renamed ]
         else
             None
     | "non-exhaustive" ->
@@ -454,8 +451,7 @@ let fixOf
     | "check" when msg.StartsWith "an if without an else" ->
         match endLine, endCol with
         | Some el, Some ec ->
-            let before =
-                (lineText line).Substring(0, min (lineText line).Length (col - 1)).TrimEnd()
+            let before = beforeSpan ()
 
             if before.EndsWith "then" then
                 // `if c then x` — the else rides the same line
@@ -478,8 +474,7 @@ let fixOf
     | "check" when msg.EndsWith Check.orFailTail ->
         match endLine, endCol with
         | Some el, Some ec ->
-            let before =
-                (lineText line).Substring(0, min (lineText line).Length (col - 1)).TrimEnd()
+            let before = beforeSpan ()
 
             let opensRhs =
                 before = ""
@@ -493,8 +488,7 @@ let fixOf
                 || [ "then"; "else"; "->"; "("; "["; "|>"; ","; ";"; "{" ]
                    |> List.exists before.EndsWith
 
-            let t = lineText el
-            let after = (if ec - 1 <= t.Length then t.Substring(ec - 1) else "").TrimStart()
+            let after = afterSpan el ec
 
             let closes =
                 after = "" || [ ")"; "]"; "}"; "//"; ";"; "," ] |> List.exists after.StartsWith
@@ -533,21 +527,10 @@ let fixOf
         | Some(bare, qualified) ->
             Some {
                 Title = $"Qualify: {qualified}"
-                Edits = [
-                    {
-                        Line = line
-                        Col = col
-                        EndLine = line
-                        EndCol = col + bare.Length
-                        NewText = qualified
-                    }
-                ]
+                Edits = [ replaceEdit line col bare.Length qualified ]
                 Family = Some "qualify"
             }
-        | None ->
-            match spanText with
-            | Some t -> replaceWithFix t msg line col
-            | None -> None
+        | None -> spanText |> Option.bind (fun t -> replaceWithFix t msg line col)
 
 // AOT-safe JSON writing: Utf8JsonWriter (reflection-free, the write
 // twin of the JsonDocument reader) — escaping is the library's job,
@@ -744,17 +727,13 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
         | true, r -> r
         | _ ->
             let r =
-                match resolveSchemaFile path name with
-                | Error e -> Error e
-                | Ok(_, file) ->
-                    match
-                        (try
-                            Ok(Contracts.readArtifactText file)
-                         with ex ->
-                             Error $"schema '{quoteData name}': cannot read {quoteData file} — {quoteData ex.Message}")
-                    with
-                    | Error e -> Error e
-                    | Ok txt -> Contracts.parseSchema name txt
+                resolveSchemaFile path name
+                |> Result.bind (fun (_, file) ->
+                    (try
+                        Ok(Contracts.readArtifactText file)
+                     with ex ->
+                         Error $"schema '{quoteData name}': cannot read {quoteData file} — {quoteData ex.Message}")
+                    |> Result.bind (Contracts.parseSchema name))
 
             cache[name] <- r
             r

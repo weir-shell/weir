@@ -21,16 +21,15 @@ type Spec = {
     Ambient: (string * string) list option
 }
 
+let private ambientOf (ambient: (string * string) list option) : (string * string) list =
+    ambient
+    |> Option.defaultWith (fun () -> Session.envOverlay () |> List.rev |> List.collect id)
+
 /// the env pairs a spawn applies, in order [D:overlay-path]: the scope
 /// snapshot (else the live `within env` layers, outer-first), then the
 /// command's own pairs — what `spawn` itself applies
 let spawnPairs (ambient: (string * string) list option) (env: (string * string) list) =
-    let amb =
-        match ambient with
-        | Some snap -> snap
-        | None -> Session.envOverlay () |> List.rev |> List.collect id
-
-    List.append amb env
+    List.append (ambientOf ambient) env
 
 /// the live-session ambient — the default for every eager spawn
 let liveAmbient () = {
@@ -58,6 +57,11 @@ let showArgv (words: string list) : string =
     words
     |> List.map (fun w -> if secretWords.ContainsKey w then "***" else w)
     |> String.concat " "
+
+let private shownOf (s: Spec) : string = showArgv (s.Prog :: s.Args)
+
+let private shownChain (specs: Spec list) : string =
+    specs |> List.map shownOf |> String.concat " | "
 
 /// one command line for the trace [D:command-trace]: every word bounded,
 /// so a word holding a space or nothing reads as the one argument it is;
@@ -186,10 +190,7 @@ let private spawnWith
     // applied at the spawn so every child (reifiers, scoped
     // procs) obeys the one law, not just the Eval command paths. A lazy
     // spawn replays its scope snapshot [D:ambient-capture-within].
-    let ambient =
-        match ambientO with
-        | Some snap -> snap
-        | None -> Session.envOverlay () |> List.rev |> List.collect id
+    let ambient = ambientOf ambientO
 
     // integrity gate [D:spawn-nul-funnel]: the program name, every
     // argument, and every env key and value — no NUL crosses. The
@@ -258,17 +259,14 @@ let private spawnWith
                 if prog.Contains '/' then
                     Some(Session.resolve prog)
                 else
-                    (match System.Environment.GetEnvironmentVariable "PATH" with
-                     | null -> ""
-                     | v -> v)
+                    (System.Environment.GetEnvironmentVariable "PATH"
+                     |> Option.ofObj
+                     |> Option.defaultValue "")
                         .Split(':', System.StringSplitOptions.RemoveEmptyEntries)
                     |> Array.map (fun d -> System.IO.Path.Combine(d, prog))
                     |> Array.tryFind runnable
 
-            let cwd =
-                match cwdO with
-                | Some c -> c
-                | None -> Session.Cwd()
+            let cwd = cwdO |> Option.defaultWith Session.Cwd
 
             match found with
             | Some path when runnable path && Session.CleanupShim.execAccepts path cwd runnable ->
@@ -296,10 +294,7 @@ let private spawnWith
     for k, v in env do
         psi.Environment[k] <- v
 
-    psi.WorkingDirectory <-
-        (match cwdO with
-         | Some c -> c
-         | None -> Session.Cwd())
+    psi.WorkingDirectory <- cwdO |> Option.defaultWith Session.Cwd
 
     psi.UseShellExecute <- false
     psi.RedirectStandardOutput <- redirectOut && isNull outH
@@ -594,7 +589,7 @@ let fatalTeardown (ex: exn) : int option =
     | _ -> None
 
 let private raiseFailure (s: Spec) (stopCaused: bool) (code: int) : unit =
-    let shown = showArgv (s.Prog :: s.Args)
+    let shown = shownOf s
 
     let signalNote =
         // 128+N = terminated by signal N; name the common ones so a
@@ -945,9 +940,7 @@ let exec (s: Spec) : unit =
     // the runtime backstop of the check's refusal [D:exec-scope-transitive]:
     // a helper reached through a value or an import execs while a scope's
     // teardown or a sibling arm is still owed
-    match Session.execScopeRefusal () with
-    | Some m -> failwith m
-    | None -> ()
+    Session.execScopeRefusal () |> Option.iter failwith
 
     // the same boundary spawn enforces [D:spawn-nul-funnel]
     nulRefusal "the command program name" s.Prog
@@ -958,14 +951,9 @@ let exec (s: Spec) : unit =
     for a in s.Args do
         nulRefusal "a command argument" a
 
-    let ambient =
-        match s.Ambient with
-        | Some snap -> snap
-        | None -> Session.envOverlay () |> List.rev |> List.collect id
-
     let isWindows = System.OperatingSystem.IsWindows()
 
-    let pairs = List.append ambient s.Env
+    let pairs = spawnPairs s.Ambient s.Env
 
     for k, v in pairs do
         nulRefusal $"the env key '{k}'" k
@@ -1008,10 +996,7 @@ let exec (s: Spec) : unit =
 
         // the cwd the spawn path gives a child (Session.Cwd — `cd`, `within
         // cd`) lands on THIS process before execve, so the image inherits it [D:exec]
-        let wd =
-            match s.Cwd with
-            | Some c -> c
-            | None -> Session.Cwd()
+        let wd = s.Cwd |> Option.defaultWith Session.Cwd
 
         if System.IO.Directory.Exists wd then
             System.IO.Directory.SetCurrentDirectory wd
@@ -1383,11 +1368,11 @@ let completedCappedSuspended
             producerFault ()
             Session.settleReplInterrupt p.ExitCode, linesView read[0] true, linesView read[1] false
         with e when capReached e ->
-            failwith (captureCapMessage cap (showArgv (s.Prog :: s.Args)))
+            failwith (captureCapMessage cap (shownOf s))
     )
 
 let completedCapped (cap: int64) (keep: bool) (s: Spec) : int * seq<string> * seq<string> =
-    capRefusal cap (showArgv (s.Prog :: s.Args)) (fun () -> completedRaw cap keep s)
+    capRefusal cap (shownOf s) (fun () -> completedRaw cap keep s)
 
 // both pipes captured to completion; the record's raw material
 let completedOf (s: Spec) : int * seq<string> * seq<string> = completedCapped captureCap true s
@@ -1756,6 +1741,20 @@ let private chainCode procs pumps =
     | Some(_, _, code) -> code
     | None -> 0
 
+let private chainStreams (last: Process) (procs: (Spec * Process) list) : System.IO.Stream[] =
+    Array.ofList (
+        Session.cutStream last last.StandardOutput.BaseStream
+        :: (procs |> List.map (fun (_, p) -> Session.cutStream p p.StandardError.BaseStream))
+    )
+
+let private chainErrLines (read: Segments[]) : seq<string> =
+    let errLines =
+        read[1..]
+        |> List.ofArray
+        |> List.collect (fun b -> linesView b false |> List.ofSeq)
+
+    errLines :> seq<string>
+
 // `chain | complete`: the tail's stdout, every stage's stderr in stage
 // order, the chain's code [D:chain-reifiers]
 let private chainCompletedRaw (cap: int64) (keep: bool) (specs: Spec list) : int * seq<string> * seq<string> =
@@ -1767,14 +1766,7 @@ let private chainCompletedRaw (cap: int64) (keep: bool) (specs: Spec list) : int
         try
             let _, last = List.last procs
 
-            let read =
-                readAllPipes
-                    cap
-                    keep
-                    (Array.ofList (
-                        Session.cutStream last last.StandardOutput.BaseStream
-                        :: (procs |> List.map (fun (_, p) -> Session.cutStream p p.StandardError.BaseStream))
-                    ))
+            let read = readAllPipes cap keep (chainStreams last procs)
 
             let outBytes = read[0]
 
@@ -1783,13 +1775,9 @@ let private chainCompletedRaw (cap: int64) (keep: bool) (specs: Spec list) : int
 
             producerFault ()
 
-            let errLines =
-                read[1..]
-                |> List.ofArray
-                |> List.map (fun b -> linesView b false |> List.ofSeq)
-                |> List.concat
+            let errLines = chainErrLines read
 
-            Session.settleReplInterrupt (chainCode procs pumps), linesView outBytes true, (errLines :> seq<string>)
+            Session.settleReplInterrupt (chainCode procs pumps), linesView outBytes true, errLines
         finally
             for _, p in procs do
                 reap p
@@ -1807,13 +1795,7 @@ let chainCompletedSuspended
 
                 let read =
                     System.Runtime.CompilerServices.AsyncHelpers.Await(
-                        readAllPipesSuspended
-                            captureCap
-                            keep
-                            (Array.ofList (
-                                Session.cutStream last last.StandardOutput.BaseStream
-                                :: (procs |> List.map (fun (_, p) -> Session.cutStream p p.StandardError.BaseStream))
-                            ))
+                        readAllPipesSuspended captureCap keep (chainStreams last procs)
                     )
 
                 let outBytes = read[0]
@@ -1827,33 +1809,18 @@ let chainCompletedSuspended
 
                 producerFault ()
 
-                let errLines =
-                    read[1..]
-                    |> List.ofArray
-                    |> List.map (fun b -> linesView b false |> List.ofSeq)
-                    |> List.concat
+                let errLines = chainErrLines read
 
-                Session.settleReplInterrupt (chainCode procs pumps), linesView outBytes true, (errLines :> seq<string>)
+                Session.settleReplInterrupt (chainCode procs pumps), linesView outBytes true, errLines
             finally
                 for _, p in procs do
                     reap p
         with e when capReached e ->
-            failwith (
-                captureCapMessage
-                    captureCap
-                    (specs
-                     |> List.map (fun sp -> showArgv (sp.Prog :: sp.Args))
-                     |> String.concat " | ")
-            )
+            failwith (captureCapMessage captureCap (shownChain specs))
     )
 
 let chainCompletedCapped (cap: int64) (keep: bool) (specs: Spec list) : int * seq<string> * seq<string> =
-    let shown =
-        specs
-        |> List.map (fun sp -> showArgv (sp.Prog :: sp.Args))
-        |> String.concat " | "
-
-    capRefusal cap shown (fun () -> chainCompletedRaw cap keep specs)
+    capRefusal cap (shownChain specs) (fun () -> chainCompletedRaw cap keep specs)
 
 let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
     chainCompletedCapped captureCap true specs
@@ -1917,6 +1884,15 @@ let runChainInherited (specs: Spec list) : unit =
 
 // ---- the public wrappers (signatures unchanged) --------------------
 
+let specOf (overlay: (string * string) list) (prog: string) (args: string list) : Spec = {
+    Prog = prog
+    Args = args
+    Env = overlay
+    Input = None
+    Cwd = None
+    Ambient = None
+}
+
 // Child-env overlay [D:child-env-overlay]: `lines` is the empty
 // overlay, so cmd/cmdEnv share one path by construction.
 let linesWith
@@ -1926,25 +1902,14 @@ let linesWith
     (input: seq<string> option)
     : seq<string> =
     linesOf {
-        Prog = prog
-        Args = args
-        Env = overlay
-        Input = input
-        Cwd = None
-        Ambient = None
+        specOf overlay prog args with
+            Input = input
     }
 
 let lines (prog: string) (args: string list) (input: seq<string> option) : seq<string> = linesWith [] prog args input
 
 let streamCode (overlay: (string * string) list) (prog: string) (args: string list) : int =
-    streamCodeOf {
-        Prog = prog
-        Args = args
-        Env = overlay
-        Input = None
-        Cwd = None
-        Ambient = None
-    }
+    streamCodeOf (specOf overlay prog args)
 
 let completeWith
     (overlay: (string * string) list)
@@ -1953,12 +1918,8 @@ let completeWith
     (input: seq<string> option)
     : int * seq<string> * seq<string> =
     completedOf {
-        Prog = prog
-        Args = args
-        Env = overlay
-        Input = input
-        Cwd = None
-        Ambient = None
+        specOf overlay prog args with
+            Input = input
     }
 
 let complete (prog: string) (args: string list) (input: seq<string> option) : int * seq<string> * seq<string> =
@@ -1974,24 +1935,11 @@ let completeCode
     : int =
     let code, _, _ =
         completedCapped captureCap false {
-            Prog = prog
-            Args = args
-            Env = overlay
-            Input = input
-            Cwd = None
-            Ambient = None
+            specOf overlay prog args with
+                Input = input
         }
 
     code
-
-let specOf (overlay: (string * string) list) (prog: string) (args: string list) : Spec = {
-    Prog = prog
-    Args = args
-    Env = overlay
-    Input = None
-    Cwd = None
-    Ambient = None
-}
 
 let completeWithSuspended
     (overlay: (string * string) list)

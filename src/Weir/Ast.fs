@@ -419,14 +419,14 @@ type Decl = {
 // `for` sources; tooling walks reach inside districts through this
 let rec yamlTplExprs (tpl: YamlTpl) : Expr list =
     match tpl with
-    | YtScalar _ -> []
-    | YtBlock _ -> []
+    | YtScalar _
+    | YtBlock _
     | YtDrop _ -> []
     | YtSplice e -> [ e ]
     | YtSeq(items, _) ->
         items
         |> List.collect (function
-            | YtItem t -> yamlTplExprs t
+            | YtItem t
             | YtDropItem(t, _) -> yamlTplExprs t
             | YtForItems(_, src, body) ->
                 src
@@ -471,7 +471,7 @@ let rec yamlTplPats (tpl: YamlTpl) : Pattern list =
     | YtSeq(items, _) ->
         items
         |> List.collect (function
-            | YtItem t -> yamlTplPats t
+            | YtItem t
             | YtDropItem(t, _) -> yamlTplPats t
             | YtForItems(b, _, body) ->
                 b
@@ -633,9 +633,9 @@ let exprChildren (e: Expr) : Expr list =
     | ETry(b, _) -> [ b ]
     | EOrFail(b, m, _) -> b :: Option.toList m
     | EOrFailForm m -> Option.toList m
-    | ELet(_, _, v, b) -> [ v; b ]
+    | ELet(_, _, v, b)
     | ELetPat(_, v, b) -> [ v; b ]
-    | ELambda(_, _, b) -> [ b ]
+    | ELambda(_, _, b)
     | ELambdaPat(_, b) -> [ b ]
     | EWithin(_, _, arg, opts, b) -> Option.toList arg @ Option.toList opts @ [ b ]
     | EAlways(b, c) -> [ b; c ]
@@ -652,7 +652,7 @@ let exprChildren (e: Expr) : Expr list =
     | EMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))
     | EIf(c, t, e) -> c :: t :: Option.toList e
     | ESeq(a, b) -> [ a; b ]
-    | EList items -> items
+    | EList items
     | ETuple items -> items
     | ECmd(h, args, envO) ->
         (match h with
@@ -678,18 +678,7 @@ let exprChildren (e: Expr) : Expr list =
 /// the first child `f` answers on, in exprChildren order, without
 /// building the list
 let tryPickExprChild (f: Expr -> 'a option) (e: Expr) : 'a option =
-    let rec ofList (xs: Expr list) =
-        match xs with
-        | [] -> None
-        | x :: rest ->
-            match f x with
-            | Some _ as r -> r
-            | None -> ofList rest
-
-    let ofOpt (o: Expr option) =
-        match o with
-        | Some e -> f e
-        | None -> None
+    let ofOpt (o: Expr option) = Option.bind f o
 
     let two (a: Expr) (b: Expr) =
         match f a with
@@ -715,9 +704,9 @@ let tryPickExprChild (f: Expr -> 'a option) (e: Expr) : 'a option =
         | Some _ as r -> r
         | None -> ofOpt m
     | EOrFailForm m -> ofOpt m
-    | ELet(_, _, v, b) -> two v b
+    | ELet(_, _, v, b)
     | ELetPat(_, v, b) -> two v b
-    | ELambda(_, _, b) -> f b
+    | ELambda(_, _, b)
     | ELambdaPat(_, b) -> f b
     | EWithin(_, _, arg, opts, b) ->
         match ofOpt arg with
@@ -772,8 +761,8 @@ let tryPickExprChild (f: Expr -> 'a option) (e: Expr) : 'a option =
         | Some _ as r -> r
         | None -> ofOpt e
     | ESeq(a, b) -> two a b
-    | EList items -> ofList items
-    | ETuple items -> ofList items
+    | EList items
+    | ETuple items -> List.tryPick f items
     | ECmd(h, args, envO) ->
         match
             (match h with
@@ -782,7 +771,7 @@ let tryPickExprChild (f: Expr -> 'a option) (e: Expr) : 'a option =
         with
         | Some _ as r -> r
         | None ->
-            match ofList args with
+            match List.tryPick f args with
             | Some _ as r -> r
             | None -> ofOpt envO
     | EDynProg(_, e) -> f e
@@ -824,14 +813,11 @@ let tryPickExprChild (f: Expr -> 'a option) (e: Expr) : 'a option =
             | IStr _ :: rest -> go rest
 
         go parts
-    | EYaml(tpl, _, _) -> ofList (yamlTplExprs tpl)
+    | EYaml(tpl, _, _) -> List.tryPick f (yamlTplExprs tpl)
 
 /// every child of a node, in exprChildren order, without the list
 let iterExprChildren (f: Expr -> unit) (e: Expr) : unit =
-    let ofOpt (o: Expr option) =
-        match o with
-        | Some e -> f e
-        | None -> ()
+    let ofOpt (o: Expr option) = Option.iter f o
 
     match e.Kind with
     | EInt _
@@ -851,13 +837,11 @@ let iterExprChildren (f: Expr -> unit) (e: Expr) : unit =
         f b
         ofOpt m
     | EOrFailForm m -> ofOpt m
-    | ELet(_, _, v, b) ->
-        f v
-        f b
+    | ELet(_, _, v, b)
     | ELetPat(_, v, b) ->
         f v
         f b
-    | ELambda(_, _, b) -> f b
+    | ELambda(_, _, b)
     | ELambdaPat(_, b) -> f b
     | EWithin(_, _, arg, opts, b) ->
         ofOpt arg
@@ -899,7 +883,7 @@ let iterExprChildren (f: Expr -> unit) (e: Expr) : unit =
     | ESeq(a, b) ->
         f a
         f b
-    | EList items -> List.iter f items
+    | EList items
     | ETuple items -> List.iter f items
     | ECmd(h, args, envO) ->
         (match h with

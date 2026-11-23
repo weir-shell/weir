@@ -123,6 +123,11 @@ let private fmtMs (ms: int64) : string =
 let private hostPortRx =
     Text.RegularExpressions.Regex(@"^(\[[^\]@]*\]|[^:@\[\]\s]*)(:\d*)?$")
 
+let private authorityStart (s: string) : int =
+    match s.IndexOf "://" with
+    | -1 -> if s.StartsWith "//" then 2 else 0
+    | i -> i + 3
+
 /// redact a URL's userinfo for a diagnostic [D:url-redact]: a credential
 /// in `scheme://user:pass@host/...` would otherwise print verbatim
 /// (terminal, CI log, REPL). Replace the whole userinfo span with `***`,
@@ -139,10 +144,7 @@ let private hostPortRx =
 /// followed by a dotted, ported, bracketed or localhost host.
 /// An `@` in a path or query otherwise stays.
 let private userinfoSpan (url: string) : (int * int) option =
-    let authStart =
-        match url.IndexOf "://" with
-        | -1 -> if url.StartsWith "//" then 2 else 0
-        | i -> i + 3
+    let authStart = authorityStart url
 
     let isDelim c =
         c = '/' || c = '?' || c = '#' || c = '\\'
@@ -222,10 +224,7 @@ let stripUserinfo (url: string) : string =
 /// the runtime takes the userinfo through the value's last `@`, wherever
 /// it is, so the mask does too
 let redactProxyValue (value: string) : string =
-    let authStart =
-        match value.IndexOf "://" with
-        | -1 -> if value.StartsWith "//" then 2 else 0
-        | i -> i + 3
+    let authStart = authorityStart value
 
     match value.LastIndexOf '@' with
     | at when at >= authStart -> value.Substring(0, authStart) + "***@" + value.Substring(at + 1)
@@ -866,10 +865,7 @@ and private sendCheckedAsync
 
                 let code = int resp.StatusCode
 
-                let location =
-                    match resp.Headers.Location with
-                    | null -> None
-                    | l -> Some l
+                let location = Option.ofObj resp.Headers.Location
 
                 match nextHop maxRedirects req.SensitiveHeaders hops curUrl curHeaders code location with
                 | Follow(nextUrl, kept) ->
@@ -901,17 +897,16 @@ and private sendCheckedAsync
             // one pair per received header line, the value verbatim: the
             // parsed view splits a value into tokens (a Server header's
             // product list) and the old "," join merged repeats into one
+            let pairs (hs: Net.Http.Headers.HttpHeaders) = [
+                for h in hs.NonValidated do
+                    for v in h.Value -> h.Key, v
+            ]
+
             let headers =
-                [
-                    for h in resp.Headers.NonValidated do
-                        for v in h.Value -> h.Key, v
-                ]
+                pairs resp.Headers
                 @ (match resp.Content with
                    | null -> []
-                   | c -> [
-                       for h in c.Headers.NonValidated do
-                           for v in h.Value -> h.Key, v
-                     ])
+                   | c -> pairs c.Headers)
 
             // an undecodable declared charset is its own error, never a
             // guessed decode — the same never-silent-U+FFFD law as
@@ -1051,12 +1046,10 @@ let private headerByteName (c: char) : string option =
 /// the offending byte's name and where it sits (name or value), or None
 /// if the pair is clean — the caller words the located refusal
 let headerInjection (name: string, value: string) : (string * string) option =
-    match name |> Seq.tryPick headerByteName with
-    | Some b -> Some(b, "name")
-    | None ->
-        match value |> Seq.tryPick headerByteName with
-        | Some b -> Some(b, "value")
-        | None -> None
+    name
+    |> Seq.tryPick headerByteName
+    |> Option.map (fun b -> b, "name")
+    |> Option.orElseWith (fun () -> value |> Seq.tryPick headerByteName |> Option.map (fun b -> b, "value"))
 
 /// the located refusal message [D:http-header-bytes], worded like the
 /// argv-NUL guard's: name the header, the byte, and where it sat. `who`
@@ -1106,22 +1099,21 @@ let headerUnsendableWith (secret: bool) (name: string, value: string) : string o
     if name = "" then
         Some "its name is empty"
     else
-        match name |> Seq.tryFind (isTchar >> not) with
-        | Some c ->
-            Some
-                $"its name carries {describeChar c}, which a header name cannot (letters, digits and !#$%%&'*+-.^_`|~ only)"
-        | None ->
-            match value |> Seq.tryFindIndex (fun c -> (c < ' ' && c <> '\t') || c = '\127') with
-            | Some i -> Some("its value carries " + which "control" i)
-            | None ->
-                match value |> Seq.tryFindIndex (fun c -> c > '\127') with
-                | Some i ->
-                    Some(
-                        "its value carries "
-                        + which "non-ASCII" i
-                        + " (header values are ASCII; percent-encode or base64 it)"
-                    )
-                | None -> None
+        name
+        |> Seq.tryFind (isTchar >> not)
+        |> Option.map (fun c ->
+            $"its name carries {describeChar c}, which a header name cannot (letters, digits and !#$%%&'*+-.^_`|~ only)")
+        |> Option.orElseWith (fun () ->
+            value
+            |> Seq.tryFindIndex (fun c -> (c < ' ' && c <> '\t') || c = '\127')
+            |> Option.map (fun i -> "its value carries " + which "control" i))
+        |> Option.orElseWith (fun () ->
+            value
+            |> Seq.tryFindIndex (fun c -> c > '\127')
+            |> Option.map (fun i ->
+                "its value carries "
+                + which "non-ASCII" i
+                + " (header values are ASCII; percent-encode or base64 it)"))
 
 let headerUnsendable (pair: string * string) : string option = headerUnsendableWith false pair
 
@@ -1133,11 +1125,10 @@ let methodUnsendable (method: string) : string option =
     if method = "" then
         Some "the method is empty — Other needs a method token such as \"PURGE\""
     else
-        match method |> Seq.tryFind (isTchar >> not) with
-        | Some c ->
-            Some
-                $"the method '{Weir.Types.quoteData method}' cannot be sent — it carries {describeChar c}, which a method token cannot (letters, digits and !#$%%&'*+-.^_`|~ only)"
-        | None -> None
+        method
+        |> Seq.tryFind (isTchar >> not)
+        |> Option.map (fun c ->
+            $"the method '{Weir.Types.quoteData method}' cannot be sent — it carries {describeChar c}, which a method token cannot (letters, digits and !#$%%&'*+-.^_`|~ only)")
 
 /// the located refusal for an unsendable header [D:http-header-unsendable],
 /// the injection message's shape: the crossing, the header, the reason

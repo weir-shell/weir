@@ -157,10 +157,38 @@ let run (path: string) (scriptArgs: string list) : int =
 
             Extern.refresh ()
 
-            let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
-
             // comment-only lines are transparent [D:comment-transparency]
             let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
+            let rawByLine = Map.ofList numbered
+
+            let framed (label: string) (line: int) (col: int) (mark: string) (msg: string) : string =
+                let c = Color.onStderr.Value
+                let src = rawByLine |> Map.tryFind line |> Option.defaultValue ""
+                let under = Color.red c (String(' ', max 0 (col - 1)) + mark)
+
+                Color.bold c $"{quoteData path}:{line}:{col}"
+                + ": "
+                + Color.red c label
+                + $":\n{src}\n{under}\n{msg}"
+
+            let warn (line: int) (col: int) (msg: string) : unit =
+                Console.Error.WriteLine(
+                    $"{quoteData path}:{line}:{col}: "
+                    + Color.yellow Color.onStderr.Value "warning"
+                    + $": {msg}"
+                )
+
+            let relShown (file: string) : string =
+                if file = path then
+                    file
+                else
+                    let rel = IO.Path.GetRelativePath(Environment.CurrentDirectory, file)
+
+                    if rel.StartsWith ".." || IO.Path.IsPathRooted rel then
+                        file
+                    else
+                        rel
+
             let assembled = numbered |> assemble // raw lines: assemble classifies/strips internally
 
             match assembled with
@@ -205,19 +233,7 @@ let run (path: string) (scriptArgs: string list) : int =
                     | null -> ""
                     | n ->
                         match runPositions.TryGetValue n with
-                        | true, (file, _, l, _) ->
-                            let shown =
-                                if file = path then
-                                    file
-                                else
-                                    let rel = IO.Path.GetRelativePath(Environment.CurrentDirectory, file)
-
-                                    if rel.StartsWith ".." || IO.Path.IsPathRooted rel then
-                                        file
-                                    else
-                                        rel
-
-                            $"{quoteData shown}:{l}"
+                        | true, (file, _, l, _) -> $"{quoteData (relShown file)}:{l}"
                         | _ -> ""
 
                 hooks.PositionOf <- System.Func<obj, string>(whereOf)
@@ -282,42 +298,25 @@ let run (path: string) (scriptArgs: string list) : int =
                                     let c = Color.onStderr.Value
 
                                     for wl, wc, wm in d.Warnings do
-                                        Console.Error.WriteLine(
-                                            $"{quoteData path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
-                                        )
+                                        warn wl wc wm
 
                                     let sameFileMsg =
                                         if d.Parse then
                                             if d.HasCol then
                                                 // the original source line + caret — never
                                                 // the assembled text
-                                                let src = rawByLine |> Map.tryFind d.PhysLine |> Option.defaultValue ""
-
-                                                let caret = Color.red c (String(' ', max 0 (d.PhysCol - 1)) + "^")
-
-                                                Color.bold c $"{quoteData path}:{d.PhysLine}:{d.PhysCol}"
-                                                + ": "
-                                                + Color.red c "parse error"
-                                                + $":\n{src}\n{caret}\n{d.Message}"
+                                                framed "parse error" d.PhysLine d.PhysCol "^" d.Message
                                             else
                                                 located path d.PhysLine d.Message
                                         else
                                             // same source-line treatment as parse
                                             // errors, with the span underlined
-                                            let src = rawByLine |> Map.tryFind d.PhysLine |> Option.defaultValue ""
-
                                             let width =
                                                 match d.PhysEnd with
                                                 | Some(el, ec) when el = d.PhysLine -> max 1 (ec - d.PhysCol)
                                                 | _ -> 1
 
-                                            let underline =
-                                                Color.red c (String(' ', max 0 (d.PhysCol - 1)) + String('^', width))
-
-                                            Color.bold c $"{quoteData path}:{d.PhysLine}:{d.PhysCol}"
-                                            + ": "
-                                            + Color.red c "type error"
-                                            + $":\n{src}\n{underline}\n{d.Message}"
+                                            framed "type error" d.PhysLine d.PhysCol (String('^', width)) d.Message
 
                                     // multi-file [D:modules-v1]: a module error
                                     // renders at its own file + an "imported here"
@@ -343,12 +342,8 @@ let run (path: string) (scriptArgs: string list) : int =
 
                                     Error locatedMsg
                                 | Ok chk ->
-                                    let c = Color.onStderr.Value
-
                                     for wl, wc, wm in chk.Warnings do
-                                        Console.Error.WriteLine(
-                                            $"{quoteData path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
-                                        )
+                                        warn wl wc wm
 
                                     runKinds.Add(ll, chk.Kind)
 
@@ -362,11 +357,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                     for d in
                                         (sigDs |> List.filter (fun d -> d.Severity = "warning"))
                                         @ continuedCommandDiagnostics path runSigInfos [ (ll, chk) ] do
-                                        Console.Error.WriteLine(
-                                            $"{quoteData path}:{d.Line}:{d.Col}: "
-                                            + Color.yellow c "warning"
-                                            + $": {d.Message}"
-                                        )
+                                        warn d.Line d.Col d.Message
 
                                     // schema contracts gate the run too — check
                                     // before effects [D:yaml-schemas]
@@ -375,22 +366,12 @@ let run (path: string) (scriptArgs: string list) : int =
                                         @ schemaDiagnostics path [ (ll, chk) ]
                                     with
                                     | d :: _ ->
-                                        let src = rawByLine |> Map.tryFind d.Line |> Option.defaultValue ""
-
                                         let width =
                                             match d.EndLine, d.EndCol with
                                             | Some el, Some ec when el = d.Line -> max 1 (ec - d.Col)
                                             | _ -> 1
 
-                                        let underline =
-                                            Color.red c (String(' ', max 0 (d.Col - 1)) + String('^', width))
-
-                                        Error(
-                                            Color.bold c $"{quoteData path}:{d.Line}:{d.Col}"
-                                            + ": "
-                                            + Color.red c "schema error"
-                                            + $":\n{src}\n{underline}\n{d.Message}"
-                                        )
+                                        Error(framed "schema error" d.Line d.Col (String('^', width)) d.Message)
                                     | [] ->
 
                                         // duplicate type declarations gate the
@@ -499,51 +480,25 @@ let run (path: string) (scriptArgs: string list) : int =
                 | Ok _ when not (runUnused.Flush Set.empty false |> List.isEmpty) ->
                     // the unused-binding check [D:unused-bindings]: judged after
                     // the whole-file fold, before any line runs
-                    let c = Color.onStderr.Value
-
                     for f in runUnused.Flush Set.empty false do
-                        let src = rawByLine |> Map.tryFind f.ULine |> Option.defaultValue ""
-
-                        let underline =
-                            Color.red c (String(' ', max 0 (f.UCol - 1)) + String('^', max 1 (f.UEndCol - f.UCol)))
-
                         Console.Error.WriteLine(
-                            Color.bold c $"{quoteData path}:{f.ULine}:{f.UCol}"
-                            + ": "
-                            + Color.red c "check error"
-                            + $":\n{src}\n{underline}\n{f.UMessage}"
+                            framed "check error" f.ULine f.UCol (String('^', max 1 (f.UEndCol - f.UCol))) f.UMessage
                         )
 
                     1
                 | Ok _ when not (docMisalignments path rawLines).IsEmpty ->
                     // a check error means nothing runs [D:check-error-no-run],
                     // the doc-alignment lint included
-                    let c = Color.onStderr.Value
-
                     for d in docMisalignments path rawLines do
-                        let src = rawByLine |> Map.tryFind d.Line |> Option.defaultValue ""
-                        let caret = Color.red c (String(' ', max 0 (d.Col - 1)) + "^")
-
-                        Console.Error.WriteLine(
-                            Color.bold c $"{quoteData path}:{d.Line}:{d.Col}"
-                            + ": "
-                            + Color.red c "check error"
-                            + $":\n{src}\n{caret}\n{d.Message}"
-                        )
+                        Console.Error.WriteLine(framed "check error" d.Line d.Col "^" d.Message)
 
                     1
                 | Ok(_, revStmts) ->
                     let stmts = List.rev revStmts
 
                     // advisory, before any line runs [D:effect-before-args]
-                    (let c = Color.onStderr.Value
-
-                     for d in effectBeforeArgs path (List.ofSeq runKinds) do
-                         Console.Error.WriteLine(
-                             $"{quoteData path}:{d.Line}:{d.Col}: "
-                             + Color.yellow c "warning"
-                             + $": {d.Message}"
-                         ))
+                    for d in effectBeforeArgs path (List.ofSeq runKinds) do
+                        warn d.Line d.Col d.Message
 
                     // a runtime error's position [D:runtime-position]: the
                     // blamed node (a command at its own column, any other
@@ -582,18 +537,7 @@ let run (path: string) (scriptArgs: string list) : int =
                     // the entry as the user wrote it; a module relative to the
                     // working directory when it is below it
                     // a file name is data [D:error-data-escape]
-                    let shownFile (file: string) =
-                        quoteData (
-                            if file = path then
-                                file
-                            else
-                                let rel = IO.Path.GetRelativePath(Environment.CurrentDirectory, file)
-
-                                if rel.StartsWith ".." || IO.Path.IsPathRooted rel then
-                                    file
-                                else
-                                    rel
-                        )
+                    let shownFile (file: string) = quoteData (relShown file)
 
                     let posOf (exact: bool) (n: obj) =
                         if isNull n then

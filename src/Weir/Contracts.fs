@@ -79,19 +79,16 @@ let private underResolved (realRoot: string) (realPath: string) : bool =
 /// non-link returns itself, a link chases to the final target; a broken
 /// link resolves to a non-existent target and reads as None here.
 let private realPathOf (p: string) : string option =
+    let real (info: FileSystemInfo) =
+        match info.ResolveLinkTarget true with
+        | null -> info.FullName
+        | tgt -> tgt.FullName
+
     try
         if Directory.Exists p then
-            let info = DirectoryInfo p
-
-            match info.ResolveLinkTarget true with
-            | null -> Some(Path.TrimEndingDirectorySeparator info.FullName)
-            | tgt -> Some(Path.TrimEndingDirectorySeparator tgt.FullName)
+            Some(Path.TrimEndingDirectorySeparator(real (DirectoryInfo p)))
         elif File.Exists p then
-            let info = FileInfo p
-
-            match info.ResolveLinkTarget true with
-            | null -> Some info.FullName
-            | tgt -> Some tgt.FullName
+            Some(real (FileInfo p))
         else
             None
     with _ ->
@@ -230,17 +227,13 @@ module AtomicFile =
             let opts =
                 FileStreamOptions(Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None)
 
-            match mode with
-            | Some m -> opts.UnixCreateMode <- Nullable m
-            | None -> ()
+            mode |> Option.iter (fun m -> opts.UnixCreateMode <- Nullable m)
 
             (use fs = new FileStream(tmp, opts)
              fs.Write(payload, 0, payload.Length)
              fs.Flush true)
 
-            match mode with
-            | Some m -> File.SetUnixFileMode(tmp, m)
-            | None -> ()
+            mode |> Option.iter (fun m -> File.SetUnixFileMode(tmp, m))
 
             if OperatingSystem.IsWindows() then
                 // a reader holding the target without FILE_SHARE_DELETE makes
@@ -462,57 +455,53 @@ let writeConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, s
 
     // the parent must resolve under root — an intermediate symlink out is
     // caught here even when the leaf does not yet exist
-    match confineRealUnder root parent with
-    | Error e -> Error e
-    | Ok _ ->
-        // and the leaf, if it already exists as a link out, is caught too
-        match confineRealUnder root dest with
-        | Error e -> Error e
-        | Ok _ ->
-            try
-                Directory.CreateDirectory parent |> ignore
-            with _ ->
-                ()
+    confineRealUnder root parent
+    // and the leaf, if it already exists as a link out, is caught too
+    |> Result.bind (fun _ -> confineRealUnder root dest)
+    |> Result.bind (fun _ ->
+        try
+            Directory.CreateDirectory parent |> ignore
+        with _ ->
+            ()
 
-            if OperatingSystem.IsWindows() then
-                try
-                    File.WriteAllBytes(dest, bytes)
-                    Ok()
-                with ex ->
-                    Error $"cannot write '{Weir.Types.quoteData dest}': {Weir.Types.quoteData ex.Message}"
-            else
-                Posix.writeNoFollow dest bytes
+        if OperatingSystem.IsWindows() then
+            try
+                File.WriteAllBytes(dest, bytes)
+                Ok()
+            with ex ->
+                Error $"cannot write '{Weir.Types.quoteData dest}': {Weir.Types.quoteData ex.Message}"
+        else
+            Posix.writeNoFollow dest bytes)
 
 /// the confinement a whole-file replace asks, with nothing written: the
 /// parent resolves under root, and a leaf that is a link is refused
 let confinedLeaf (root: string) (dest: string) : Result<unit, string> =
-    match confineRealUnder root (Path.GetDirectoryName dest) with
-    | Error e -> Error e
-    | Ok _ ->
-        match confineRealUnder root dest with
-        | Error e -> Error e
-        | Ok _ when
-            (try
+    confineRealUnder root (Path.GetDirectoryName dest)
+    |> Result.bind (fun _ -> confineRealUnder root dest)
+    |> Result.bind (fun _ ->
+        let linked =
+            try
                 not (isNull (FileInfo(dest).LinkTarget))
-             with _ ->
-                 false)
-            ->
+            with _ ->
+                false
+
+        if linked then
             Error $"'{Weir.Types.quoteData dest}' is a symbolic link — a vendored file is a regular file"
-        | Ok _ -> Ok()
+        else
+            Ok())
 
 /// the same confinement for a file replaced whole (temp + rename: a reader
 /// never sees it half-written): the parent resolves under root, and a leaf
 /// that is a link is refused, never replaced through
 let replaceConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, string> =
-    match confinedLeaf root dest with
-    | Error e -> Error e
-    | Ok() ->
+    confinedLeaf root dest
+    |> Result.bind (fun () ->
         try
             Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
             AtomicFile.replaceFile dest bytes
             Ok()
         with ex ->
-            Error $"cannot write '{Weir.Types.quoteData dest}': {Weir.Types.quoteData ex.Message}"
+            Error $"cannot write '{Weir.Types.quoteData dest}': {Weir.Types.quoteData ex.Message}")
 
 /// a vendored name safe as a file-name segment [D:lockfile-confinement]:
 /// the F14 guard at the argv crossing — no separators, no `..`, no
@@ -632,15 +621,15 @@ let entryDest (weirDir: string) (e: LockEntry) : Result<string, string> =
             || String.Equals(realDest, Path.Combine(realRoot, "lock.json"), StringComparison.OrdinalIgnoreCase)
         | _ -> false
 
-    match confineUnder weirDir e.Path with
-    | Error _ -> Error(tampered ())
-    | Ok dest ->
-        match confineRealUnder weirDir dest with
-        | Error _ -> Error(tampered ())
-        | Ok _ when reserved dest || reservedReal dest ->
+    confineUnder weirDir e.Path
+    |> Result.bind (confineRealUnder weirDir)
+    |> Result.mapError (fun _ -> tampered ())
+    |> Result.bind (fun dest ->
+        if reserved dest || reservedReal dest then
             Error
                 $"{e.Kind} {e.Name}: the lock records path '{e.Path}', which names .weir/lock.json or .weir/ itself — an artifact never overwrites the lockfile; this lock was tampered with or hand-edited"
-        | Ok _ -> Ok dest
+        else
+            Ok dest)
 
 let sha256Hex (bytes: byte[]) : string =
     use sha = Security.Cryptography.SHA256.Create()
@@ -1018,10 +1007,7 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
             let resp = client.SendAsync(msg).Result
             let code = int resp.StatusCode
 
-            let location =
-                match resp.Headers.Location with
-                | null -> None
-                | l -> Some l
+            let location = Option.ofObj resp.Headers.Location
 
             // ten hops [D:contract-hop-bound]; past them the redirect itself
             // is the answer, and reads as the status it is
@@ -1042,9 +1028,9 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
             Error $"{quoteData (Http.redactUrl url)} answered {int resp.StatusCode} ({resp.StatusCode})"
         else
             let ct =
-                match resp.Content.Headers.ContentType with
-                | null -> None
-                | t -> Some t.MediaType
+                resp.Content.Headers.ContentType
+                |> Option.ofObj
+                |> Option.map (fun t -> t.MediaType)
 
             Ok(resp.Content.ReadAsByteArrayAsync().Result, ct)
     with ex ->
@@ -1117,6 +1103,12 @@ let private secureUrl (url: string) : bool =
         u.Scheme = Uri.UriSchemeHttps || u.IsLoopback
     with _ ->
         false
+
+let private hostOf (url: string) : string =
+    try
+        (Uri url).Host
+    with _ ->
+        ""
 
 let private hostToken (host: string) : string option =
     if not (tokenHostShape.IsMatch host) then
@@ -1215,11 +1207,10 @@ let semverKey (v: string) : (int * int * int * string option) option =
 
         // a numeric prerelease identifier carries no leading zero
         let preOk =
-            match pre with
-            | Some p ->
+            pre
+            |> Option.forall (fun p ->
                 p.Split '.'
-                |> Array.forall (fun id -> not (numeric id && id.Length > 1 && id[0] = '0'))
-            | None -> true
+                |> Array.forall (fun id -> not (numeric id && id.Length > 1 && id[0] = '0')))
 
         match part 1, part 2, part 3 with
         | Some ma, Some mi, Some pa when preOk -> Some(ma, mi, pa, pre)
@@ -1289,9 +1280,8 @@ let latestModuleTag (refs: (string * string) list) (name: string) : (string * st
             None
         |> Option.map (fun (_, v, sha, _) -> $"{name}/v{v}", sha)
 
-    match best (candidates |> List.filter (fun ((_, _, _, pre), _, _, _) -> pre.IsNone)) with
-    | Some t -> Some t
-    | None -> best candidates
+    best (candidates |> List.filter (fun ((_, _, _, pre), _, _, _) -> pre.IsNone))
+    |> Option.orElseWith (fun () -> best candidates)
 
 /// Ok None: not library-shaped (has a `/` or `:`) — the caller passes the
 /// spec through unchanged. Ok (Some s): the name and the tag as typed, None
@@ -1386,22 +1376,20 @@ let pickRef (refs: (string * string) list) (name: string) : string option =
 /// header
 let private listRefs (host: string) (repo: string) (listUser: string) : Result<(string * string) list, string> =
     let auth =
-        match hostToken host with
-        | Some t -> [
+        hostToken host
+        |> Option.map (fun t ->
             "Authorization",
             "Basic "
-            + Convert.ToBase64String(Text.Encoding.UTF8.GetBytes(listUser + ":" + t))
-          ]
-        | None -> []
+            + Convert.ToBase64String(Text.Encoding.UTF8.GetBytes(listUser + ":" + t)))
+        |> Option.toList
 
     let url = $"https://{host}/{repo}.git/info/refs?service=git-upload-pack"
 
-    match fetchBytesWith (uaHeader @ auth) url with
-    | Error e -> Error(hintPrivate host $"listing refs: {e}")
-    | Ok(bytes, _) ->
-        match parseRefListing bytes with
-        | Error _ -> Error $"unexpected answer listing refs at {quoteData url}"
-        | Ok refs -> Ok refs
+    fetchBytesWith (uaHeader @ auth) url
+    |> Result.mapError (fun e -> hintPrivate host $"listing refs: {e}")
+    |> Result.bind (fun (bytes, _) ->
+        parseRefListing bytes
+        |> Result.mapError (fun _ -> $"unexpected answer listing refs at {quoteData url}"))
 
 let private pathNeedsRawRoot =
     "--path goes with a raw root URL (weir add module https://host/base/ --path lib/x.weir --as <name>); the shorthand already carries the path after // — <host>/<org>/<repo>//<path>@<ref>"
@@ -1409,16 +1397,12 @@ let private pathNeedsRawRoot =
 let resolveModuleSpec (spec: string) (entryPath: string option) : Result<ResolvedModuleSource, string> =
     if spec.StartsWith "http://" || spec.StartsWith "https://" then
         // the explicit raw-URL form — any host, no expansion
-        let host =
-            try
-                (Uri spec).Host
-            with _ ->
-                ""
+        let host = hostOf spec
 
         let hdrs =
-            match (if secureUrl spec then hostToken host else None) with
-            | Some t -> [ "Authorization", "token " + t ]
-            | None -> []
+            (if secureUrl spec then hostToken host else None)
+            |> Option.map (fun t -> "Authorization", "token " + t)
+            |> Option.toList
 
         let src root url = {
             Url = url
@@ -1507,17 +1491,15 @@ let resolveModuleSpec (spec: string) (entryPath: string option) : Result<Resolve
                             hostArm
                                 "x-access-token"
                                 (fun sha -> $"https://raw.githubusercontent.com/{repo}/{sha}/")
-                                (match hostToken host with
-                                 | Some t -> [ "Authorization", "token " + t ]
-                                 | None -> [])
+                                (hostToken host
+                                 |> Option.map (fun t -> "Authorization", "token " + t)
+                                 |> Option.toList)
                                 $"https://github.com/{repo}/tags"
                         | "gitlab.com" ->
                             hostArm
                                 "oauth2"
                                 (fun sha -> $"https://gitlab.com/{repo}/-/raw/{sha}/")
-                                (match hostToken host with
-                                 | Some t -> [ "PRIVATE-TOKEN", t ]
-                                 | None -> [])
+                                (hostToken host |> Option.map (fun t -> "PRIVATE-TOKEN", t) |> Option.toList)
                                 $"https://gitlab.com/{repo}/-/tags"
                         | h ->
                             Error
@@ -1568,11 +1550,7 @@ let resolveLibSpec (l: LibSpec) (entryPath: string option) : Result<ResolvedModu
 /// URL is the github.com shorthand's download, so it reads that host's
 /// token when its own is unset.
 let moduleFetchHeaders (url: string) : (string * string) list * string option =
-    let host =
-        try
-            (Uri url).Host
-        with _ ->
-            ""
+    let host = hostOf url
 
     let secure = secureUrl url
 
@@ -1624,6 +1602,48 @@ let private removeClosureFiles (weirDir: string) (e: LockEntry) (keep: Set<strin
             with _ ->
                 ()
 
+let private writeEntry
+    (weirDir: string)
+    (entries: LockEntry list)
+    (kind: string)
+    (name: string)
+    (rel: string)
+    (url: string)
+    (bytes: byte[])
+    (afterLock: unit -> unit)
+    : Result<string, string> =
+    let dest = Path.Combine(weirDir, rel)
+    let hash = sha256Hex bytes
+
+    let entry = {
+        Kind = kind
+        Name = name
+        Url = Http.stripUserinfo url
+        Sha256 = hash
+        Path = rel
+        Version = None
+        Closure = None
+    }
+
+    let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
+
+    // even a vendored kind directory (.weir/modules) can be a symlink
+    // out [D:lockfile-symlink-confinement] — writeConfined realpath-
+    // verifies the parent and opens the leaf O_NOFOLLOW
+    writeConfined weirDir dest bytes
+    |> Result.bind (fun () ->
+        try
+            writeLock weirDir (others @ [ entry ])
+            afterLock ()
+            Ok hash
+        with ex ->
+            (try
+                File.Delete dest
+             with _ ->
+                 ())
+
+            Error $"write failed: {quoteData ex.Message} — the partial file was removed")
+
 /// the shared vendoring tail: write the artifact and upsert its lock
 /// entry together, or neither. Returns (sha256, prior entry's sha) so
 /// the caller can render added/updated — a re-add is the update path,
@@ -1637,46 +1657,16 @@ let vendorFile
     (bytes: byte[])
     : Result<string * string option, string> =
     AtomicFile.withWeirDirLock weirDir (fun () ->
-        match readLock weirDir with
-        | Error e -> Error e
-        | Ok entries ->
+        readLock weirDir
+        |> Result.bind (fun entries ->
             let priorEntry = entries |> List.tryFind (fun e -> e.Kind = kind && e.Name = name)
             let prior = priorEntry |> Option.map (fun e -> e.Sha256)
 
-            let dest = Path.Combine(weirDir, rel)
-            let hash = sha256Hex bytes
-
-            let entry = {
-                Kind = kind
-                Name = name
-                Url = Http.stripUserinfo url
-                Sha256 = hash
-                Path = rel
-                Version = None
-                Closure = None
-            }
-
-            let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
-
-            // even a vendored kind directory (.weir/modules) can be a symlink
-            // out [D:lockfile-symlink-confinement] — writeConfined realpath-
-            // verifies the parent and opens the leaf O_NOFOLLOW
-            match writeConfined weirDir dest bytes with
-            | Error w -> Error w
-            | Ok() ->
-                try
-                    writeLock weirDir (others @ [ entry ])
-                    // a closure re-added as one file leaves no directory
-                    // behind [D:add-module-closure]
-                    priorEntry |> Option.iter (fun pe -> removeClosureFiles weirDir pe Set.empty)
-                    Ok(hash, prior)
-                with ex ->
-                    (try
-                        File.Delete dest
-                     with _ ->
-                         ())
-
-                    Error $"write failed: {quoteData ex.Message} — the partial file was removed")
+            // a closure re-added as one file leaves no directory
+            // behind [D:add-module-closure]
+            writeEntry weirDir entries kind name rel url bytes (fun () ->
+                priorEntry |> Option.iter (fun pe -> removeClosureFiles weirDir pe Set.empty))
+            |> Result.map (fun hash -> hash, prior)))
 
 /// one closure file's change on a re-add [D:add-module-closure]: the
 /// path, the old sha (None = new to the closure), the new sha (None =
@@ -1697,9 +1687,8 @@ let vendorClosure
     (files: (string * byte[]) list)
     : Result<string * string option * ClosureChange list, string> =
     AtomicFile.withWeirDirLock weirDir (fun () ->
-        match readLock weirDir with
-        | Error e -> Error e
-        | Ok entries ->
+        readLock weirDir
+        |> Result.bind (fun entries ->
             let priorEntry =
                 entries |> List.tryFind (fun e -> e.Kind = "module" && e.Name = name)
 
@@ -1747,9 +1736,8 @@ let vendorClosure
                         | Error e -> Error e
                         | Ok() -> writeAll rest
 
-            match writeAll files with
-            | Error e -> Error e
-            | Ok() ->
+            writeAll files
+            |> Result.bind (fun () ->
                 try
                     let others =
                         entries |> List.filter (fun e -> not (e.Kind = "module" && e.Name = name))
@@ -1767,7 +1755,7 @@ let vendorClosure
 
                     Ok(entry.Sha256, priorEntry |> Option.map (fun e -> e.Sha256), changes)
                 with ex ->
-                    Error $"write failed: {quoteData ex.Message}")
+                    Error $"write failed: {quoteData ex.Message}")))
 
 // ---- the JSON Schema subset [D:yaml-schemas] -------------------------------
 
@@ -1914,6 +1902,11 @@ let private refTarget (r: string) : string option =
             None)
     |> Option.orElse (if r = "#" || r.StartsWith "#/" then Some r else None)
 
+let private tryProp (name: string) (el: Text.Json.JsonElement) : Text.Json.JsonElement option =
+    match el.TryGetProperty name with
+    | true, v -> Some v
+    | _ -> None
+
 /// an in-document JSON pointer's target (RFC 6901 in a URI fragment:
 /// percent-decoded, then ~1 → /, ~0 → ~), or None when it names no node
 let pointerTarget (root: Text.Json.JsonElement) (ptr: string) : Text.Json.JsonElement option =
@@ -1927,10 +1920,7 @@ let pointerTarget (root: Text.Json.JsonElement) (ptr: string) : Text.Json.JsonEl
         |> Array.fold
             (fun (acc: Text.Json.JsonElement option) seg ->
                 match acc with
-                | Some el when el.ValueKind = Text.Json.JsonValueKind.Object ->
-                    match el.TryGetProperty seg with
-                    | true, v -> Some v
-                    | _ -> None
+                | Some el when el.ValueKind = Text.Json.JsonValueKind.Object -> tryProp seg el
                 | Some el when el.ValueKind = Text.Json.JsonValueKind.Array ->
                     match Int32.TryParse seg with
                     | true, i when i >= 0 && i < el.GetArrayLength() -> Some(el[i])
@@ -1979,6 +1969,15 @@ let private annotationOnly (el: Text.Json.JsonElement) : bool =
     && el.EnumerateObject()
        |> Seq.forall (fun p -> annotationKeys.Contains p.Name || p.Name.StartsWith "x-")
 
+let private sequenceResults (rs: Result<'a, 'e> list) : Result<'a list, 'e> =
+    (Ok [], rs)
+    ||> List.fold (fun acc r ->
+        match acc, r with
+        | Error e, _
+        | _, Error e -> Error e
+        | Ok list, Ok a -> Ok(a :: list))
+    |> Result.map List.rev
+
 let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElement) : Result<Schema, string> =
     let unenforced = ctx.Unenforced
     let parseNode = parseNode ctx
@@ -1997,14 +1996,7 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
 
             let known =
                 k = "type"
-                || k = "properties"
-                || k = "required"
-                || k = "items"
-                || k = "additionalProperties"
-                || k = "enum"
-                || k = "oneOf"
-                || k = "anyOf"
-                || k = "allOf"
+                || shapeKeys.Contains k
                 || k = "$ref"
                 || k = "nullable"
                 || (path = "" && (k = "definitions" || k = "$defs" || k = "components"))
@@ -2034,10 +2026,7 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
         | Some e -> Error e
         | None ->
 
-            let getProp (name: string) =
-                match el.TryGetProperty name with
-                | true, v -> Some v
-                | _ -> None
+            let getProp (name: string) = tryProp name el
 
             // `nullable: true` (the OpenAPI 3.0 spelling) folds into a
             // scalar's kind set; anything else wraps [D:schema-types]
@@ -2092,10 +2081,7 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                 [ "definitions"; "$defs" ]
                                 |> List.tryPick (fun h ->
                                     match ctx.Root.TryGetProperty h with
-                                    | true, hv when hv.ValueKind = Text.Json.JsonValueKind.Object ->
-                                        match hv.TryGetProperty key with
-                                        | true, v -> Some v
-                                        | _ -> None
+                                    | true, hv when hv.ValueKind = Text.Json.JsonValueKind.Object -> tryProp key hv
                                     | _ -> None)
                                 |> Option.orElse (pointerTarget ctx.Root raw)
                             | Some _ -> pointerTarget ctx.Root raw
@@ -2251,7 +2237,6 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                             Ok(
                                 match values, hasNull with
                                 | [], true -> SScalar(Set.singleton "null")
-                                | [], false -> SEnum(values, kind, false)
                                 | _, true -> SNullable(SEnum(values, kind, nullListed))
                                 | _, false -> SEnum(values, kind, false)
                             )
@@ -2293,28 +2278,17 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                      let scalars = known |> List.filter (fun k -> k <> "object" && k <> "array")
 
                                      [
-                                         (match scalars with
-                                          | [] -> None
-                                          | [ one ] -> Some(alt one)
-                                          | many -> Some(Ok(SScalar(Set.ofList many))))
-                                         (if List.contains "object" known then
-                                              Some(alt "object")
-                                          else
-                                              None)
-                                         (if List.contains "array" known then
-                                              Some(alt "array")
-                                          else
-                                              None)
+                                         match scalars with
+                                         | [] -> ()
+                                         | [ one ] -> yield alt one
+                                         | many -> yield Ok(SScalar(Set.ofList many))
+                                         if List.contains "object" known then
+                                             yield alt "object"
+                                         if List.contains "array" known then
+                                             yield alt "array"
                                      ]
-                                     |> List.choose id
-                                     |> List.fold
-                                         (fun acc r ->
-                                             match acc, r with
-                                             | Error e, _
-                                             | _, Error e -> Error e
-                                             | Ok list, Ok a -> Ok(a :: list))
-                                         (Ok [])
-                                     |> Result.map (fun alts -> SMixed(Set.ofList known, List.rev alts))
+                                     |> sequenceResults
+                                     |> Result.map (fun alts -> SMixed(Set.ofList known, alts))
                                  else
                                      Error
                                          $"at {where}: 'oneOf' is supported only over scalar type alternatives (the IntOrString idiom), one alternative per JSON kind, or one schema beside null — general composition is outside the subset")
@@ -2336,11 +2310,10 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                      |> Seq.indexed
                                      |> Seq.fold
                                          (fun acc (i, alt) ->
-                                             match acc with
-                                             | Error e -> Error e
-                                             | Ok list ->
+                                             acc
+                                             |> Result.bind (fun list ->
                                                  parseNode (path + $"anyOf[{i}].") alt
-                                                 |> Result.map (fun s -> s :: list))
+                                                 |> Result.map (fun s -> s :: list)))
                                          (Ok [])
                                      |> Result.map (List.rev >> SChoice))
                                 |> applyNullable
@@ -2349,10 +2322,12 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                 // `type: ["object","null"]` / `["array","null"]`
                                 // wrap like `nullable: true` does — the null
                                 // spelling follows the value [D:schema-types]
-                                let nullListed =
-                                    match typeKinds with
-                                    | Some ks -> ks.Contains "null"
-                                    | None -> false
+                                let nullListed = typeKinds |> Option.exists (fun ks -> ks.Contains "null")
+
+                                let formatIs (v: string) =
+                                    getProp "format"
+                                    |> Option.exists (fun f ->
+                                        f.ValueKind = Text.Json.JsonValueKind.String && f.GetString() = v)
 
                                 let wrapNullListed (r: Result<Schema, string>) =
                                     if nullListed then Result.map SNullable r else r
@@ -2377,22 +2352,15 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                      let scalars = kinds - set [ "object"; "array" ]
 
                                      [
-                                         (if scalars.IsEmpty then None else Some(Ok(SScalar scalars)))
-                                         (if kinds.Contains "object" then
-                                              Some(objectNode path el getProp)
-                                          else
-                                              None)
-                                         (if kinds.Contains "array" then Some(arrayNode ()) else None)
+                                         if not scalars.IsEmpty then
+                                             yield Ok(SScalar scalars)
+                                         if kinds.Contains "object" then
+                                             yield objectNode path el getProp
+                                         if kinds.Contains "array" then
+                                             yield arrayNode ()
                                      ]
-                                     |> List.choose id
-                                     |> List.fold
-                                         (fun acc r ->
-                                             match acc, r with
-                                             | Error e, _
-                                             | _, Error e -> Error e
-                                             | Ok list, Ok alt -> Ok(alt :: list))
-                                         (Ok [])
-                                     |> Result.map (fun alts -> SMixed(kinds, List.rev alts))
+                                     |> sequenceResults
+                                     |> Result.map (fun alts -> SMixed(kinds, alts))
                                  | Some kinds when
                                      kinds.Contains "object" || (kinds.IsEmpty && getProp("properties").IsSome)
                                      ->
@@ -2404,19 +2372,11 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                  | Some kinds when
                                      kinds.Contains "string"
                                      && Set.isSubset kinds (set [ "string"; "integer"; "null" ])
-                                     && (match getProp "format" with
-                                         | Some f ->
-                                             f.ValueKind = Text.Json.JsonValueKind.String
-                                             && f.GetString() = "int-or-string"
-                                         | None -> false)
+                                     && formatIs "int-or-string"
                                      ->
                                      Ok(SIntOrStringFormat(SScalar(Set.add "integer" kinds)))
                                  | Some kinds when
-                                     Set.remove "null" kinds = Set.singleton "integer"
-                                     && (match getProp "format" with
-                                         | Some f ->
-                                             f.ValueKind = Text.Json.JsonValueKind.String && f.GetString() = "uint64"
-                                         | None -> false)
+                                     Set.remove "null" kinds = Set.singleton "integer" && formatIs "uint64"
                                      ->
                                      Ok(SUint64Format(SScalar kinds))
                                  | Some kinds when not kinds.IsEmpty -> Ok(SScalar kinds)
@@ -2424,9 +2384,8 @@ let rec private parseNode (ctx: ParseCtx) (path: string) (el: Text.Json.JsonElem
                                  // type: the anyOf idiom's own kinds
                                  // [D:schema-int-or-string]
                                  | None when
-                                     (match getProp "x-kubernetes-int-or-string" with
-                                      | Some m -> m.ValueKind = Text.Json.JsonValueKind.True
-                                      | None -> false)
+                                     getProp "x-kubernetes-int-or-string"
+                                     |> Option.exists (fun m -> m.ValueKind = Text.Json.JsonValueKind.True)
                                      ->
                                      Ok(SScalar(Set.ofList [ "integer"; "string" ]))
                                  | _ -> Ok SAny)
@@ -2449,31 +2408,27 @@ and private objectNode
     let additional =
         match getProp "additionalProperties" with
         | Some a when a.ValueKind = Text.Json.JsonValueKind.False -> Ok Closed
-        | Some a when a.ValueKind = Text.Json.JsonValueKind.True -> Ok OpenProps
         | Some a when a.ValueKind = Text.Json.JsonValueKind.Object ->
             parseNode (path + "additionalProperties.") a |> Result.map Vals
-        | Some _ -> Ok OpenProps
-        | None -> Ok OpenProps
+        | _ -> Ok OpenProps
 
-    match additional with
-    | Error e -> Error e
-    | Ok additional ->
+    additional
+    |> Result.bind (fun additional ->
         let props =
             match getProp "properties" with
             | Some ps when ps.ValueKind = Text.Json.JsonValueKind.Object ->
                 ps.EnumerateObject()
                 |> Seq.fold
                     (fun acc p ->
-                        match acc with
-                        | Error e -> Error e
-                        | Ok list ->
+                        acc
+                        |> Result.bind (fun list ->
                             parseNode (path + "properties." + p.Name + ".") p.Value
-                            |> Result.map (fun s -> (p.Name, s) :: list))
+                            |> Result.map (fun s -> (p.Name, s) :: list)))
                     (Ok [])
                 |> Result.map List.rev
             | _ -> Ok []
 
-        props |> Result.map (fun props -> SObject(props, required, additional))
+        props |> Result.map (fun props -> SObject(props, required, additional)))
 
 // every SRef a tree reaches — the parse-time resolution check's walk
 let rec private refsOf (s: Schema) : string list =
@@ -2522,18 +2477,9 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
                     []
                 else
                     [
-                        (match root.TryGetProperty "definitions" with
-                         | true, h -> Some h
-                         | _ -> None)
-                        (match root.TryGetProperty "$defs" with
-                         | true, h -> Some h
-                         | _ -> None)
-                        (match root.TryGetProperty "components" with
-                         | true, c ->
-                             match c.TryGetProperty "schemas" with
-                             | true, h -> Some h
-                             | _ -> None
-                         | _ -> None)
+                        tryProp "definitions" root
+                        tryProp "$defs" root
+                        tryProp "components" root |> Option.bind (tryProp "schemas")
                     ]
                     |> List.choose id
                     |> List.filter (fun h -> h.ValueKind = Text.Json.JsonValueKind.Object)
@@ -2555,19 +2501,16 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
                 |> List.collect (fun h -> h.EnumerateObject() |> List.ofSeq)
                 |> List.fold
                     (fun acc p ->
-                        match acc with
-                        | Error e -> Error e
-                        | Ok m ->
+                        acc
+                        |> Result.bind (fun m ->
                             parseTree (Some p.Name) $"definitions.{p.Name}." p.Value
-                            |> Result.map (fun s -> Map.add p.Name s m))
+                            |> Result.map (fun s -> Map.add p.Name s m)))
                     (Ok Map.empty)
 
-            (match defs with
-             | Error e -> Error e
-             | Ok defs ->
-                 match parseTree None "" root with
-                 | Error e -> Error e
-                 | Ok rootSchema ->
+            (defs
+             |> Result.bind (fun defs ->
+                 parseTree None "" root
+                 |> Result.bind (fun rootSchema ->
                      // a pointer ref (`#`, `#/definitions/a/properties/b`) joins
                      // the defs under its own key: the subtree it names, parsed
                      // once; `#` is the root itself [D:schema-deep-refs]
@@ -2597,10 +2540,8 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
                      let allRefs =
                          refsOf rootSchema @ (defs |> Map.toList |> List.collect (snd >> refsOf))
 
-                     match closePointers defs allRefs with
-                     | Error e -> Error e
-                     | Ok defs ->
-
+                     closePointers defs allRefs
+                     |> Result.bind (fun defs ->
                          let dangling =
                              (refsOf rootSchema @ (defs |> Map.toList |> List.collect (snd >> refsOf)))
                              |> List.tryFind (fun n -> not (Map.containsKey n defs))
@@ -2614,7 +2555,7 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
                                  Root = rootSchema
                                  Defs = defs
                                  Unenforced = List.ofSeq unenforced
-                             })
+                             }))))
             |> Result.mapError (fun e -> $"schema {quoteData name}: {e}")
         with ex ->
             Error $"schema {quoteData name}: not valid JSON — {Weir.Types.quoteData ex.Message}"
@@ -2678,19 +2619,15 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
             | Error None ->
                 Error $"the response is not JSON (Content-Type: {quoteData ct}){rawUrlHint url}; nothing was written"
 
-        match parsed with
-        | Error e -> Error e
-        | Ok doc ->
+        parsed
+        |> Result.bind (fun doc ->
             use doc = doc
             let root = doc.RootElement
 
             let schemaShaped =
                 root.ValueKind = Text.Json.JsonValueKind.Object
                 && [ "$schema"; "type"; "properties"; "$defs" ]
-                   |> List.exists (fun k ->
-                       match root.TryGetProperty k with
-                       | true, _ -> true
-                       | _ -> false)
+                   |> List.exists (fun k -> (tryProp k root).IsSome)
 
             if kind = "schema" && not schemaShaped then
                 Error
@@ -2711,9 +2648,8 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                 | Ok() ->
 
                     AtomicFile.withWeirDirLock weirDir (fun () ->
-                        match readLock weirDir with
-                        | Error e -> Error e
-                        | Ok entries ->
+                        readLock weirDir
+                        |> Result.bind (fun entries ->
                             // a schema with no `additionalProperties: false` anywhere cannot
                             // fire unknown-field checks — the feature's whole point — so a
                             // silently-inert contract warns at add time (the vacuous-pin
@@ -2727,39 +2663,10 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                             // only now touch the disk — the file and the lock entry
                             // land together or not at all
                             let rel = Path.Combine(kind + "s", name + ".json")
-                            let dest = Path.Combine(weirDir, rel)
-                            let hash = sha256Hex bytes
 
-                            let entry = {
-                                Kind = kind
-                                Name = name
-                                Url = Http.stripUserinfo url
-                                Sha256 = hash
-                                Path = rel
-                                Version = None
-                                Closure = None
-                            }
-
-                            let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
-
-                            // a symlinked kind directory (.weir/schemas → outside)
-                            // must not redirect the vendored write
-                            // [D:lockfile-symlink-confinement]
-                            match writeConfined weirDir dest bytes with
-                            | Error w -> Error w
-                            | Ok() ->
-                                try
-                                    writeLock weirDir (others @ [ entry ])
-
-                                    Ok
-                                        $"added {kind} {quoteData name} ({hash.Substring(0, 12)}…) from {quoteData (Http.redactUrl url)}"
-                                with ex ->
-                                    (try
-                                        File.Delete dest
-                                     with _ ->
-                                         ())
-
-                                    Error $"write failed: {quoteData ex.Message} — the partial file was removed")
+                            writeEntry weirDir entries kind name rel url bytes ignore
+                            |> Result.map (fun hash ->
+                                $"added {kind} {quoteData name} ({hash.Substring(0, 12)}…) from {quoteData (Http.redactUrl url)}"))))
 
 /// restore one closure entry [D:add-module-closure]: every file present
 /// and true is left alone; an absent or drifted one is refetched at the
@@ -2859,10 +2766,8 @@ let restore (weirDir: string) : Result<string list, string> =
                     // overwrites only its own artifacts inside .weir/, never a
                     // path outside it — the confinement makes "outside"
                     // unreachable [D:lockfile-confinement]
-                    match entryDest weirDir e with
-                    | Error refusal -> Error refusal
-                    | Ok dest ->
-
+                    entryDest weirDir e
+                    |> Result.bind (fun dest ->
                         // a present-but-modified url artifact is drift from the
                         // lock's intent — restore repairs it by refetching, the
                         // same hash-checked path an absent file takes (a
@@ -2930,22 +2835,9 @@ let restore (weirDir: string) : Result<string list, string> =
                                                  $"{e.Kind} {e.Name}: repaired — refetched over a modified copy"
                                              else
                                                  $"{e.Kind} {e.Name}: restored from {quoteData (Http.redactUrl e.Url)}")
-                                        ])
+                                        ]))
 
-        match
-            results
-            |> List.tryPick (function
-                | Error e -> Some e
-                | Ok _ -> None)
-        with
-        | Some firstErr -> Error firstErr
-        | None ->
-            Ok(
-                results
-                |> List.collect (function
-                    | Ok s -> s
-                    | Error _ -> [])
-            )
+        results |> sequenceResults |> Result.map List.concat
 
 /// the version probe's three honest answers [D:sig-version-probe]:
 /// absent, speaks, or refuses every rung — a nonzero exit's output is
@@ -3184,9 +3076,9 @@ module private ProbeSpawn =
         if prog.Contains '/' then
             Some prog
         else
-            (match Environment.GetEnvironmentVariable "PATH" with
-             | null -> ""
-             | v -> v)
+            (Environment.GetEnvironmentVariable "PATH"
+             |> Option.ofObj
+             |> Option.defaultValue "")
                 .Split(':', StringSplitOptions.RemoveEmptyEntries)
             |> Array.map (fun d -> Path.Combine(d, prog))
             |> Array.tryFind (fun p ->
@@ -3432,9 +3324,9 @@ let locateTool (prog: string) : string option =
             ownSpawn
             (toolExts ())
             (PathLookup.dirsOf (
-                match Environment.GetEnvironmentVariable "PATH" with
-                | null -> ""
-                | v -> v
+                Environment.GetEnvironmentVariable "PATH"
+                |> Option.ofObj
+                |> Option.defaultValue ""
             ))
             prog
 
@@ -3638,9 +3530,8 @@ type VerifyFinding =
     | ToolMissing of LockEntry
 
 let verify (weirDir: string) (probePaths: bool) : Result<string list * VerifyFinding list, string> =
-    match readLock weirDir with
-    | Error e -> Error e
-    | Ok entries ->
+    readLock weirDir
+    |> Result.map (fun entries ->
         let lines = ResizeArray<string>()
         let findings = ResizeArray<VerifyFinding>()
 
@@ -3763,7 +3654,7 @@ let verify (weirDir: string) (probePaths: bool) : Result<string list * VerifyFin
                                 | ToolVersion _ -> lines.Add $"{e.Kind} {e.Name}: ok (hash + version)"
                             | None -> lines.Add $"{e.Kind} {e.Name}: ok"
 
-        Ok(List.ofSeq lines, List.ofSeq findings)
+        List.ofSeq lines, List.ofSeq findings)
 
 // ---- validation against a district template [D:yaml-schemas] ---------------
 //
@@ -3851,6 +3742,15 @@ let private enumText (values: string list) =
         let shown = vs |> List.truncate 6 |> List.map quoteData |> String.concat ", "
         $"one of {shown} (+{List.length vs - 6} more)"
 
+let private tplShape (tpl: Check.TypedYamlTpl) : (Span * string) option =
+    match tpl with
+    | Check.TYtScalar(_, _, span)
+    | Check.TYtBlock(_, span) -> Some(span, "a scalar")
+    | Check.TYtMap(_, span) -> Some(span, "a mapping")
+    | Check.TYtSeq(_, span) -> Some(span, "a sequence")
+    | Check.TYtSplice _
+    | Check.TYtDrop _ -> None
+
 let rec validateTpl
     (name: string)
     (defs: Map<string, Schema>)
@@ -3859,6 +3759,12 @@ let rec validateTpl
     (tpl: Check.TypedYamlTpl)
     : (Span * string) list =
     let child k = if path = "" then k else path + "." + k
+
+    let mismatch (expects: string) (tpl: Check.TypedYamlTpl) : (Span * string) list =
+        tplShape tpl
+        |> Option.map (fun (span, got) ->
+            span, $"schema {quoteData name}: {fieldName path} expects {expects}, got {got}")
+        |> Option.toList
 
     match schema, tpl with
     | SAny, _ -> []
@@ -3899,17 +3805,7 @@ let rec validateTpl
 
         match pick, tpl with
         | Some alt, tpl -> validateTpl name defs path alt tpl
-        | None, Check.TYtScalar(_, _, span)
-        | None, Check.TYtBlock(_, span) -> [
-            span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a scalar"
-          ]
-        | None, Check.TYtMap(_, span) -> [
-            span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a mapping"
-          ]
-        | None, Check.TYtSeq(_, span) -> [
-            span, $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a sequence"
-          ]
-        | None, _ -> []
+        | None, tpl -> mismatch (kindsText kinds) tpl
     | SObject(props, required, additional), Check.TYtMap(entries, mspan) ->
         let hasDynamic =
             entries
@@ -3956,13 +3852,7 @@ let rec validateTpl
                     mspan, $"schema {quoteData name}: missing required field '{quoteData r}'{atPath path}")
 
         entryErrors entries @ missing
-    | SObject _, Check.TYtScalar(_, _, span)
-    | SObject _, Check.TYtBlock(_, span) -> [
-        span, $"schema {quoteData name}: {fieldName path} expects a mapping, got a scalar"
-      ]
-    | SObject _, Check.TYtSeq(_, span) -> [
-        span, $"schema {quoteData name}: {fieldName path} expects a mapping, got a sequence"
-      ]
+    | SObject _, tpl -> mismatch "a mapping" tpl
     | SArray items, Check.TYtSeq(elems, _) ->
         let rec itemErrors (es: Check.TypedYamlTplItem list) =
             es
@@ -3973,13 +3863,7 @@ let rec validateTpl
                 | Check.TYtForItems(_, _, body) -> itemErrors body)
 
         itemErrors elems
-    | SArray _, Check.TYtScalar(_, _, span)
-    | SArray _, Check.TYtBlock(_, span) -> [
-        span, $"schema {quoteData name}: {fieldName path} expects a sequence, got a scalar"
-      ]
-    | SArray _, Check.TYtMap(_, span) -> [
-        span, $"schema {quoteData name}: {fieldName path} expects a sequence, got a mapping"
-      ]
+    | SArray _, tpl -> mismatch "a sequence" tpl
     | SScalar kinds, Check.TYtScalar(raw, quoted, span) ->
         let got = literalKind raw quoted
 
@@ -3998,12 +3882,7 @@ let rec validateTpl
                 span,
                 $"schema {quoteData name}: {fieldName path} expects {kindsText kinds}, got a block scalar (string)"
             ]
-    | SScalar _, Check.TYtMap(_, span) -> [
-        span, $"schema {quoteData name}: {fieldName path} expects a scalar, got a mapping"
-      ]
-    | SScalar _, Check.TYtSeq(_, span) -> [
-        span, $"schema {quoteData name}: {fieldName path} expects a scalar, got a sequence"
-      ]
+    | SScalar _, tpl -> mismatch "a scalar" tpl
     | SEnum(values, _, _), Check.TYtScalar(raw, _, span) ->
         if List.contains raw values then
             []

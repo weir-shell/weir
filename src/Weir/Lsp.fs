@@ -326,9 +326,8 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     // spans anchored on inserted join/wrap text emit nothing rather
     // than a mislocated token
     let emitSpan (ll: Assemble.LogicalLine) (startCol: int) (len: int) (ty: int) =
-        match verbatimAt lineArr ll startCol len with
-        | Some(l1, c1) -> out.Add(l1 - 1, c1 - 1, len, ty)
-        | None -> ()
+        verbatimAt lineArr ll startCol len
+        |> Option.iter (fun (l1, c1) -> out.Add(l1 - 1, c1 - 1, len, ty))
 
     let charAt (ll: Assemble.LogicalLine) (col: int) =
         if col >= 1 && col <= ll.Text.Length then
@@ -364,6 +363,13 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
         then
             emitSpan ll j (prog.Length + (if forced then 1 else 0)) 0
 
+    let emitSplat (ll: Assemble.LogicalLine) (s: int) (len: int) =
+        if charAt ll (s + 2) = Some '(' then
+            emitSpan ll s 3 2
+            emitSpan ll (s + len - 1) 1 2
+        else
+            emitSpan ll s len 2
+
     let emitArg (ll: Assemble.LogicalLine) (a: Check.TypedExpr) =
         let s = a.Span.Start.Col
         let len = a.Span.End.Col - s
@@ -371,12 +377,7 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
         match a.Kind, charAt ll s with
         // $@ splat: the island marker — whole token for $@name, the
         // delimiters for $@(expr) [D:argv-splat]
-        | Check.TESplat _, Some '$' ->
-            if charAt ll (s + 2) = Some '(' then
-                emitSpan ll s 3 2
-                emitSpan ll (s + len - 1) 1 2
-            else
-                emitSpan ll s len 2
+        | Check.TESplat _, Some '$' -> emitSplat ll s len
         // bareword argv (quoted/raw/interp args keep their lexical
         // string coloring — they already read as data)
         | Check.TEStr _, Some c when c <> '"' && c <> '@' && c <> '$' -> emitSpan ll s len 1
@@ -420,11 +421,7 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
             let len = te.Span.End.Col - s
 
             if charAt ll s = Some '$' then
-                if charAt ll (s + 2) = Some '(' then
-                    emitSpan ll s 3 2
-                    emitSpan ll (s + len - 1) 1 2
-                else
-                    emitSpan ll s len 2
+                emitSplat ll s len
 
     let rec walk (ll: Assemble.LogicalLine) (te: Check.TypedExpr) =
         (match te.Kind with
@@ -628,13 +625,10 @@ let private analyze (uri: string) (text: string) =
     // init it is [D:init-marker] — the shared path, so the editor reports
     // exactly what `weir check` and the loader do (checkInit [D:repl-init]),
     // the missing marker included
-    let diags, stmts, env0, lls, partials =
-        if canonical || Assemble.isInitMarked raw then
-            analyzeCachedAs true path raw
-        else
-            analyzeCached path raw
-
-    diags, stmts, env0, lls, partials
+    if canonical || Assemble.isInitMarked raw then
+        analyzeCachedAs true path raw
+    else
+        analyzeCached path raw
 
 // is a physical line (0-based) inside a yaml block? Its nearest less
 // indented line above is a yaml district marker, or is itself inside one
@@ -737,18 +731,18 @@ let private teOf (chk: Statements.CheckedStatement) =
 // smallest node whose span contains the (1-based, logical) column
 let private nodeAt (te: TypedExpr) (col: int) : TypedExpr option =
     let rec go (best: TypedExpr option) (node: TypedExpr) =
-        if
-            node.Span.Start.Col <= col
-            && col < max node.Span.End.Col (node.Span.Start.Col + 1)
-        then
-            let best =
+        let best =
+            if
+                node.Span.Start.Col <= col
+                && col < max node.Span.End.Col (node.Span.Start.Col + 1)
+            then
                 match best with
                 | Some b when (b.Span.End.Col - b.Span.Start.Col) <= (node.Span.End.Col - node.Span.Start.Col) -> Some b
                 | _ -> Some node
+            else
+                best
 
-            Check.childExprs node |> List.fold go best
-        else
-            Check.childExprs node |> List.fold go best
+        Check.childExprs node |> List.fold go best
 
     go None te
 
@@ -759,7 +753,7 @@ let private inHole (chk: Statements.CheckedStatement) (col: int) : bool =
         | Check.TEHole sp -> sp.Start.Col <= col && col < sp.End.Col
         | _ -> Check.childExprs te |> List.exists go
 
-    teOf chk |> Option.map go |> Option.defaultValue false
+    teOf chk |> Option.exists go
 
 // ---- go-to-definition v1 [D:lsp-requests]: top-level bindings only,
 // null otherwise (params/match binders/block-lets carry no binder
@@ -768,6 +762,14 @@ let private inHole (chk: Statements.CheckedStatement) (col: int) : bool =
 // logical line, bounded by the first `=`.
 
 let private isWord (c: char) = Char.IsLetterOrDigit c || c = '_'
+
+let private wordStartOf (text: string) (jcol: int) : int =
+    let mutable s = jcol - 1
+
+    while s > 0 && isWord text[s - 1] do
+        s <- s - 1
+
+    s
 
 // word-bounded search for `name` in text[from..bound), 1-based col —
 // the one search behind binderCol and the type-member lookup
@@ -792,11 +794,7 @@ let private wordAt (text: string) (jcol: int) : string option =
     let i = jcol - 1
 
     if i >= 0 && i < text.Length && isWord text[i] then
-        let mutable s = i
-
-        while s > 0 && isWord text[s - 1] do
-            s <- s - 1
-
+        let s = wordStartOf text jcol
         let mutable e = i
 
         while e + 1 < text.Length && isWord text[e + 1] do
@@ -811,11 +809,7 @@ let private wordAt (text: string) (jcol: int) : string option =
 let private letBinderAt (text: string) (jcol: int) : string option =
     wordAt text jcol
     |> Option.filter (fun _ ->
-        let mutable s = jcol - 1
-
-        while s > 0 && isWord text[s - 1] do
-            s <- s - 1
-
+        let s = wordStartOf text jcol
         let before = text.Substring(0, s).TrimEnd()
 
         before.EndsWith "let"
@@ -826,27 +820,25 @@ let private letBinderAt (text: string) (jcol: int) : string option =
 // expression node — nodeAt alone sees the enclosing let-in, whose
 // type is the body's) [PLAN-diagnostics-arc A2]
 let rec private innerLetType (name: string) (jcol: int) (te: Check.TypedExpr) : Ty option =
-    let deeper = Check.childExprs te |> List.tryPick (innerLetType name jcol)
-
-    match deeper with
-    | Some t -> Some t
-    | None ->
+    Check.childExprs te
+    |> List.tryPick (innerLetType name jcol)
+    |> Option.orElseWith (fun () ->
         match te.Kind with
         | Check.TELet(n, _, tvalue, _) when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
             Some tvalue.Ty
-        | _ -> None
+        | _ -> None)
 
 // a lambda param binder at the column shows its own type (the domain of
 // the enclosing lambda), not the arrow type nodeAt would surface — the
 // param binder is not an expression node, so nodeAt falls back to the
 // lambda itself and shows `dom -> cod` for the parameter [D:lsp-v1]
 let rec private paramTypeAt (jcol: int) (te: Check.TypedExpr) : Ty option =
-    match Check.childExprs te |> List.tryPick (paramTypeAt jcol) with
-    | Some t -> Some t
-    | None ->
+    Check.childExprs te
+    |> List.tryPick (paramTypeAt jcol)
+    |> Option.orElseWith (fun () ->
         match te.Kind, te.Ty with
         | Check.TELambda(_, pspan, _), TFun(dom, _) when pspan.Start.Col <= jcol && jcol < pspan.End.Col -> Some dom
-        | _ -> None
+        | _ -> None)
 
 let private binderCol (name: string) (text: string) : int option =
     let eq = text.IndexOf '='
@@ -984,11 +976,7 @@ let private moduleAliasHover
     : string option =
     wordAt text jcol
     |> Option.bind (fun w ->
-        let mutable s = jcol - 1
-
-        while s > 0 && isWord text[s - 1] do
-            s <- s - 1
-
+        let s = wordStartOf text jcol
         let e = s + w.Length
         let member_ = s > 0 && text[s - 1] = '.'
         let qualifier = e < text.Length && text[e] = '.'
@@ -1023,7 +1011,7 @@ let rec private varUseType (name: string) (te: Check.TypedExpr) : Ty option =
 /// value type (`name : ty`) — matching F#, which names only named params,
 /// so an all-`()` (unit) or param-less binding hovers as its value type
 let private sigOrFlat (name: string) (ps: string list) (ty: Ty) : string =
-    if ps |> List.filter (fun p -> p <> "()") |> List.isEmpty then
+    if ps |> List.forall (fun p -> p = "()") then
         $"{name} : {formatTy ty}"
     else
         formatSignature name ps ty
@@ -1031,13 +1019,13 @@ let private sigOrFlat (name: string) (ps: string list) (ty: Ty) : string =
 /// the annotated signature of the inner-let binding `name` at the column —
 /// the sibling of innerLetType that renders names, not just the arrow type
 let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : string option =
-    match Check.childExprs te |> List.tryPick (innerLetSig name jcol) with
-    | Some s -> Some s
-    | None ->
+    Check.childExprs te
+    |> List.tryPick (innerLetSig name jcol)
+    |> Option.orElseWith (fun () ->
         match te.Kind with
         | Check.TELet(n, _, tvalue, _) when n = name && te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
             Some(sigOrFlat n (Check.lambdaParamNames tvalue) tvalue.Ty)
-        | _ -> None
+        | _ -> None)
 
 /// the type of the record-pattern field whose name sits at the column —
 /// a pattern is no expression node, so without this the enclosing
@@ -1102,9 +1090,9 @@ let rec private patFieldTypeAt (env: TypeEnv) (jcol: int) (ty: Ty option) (p: As
 
 /// patFieldTypeAt over every pattern in the typed tree, innermost first
 let rec private patFieldHoverAt (env: TypeEnv) (jcol: int) (te: Check.TypedExpr) : Ty option =
-    match Check.childExprs te |> List.tryPick (patFieldHoverAt env jcol) with
-    | Some t -> Some t
-    | None ->
+    Check.childExprs te
+    |> List.tryPick (patFieldHoverAt env jcol)
+    |> Option.orElseWith (fun () ->
         match te.Kind with
         | Check.TEMatch(s, arms) -> arms |> List.tryPick (fun (p, _, _) -> patFieldTypeAt env jcol (Some s.Ty) p)
         | Check.TELambdaPat(p, _) ->
@@ -1114,7 +1102,7 @@ let rec private patFieldHoverAt (env: TypeEnv) (jcol: int) (te: Check.TypedExpr)
                 | _ -> None
 
             patFieldTypeAt env jcol dom p
-        | _ -> None
+        | _ -> None)
 
 // ---- cross-file navigation [D:lsp-cross-file] ---------------------
 // the server retains nothing between requests, so a cross-file target
@@ -1164,10 +1152,7 @@ let private letSiteIn
     : (int * int * int) option =
     let inScope =
         stmts
-        |> List.filter (fun (ll, _) ->
-            match bound with
-            | Some b -> ll.Head < b
-            | None -> true)
+        |> List.filter (fun (ll, _) -> bound |> Option.forall (fun b -> ll.Head < b))
 
     let site (ll: Assemble.LogicalLine) =
         binderCol n ll.Text
@@ -1198,60 +1183,46 @@ let private letSiteIn
 
             if binds then site ll else None))
 
+let private strWord (a: Check.TypedExpr) =
+    match a.Kind with
+    | Check.TEStr w -> Some(w, a.Span)
+    | _ -> None
+
 /// the command surface containing the column — bare TECmd or the
 /// reified spine (| succeeds desugars the ECmd away; recover prog and
 /// the literal argv words like the unknown-flag check does
 /// [D:command-signatures]): (prog, head start col, words with spans)
 let rec private cmdSurfaceAt (jcol: int) (te: Check.TypedExpr) : (string * int * (string * Span) list) option =
-    match Check.childExprs te |> List.tryPick (cmdSurfaceAt jcol) with
-    | Some r -> Some r
-    | None when te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
-        (match te.Kind with
-         | Check.TECmd(Check.THeadLit prog, args, _) ->
-             Some(
-                 prog,
-                 te.Span.Start.Col,
-                 args
-                 |> List.choose (fun a ->
-                     match a.Kind with
-                     | Check.TEStr w -> Some(w, a.Span)
-                     | _ -> None)
-             )
-         | _ ->
-             let rec spine (e: Check.TypedExpr) acc =
-                 match e.Kind with
-                 | Check.TEApp(f, a) -> spine f (a :: acc)
-                 // the command-reifier spine only [D:desugar-namespace] — a
-                 // library desugar carries no program/argv to recover
-                 | Check.TEVar v when Weir.Effects.isCommandReifier v -> Some acc
-                 | _ -> None
+    Check.childExprs te
+    |> List.tryPick (cmdSurfaceAt jcol)
+    |> Option.orElseWith (fun () ->
+        if te.Span.Start.Col <= jcol && jcol < te.Span.End.Col then
+            match te.Kind with
+            | Check.TECmd(Check.THeadLit prog, args, _) -> Some(prog, te.Span.Start.Col, args |> List.choose strWord)
+            | _ ->
+                let rec spine (e: Check.TypedExpr) acc =
+                    match e.Kind with
+                    | Check.TEApp(f, a) -> spine f (a :: acc)
+                    // the command-reifier spine only [D:desugar-namespace] — a
+                    // library desugar carries no program/argv to recover
+                    | Check.TEVar v when Weir.Effects.isCommandReifier v -> Some acc
+                    | _ -> None
 
-             match spine te [] with
-             | Some args ->
-                 let progE =
-                     args
-                     |> List.choose (fun a ->
-                         match a.Kind with
-                         | Check.TEStr p -> Some(p, a.Span)
-                         | _ -> None)
-                     |> List.tryLast
+                match spine te [] with
+                | Some args ->
+                    let progE = args |> List.choose strWord |> List.tryLast
 
-                 let rec lists (e: Check.TypedExpr) =
-                     match e.Kind with
-                     | Check.TEList items -> items
-                     | _ -> Check.childExprs e |> List.collect lists
+                    let rec lists (e: Check.TypedExpr) =
+                        match e.Kind with
+                        | Check.TEList items -> items
+                        | _ -> Check.childExprs e |> List.collect lists
 
-                 let words =
-                     args
-                     |> List.collect lists
-                     |> List.choose (fun a ->
-                         match a.Kind with
-                         | Check.TEStr w -> Some(w, a.Span)
-                         | _ -> None)
+                    let words = args |> List.collect lists |> List.choose strWord
 
-                 progE |> Option.map (fun (p, psp) -> p, psp.Start.Col, words)
-             | None -> None)
-    | None -> None
+                    progE |> Option.map (fun (p, psp) -> p, psp.Start.Col, words)
+                | None -> None
+        else
+            None)
 
 /// the flag's field in its signature, resolved the way the unknown-flag
 /// check resolves surfaces (record = the "" sub; union = the first
@@ -1313,6 +1284,14 @@ let private sigFlagField (si: Sigs.SigInfo) (words: string list) (w: string) =
                         rn, f, fty, sigLines, sigStmts)
                 | _ -> None)))
 
+let private docAtSite (atts: Assemble.DocAttach list) (dl: int) (dc: int) : string option =
+    atts
+    |> List.tryPick (fun d ->
+        if d.Line = dl && d.Col = dc then
+            Some(reflowDoc d.Doc)
+        else
+            None)
+
 /// a signed flag's `///` doc, read at its field's declaration in the sig
 /// file — hover and signature help share the read
 let private sigFlagDoc
@@ -1323,13 +1302,7 @@ let private sigFlagDoc
     (sigStmts: (Assemble.LogicalLine * Statements.CheckedStatement) list)
     : string option =
     typeSiteIn sigStmts rn (Some f)
-    |> Option.bind (fun (dl, dc, _) ->
-        docAttachmentsCached sigPath sigLines
-        |> List.tryPick (fun d ->
-            if d.Line = dl && d.Col = dc then
-                Some(reflowDoc d.Doc)
-            else
-                None))
+    |> Option.bind (fun (dl, dc, _) -> docAtSite (docAttachmentsCached sigPath sigLines) dl dc)
 
 /// definition site for the identifier at (1-based physical line, col):
 /// Some (target file or None for this one, physLine, physCol,
@@ -1367,6 +1340,22 @@ let private unionOf (env: TypeEnv) (ctor: string) =
         | Union d when d.Cases |> List.exists (fun (c, _) -> c = ctor) -> Some tn
         | _ -> None)
 
+let private moduleUnionOf (env: TypeEnv) (alias: string) (ctor: string) : string option =
+    env.ModuleTypes
+    |> Map.tryFind alias
+    |> Option.bind (
+        Map.tryPick (fun _ key ->
+            match Map.tryFind key env.Types with
+            | Some(Union d) when d.Cases |> List.exists (fun (c, _) -> c = ctor) -> Some key
+            | _ -> None)
+    )
+
+let private argsTargetName (target: Check.ArgsTarget) =
+    match target with
+    | Check.ArgsRecord def -> def.Name
+    | Check.ArgsUnion(udef, _) -> udef.Name
+    | Check.ArgsShared(outer, _, _, _) -> outer.Name
+
 let definitionTarget
     (path: string)
     (lines: string list)
@@ -1397,10 +1386,10 @@ let definitionTarget
                     |> Option.map (fun (pl, pc, len) -> Some lm.AbsPath, pl, pc, len))
             | _ -> None
 
-        match typeSiteIn stmts tyName member_ with
-        | Some(pl, pc, len) -> Some(None, pl, pc, len)
-        | None when viaAlias.IsSome -> viaAlias
-        | None ->
+        typeSiteIn stmts tyName member_
+        |> Option.map (fun (pl, pc, len) -> None, pl, pc, len)
+        |> Option.orElse viaAlias
+        |> Option.orElseWith (fun () ->
             imports
             |> List.tryPick (fun lm ->
                 if lm.TypeDefs |> List.exists (fun (tn, _) -> tn = tyName) then
@@ -1408,7 +1397,7 @@ let definitionTarget
                     |> Option.bind (fun (_, mstmts) -> typeSiteIn mstmts tyName member_)
                     |> Option.map (fun (pl, pc, len) -> Some lm.AbsPath, pl, pc, len)
                 else
-                    None)
+                    None))
 
     let recordHasField (env: TypeEnv) (recName: string) (field: string) =
         match Map.tryFind recName env.Types with
@@ -1429,9 +1418,8 @@ let definitionTarget
             | Ast.PRecord fields -> fields |> List.tryPick (snd >> patCaseAt jcol)
             | _ -> None
 
-        match deeper with
-        | Some d -> Some d
-        | None ->
+        deeper
+        |> Option.orElseWith (fun () ->
             match p.PKind with
             | Ast.PCase(ctor, _, None) when p.PSpan.Start.Col <= jcol && jcol < p.PSpan.Start.Col + ctor.Length ->
                 Some(Choice2Of2(None, ctor))
@@ -1444,7 +1432,7 @@ let definitionTarget
                     Some(Choice2Of2(Some m, ctor))
                 else
                     None
-            | _ -> None
+            | _ -> None)
 
     let rec matchCaseAt (jcol: int) (te: Check.TypedExpr) : Choice<string, string option * string> option =
         let here =
@@ -1452,9 +1440,8 @@ let definitionTarget
             | Check.TEMatch(_, arms) -> arms |> List.tryPick (fun (p, _, _) -> patCaseAt jcol p)
             | _ -> None
 
-        match here with
-        | Some c -> Some c
-        | None -> Check.childExprs te |> List.tryPick (matchCaseAt jcol)
+        here
+        |> Option.orElseWith (fun () -> Check.childExprs te |> List.tryPick (matchCaseAt jcol))
 
     toLogical (withPartials stmts partials) line col
     // inside a hole there is nothing to jump from [D:block-recovery]
@@ -1522,20 +1509,17 @@ let definitionTarget
                         |> List.tryFind (fun lm -> lm.Alias = alias)
                         |> Option.map (fun lm -> Some lm.AbsPath, 1, 1, 0)
                     | Choice2Of2(Some alias, ctor) ->
-                        env.ModuleTypes
-                        |> Map.tryFind alias
-                        |> Option.bind (
-                            Map.tryPick (fun _ key ->
-                                match Map.tryFind key env.Types with
-                                | Some(Union d) when d.Cases |> List.exists (fun (c, _) -> c = ctor) -> Some key
-                                | _ -> None)
-                        )
-                        |> Option.bind (fun tn -> typeSite tn (Some ctor))
+                        moduleUnionOf env alias ctor |> Option.bind (fun tn -> typeSite tn (Some ctor))
                     | Choice2Of2(None, ctor) -> unionOf env ctor |> Option.bind (fun tn -> typeSite tn (Some ctor)))
 
-            match fromPattern with
-            | Some r -> Some r
-            | None ->
+            let onTypeWord (name: string) (key: unit -> string) =
+                if wordAt useLl.Text jcol = Some name then
+                    typeSite (key ()) None
+                else
+                    None
+
+            fromPattern
+            |> Option.orElseWith (fun () ->
                 teOf chk
                 |> Option.bind (fun te -> nodeAt te jcol)
                 |> Option.bind (fun node ->
@@ -1605,27 +1589,16 @@ let definitionTarget
                             | TNamed(k, _) when k.EndsWith("." + topName) -> k
                             | _ -> topName
 
-                        wordAt useLl.Text jcol
-                        |> Option.bind (fun w -> if w = topName then typeSite (keyOf node.Ty) None else None)
+                        onTypeWord topName (fun () -> keyOf node.Ty)
                     | Check.TEFromYaml(tyName, _, _)
-                    | Check.TEFromToml(tyName, _) ->
-                        wordAt useLl.Text jcol
-                        |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
+                    | Check.TEFromToml(tyName, _) -> onTypeWord tyName (fun () -> tyName)
                     // `Env.load T` / `Args.load T`: the target type name jumps to
                     // its declaration — the bespoke arm absorbs the argument, so
                     // it is no TEVar; resolve it off the load node's own def
-                    | Check.TEEnvLoad(def, _) ->
-                        wordAt useLl.Text jcol
-                        |> Option.bind (fun w -> if w = def.Name then typeSite def.Name None else None)
+                    | Check.TEEnvLoad(def, _) -> onTypeWord def.Name (fun () -> def.Name)
                     | Check.TEArgsLoad target ->
-                        let tyName =
-                            match target with
-                            | Check.ArgsRecord def -> def.Name
-                            | Check.ArgsUnion(udef, _) -> udef.Name
-                            | Check.ArgsShared(outer, _, _, _) -> outer.Name
-
-                        wordAt useLl.Text jcol
-                        |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
+                        let tyName = argsTargetName target
+                        onTypeWord tyName (fun () -> tyName)
                     // the schema= name opens the vendored file [D:schema-hover]
                     // — the checker's own resolution; a not-vendored name
                     // stays quiet (the hover carries the teaching)
@@ -1651,7 +1624,7 @@ let definitionTarget
                         then
                             typeSite w None
                         else
-                            None)))
+                            None))))
 
 /// the single-file view of definitionTarget: Some (physLine, physCol,
 /// nameLength) when the definition is in this file, None otherwise —
@@ -1863,14 +1836,11 @@ let private keyFind (name: string) (text: string) (lo: int) (hi: int) : int opti
 // case (after `|`, `=` or an attribute's `]`) — the member words a
 // type-reference search skips
 let private isFieldWord (text: string) (jc: int) (len: int) =
-    match nextIdx text (jc - 1 + len) with
-    | Some k -> text[k] = ':'
-    | None -> false
+    nextIdx text (jc - 1 + len) |> Option.exists (fun k -> text[k] = ':')
 
 let private isCaseWord (text: string) (jc: int) =
-    match prevIdx text (jc - 1) with
-    | Some k -> text[k] = '|' || text[k] = '=' || text[k] = ']'
-    | None -> false
+    prevIdx text (jc - 1)
+    |> Option.exists (fun k -> text[k] = '|' || text[k] = '=' || text[k] = ']')
 
 // a declared member's type with the type's parameters bound to a use's
 // arguments — a generic record's field, a generic union's payload
@@ -2033,15 +2003,7 @@ let private memberOccurrences
                  | None -> arg |> Option.iter (walkPat None))
             | PCase(ctor, arg, Some(alias, mspan)) ->
                 // an imported union's case [D:qualified-case-patterns]
-                let key =
-                    env.ModuleTypes
-                    |> Map.tryFind alias
-                    |> Option.bind (
-                        Map.tryPick (fun _ key ->
-                            match Map.tryFind key env.Types with
-                            | Some(Union d) when d.Cases |> List.exists (fst >> (=) ctor) -> Some key
-                            | _ -> None)
-                    )
+                let key = moduleUnionOf env alias ctor
 
                 let payload =
                     key
@@ -2210,14 +2172,7 @@ let private memberOccurrences
                 let alias = n.Substring(0, n.LastIndexOf '.')
                 let ctor = n.Substring(n.LastIndexOf '.' + 1)
 
-                env.ModuleTypes
-                |> Map.tryFind alias
-                |> Option.bind (
-                    Map.tryPick (fun _ key ->
-                        match Map.tryFind key env.Types with
-                        | Some(Union d) when d.Cases |> List.exists (fst >> (=) ctor) -> Some key
-                        | _ -> None)
-                )
+                moduleUnionOf env alias ctor
                 |> Option.iter (fun k ->
                     let lo = max 0 (te.Span.Start.Col - 1) + alias.Length + 1
                     caseUse k ctor (wordFind ctor text lo (min text.Length (lo + ctor.Length))))
@@ -2229,13 +2184,7 @@ let private memberOccurrences
             | TEFromYaml(tyName, _, _)
             | TEFromToml(tyName, _) -> typeUse tyName te.Span
             | TEEnvLoad(def, _) -> typeUse def.Name te.Span
-            | TEArgsLoad target ->
-                typeUse
-                    (match target with
-                     | ArgsRecord def -> def.Name
-                     | ArgsUnion(udef, _) -> udef.Name
-                     | ArgsShared(outer, _, _, _) -> outer.Name)
-                    te.Span
+            | TEArgsLoad target -> typeUse (argsTargetName target) te.Span
             | TEYaml(tpl, _, _) -> walkTpl tpl
             | _ -> childExprs te |> List.iter walk
 
@@ -2634,10 +2583,7 @@ let private memberNameCheck
         | Some(Union _) -> "case"
         | None -> "member"
 
-    let kind =
-        match member_, def with
-        | None, _ -> "type"
-        | Some _, _ -> kindOf key
+    let kind = if member_.IsNone then "type" else kindOf key
 
     let imports =
         stmts
@@ -2883,14 +2829,7 @@ let private withinFormHover (env: TypeEnv) (text: string) (jcol: int) : string o
 
     wordAt text jcol
     |> Option.bind (fun w ->
-        let wordStart =
-            let mutable st = jcol - 1
-
-            while st > 0 && isWord text[st - 1] do
-                st <- st - 1
-
-            st
-
+        let wordStart = wordStartOf text jcol
         let before = text.Substring(0, wordStart).TrimEnd()
 
         if w = "within" then
@@ -2947,20 +2886,18 @@ let private withinFormHover (env: TypeEnv) (text: string) (jcol: int) : string o
 // The form-word hover rule: a keyword that names a form answers; a
 // punctuation-in-word-form keyword keeps the silence guard [D:form-word-hover].
 let private adapterFormHover (text: string) (jcol: int) : string option =
-    wordAt text jcol
-    |> Option.bind (fun w ->
-        match w with
-        | "from" ->
-            Some(
-                "from <adapter> [T] — parse a text line stream into typed values. Adapters: "
-                + (Builtins.adapterNames "from" |> String.concat ", ")
-            )
-        | "to" ->
-            Some(
-                "to <adapter> — render typed values as a text line stream. Adapters: "
-                + (Builtins.adapterNames "to" |> String.concat ", ")
-            )
-        | _ -> None)
+    match wordAt text jcol with
+    | Some "from" ->
+        Some(
+            "from <adapter> [T] — parse a text line stream into typed values. Adapters: "
+            + (Builtins.adapterNames "from" |> String.concat ", ")
+        )
+    | Some "to" ->
+        Some(
+            "to <adapter> — render typed values as a text line stream. Adapters: "
+            + (Builtins.adapterNames "to" |> String.concat ", ")
+        )
+    | _ -> None
 
 // retry/poll/until answer as forms [D:form-word-hover] — the stated
 // rule's remaining customers. The key lists derive from the prelude
@@ -3000,13 +2937,11 @@ let private retryPollFormHover (env: TypeEnv) (text: string) (jcol: int) : strin
 // lambda — the meaning plus the pointer to match, the fourth form word
 // under the stated rule
 let private functionFormHover (text: string) (jcol: int) : string option =
-    wordAt text jcol
-    |> Option.bind (fun w ->
-        match w with
-        | "function" ->
-            Some
-                "function | <pattern> -> <expr> | … — a one-parameter fun whose body matches that parameter (fun x -> match x with …); arms take guards exactly as match does"
-        | _ -> None)
+    match wordAt text jcol with
+    | Some "function" ->
+        Some
+            "function | <pattern> -> <expr> | … — a one-parameter fun whose body matches that parameter (fun x -> match x with …); arms take guards exactly as match does"
+    | _ -> None
 
 // the attribute names answer inside their brackets [D:lsp-typename]:
 // [<Tag>]/[<Other>]/[<Short>]… are no expression nodes, so the word
@@ -3027,14 +2962,7 @@ let private streamFormHover (text: string) (jcol: int) : string option =
         if w <> "stream" then
             None
         else
-            let wordStart =
-                let mutable st = jcol - 1
-
-                while st > 0 && isWord text[st - 1] do
-                    st <- st - 1
-
-                st
-
+            let wordStart = wordStartOf text jcol
             let before = text.Substring(0, wordStart).TrimEnd()
 
             if before.EndsWith "from yaml" || before.EndsWith "to yaml" then
@@ -3046,13 +2974,11 @@ let private streamFormHover (text: string) (jcol: int) : string option =
 // `pfor` answers as a form [D:pfor]: the parallel `for` — the meaning
 // plus what it inherits from Seq.piter and where the ceiling knob lives
 let private pforFormHover (text: string) (jcol: int) : string option =
-    wordAt text jcol
-    |> Option.bind (fun w ->
-        match w with
-        | "pfor" ->
-            Some
-                "pfor <pattern> in <seq> do <body> — the parallel for: exactly `xs |> Seq.piter (fun x -> body)`. The body must be unit and arms finish in any order (their output interleaves); every arm runs even if one fails, then the first error by input order raises. The default ceiling is 64 arms (8 when nested in a fan-out, 1 deeper); `Seq.piterWith n` sets one. Effects only — collect results with `Seq.pmap`"
-        | _ -> None)
+    match wordAt text jcol with
+    | Some "pfor" ->
+        Some
+            "pfor <pattern> in <seq> do <body> — the parallel for: exactly `xs |> Seq.piter (fun x -> body)`. The body must be unit and arms finish in any order (their output interleaves); every arm runs even if one fails, then the first error by input order raises. The default ceiling is 64 arms (8 when nested in a fan-out, 1 deeper); `Seq.piterWith n` sets one. Effects only — collect results with `Seq.pmap`"
+    | _ -> None
 
 let private formWordHover (env: TypeEnv) (text: string) (jcol: int) : string option =
     withinFormHover env text jcol
@@ -3191,6 +3117,23 @@ let private schemaHover (path: string) (name: string) : string option =
                     $"schema={name} — {strictness}\n\n"
                     + String.concat "\n" ([ file; source ] @ what)
                 )
+
+let private joinParas (a: string option) (b: string option) : string option =
+    match a, b with
+    | Some a, Some b -> Some(a + "\n\n" + b)
+    | a, None -> a
+    | None, b -> b
+
+let private valueTy (env: TypeEnv) (name: string) : Ty option =
+    match Map.tryFind name env.Values with
+    | Some sch -> Some sch.Ty
+    | None ->
+        match name.Split '.' with
+        | [| m; mem |] ->
+            Map.tryFind m env.Modules
+            |> Option.bind (Map.tryFind mem)
+            |> Option.map (fun s -> s.Ty)
+        | _ -> None
 
 /// hover text at (1-based physical line, col), or None. Pure. Type first,
 /// then the `///` doc. Silence guard first [D:hover-silence]; then the
@@ -3469,10 +3412,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         // in its body: an inner let shadowing it would otherwise lend
         // the binder its type
         let ownBinderSig =
-            let mutable s = jcol - 1
-
-            while s > 0 && isWord ll.Text[s - 1] do
-                s <- s - 1
+            let s = wordStartOf ll.Text jcol
 
             if s <= ll.Text.Length && ll.Text.Substring(0, s).Trim() = "let" then
                 topLetSig ()
@@ -3517,11 +3457,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     | Check.TEFromYaml(tyName, _, _)
                     | Check.TEFromToml(tyName, _) -> named tyName
                     | Check.TEEnvLoad(def, _) -> named def.Name
-                    | Check.TEArgsLoad target ->
-                        (match target with
-                         | Check.ArgsRecord def -> named def.Name
-                         | Check.ArgsUnion(udef, _) -> named udef.Name
-                         | Check.ArgsShared(outer, _, _, _) -> named outer.Name)
+                    | Check.TEArgsLoad target -> named (argsTargetName target)
                     | _ -> None))
             |> Option.orElseWith (fun () -> node |> Option.map (fun n -> formatTy n.Ty))
             |> Option.orElseWith (fun () ->
@@ -3593,13 +3529,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     (match fileOpt with
                      | None -> Some(path, lines)
                      | Some f -> Sigs.targetSourceLines f |> Option.map (fun ls -> f, ls))
-                    |> Option.bind (fun (docPath, docSrc) ->
-                        docAttachmentsCached docPath docSrc
-                        |> List.tryPick (fun d ->
-                            if d.Line = dl && d.Col = dc then
-                                Some(reflowDoc d.Doc)
-                            else
-                                None)))
+                    |> Option.bind (fun (docPath, docSrc) -> docAtSite (docAttachmentsCached docPath docSrc) dl dc))
 
         let doc =
             (sigHead |> Option.map snd)
@@ -3608,22 +3538,14 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.orElse usageDoc
             |> Option.orElse builtinDoc
             // a validated type's `validate` doc rides below [D:validated-types]
-            |> fun d ->
-                match d, validateDoc with
-                | Some d, Some v -> Some(d + "\n\n" + v)
-                | None, v -> v
-                | d, None -> d
+            |> fun d -> joinParas d validateDoc
 
         // a hole-descended type (a use of a binder whose value failed)
         // hovers nothing [D:block-recovery]: the hole convention's var
         // would render, and no type is the honest answer
         let ty = ty |> Option.filter (fun t -> not (t.Contains "'__hole"))
 
-        match ty, doc with
-        | Some t, Some d -> Some(t + "\n\n" + d) // type FIRST, then the doc
-        | Some t, None -> Some t
-        | None, Some d -> Some d
-        | None, None -> None
+        joinParas ty doc // type FIRST, then the doc
     | Some _ -> None
     // no statement holds the cursor — the line did not parse. A form word
     // answers from the line's own text [D:serve-defaults]: the shape is
@@ -3693,6 +3615,9 @@ let inlayOptionsOf (json: JsonElement) : InlayHintOptions =
 let private hasSentinel (ty: Ty) =
     Types.tyVars ty |> Set.exists (fun v -> v.StartsWith "__")
 
+let private lastPhysLine (ll: Assemble.LogicalLine) =
+    ll.Segments |> List.fold (fun m (_, pl, _) -> max m pl) ll.Head
+
 // the lambda chain a `let f a b = …` desugars to: the last param's span
 // and the body's (return) type
 let rec private lastParam (te: Check.TypedExpr) : (Span * Ty) option =
@@ -3733,8 +3658,7 @@ let inlayHintsFor
     // the viewport filter runs before any walk: a statement is visible
     // when its physical lines overlap the range
     let overlaps (ll: Assemble.LogicalLine) =
-        let last = ll.Segments |> List.fold (fun m (_, pl, _) -> max m pl) ll.Head
-        last >= fromLine && ll.Head <= toLine
+        lastPhysLine ll >= fromLine && ll.Head <= toLine
 
     // R2: a long label is cut with a trailing `…`, the full type rides
     // in the tooltip; an untruncated label carries none
@@ -3761,9 +3685,8 @@ let inlayHintsFor
     // after the word at the logical column, when it is verbatim there
     let afterWord (ll: Assemble.LogicalLine) (jcol: int) (word: string) (ty: Ty) (kind: int) =
         if word <> "()" && word <> "_" then
-            match verbatimAt raw ll jcol word.Length with
-            | Some(l, c) -> place l (c + word.Length) ty kind false false
-            | None -> ()
+            verbatimAt raw ll jcol word.Length
+            |> Option.iter (fun (l, c) -> place l (c + word.Length) ty kind false false)
 
     // the return type sits before the `=` that follows the last param
     // (so it never collides with that param's own hint); `let f = fun…`
@@ -3775,9 +3698,8 @@ let inlayHintsFor
                 let eq = ll.Text.IndexOf('=', pspan.End.Col - 1)
 
                 if eq >= 0 && eq + 1 < bodyStart then
-                    match verbatimAt raw ll (eq + 1) 1 with
-                    | Some(l, c) -> place l c ret 1 false true
-                    | None -> ()
+                    verbatimAt raw ll (eq + 1) 1
+                    |> Option.iter (fun (l, c) -> place l c ret 1 false true)
             | None -> ()
 
     let pipeLines = System.Collections.Generic.HashSet<int>()
@@ -3889,11 +3811,8 @@ let documentSymbolsFor (path: string) (lines: string list) : DocSymbol list =
     let lineLen (l: int) =
         if l >= 1 && l <= raw.Length then raw[l - 1].Length else 0
 
-    let lastLine (ll: Assemble.LogicalLine) =
-        ll.Segments |> List.fold (fun m (_, pl, _) -> max m pl) ll.Head
-
     let rangeOf (ll: Assemble.LogicalLine) =
-        let l2 = lastLine ll
+        let l2 = lastPhysLine ll
         ll.Head, 1, l2, lineLen l2 + 1
 
     let lineRange (l: int) = l, 1, l, lineLen l + 1
@@ -4193,7 +4112,7 @@ let foldingRangesFor (path: string) (lines: string list) : (int * int * string o
 
     // rule 1: the assembled statement
     for ll in lls do
-        let last = ll.Segments |> List.fold (fun m (_, pl, _) -> max m pl) ll.Head
+        let last = lastPhysLine ll
 
         if last > ll.Head && ll.Head >= 1 && last <= n then
             add ll.Head last None
@@ -4380,9 +4299,7 @@ let private fixAllTitle (family: string) =
 /// anywhere in the file
 let codeActionsFor (diags: Diagnostics.Diagnostic list) (range: (int * int) option) : CodeAction list =
     let inRange (d: Diagnostics.Diagnostic) =
-        match range with
-        | Some(a, b) -> d.Line >= a && d.Line <= b
-        | None -> true
+        range |> Option.forall (fun (a, b) -> d.Line >= a && d.Line <= b)
 
     let withFix = diags |> List.choose (fun d -> d.Fix |> Option.map (fun f -> d, f))
 
@@ -4454,17 +4371,14 @@ let private spineAtoms (text: string) : (string * int) list =
     if quote <> ' ' then
         []
     else
-        let groupFrom, pseudo =
+        let pseudo =
             if opens.Count > 0 && text.Substring(opens.Peek() + 1).Trim() = "" then
-                let o = opens.Pop()
-                (if opens.Count > 0 then opens.Peek() + 1 else 0), Some o
+                Some(opens.Pop())
             else
-                (if opens.Count > 0 then opens.Peek() + 1 else 0), None
+                None
 
-        let stop =
-            match pseudo with
-            | Some o -> o
-            | None -> text.Length
+        let groupFrom = if opens.Count > 0 then opens.Peek() + 1 else 0
+        let stop = defaultArg pseudo text.Length
 
         let out = ResizeArray<string * int>()
         let mutable start = -1
@@ -4551,12 +4465,7 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
             |> Option.defaultValue env0
 
         let docAt (src: string list) (dl: int) (dc: int) =
-            Assemble.docAttachments src
-            |> List.tryPick (fun d ->
-                if d.Line = dl && d.Col = dc then
-                    Some(reflowDoc d.Doc)
-                else
-                    None)
+            docAtSite (Assemble.docAttachments src) dl dc
 
         // ---- command position [D:sig-arg-complete]: the typed line
         // normalised — head, its case words, one parameter per flag
@@ -4645,16 +4554,7 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
 
         // ---- expression application: the head's names, type and doc
         let resolveHead (head: string) : (string list * Ty * string option) option =
-            let schemeTy () =
-                match Map.tryFind head env.Values with
-                | Some sch -> Some sch.Ty
-                | None ->
-                    match head.Split '.' with
-                    | [| m; mem |] ->
-                        Map.tryFind m env.Modules
-                        |> Option.bind (Map.tryFind mem)
-                        |> Option.map (fun s -> s.Ty)
-                    | _ -> None
+            let schemeTy () = valueTy env head
 
             match Map.tryFind head Builtins.builtinDocs.Value with
             | Some d when not d.Params.IsEmpty ->
@@ -4731,10 +4631,7 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
                     atoms
                     |> List.tryFindIndexBack (fun (a, _) -> isOperatorAtom a || Parser.keywords.Contains a)
 
-                let piped =
-                    match sepIdx with
-                    | Some i -> fst atoms[i] = "|>"
-                    | None -> false
+                let piped = sepIdx |> Option.exists (fun i -> fst atoms[i] = "|>")
 
                 match List.skip (sepIdx |> Option.map ((+) 1) |> Option.defaultValue 0) atoms with
                 | (head, headAt) :: args when isHeadWord head ->
@@ -5124,6 +5021,16 @@ let run (debug: bool) : int =
                         | Some l, Some c -> Some(l + 1, c + 1) // to 1-based
                         | _ -> None)
 
+                let lineRangeOf () =
+                    jObj "range" ps
+                    |> Option.bind (fun r ->
+                        match jObj "start" r, jObj "end" r with
+                        | Some st, Some en ->
+                            match jNum "line" st, jNum "line" en with
+                            | Some a, Some b -> Some(a + 1, b + 1)
+                            | _ -> None
+                        | _ -> None)
+
                 lastAnswered <- None
 
                 // a malformed request (bad URI, bad params) must not kill
@@ -5159,9 +5066,8 @@ let run (debug: bool) : int =
                         |> Option.bind (jObj "publishDiagnostics")
                         |> Option.iter (fun pd ->
                             clientRelated <-
-                                (match tryProp "relatedInformation" pd with
-                                 | Some v -> v.ValueKind = JsonValueKind.True
-                                 | None -> false)
+                                tryProp "relatedInformation" pd
+                                |> Option.exists (fun v -> v.ValueKind = JsonValueKind.True)
 
                             clientTags <-
                                 jObj "tagSupport" pd
@@ -5178,8 +5084,7 @@ let run (debug: bool) : int =
                             textDocCaps
                             |> Option.bind (jObj "documentSymbol")
                             |> Option.bind (tryProp "hierarchicalDocumentSymbolSupport")
-                            |> Option.map (fun v -> v.ValueKind = JsonValueKind.True)
-                            |> Option.defaultValue false
+                            |> Option.exists (fun v -> v.ValueKind = JsonValueKind.True)
 
                         jObj "initializationOptions" ps
                         |> Option.bind (jObj "inlayHints")
@@ -5273,15 +5178,7 @@ let run (debug: bool) : int =
                                     | true, ds -> ds
                                     | _ -> []
 
-                                let requestedLines =
-                                    jObj "range" ps
-                                    |> Option.bind (fun r ->
-                                        match jObj "start" r, jObj "end" r with
-                                        | Some st, Some en ->
-                                            match jNum "line" st, jNum "line" en with
-                                            | Some a, Some b -> Some(a + 1, b + 1)
-                                            | _ -> None
-                                        | _ -> None)
+                                let requestedLines = lineRangeOf ()
 
                                 let writeRange (l1: int) (c1: int) (l2: int) (c2: int) =
                                     w.WritePropertyName "range"
@@ -5392,13 +5289,7 @@ let run (debug: bool) : int =
                                     let targetUri =
                                         match fileOpt with
                                         | None -> uri
-                                        | Some f ->
-                                            // the client's own spelling when the target is
-                                            // an open doc [D:lsp-uri-spelling]; pathToUri
-                                            // serves only files the client never named
-                                            docs.Keys
-                                            |> Seq.tryFind (fun k -> uriToPath k = f)
-                                            |> Option.defaultValue (pathToUri f)
+                                        | Some f -> uriFor f
 
                                     w.WriteStartObject()
                                     w.WriteString("uri", targetUri)
@@ -5412,8 +5303,7 @@ let run (debug: bool) : int =
                         let includeDeclaration =
                             jObj "context" ps
                             |> Option.bind (tryProp "includeDeclaration")
-                            |> Option.map (fun v -> v.ValueKind <> JsonValueKind.False)
-                            |> Option.defaultValue true
+                            |> Option.forall (fun v -> v.ValueKind <> JsonValueKind.False)
 
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf (), posOf () with
@@ -5840,18 +5730,8 @@ let run (debug: bool) : int =
                                         Map.tryFind label Builtins.builtinDocs.Value
                                         |> Option.filter (fun d -> not (List.isEmpty d.Params))
                                         |> Option.bind (fun d ->
-                                            let tyOf =
-                                                match Map.tryFind label env.Values with
-                                                | Some sch -> Some sch.Ty
-                                                | None ->
-                                                    match label.Split '.' with
-                                                    | [| m; mem |] ->
-                                                        Map.tryFind m env.Modules
-                                                        |> Option.bind (Map.tryFind mem)
-                                                        |> Option.map (fun s -> s.Ty)
-                                                    | _ -> None
-
-                                            tyOf |> Option.map (fun ty -> formatSignature label d.Params ty))
+                                            valueTy env label
+                                            |> Option.map (fun ty -> formatSignature label d.Params ty))
 
                                     match kindDetail |> Option.orElse sigDetail with
                                     | Some s -> w.WriteString("detail", s)
@@ -6021,15 +5901,7 @@ let run (debug: bool) : int =
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/inlayHint" ->
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
-                            let range =
-                                jObj "range" ps
-                                |> Option.bind (fun r ->
-                                    match jObj "start" r, jObj "end" r with
-                                    | Some st, Some en ->
-                                        match jNum "line" st, jNum "line" en with
-                                        | Some a, Some b -> Some(a + 1, b + 1)
-                                        | _ -> None
-                                    | _ -> None)
+                            let range = lineRangeOf ()
 
                             match docOf (), range with
                             | Some(uri, text), Some(fromLine, toLine) ->
