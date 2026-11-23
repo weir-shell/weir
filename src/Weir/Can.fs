@@ -657,60 +657,61 @@ let renderJson (script: string) (caps: Cap list) : string =
     use w = new System.Text.Json.Utf8JsonWriter(ms, opts)
 
     let writeSite (s: Site) =
-        w.WriteString("file", s.File)
-        w.WriteNumber("line", s.Line)
-        w.WriteNumber("col", s.Col)
+        Json.jfields {
+            "file", s.File
+            "line", s.Line
+            "col", s.Col
+        }
 
-    w.WriteStartObject()
-    w.WriteString("script", script)
-    w.WriteString("model", "capability, not behaviour")
-    w.WriteNumber("opaqueSites", opaqueCount caps)
-    w.WriteStartArray "capabilities"
+    (Json.jobj {
+        "script", script
+        "model", "capability, not behaviour"
+        "opaqueSites", opaqueCount caps
 
-    for c in caps do
-        w.WriteStartObject()
+        "capabilities",
+        [
+            for c in caps ->
+                Json.jobj {
+                    let kind, detail =
+                        match c.Fact with
+                        | Runs p -> "runs", p
+                        | RunsDyn d -> "runs-dynamic", d
+                        | OpaqueArg i -> "opaque", i
+                        | FsRead(m, p) -> "read", m + (p |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
+                        | FsWrite(m, p) -> "write", m + (p |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
+                        | TempWrite t -> "write", t
+                        | CwdChange via -> "cwd", via
+                        | Network(m, u) -> "network", m + (u |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
+                        | EnvRead x -> "env-read", x
+                        | EnvWrite(v, ns) ->
+                            "env-write",
+                            v
+                            + (ns
+                               |> Option.map (fun xs -> ": " + String.concat ", " xs)
+                               |> Option.defaultValue "")
+                        | SecretLoad x -> "secret-load", x
+                        | SecretArgv p -> "secret-argv", p
+                        | ProcScope -> "proc-scope", "within proc"
+                        | ServeScope(Some p) -> "serve-scope", $"within serve (port {p})"
+                        | ServeScope None -> "serve-scope", "within serve"
+                        | ProcCtl m -> "proc-ctl", m
+                        | Terminates v -> "terminates", v
 
-        let kind, detail =
-            match c.Fact with
-            | Runs p -> "runs", p
-            | RunsDyn d -> "runs-dynamic", d
-            | OpaqueArg i -> "opaque", i
-            | FsRead(m, p) -> "read", m + (p |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
-            | FsWrite(m, p) -> "write", m + (p |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
-            | TempWrite t -> "write", t
-            | CwdChange via -> "cwd", via
-            | Network(m, u) -> "network", m + (u |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
-            | EnvRead x -> "env-read", x
-            | EnvWrite(v, ns) ->
-                "env-write",
-                v
-                + (ns
-                   |> Option.map (fun xs -> ": " + String.concat ", " xs)
-                   |> Option.defaultValue "")
-            | SecretLoad x -> "secret-load", x
-            | SecretArgv p -> "secret-argv", p
-            | ProcScope -> "proc-scope", "within proc"
-            | ServeScope(Some p) -> "serve-scope", $"within serve (port {p})"
-            | ServeScope None -> "serve-scope", "within serve"
-            | ProcCtl m -> "proc-ctl", m
-            | Terminates v -> "terminates", v
+                    "kind", kind
+                    "detail", detail
+                    // the ambient/mutation class [D:pure-stage2] — machines get the
+                    // partition too, so "what changes?" is a filter, not a heuristic
+                    "class",
+                    (match factClass c.Fact with
+                     | Weir.Effects.Ambient -> "ambient"
+                     | Weir.Effects.Mutation -> "mutation")
 
-        w.WriteString("kind", kind)
-        w.WriteString("detail", detail)
-        // the ambient/mutation class [D:pure-stage2] — machines get the
-        // partition too, so "what changes?" is a filter, not a heuristic
-        w.WriteString(
-            "class",
-            match factClass c.Fact with
-            | Weir.Effects.Ambient -> "ambient"
-            | Weir.Effects.Mutation -> "mutation"
-        )
+                    yield! writeSite c.Site
+                }
+        ]
+    })
+        w
 
-        writeSite c.Site
-        w.WriteEndObject()
-
-    w.WriteEndArray()
-    w.WriteEndObject()
     w.Flush()
     System.Text.Encoding.UTF8.GetString(ms.ToArray())
 

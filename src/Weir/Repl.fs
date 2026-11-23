@@ -516,125 +516,114 @@ let docsJson () : string =
         new System.Text.Json.Utf8JsonWriter(ms, System.Text.Json.JsonWriterOptions(Indented = true, NewLine = "\n"))
 
     let writeDocFields (d: Builtins.BuiltinDoc option) =
-        match d with
-        | Some d ->
-            w.WriteString("summary", d.Summary)
+        Json.jfields {
+            match d with
+            | Some d ->
+                "summary", d.Summary
+                "example", d.Example
+                "pointer", d.Pointer
+            | None ->
+                "summary", Json.nil
+                "example", Json.nil
+                "pointer", Json.nil
+        }
 
-            match d.Example with
-            | Some e -> w.WriteString("example", e)
-            | None -> w.WriteNull "example"
+    (Json.jobj {
+        // Self is script-only [D:self-module] — absent from the REPL env this
+        // dump reads, but the reference documents the language, so it joins
+        // the module walk from its one source (Statements.selfMembers)
+        let modules = te.Modules |> Map.add "Self" Statements.selfMembers
 
-            match d.Pointer with
-            | Some p -> w.WriteString("pointer", p)
-            | None -> w.WriteNull "pointer"
-        | None ->
-            w.WriteNull "summary"
-            w.WriteNull "example"
-            w.WriteNull "pointer"
+        "modules",
+        [
+            for KeyValue(m, members) in modules ->
+                Json.jobj {
+                    "name", m
 
-    w.WriteStartObject()
-    w.WriteStartArray "modules"
+                    "members",
+                    [
+                        for KeyValue(mem, sch) in members ->
+                            let q = $"{m}.{mem}"
+                            let d = Map.tryFind q Builtins.builtinDocs.Value
 
-    // Self is script-only [D:self-module] — absent from the REPL env this
-    // dump reads, but the reference documents the language, so it joins
-    // the module walk from its one source (Statements.selfMembers)
-    let modules = te.Modules |> Map.add "Self" Statements.selfMembers
+                            let ps = d |> Option.map (fun d -> d.Params) |> Option.defaultValue []
 
-    for KeyValue(m, members) in modules do
-        w.WriteStartObject()
-        w.WriteString("name", m)
-        w.WriteStartArray "members"
+                            Json.jobj {
+                                "name", mem
+                                "signature", formatSignature q ps sch.Ty
+                                yield! writeDocFields d
+                            }
+                    ]
+                }
+        ]
 
-        for KeyValue(mem, sch) in members do
-            let q = $"{m}.{mem}"
-            let d = Map.tryFind q Builtins.builtinDocs.Value
-            w.WriteStartObject()
-            w.WriteString("name", mem)
+        "forms",
+        [
+            // a type's doc rides its types entry, never a form [D:prelude-type-docs]
+            for KeyValue(k, d) in Builtins.builtinDocs.Value do
+                if not (k.Contains '.') && not (Map.containsKey k te.Types) then
+                    Json.jobj {
+                        "name", k
 
-            let ps = d |> Option.map (fun d -> d.Params) |> Option.defaultValue []
+                        "signature",
+                        Map.tryFind k te.Values
+                        |> Option.map (fun sch -> formatSignature k d.Params sch.Ty)
 
-            w.WriteString("signature", formatSignature q ps sch.Ty)
-            writeDocFields d
-            w.WriteEndObject()
+                        yield! writeDocFields (Some d)
 
-        w.WriteEndArray()
-        w.WriteEndObject()
+                        // the within entry carries its kind table structurally — the
+                        // site renders rows where the summary's prose enumeration
+                        // cannot (the one source: Ast.withinKinds)
+                        if k = "within" then
+                            "kinds",
+                            [
+                                for kind in Ast.withinKinds |> List.filter (fun x -> not x.Standalone) ->
+                                    Json.jobj {
+                                        "name", kind.Name
+                                        "doc", kind.Doc
+                                    }
+                            ]
+                    }
+        ]
 
-    w.WriteEndArray()
-    w.WriteStartArray "forms"
+        // the prelude types, generated from the env [D:reference]: every
+        // record with its fields and every union with its cases (the
+        // constructors), so the reference covers them by construction
+        "types",
+        [
+            for KeyValue(n, def) in te.Types ->
+                Json.jobj {
+                    "name", n
+                    yield! writeDocFields (Map.tryFind n Builtins.builtinDocs.Value)
 
-    // a type's doc rides its types entry, never a form [D:prelude-type-docs]
-    for KeyValue(k, d) in Builtins.builtinDocs.Value do
-        if not (k.Contains '.') && not (Map.containsKey k te.Types) then
-            w.WriteStartObject()
-            w.WriteString("name", k)
+                    match def with
+                    | Types.Record r ->
+                        "kind", "record"
 
-            match Map.tryFind k te.Values with
-            | Some sch -> w.WriteString("signature", formatSignature k d.Params sch.Ty)
-            | None -> w.WriteNull "signature"
+                        "fields",
+                        [
+                            for f, ty in r.Fields ->
+                                Json.jobj {
+                                    "name", f
+                                    "type", Types.formatTy ty
+                                }
+                        ]
+                    | Types.Union u ->
+                        "kind", "union"
 
-            writeDocFields (Some d)
+                        "cases",
+                        [
+                            for c, payload in u.Cases ->
+                                Json.jobj {
+                                    "name", c
+                                    "payload", payload |> Option.map Types.formatTy
+                                }
+                        ]
+                }
+        ]
+    })
+        w
 
-            // the within entry carries its kind table structurally — the
-            // site renders rows where the summary's prose enumeration
-            // cannot (the one source: Ast.withinKinds)
-            if k = "within" then
-                w.WriteStartArray "kinds"
-
-                for kind in Ast.withinKinds |> List.filter (fun x -> not x.Standalone) do
-                    w.WriteStartObject()
-                    w.WriteString("name", kind.Name)
-                    w.WriteString("doc", kind.Doc)
-                    w.WriteEndObject()
-
-                w.WriteEndArray()
-
-            w.WriteEndObject()
-
-    w.WriteEndArray()
-
-    // the prelude types, generated from the env [D:reference]: every
-    // record with its fields and every union with its cases (the
-    // constructors), so the reference covers them by construction
-    w.WriteStartArray "types"
-
-    for KeyValue(n, def) in te.Types do
-        w.WriteStartObject()
-        w.WriteString("name", n)
-        writeDocFields (Map.tryFind n Builtins.builtinDocs.Value)
-
-        match def with
-        | Types.Record r ->
-            w.WriteString("kind", "record")
-            w.WriteStartArray "fields"
-
-            for f, ty in r.Fields do
-                w.WriteStartObject()
-                w.WriteString("name", f)
-                w.WriteString("type", Types.formatTy ty)
-                w.WriteEndObject()
-
-            w.WriteEndArray()
-        | Types.Union u ->
-            w.WriteString("kind", "union")
-            w.WriteStartArray "cases"
-
-            for c, payload in u.Cases do
-                w.WriteStartObject()
-                w.WriteString("name", c)
-
-                match payload with
-                | Some ty -> w.WriteString("payload", Types.formatTy ty)
-                | None -> w.WriteNull "payload"
-
-                w.WriteEndObject()
-
-            w.WriteEndArray()
-
-        w.WriteEndObject()
-
-    w.WriteEndArray()
-    w.WriteEndObject()
     w.Flush()
     Text.Encoding.UTF8.GetString(ms.ToArray())
 
@@ -703,40 +692,15 @@ let private loadConfig () : ReplConfig =
                 if not (configKeys.Contains prop.Name) then
                     Console.Error.WriteLine $"weir: config: unknown key '{prop.Name}'{didYouMean prop.Name configKeys}"
 
-            let getInt (k: string) d =
-                match root.TryGetProperty k with
-                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.Number -> v.GetInt32()
-                | _ -> d
-
-            let getBool (k: string) d =
-                match root.TryGetProperty k with
-                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.True -> true
-                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.False -> false
-                | _ -> d
-
-            let getStr (k: string) d =
-                match root.TryGetProperty k with
-                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.String -> v.GetString()
-                | _ -> d
-
-            let getStrList (k: string) d =
-                match root.TryGetProperty k with
-                | true, v when v.ValueKind = System.Text.Json.JsonValueKind.Array -> [
-                    for e in v.EnumerateArray() do
-                        if e.ValueKind = System.Text.Json.JsonValueKind.String then
-                            e.GetString()
-                  ]
-                | _ -> d
-
             {
-                HistorySize = getInt "historySize" defaultConfig.HistorySize
-                HistoryDedup = getBool "historyDedup" defaultConfig.HistoryDedup
+                HistorySize = Json.intOr defaultConfig.HistorySize "historySize" root
+                HistoryDedup = Json.boolOr defaultConfig.HistoryDedup "historyDedup" root
                 HistoryPath =
-                    match getStr "historyPath" "" with
+                    match Json.strOr "" "historyPath" root with
                     | "" -> defaultConfig.HistoryPath
                     | p -> Some p
-                FinderFlags = getStrList "finderFlags" defaultConfig.FinderFlags
-                EchoElems = getInt "echoElems" defaultConfig.EchoElems
+                FinderFlags = Json.strListOr defaultConfig.FinderFlags "finderFlags" root
+                EchoElems = Json.intOr defaultConfig.EchoElems "echoElems" root
                 Types =
                     match root.TryGetProperty "types" with
                     | false, _ -> defaultConfig.Types

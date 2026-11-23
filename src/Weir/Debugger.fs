@@ -17,6 +17,7 @@ open System
 open System.IO
 open System.Text
 open System.Text.Json
+open Weir.Json
 
 // ---- the wire both halves share: one JSON object per line ---------------------
 
@@ -34,10 +35,7 @@ let private writeLine (stream: Stream) (gate: obj) (build: Utf8JsonWriter -> uni
         stream.Write(buf.GetBuffer(), 0, int buf.Length)
         stream.Flush())
 
-let private str (el: JsonElement) (name: string) : string =
-    match el.TryGetProperty name with
-    | true, v when v.ValueKind = JsonValueKind.String -> v.GetString()
-    | _ -> ""
+let private str (el: JsonElement) (name: string) : string = strOr "" name el
 
 let private num (el: JsonElement) (name: string) : int =
     match el.TryGetProperty name with
@@ -47,10 +45,7 @@ let private num (el: JsonElement) (name: string) : int =
         | _ -> 0
     | _ -> 0
 
-let private flag (el: JsonElement) (name: string) : bool =
-    match el.TryGetProperty name with
-    | true, v -> v.ValueKind = JsonValueKind.True
-    | _ -> false
+let private flag (el: JsonElement) (name: string) : bool = boolOr false name el
 
 // ---- the engine -------------------------------------------------------------
 
@@ -139,17 +134,20 @@ type private Engine(channel: Stream) =
 
     let send (build: Utf8JsonWriter -> unit) = writeLine channel gate build
 
-    let writeVars (w: Utf8JsonWriter) (vars: (string * Eval.Value) seq) =
-        w.WriteStartArray "variables"
-
-        for name, value in vars do
-            w.WriteStartObject()
-            w.WriteString("name", name)
-            w.WriteString("value", render value)
-            w.WriteString("type", kind value)
-            w.WriteEndObject()
-
-        w.WriteEndArray()
+    let writeVars (vars: (string * Eval.Value) seq) : Node =
+        jfields {
+            "variables",
+            arr (
+                seq {
+                    for name, value in vars ->
+                        jobj {
+                            "name", name
+                            "value", render value
+                            "type", kind value
+                        }
+                }
+            )
+        }
 
     // the stopped thread answers questions until it is told to go on
     let rec serve (depth: int) : unit =
@@ -174,41 +172,48 @@ type private Engine(channel: Stream) =
                 setBreakpoints m
                 serve depth
             | "stack" ->
-                send (fun w ->
-                    w.WriteString("reply", "stack")
-                    w.WriteStartArray "frames"
+                send (
+                    jfields {
+                        "reply", "stack"
 
-                    for d in depth .. -1 .. 0 do
-                        if d < frames.Count && not (isNull frames[d]) then
-                            w.WriteStartObject()
-                            w.WriteNumber("id", d)
-                            w.WriteString("file", frames[d].File)
-                            w.WriteNumber("line", frames[d].Line)
-                            w.WriteEndObject()
-
-                    w.WriteEndArray())
+                        "frames",
+                        [
+                            for d in depth .. -1 .. 0 do
+                                if d < frames.Count && not (isNull frames[d]) then
+                                    jobj {
+                                        "id", d
+                                        "file", frames[d].File
+                                        "line", frames[d].Line
+                                    }
+                        ]
+                    }
+                )
 
                 serve depth
             | "locals"
             | "globals" as which ->
                 let d = num m "frame"
 
-                send (fun w ->
-                    w.WriteString("reply", which)
+                send (
+                    jfields {
+                        "reply", which
 
-                    if d >= 0 && d < frames.Count && not (isNull frames[d]) then
-                        let scope = frames[d].Scope
+                        if d >= 0 && d < frames.Count && not (isNull frames[d]) then
+                            let scope = frames[d].Scope
 
-                        if which = "locals" then
-                            writeVars w (scope.Locals())
+                            if which = "locals" then
+                                yield! writeVars (scope.Locals())
+                            else
+                                yield!
+                                    writeVars (
+                                        scope.Globals()
+                                        |> Map.toSeq
+                                        |> Seq.filter (fun (n, _) -> not (n.StartsWith "Self."))
+                                    )
                         else
-                            writeVars
-                                w
-                                (scope.Globals()
-                                 |> Map.toSeq
-                                 |> Seq.filter (fun (n, _) -> not (n.StartsWith "Self.")))
-                    else
-                        writeVars w [])
+                            yield! writeVars []
+                    }
+                )
 
                 serve depth
             | "value" ->
@@ -216,21 +221,24 @@ type private Engine(channel: Stream) =
                 let d = num m "frame"
                 let name = str m "name"
 
-                send (fun w ->
-                    w.WriteString("reply", "value")
+                send (
+                    jfields {
+                        "reply", "value"
 
-                    let found =
-                        if d >= 0 && d < frames.Count && not (isNull frames[d]) then
-                            Eval.lookupValue name (frames[d].Scope.ToMap())
-                        else
-                            None
+                        let found =
+                            if d >= 0 && d < frames.Count && not (isNull frames[d]) then
+                                Eval.lookupValue name (frames[d].Scope.ToMap())
+                            else
+                                None
 
-                    match found with
-                    | Some v ->
-                        w.WriteBoolean("found", true)
-                        w.WriteString("value", render v)
-                        w.WriteString("type", kind v)
-                    | None -> w.WriteBoolean("found", false))
+                        match found with
+                        | Some v ->
+                            "found", true
+                            "value", render v
+                            "type", kind v
+                        | None -> "found", false
+                    }
+                )
 
                 serve depth
             | _ -> serve depth
@@ -322,11 +330,14 @@ type private Engine(channel: Stream) =
                     Console.Out.Flush()
                     Console.Error.Flush()
 
-                    send (fun w ->
-                        w.WriteString("event", "stopped")
-                        w.WriteString("reason", reason)
-                        w.WriteString("file", file)
-                        w.WriteNumber("line", line))
+                    send (
+                        jfields {
+                            "event", "stopped"
+                            "reason", reason
+                            "file", file
+                            "line", line
+                        }
+                    )
 
                     serve depth)
 
@@ -400,28 +411,30 @@ type private Adapter() =
     let nextSeq () = Threading.Interlocked.Increment &seq
 
     let event (name: string) (body: Utf8JsonWriter -> unit) : unit =
-        sendMessage (fun w ->
-            w.WriteNumber("seq", nextSeq ())
-            w.WriteString("type", "event")
-            w.WriteString("event", name)
-            w.WriteStartObject "body"
-            body w
-            w.WriteEndObject())
+        sendMessage (
+            jfields {
+                "seq", nextSeq ()
+                "type", "event"
+                "event", name
+                "body", jobj { yield! body }
+            }
+        )
 
     let respond (request: JsonElement) (ok: bool) (message: string) (body: Utf8JsonWriter -> unit) : unit =
-        sendMessage (fun w ->
-            w.WriteNumber("seq", nextSeq ())
-            w.WriteString("type", "response")
-            w.WriteNumber("request_seq", num request "seq")
-            w.WriteBoolean("success", ok)
-            w.WriteString("command", str request "command")
+        sendMessage (
+            jfields {
+                "seq", nextSeq ()
+                "type", "response"
+                "request_seq", num request "seq"
+                "success", ok
+                "command", str request "command"
 
-            if not ok then
-                w.WriteString("message", message)
+                if not ok then
+                    "message", message
 
-            w.WriteStartObject "body"
-            body w
-            w.WriteEndObject())
+                "body", jobj { yield! body }
+            }
+        )
 
     let toChild (build: Utf8JsonWriter -> unit) : bool =
         match link with
@@ -446,15 +459,13 @@ type private Adapter() =
             None
 
     let sendBreakpoints (file: string) (lines: int list) : unit =
-        toChild (fun w ->
-            w.WriteString("do", "breakpoints")
-            w.WriteString("file", file)
-            w.WriteStartArray "lines"
-
-            for l in lines do
-                w.WriteNumberValue l
-
-            w.WriteEndArray())
+        toChild (
+            jfields {
+                "do", "breakpoints"
+                "file", file
+                "lines", [ for l in lines -> Json.num l ]
+            }
+        )
         |> ignore
 
     let forward (category: string) (stream: StreamReader) : Threading.Thread =
@@ -465,9 +476,12 @@ type private Adapter() =
             while n > 0 do
                 let text = String(buf, 0, n)
 
-                event "output" (fun w ->
-                    w.WriteString("category", category)
-                    w.WriteString("output", text))
+                event
+                    "output"
+                    (jfields {
+                        "category", category
+                        "output", text
+                    })
 
                 n <- stream.Read(buf, 0, buf.Length)
 
@@ -489,10 +503,13 @@ type private Adapter() =
                      let m = doc.RootElement
 
                      if str m "event" = "stopped" then
-                         event "stopped" (fun w ->
-                             w.WriteString("reason", str m "reason")
-                             w.WriteNumber("threadId", 1)
-                             w.WriteBoolean("allThreadsStopped", true))
+                         event
+                             "stopped"
+                             (jfields {
+                                 "reason", str m "reason"
+                                 "threadId", 1
+                                 "allThreadsStopped", true
+                             })
                      else
                          replies.Add text)
 
@@ -601,7 +618,7 @@ type private Adapter() =
                     outPump.Join 2000 |> ignore
                     errPump.Join 2000 |> ignore
                     finished <- true
-                    event "exited" (fun w -> w.WriteNumber("exitCode", child.ExitCode))
+                    event "exited" (jfields { "exitCode", child.ExitCode })
                     event "terminated" ignore
 
                 Threading.Thread(waiter, IsBackground = true).Start()
@@ -627,10 +644,15 @@ type private Adapter() =
 
         match str request "command" with
         | "initialize" ->
-            respond request true "" (fun w ->
-                w.WriteBoolean("supportsConfigurationDoneRequest", true)
-                w.WriteBoolean("supportsTerminateRequest", true)
-                w.WriteBoolean("supportsEvaluateForHovers", true))
+            respond
+                request
+                true
+                ""
+                (jfields {
+                    "supportsConfigurationDoneRequest", true
+                    "supportsTerminateRequest", true
+                    "supportsEvaluateForHovers", true
+                })
 
             true
         | "launch" ->
@@ -653,84 +675,108 @@ type private Adapter() =
 
             sendBreakpoints file lines
 
-            respond request true "" (fun w ->
-                w.WriteStartArray "breakpoints"
-
-                for l in lines do
-                    w.WriteStartObject()
-                    w.WriteBoolean("verified", true)
-                    w.WriteNumber("line", l)
-                    w.WriteEndObject()
-
-                w.WriteEndArray())
+            respond
+                request
+                true
+                ""
+                (jfields {
+                    "breakpoints",
+                    [
+                        for l in lines ->
+                            jobj {
+                                "verified", true
+                                "line", l
+                            }
+                    ]
+                })
 
             true
         | "setExceptionBreakpoints" ->
             respond request true "" ignore
             true
         | "configurationDone" ->
-            toChild (fun w ->
-                w.WriteString("do", "start")
-                w.WriteBoolean("stopOnEntry", stopOnEntry))
+            toChild (
+                jfields {
+                    "do", "start"
+                    "stopOnEntry", stopOnEntry
+                }
+            )
             |> ignore
 
             respond request true "" ignore
             true
         | "threads" ->
-            respond request true "" (fun w ->
-                w.WriteStartArray "threads"
-                w.WriteStartObject()
-                w.WriteNumber("id", 1)
-                w.WriteString("name", "script")
-                w.WriteEndObject()
-                w.WriteEndArray())
+            respond
+                request
+                true
+                ""
+                (jfields {
+                    "threads",
+                    [
+                        jobj {
+                            "id", 1
+                            "name", "script"
+                        }
+                    ]
+                })
 
             true
         | "stackTrace" ->
-            match ask (fun w -> w.WriteString("do", "stack")) with
+            match ask (jfields { "do", "stack" }) with
             | Some doc ->
                 use doc = doc
 
-                respond request true "" (fun w ->
-                    w.WriteStartArray "stackFrames"
-                    let mutable count = 0
+                respond
+                    request
+                    true
+                    ""
+                    (jfields {
+                        let stackFrames = [
+                            match doc.RootElement.TryGetProperty "frames" with
+                            | true, fs ->
+                                for f in fs.EnumerateArray() do
+                                    let file = str f "file"
 
-                    match doc.RootElement.TryGetProperty "frames" with
-                    | true, fs ->
-                        for f in fs.EnumerateArray() do
-                            count <- count + 1
-                            let file = str f "file"
-                            w.WriteStartObject()
-                            w.WriteNumber("id", num f "id")
-                            w.WriteString("name", (if num f "id" = 0 then "script" else "function"))
-                            w.WriteStartObject "source"
-                            w.WriteString("name", Path.GetFileName file)
-                            w.WriteString("path", file)
-                            w.WriteEndObject()
-                            w.WriteNumber("line", num f "line")
-                            w.WriteNumber("column", 1)
-                            w.WriteEndObject()
-                    | _ -> ()
+                                    jobj {
+                                        "id", num f "id"
+                                        "name", (if num f "id" = 0 then "script" else "function")
 
-                    w.WriteEndArray()
-                    w.WriteNumber("totalFrames", count))
+                                        "source",
+                                        jobj {
+                                            "name", Path.GetFileName file
+                                            "path", file
+                                        }
+
+                                        "line", num f "line"
+                                        "column", 1
+                                    }
+                            | _ -> ()
+                        ]
+
+                        "stackFrames", stackFrames
+                        "totalFrames", List.length stackFrames
+                    })
             | None -> respond request false "the script is not stopped" ignore
 
             true
         | "scopes" ->
             let frame = num args "frameId"
 
-            respond request true "" (fun w ->
-                w.WriteStartArray "scopes"
-
-                for name, offset in [ "Locals", 1; "Top level", 2 ] do
-                    w.WriteStartObject()
-                    w.WriteString("name", name)
-                    w.WriteNumber("variablesReference", frame * 2 + offset)
-                    w.WriteBoolean("expensive", (offset = 2))
-                    w.WriteEndObject()
-
-                w.WriteEndArray())
+            respond
+                request
+                true
+                ""
+                (jfields {
+                    "scopes",
+                    [
+                        for name, offset in [ "Locals", 1; "Top level", 2 ] ->
+                            jobj {
+                                "name", name
+                                "variablesReference", frame * 2 + offset
+                                "expensive", (offset = 2)
+                            }
+                    ]
+                })
 
             true
         | "variables" ->
@@ -739,45 +785,60 @@ type private Adapter() =
             let which = if reference % 2 = 1 then "locals" else "globals"
 
             match
-                ask (fun w ->
-                    w.WriteString("do", which)
-                    w.WriteNumber("frame", frame))
+                ask (
+                    jfields {
+                        "do", which
+                        "frame", frame
+                    }
+                )
             with
             | Some doc ->
                 use doc = doc
 
-                respond request true "" (fun w ->
-                    w.WriteStartArray "variables"
-
-                    match doc.RootElement.TryGetProperty "variables" with
-                    | true, vs ->
-                        for v in vs.EnumerateArray() do
-                            w.WriteStartObject()
-                            w.WriteString("name", str v "name")
-                            w.WriteString("value", str v "value")
-                            w.WriteString("type", str v "type")
-                            w.WriteNumber("variablesReference", 0)
-                            w.WriteEndObject()
-                    | _ -> ()
-
-                    w.WriteEndArray())
+                respond
+                    request
+                    true
+                    ""
+                    (jfields {
+                        "variables",
+                        [
+                            match doc.RootElement.TryGetProperty "variables" with
+                            | true, vs ->
+                                for v in vs.EnumerateArray() do
+                                    jobj {
+                                        "name", str v "name"
+                                        "value", str v "value"
+                                        "type", str v "type"
+                                        "variablesReference", 0
+                                    }
+                            | _ -> ()
+                        ]
+                    })
             | None -> respond request false "the script is not stopped" ignore
 
             true
         | "evaluate" ->
             match
-                ask (fun w ->
-                    w.WriteString("do", "value")
-                    w.WriteNumber("frame", num args "frameId")
-                    w.WriteString("name", (str args "expression").Trim()))
+                ask (
+                    jfields {
+                        "do", "value"
+                        "frame", num args "frameId"
+                        "name", (str args "expression").Trim()
+                    }
+                )
             with
             | Some doc when flag doc.RootElement "found" ->
                 use doc = doc
 
-                respond request true "" (fun w ->
-                    w.WriteString("result", str doc.RootElement "value")
-                    w.WriteString("type", str doc.RootElement "type")
-                    w.WriteNumber("variablesReference", 0))
+                respond
+                    request
+                    true
+                    ""
+                    (jfields {
+                        "result", str doc.RootElement "value"
+                        "type", str doc.RootElement "type"
+                        "variablesReference", 0
+                    })
             | Some doc ->
                 doc.Dispose()
                 respond request false "only a name in scope can be read here" ignore
@@ -788,11 +849,16 @@ type private Adapter() =
         | "next"
         | "stepIn"
         | "stepOut" as command ->
-            toChild (fun w -> w.WriteString("do", command)) |> ignore
+            toChild (jfields { "do", command }) |> ignore
 
-            respond request true "" (fun w ->
-                if command = "continue" then
-                    w.WriteBoolean("allThreadsContinued", true))
+            respond
+                request
+                true
+                ""
+                (jfields {
+                    if command = "continue" then
+                        "allThreadsContinued", true
+                })
 
             true
         | "pause" ->

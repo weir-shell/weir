@@ -1123,10 +1123,7 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
         // the encoder is unchanged; a tty sink gets the safe rendering
         // [D:tty-bidi-sanitize]
         Console.WriteLine(
-            jsonBuild (fun w ->
-                w.WriteStartArray()
-                diags |> List.iter (writeDiag w)
-                w.WriteEndArray())
+            jsonBuild (Json.arr (seq { for d in diags -> fun w -> writeDiag w d }))
             |> Eval.sanitizeIfTty Console.IsOutputRedirected
         )
     else
