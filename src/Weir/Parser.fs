@@ -426,7 +426,16 @@ let private splicePath (sigil: Parser<unit, unit>) : Parser<Expr, unit> =
                 Kind = EField(target, f, fsp)
                 Span = { Start = sp.Start; End = fsp.End }
             })
-            { Kind = EVar n; Span = sp }
+            (spliceName n sp)
+
+// `$NAME` in expression position [D:env-sigil]; no label of its own, so
+// the atom's Expecting list stands as it is
+let private envAtom: Parser<Expr, unit> =
+    fun stream ->
+        if stream.Peek() = '$' && System.Char.IsUpper(stream.Peek 1) then
+            (spanned (pchar '$' >>. rawWord) .>> ws |>> fun (n, sp) -> envRead n sp) stream
+        else
+            Reply(ReplyStatus.Error, NoErrorMessages)
 
 // the two-pipe cliff [D:pipe-hint]: a bare `|` after a completed
 // expression is not an operator — name the spelling instead of
@@ -1759,6 +1768,7 @@ let private atomChoice =
         interpRawLit
         interpLit
         captureSigil
+        envAtom
         unitLit
         opValue
         parens
@@ -4741,6 +4751,15 @@ let private spliceVar =
                  else
                      "a splice cannot join a word under construction — spell it with a space (`--flag $x`) or an interpolated arg (`$\"--flag={x}\"`)"
              ))
+    // bash's `${NAME}` [D:env-sigil]: name the spelling, as the other
+    // `$` teaches do
+    >>. ((lookAhead (pstring "${") >>. getPosition
+          >>= fun at ->
+              pchar '$'
+              >>. failFatallyAt
+                      at
+                      "`${NAME}` is bash — use '$NAME' for an environment variable, one whole word; inside a word, interpolate: `$\"{$NAME}/bin\"`")
+         <|> preturn ())
     >>. splicePath (skipChar '$')
     .>> ws
 
@@ -4886,7 +4905,7 @@ let private envValue: Parser<Expr, unit> =
         lookAhead (pstring "$\"\"\"") >>. interpRawLit
         lookAhead (pstring "$\"") >>. interpLit
         lookAhead (pstring "$(") >>. captureSigil
-        spanned (pchar '$' >>. rawWord) |>> fun (n, sp) -> { Kind = EVar n; Span = sp }
+        spanned (pchar '$' >>. rawWord) |>> fun (n, sp) -> spliceName n sp
         lookAhead (pstring "\"\"\"") >>. tripleLit
         lookAhead (pchar '"') >>. strLit
         lookAhead (pchar '\'') >>. singleQuoted

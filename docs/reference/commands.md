@@ -53,7 +53,8 @@ What command lines don't do:
 |---|---|
 | `\` escapes | an error showing the fix: `\;` is `";"`, a literal backslash is `"\\"`, `\ls` is `^ls` |
 | glob expansion | `Path.glob` |
-| `$VAR` | splice a weir binding |
+| `$var` | splice a weir binding |
+| `$VAR` | the environment variable (first letter uppercase); raises when unset |
 | `&&` | two statements, or [`\| and` / `\| or`](#chaining) |
 | `>` redirects | passed as a literal argument, with a warning suggesting `File.write` |
 

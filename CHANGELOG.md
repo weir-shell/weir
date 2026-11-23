@@ -2,6 +2,14 @@
 
 ## v0.0.96
 
+### Added
+
+- **`$NAME` reads an environment variable.** A name that starts with
+  an uppercase letter after `$` is the variable: `echo $HOME`,
+  `cd $PROJECT_DIR`, `let editor = $EDITOR`, `$"{$HOME}/bin"`. It
+  raises when the variable is unset, where bash would pass an empty
+  argument. Lowercase `$name` is still a weir binding.
+
 ### Fixed
 
 - **The REPL colors three command shapes as the editor does.** After a

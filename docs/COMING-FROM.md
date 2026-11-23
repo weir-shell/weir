@@ -97,9 +97,11 @@ print "unreached"
   - bash's `a && b || c` is a trap anyway (`c` also runs when `b`
     fails). Its intent, "if a then b else c", is
     `if a | succeeds then b else c`.
-- `$VAR` expansion. Use `Env.get "VAR"` (an `Option<string>`) and
-  splice the result. `NAME=value cmd` sets a variable for one command,
-  as in bash.
+- `$var` expansion of a lowercase name: that is a weir binding. A
+  name that starts uppercase is the environment variable, so
+  `echo $HOME` works; unlike bash it raises when the variable is unset
+  and never joins a word (`$HOME/bin` is `$"{$HOME}/bin"`). `NAME=value
+  cmd` sets a variable for one command, as in bash.
 - `while`. weir has none. Instead:
   - [`retry` and `poll`](GUIDE.md#retrying-and-polling), bounded by
     attempts or time (`retry attempts=5 delay=30s` + a block). Running

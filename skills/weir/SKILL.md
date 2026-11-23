@@ -2077,9 +2077,10 @@ Path.glob "*" |> Seq.map (File)
   [D:dynamic-head]) or join a word mid-construction
   (`--flag=$@xs` — map the prefix on, or separate args).
 - No glob EXPANSION (`Path.glob` is the typed spelling — a
-  function, not argv magic), no redirects, no `&&`, no `$VAR` env
-  expansion (`$HOME` is a weir SPLICE — unbound unless you bind it;
-  `Env.get "HOME"` / `Path.home ()` are the typed reads) — the other
+  function, not argv magic), no redirects, no `&&`. `$NAME` with an
+  UPPERCASE first letter is the environment variable [D:env-sigil] —
+  `echo $HOME` is `echo (Env.need "HOME")`; lowercase is a weir
+  splice, and no binder starts uppercase, so the two never meet — the other
   characters pass through as literal argv (`echo a && b` prints
   "a && b", warning with `| and`; `||` refuses, naming `| or`);
   `>`/`>>` WARN with the File spelling
@@ -3255,10 +3256,19 @@ print c.flag
   names. An anonymous type takes NO attributes, here or anywhere
   (F#'s rule): an optional var is `Option<T>` + `Option.defaultValue`
   at the use, and `[<Default>]`/`[<Wire>]` need a declared `type`.
-  No `$NAME` expansion in commands — interpolate: `-H $"token {key}"`.
+  `$NAME` — the name's FIRST LETTER UPPERCASE — is `Env.need "NAME"`
+  [D:env-sigil], in argv (`echo $HOME`, `FOO=$HOME cmd`, `^$EDITOR f`)
+  and as an expression (`let h = $HOME`, `$"{$HOME}/bin"`): a string,
+  raising `Env.need: NAME is not set` when unset — never an empty
+  argument. It is one whole word like any splice (`$HOME/bin` refuses,
+  naming the interpolated spelling), has no default form (`Env.getOr`),
+  and a lowercase-named variable keeps `Env.need "http_proxy"`. Inside
+  a `$$<<<` text block or a yaml block `$name` stays a weir binding only.
 
 ```weir
 let home = Env.need "HOME"
+print $"{home == $HOME} {$"{$HOME}/bin" == $"{home}/bin"}"
+echo $HOME |> Seq.length |> show |> print
 let port = Env.getOr "WEIR_SKILL_PORT_ZZ" "8080"
 let env = Env.load {| HOME: string; WEIR_SKILL_CI_ZZ: Option<string> |}
 print $"{home == env.HOME} {port} {env.WEIR_SKILL_CI_ZZ}"

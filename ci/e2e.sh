@@ -1006,8 +1006,13 @@ out=$($BIN "$dvdir/dash.weir" 2>&1) && fail "a missing dashed command must fail 
 expect "a dashed missing command is named whole at run" "unknown command 'no-such-cmd-zz'" "$out"
 out=$($BIN -e 'let n = echo a | complete in n.exitCode' 2>&1) && fail "a reifier in single-line let…in must refuse"
 expect "a reifier in single-line let…in teaches \$()" "wrap the chain: \$(<command> | complete)" "$out"
-out=$($BIN -e 'echo $HOME' 2>&1) && fail "\$HOME in argv is a splice, not env expansion"
-expect "\$HOME in argv is an unbound splice" "unbound variable 'HOME'" "$out"
+# `$NAME` reads the environment [D:env-sigil]; a lowercase name stays a binding
+out=$(WEIR_E2E_SIGIL=v1 $BIN -e 'echo $WEIR_E2E_SIGIL')
+expect "\$NAME in argv is the environment variable" '["v1"]' "$out"
+out=$($BIN -e 'echo $WEIR_E2E_SIGIL_UNSET' 2>&1) && fail "an unset \$NAME must raise, not pass an empty argument"
+expect "an unset \$NAME raises naming the variable" "WEIR_E2E_SIGIL_UNSET is not set" "$out"
+out=$($BIN -e 'echo $zz_unbound' 2>&1) && fail "\$zz_unbound in argv is a splice, not env expansion"
+expect "a lowercase \$name in argv is an unbound splice" "unbound variable 'zz_unbound'" "$out"
 mkdir -p "$dvdir/g/a/b"
 touch "$dvdir/g/x.fs" "$dvdir/g/a/y.fs" "$dvdir/g/a/b/z.fs" "$dvdir/g/a/b.fs"
 out=$(cd "$dvdir/g" && $BIN -e 'Path.glob "**/*.fs" |> Str.join ","')

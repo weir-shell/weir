@@ -9393,6 +9393,63 @@ let fieldSpliceTests =
             | Ok s -> failtest $"must refuse, got {Weir.Ast.sexprStmt s}"
             | Error f -> Expect.stringContains f.Message "a name or (expr) after '$@'" "label"
         }
+        test "$NAME is Env.need \"NAME\" wherever a $ name stands [D:env-sigil]" {
+            for sugar, plain in
+                [
+                    "echo $HOME", "echo (Env.need \"HOME\")"
+                    "echo -C $Project_dir x", "echo -C (Env.need \"Project_dir\") x"
+                    "let h = $HOME", "let h = Env.need \"HOME\""
+                    "print $\"{$HOME}/bin\"", "print $\"{Env.need \"HOME\"}/bin\""
+                ] do
+                Expect.equal (sx sugar) (sx plain) sugar
+
+                match Weir.Fast.tryStmt cmdResolver sugar, Weir.Fast.tryStmt cmdResolver plain with
+                | Some a, Some b -> Expect.equal (Weir.Ast.sexprStmt a) (Weir.Ast.sexprStmt b) $"fast: {sugar}"
+                | _ -> ()
+
+            Expect.stringContains (sx "FOO=$HOME echo a") "Env.need" "an env-prefix value"
+            Expect.stringContains (sx "^$EDITOR f") "Env.need" "a dynamic head"
+            Expect.isFalse ((sx "echo $home").Contains "Env") "a lowercase name is the binding"
+        }
+        test "$NAME checks as a string, stays one word, and is no binding in a text block [D:env-sigil]" {
+            Expect.isEmpty
+                (errs [ "echo $HOME"; "let n = $HOME |> Str.length"; "print $\"{n} {$HOME}/bin\"" ])
+                "legal in argv, as an expression, in a hole"
+
+            match Weir.Parser.parseLineFull cmdResolver "echo $HOME/bin" with
+            | Ok s -> failtest $"must refuse, got {Weir.Ast.sexprStmt s}"
+            | Error f -> Expect.stringContains f.Message "do not concatenate" "one whole word"
+
+            match Weir.Parser.parseLineFull cmdResolver "echo ${HOME}" with
+            | Ok s -> failtest $"must refuse, got {Weir.Ast.sexprStmt s}"
+            | Error f -> Expect.stringContains f.Message "use '$NAME' for an environment variable" "bash braces"
+
+            let ms = errs [ "let t = $$<<<"; "    a $HOME"; "print (show t)" ]
+            Expect.isTrue (ms |> List.exists (fun m -> m.Contains "unbound variable 'HOME'")) $"{ms}"
+        }
+        test "$NAME reads the variable and raises when it is unset [D:env-sigil]" {
+            System.Environment.SetEnvironmentVariable("WEIR_SIGIL_SET_ZZ", "v1")
+            Expect.equal (run "$WEIR_SIGIL_SET_ZZ") (VStr "v1") "set"
+
+            Expect.throwsC (fun () -> run "$WEIR_SIGIL_UNSET_ZZ" |> ignore) (fun e ->
+                Expect.stringContains e.Message "WEIR_SIGIL_UNSET_ZZ is not set" "names the variable")
+        }
+        test "Tab after $ offers the set variables that start uppercase [D:env-sigil]" {
+            System.Environment.SetEnvironmentVariable("WEIR_SIGIL_TAB_ZZ", "1")
+            System.Environment.SetEnvironmentVariable("weir_sigil_lower_zz", "1")
+            let text = "echo $WEIR_SIGIL_T"
+
+            let got =
+                Weir.Complete.suggest env text (Weir.Complete.wordStartAt text text.Length)
+
+            Expect.contains got "WEIR_SIGIL_TAB_ZZ" $"{got}"
+
+            let low = "echo $weir_sigil_l"
+
+            Expect.isEmpty
+                (Weir.Complete.suggest env low (Weir.Complete.wordStartAt low low.Length))
+                "a lowercase-named variable is not a $ name"
+        }
     ]
 
 let armBlockTests =
