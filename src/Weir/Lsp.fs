@@ -5703,7 +5703,7 @@ let run (debug: bool) : int =
                                         let up = cur.Substring(0, min (col - 1) cur.Length)
 
                                         if inBlock && cur.Trim() <> "}" && not (up.Contains "=") then
-                                            [ "cwd"; "echoCap"; "env"; "logLevel"; "prompt" ]
+                                            [ "continuationPrompt"; "cwd"; "echoCap"; "env"; "logLevel"; "prompt" ]
                                             |> List.filter (fun k -> k.StartsWith word)
                                         else
                                             []

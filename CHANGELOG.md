@@ -9,6 +9,14 @@
   `cd $PROJECT_DIR`, `let editor = $EDITOR`, `$"{$HOME}/bin"`. It
   raises when the variable is unset, where bash would pass an empty
   argument. Lowercase `$name` is still a weir binding.
+- **The REPL's continuation prompt can be set.** `continuationPrompt`
+  in the init file's `#session` block is the text at the start of the
+  second and later lines of a multi-line entry. weir pads or cuts it
+  to the prompt's width.
+
+### Changed
+
+- **The default continuation mark is `∙`**, where it was `…`.
 
 ### Fixed
 

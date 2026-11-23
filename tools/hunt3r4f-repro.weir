@@ -432,7 +432,7 @@ let ctrlC = "HEX 03"
 // the REPL's empty prompt (the line editor is reading) and its empty
 // continuation line (an Alt-Enter has been taken)
 let promptReady = @"WAITRE weir> \r"
-let contReady = @"WAITRE … \r"
+let contReady = @"WAITRE ∙ \r"
 
 // a REPL's HOME and every XDG dir pinned to the probe dir, as env words
 let replEnv d =

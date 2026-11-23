@@ -177,8 +177,8 @@ echo $nope
   `%APPDATA%\weir\` on Windows). It starts with `#init` and holds only:
   - declarations (`let`/`type`, for example prompt helpers)
   - `#alias` lines
-  - one `#session { … }` block with `cwd`, `env`, `logLevel`, `echoCap`
-    and `prompt`
+  - one `#session { … }` block with `cwd`, `env`, `logLevel`, `echoCap`,
+    `prompt` and `continuationPrompt`
 
   The closest thing to `set -U` is `#session`'s `env`: it sets
   environment variables once per session, and `Env.vars`, every started
@@ -785,7 +785,7 @@ print $"typed rows: {rows}"
   (`let`/`type`, for example prompt helpers; no commands run at
   startup), `#alias` lines for command aliases, and one
   `#session { … }` block for what a declaration can't express (`cwd`,
-  `env`, `logLevel`, `echoCap`, `prompt`). It is not a login shell: there's no job control.\
+  `env`, `logLevel`, `echoCap`, `prompt`, `continuationPrompt`). It is not a login shell: there's no job control.\
   *Cost:* loading is all-or-nothing. An error shows with its location
   and the REPL starts with *none* of the file loaded (safe, since
   nothing in it runs while loading). A helper you rely on is missing,
