@@ -2013,6 +2013,13 @@ let replColorTests =
                 ((Weir.ReplColor.colorizeRepl isCb "cb BBDD-8900").Contains "\x1b[2m")
                 "a known name that is no alias stays an expression"
         }
+        test "cd arms command mode: a path's uppercase part is no constructor [D:alias-argv-tint]" {
+            let c = Weir.ReplColor.colorizeRepl (fun n -> n = "cd") "cd /Users/queil/"
+
+            Expect.stringContains c "\x1b[1mcd\x1b[0m" "cd keeps the known tint"
+            Expect.stringContains c "\x1b[2m/Users/queil/\x1b[0m" "the path is one argv word"
+            Expect.isFalse (c.Contains "\x1b[33m") "no part of it takes the constructor tint"
+        }
         test "the Tab listing paints a candidate without moving the columns [D:repl-color-words]" {
             let items = [ "alpha"; "be"; "gamma"; "d" ]
             let plain = Weir.Repl.completionListing 20 items

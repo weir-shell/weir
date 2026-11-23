@@ -31,6 +31,8 @@
   editor.** One line of repeated `{(`, one command continued over tens
   of thousands of indented lines, or one unclosed lambda holding
   thousands of `if` lines took minutes; each now takes under a second.
+- **The REPL colors `cd`'s argument as a path.** In `cd /Users/me` the
+  capitalised part was colored as a type name.
 
 ## v0.0.95
 

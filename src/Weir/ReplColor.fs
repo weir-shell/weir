@@ -282,8 +282,9 @@ let colorizeReplWith (isAlias: string -> bool) (isKnown: string -> bool) (line: 
                             Some "33"
                         elif slot <> Complete.HeadSlot.No && isKnown word then
                             // an alias head is a command: its words are
-                            // argv [D:alias-argv-tint]
-                            if isAlias word then
+                            // argv [D:alias-argv-tint] — and so is a
+                            // command-callable builtin's (`cd /Users/me`)
+                            if isAlias word || Builtins.commandCallable.Contains word then
                                 cmdMode <- true
 
                             // the fish trick: the head resolves live
