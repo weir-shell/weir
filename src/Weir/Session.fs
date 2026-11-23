@@ -3234,18 +3234,23 @@ let openPolled (path: string) : System.IO.Stream option =
         else
             Some(new PolledFd(fd) :> System.IO.Stream)
 
-/// a FIFO, after symlinks (Linux; false elsewhere or when absent)
+/// a FIFO, after symlinks (Linux; false elsewhere, when absent, or on a
+/// libc with no statx [D:musl-builds])
 let isFifo (path: string) : bool =
     System.OperatingSystem.IsLinux()
     && (let buf = Array.zeroCreate<byte> 256
         let AT_FDCWD, STATX_TYPE = -100, 1u
 
-        Libc.statx (AT_FDCWD, path, 0, STATX_TYPE, buf) = 0
-        && (int (System.BitConverter.ToUInt16(buf, 28)) &&& 0o170000) = 0o010000)
+        try
+            Libc.statx (AT_FDCWD, path, 0, STATX_TYPE, buf) = 0
+            && (int (System.BitConverter.ToUInt16(buf, 28)) &&& 0o170000) = 0o010000
+        with :? System.EntryPointNotFoundException ->
+            false)
 
 /// a FIFO, socket or device, not followed through a link: its mode (type
 /// and permission bits) and its device number; None for a regular file,
-/// a directory, a link, or off POSIX [D:dircopy-special]
+/// a directory, a link, off POSIX [D:dircopy-special], or on a libc with
+/// no statx [D:musl-builds]
 let specialFile (path: string) : (int * uint64) option =
     let special (mode: int) =
         match mode &&& 0o170000 with
@@ -3259,7 +3264,13 @@ let specialFile (path: string) : (int * uint64) option =
         let buf = Array.zeroCreate<byte> 256
         let AT_FDCWD, AT_SYMLINK_NOFOLLOW, STATX_TYPE_MODE = -100, 0x100, 3u
 
-        if Libc.statx (AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_TYPE_MODE, buf) = 0 then
+        let rc =
+            try
+                Libc.statx (AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_TYPE_MODE, buf)
+            with :? System.EntryPointNotFoundException ->
+                -1
+
+        if rc = 0 then
             let mode = int (System.BitConverter.ToUInt16(buf, 28))
             let major = uint64 (System.BitConverter.ToUInt32(buf, 128))
             let minor = uint64 (System.BitConverter.ToUInt32(buf, 132))

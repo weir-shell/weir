@@ -4,6 +4,10 @@
 
 ### Added
 
+- **weir runs on Alpine.** Each release now has musl builds for x64 and
+  arm64 (`weir-<tag>-linux-musl-x64`, `-linux-musl-arm64`), and the
+  installer picks them on a musl system. They need Alpine 3.20 or
+  newer.
 - **`$NAME` reads an environment variable.** A name that starts with
   an uppercase letter after `$` is the variable: `echo $HOME`,
   `cd $PROJECT_DIR`, `let editor = $EDITOR`, `$"{$HOME}/bin"`. It

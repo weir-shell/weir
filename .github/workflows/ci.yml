@@ -120,6 +120,39 @@ jobs:
           retention-days: 1
 
   # ---- unit: needs no binary, so it runs beside the build from t=0
+  # the musl build, before a tag needs it [D:musl-builds]: release.yml's
+  # musl steps on x64 — published in the Alpine SDK image, then run on the
+  # Alpine floor with nothing added, and once on an older Alpine whose
+  # musl has no statx (a file read there takes the guarded path)
+  musl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MUSL_SDK: mcr.microsoft.com/dotnet/sdk:11.0-alpine
+      MUSL_FLOOR: alpine:3.20
+      MUSL_OLDER: alpine:3.19
+    steps:
+      - uses: actions/checkout@v7
+      - name: publish (AOT, in the Alpine SDK image)
+        run: |
+          docker run --rm -v "$PWD":/src -w /src \
+            -e DOTNET_NOLOGO -e DOTNET_CLI_TELEMETRY_OPTOUT "$MUSL_SDK" sh -ec '
+              apk add --no-cache clang build-base zlib-dev git
+              git config --global --add safe.directory /src
+              dotnet publish src/Weir -c Release -r linux-musl-x64'
+      - name: the binary runs on the Alpine floor and upholds the hygiene guarantees
+        run: |
+          BIN=src/Weir/bin/Release/net11.0/linux-musl-x64/publish/Weir
+          run() { docker run --rm -v "$PWD":/src -w /src "$MUSL_FLOOR" "$@"; }
+          run "$BIN" --version
+          run "$BIN" ci/release-smoke.weir --bin "$BIN"
+      - name: a file read on a musl with no statx
+        run: |
+          BIN=src/Weir/bin/Release/net11.0/linux-musl-x64/publish/Weir
+          out=$(docker run --rm -v "$PWD":/src -w /src "$MUSL_OLDER" "$BIN" -e 'File.read "install.sh" |> Seq.head')
+          echo "$out"
+          [ "$out" = '"#!/bin/sh" : string' ] || { echo "a file read on $MUSL_OLDER must work without statx"; exit 1; }
+
   linux-unit:
     runs-on: ubuntu-latest
     timeout-minutes: 30
