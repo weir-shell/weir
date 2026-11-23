@@ -1584,12 +1584,53 @@ let private escF1Tail () : bool =
         true
     | None -> false
 
-let private deriveContPrompt (w: int) =
+// the session's own continuation text [D:continuation-prompt]; None is
+// the default mark
+let mutable private contText: string option = None
+
+// the continuation prompt is as wide as the prompt, whatever it says
+// [D:continuation-prompt]: the editor's column math counts one width for
+// every row. Shorter text sits at the right, as the default mark does;
+// longer text is cut to the width, its colour dropped with the cut
+let private deriveContPromptOf (own: string option) (w: int) =
     let on = Types.Color.onStdout.Value
 
-    if w >= 2 then String(' ', w - 2) + Types.Color.dim on "… "
-    elif w = 1 then Types.Color.dim on "…"
-    else ""
+    let text =
+        match own with
+        | Some t -> sanitizePromptForTest t
+        | None -> Types.Color.dim on "∙ "
+
+    let width = visibleWidth text
+
+    if w <= 0 then
+        ""
+    elif width <= w then
+        String(' ', w - width) + text
+    else
+        let plain = ReplColor.stripAnsi text
+        let cut = Text.StringBuilder()
+        let mutable cells = 0
+        let mutable go = true
+        let runes = plain.EnumerateRunes()
+
+        for r in runes do
+            let c = visibleWidth (r.ToString())
+
+            if go && cells + c <= w then
+                cut.Append(r.ToString()) |> ignore
+                cells <- cells + c
+            else
+                go <- false
+
+        String(' ', w - cells) + cut.ToString()
+
+// a session with redirected input keeps the default mark, as it keeps
+// the default prompt [D:session-prompt]
+let private deriveContPrompt (w: int) =
+    deriveContPromptOf (if Console.IsInputRedirected then None else contText) w
+
+/// the continuation text seam for tests [D:continuation-prompt]
+let deriveContPromptOfForTest = deriveContPromptOf
 
 let deriveContPromptForTest = deriveContPrompt
 
@@ -5103,6 +5144,7 @@ let private prepareSessionField
         | "echoCap", Eval.VInt n ->
             let cap = Eval.toIntArg "echoCap" Eval.Amount n
             Some(fun () -> echoCap <- Some cap)
+        | "continuationPrompt", Eval.VStr t -> Some(fun () -> contText <- Some t)
         | "env", Eval.VSeq pairs ->
             // the session's base reality, not an overlay: set the
             // process env once, before the first prompt — exactly what

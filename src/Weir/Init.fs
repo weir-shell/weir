@@ -71,7 +71,8 @@ let parseAliasLine (body: string) : Result<string * CommandAlias, string> =
 let sessionDeclRefMessage (name: string) : string =
     $"a #session value cannot use the file's own declarations ('{name}') — settings are read before the declarations bind; only prompt may name one. Write the value inline"
 
-let knownSessionKeys = Set [ "cwd"; "env"; "logLevel"; "echoCap"; "prompt" ]
+let knownSessionKeys =
+    Set [ "cwd"; "env"; "logLevel"; "echoCap"; "prompt"; "continuationPrompt" ]
 
 /// the #session rules that need the value, ONE home
 /// [D:session-value-one-home]: the REPL loader runs them on the evaluated
@@ -120,7 +121,8 @@ let rec private sessionLiteral (te: Check.TypedExpr) : bool =
 let expectedFieldTypes (key: string) : Ty list =
     match key with
     | "cwd"
-    | "logLevel" -> [ TStr ]
+    | "logLevel"
+    | "continuationPrompt" -> [ TStr ]
     | "echoCap" -> [ TInt ]
     | "env" -> [ TSeq(TTuple [ TStr; TStr ]) ]
     | "prompt" -> [ TStr; TFun(TUnit, TStr); TFun(TNamed("PromptStatus", []), TStr) ]
@@ -506,7 +508,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                     kc
                                     (Some(kc + key.Length))
                                     "session-key"
-                                    $"unknown #session key '{key}'{hint} (the keys: cwd, env, logLevel, echoCap, prompt)"
+                                    $"unknown #session key '{key}'{hint} (the keys: cwd, env, logLevel, echoCap, prompt, continuationPrompt)"
                             )
                         elif Set.contains key seen then
                             diags.Add(
@@ -533,7 +535,7 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
 
                             let typeMsg =
                                 match key, te.Ty with
-                                | ("cwd" | "logLevel"), TStr
+                                | ("cwd" | "logLevel" | "continuationPrompt"), TStr
                                 | "echoCap", TInt
                                 | "env", TSeq(TTuple [ TStr; TStr ]) -> None
                                 // a generic value (an empty list -> seq<'a>)
@@ -541,6 +543,8 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                 | _, ty when (formatTy ty).Contains "'" -> None
                                 | "cwd", ty -> Some $"cwd expects a string, got {formatTy ty}"
                                 | "logLevel", ty -> Some $"logLevel expects a string, got {formatTy ty}"
+                                | "continuationPrompt", ty ->
+                                    Some $"continuationPrompt expects a string, got {formatTy ty}"
                                 | "echoCap", ty -> Some $"echoCap expects an int, got {formatTy ty}"
                                 | _, ty ->
                                     Some $"env expects seq<string * string> — pairs, order kept; got {formatTy ty}"

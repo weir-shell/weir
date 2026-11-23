@@ -2566,8 +2566,11 @@ m |> to json |> Seq.iter print // JSON object keys are strings — show the key 
   bindings. `#quit` (or `^D`) exits. The init
   file's FIRST line must be `#init`; it holds declarations, imports,
   `#alias` lines and one `#session { cwd; env; logLevel; echoCap;
-  prompt }` block (`prompt` = a string or a `unit -> string` /
-  `PromptStatus -> string` function from the file). It is STRICT:
+  prompt; continuationPrompt }` block (`prompt` = a string or a
+  `unit -> string` / `PromptStatus -> string` function from the file;
+  `continuationPrompt` = a string for the later lines of a multi-line
+  entry, default a dim `∙` — weir pads or cuts it to the prompt's
+  width [D:continuation-prompt]). It is STRICT:
   script rules (no bare `map`), alias targets refuse `|`/`|>`/`&&`/
   `||`/`;`, `#session` values cannot run commands nor (except
   `prompt`) name the file's declarations; `weir check init.weir`

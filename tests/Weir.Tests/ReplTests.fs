@@ -3890,13 +3890,31 @@ let contPromptTests =
     testList "continuation prompt [D:cont-marker]" [
         test "a wide prompt keeps ... ; a narrow one still shows a hint; width preserved" {
             let wide = Weir.Repl.deriveContPromptForTest 10
-            Expect.stringContains wide "…" "the ellipsis marker, right-aligned"
+            Expect.stringContains wide "∙" "the mark, right-aligned"
             Expect.equal (vis wide) 10 "display width matches the prompt (uniform column math)"
 
             let narrow = Weir.Repl.deriveContPromptForTest 2
-            Expect.stringContains narrow "…" "a 2-wide prompt gets the ellipsis hint, not blank"
+            Expect.stringContains narrow "∙" "a 2-wide prompt gets the mark, not blank"
             Expect.equal (vis narrow) 2 "display width still matches"
             Expect.notEqual (narrow.Trim()) "" "the marker is not blank (the bug)"
+        }
+        test "a session's continuationPrompt is the prompt's width whatever it says [D:continuation-prompt]" {
+            let vis (s: string) = Weir.Repl.visibleWidthForTest s
+            let fits = Weir.Repl.deriveContPromptOfForTest (Some "\x1b[90m>> \x1b[0m") 8
+            Expect.equal (vis fits) 8 "shorter text is padded to the prompt's width"
+            Expect.isTrue (fits.StartsWith "     ") "at the right, as the default mark is"
+            Expect.stringContains fits "\x1b[90m>> " "its colour kept"
+
+            Expect.equal
+                (Weir.Repl.deriveContPromptOfForTest (Some "continued> ") 4)
+                "cont"
+                "longer text is cut to the width"
+
+            let safe = Weir.Repl.deriveContPromptOfForTest (Some "a\x1b]0;title\x07\nb") 6
+            Expect.isFalse (safe.Contains "title") "a title escape is dropped, as in the prompt"
+            Expect.isFalse (safe.Contains "\n") "a newline is flattened"
+            Expect.equal (vis safe) 6 "and the width holds"
+            Expect.equal (Weir.Repl.deriveContPromptOfForTest (Some "x") 0) "" "no prompt, no continuation prompt"
         }
     ]
 

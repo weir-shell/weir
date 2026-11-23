@@ -441,10 +441,10 @@ if "help" not in t or "infer" not in t or "save" not in t:
 # a continuation line is not an entry's first line: Tab there offers no
 # directive, and a typed '#' there completes none [D:repl-directives]
 t = pty_tab("let tabx =\r", taps=2)
-if re.search(r"\u2026\s+#", t) or re.search(r"\bhelp\s+history\b", t):
+if re.search(r"\u2219\s+#", t) or re.search(r"\bhelp\s+history\b", t):
     failures.append(f"a continuation-line Tab must not offer directives: {t[-400:]!r}")
 t = pty_tab("let tabx =\r#", taps=2)
-if re.search(r"\bhelp\s+history\b", t) or re.search(r"\u2026\s+#help", t):
+if re.search(r"\bhelp\s+history\b", t) or re.search(r"\u2219\s+#help", t):
     failures.append(f"a continuation-line '#' must not complete directives: {t[-400:]!r}")
 
 # `Wr` at a head has a single completion and it is not the WriteFile

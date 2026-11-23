@@ -677,6 +677,9 @@ The `#session` keys:
 - `echoCap` — a permanent `#echo` limit; it takes precedence over the
   config file's `echoElems`
 - `prompt` — see below
+- `continuationPrompt` — a string shown at the start of the second and
+  later lines of a multi-line entry, in place of the default dim `∙`;
+  see [below](#the-continuation-prompt)
 
 A misspelled key gets a suggestion for the closest one. The values
 can't run commands, and every value but `prompt` is read before the
@@ -824,6 +827,30 @@ Two limits:
 - The default prompt's red error color ([above](#the-prompt-and-the-colors))
   doesn't apply to a custom prompt; it chooses its own colors.
 
+### The continuation prompt
+
+The second and later lines of a multi-line entry start with a dim `∙`,
+lined up under the end of the prompt. `continuationPrompt` replaces it:
+
+```text
+#session {
+    prompt = sigil
+    continuationPrompt = "\e[90m│\e[0m "
+}
+```
+
+It is always exactly as wide as the prompt, so the lines of an entry
+stay aligned:
+
+- Shorter text is placed at the right, under the end of the prompt.
+- Longer text is cut to the prompt's width, and loses its color.
+- The same cleaning as the prompt applies: color escapes are kept and
+  don't count toward the width, other escape sequences are removed,
+  and control characters become spaces.
+
+It is a plain string, not a function, and like the prompt it doesn't
+apply to a session with redirected input.
+
 ### A prompt from a vendored module
 
 A prompt someone else wrote, like the
@@ -946,8 +973,8 @@ Alt+Enter, then `|> Seq.sum` and Enter, without typing any spaces:
 
 ```
 weir> let total =
-    …     [1; 2; 3]
-    …     |> Seq.sum
+    ∙     [1; 2; 3]
+    ∙     |> Seq.sum
 total = 6
 ```
 
