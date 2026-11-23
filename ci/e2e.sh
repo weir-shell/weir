@@ -548,6 +548,15 @@ echo "e2e ok: assembler — 200k '{(' single line settles in linear time"
 { echo "echo a"; for _ in $(seq 1 60000); do echo " b"; done; echo 'print "done"'; } > "$asmdir/argv.weir"
 timeout 20 $BIN check "$asmdir/argv.weir" >/dev/null 2>&1 || fail "assembler DoS: 60k space-joined continuation lines did not check within 20s (quadratic regression?)"
 echo "e2e ok: assembler — 60k space-joined continuation lines check in linear time"
+# (e) a statement that paren-wraps a compound at every other line and
+# never ends (a lambda's open paren holds it): 40k `if … then` heads, each
+# closed by the shallower line after it. It fails to assemble fast; a
+# timeout (124) is the failure this guards against
+{ echo "let f = (fun x ->"; for _ in $(seq 1 40000); do echo "        if a then"; echo "    b"; done; echo 'print "done"'; } > "$asmdir/wraps.weir"
+acode=0
+timeout 20 $BIN check "$asmdir/wraps.weir" >/dev/null 2>&1 || acode=$?
+[ "$acode" -ne 124 ] || fail "assembler DoS: 40k compound wraps in one statement did not settle within 20s (quadratic regression?)"
+echo "e2e ok: assembler — 40k compound wraps in one statement settle in linear time"
 rm -rf "$asmdir"
 
 rangedir=$(mkweirtmp)
