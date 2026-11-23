@@ -963,7 +963,7 @@ let private splicePathAt (st: St) (sigilLen: int) : Expr =
         refuse st
     else
         let sp = { Start = at s; End = here st }
-        let mutable e = { Kind = EVar w; Span = sp }
+        let mutable e = spliceName w sp
 
         while peek st = '.' && isIdentStart (peekAt st 1) do
             st.I <- st.I + 1
@@ -3297,10 +3297,7 @@ and private envAssigns (st: St) : ((string * Expr) * Span) list =
                     st.I <- st.I + 1
                     let w = takeWord st
 
-                    {
-                        Kind = EVar w
-                        Span = { Start = at vs; End = here st }
-                    }
+                    spliceName w { Start = at vs; End = here st }
                 else
                     refuse st
             elif c = '"' then

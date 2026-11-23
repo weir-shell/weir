@@ -724,8 +724,11 @@ Things weir command lines don't do:
 - No glob expansion. Use the `Path.glob` function.
 - No `&&`. Write two statements, or chain with
   [`| and` / `| or`](#exit-codes-from-command-to-value).
-- No `$VAR` expansion. Splice weir values instead.
-- No `$HOME` expansion. But `~` typed directly is your home
+- `$name` splices a weir value. A name that starts uppercase is the
+  environment variable: `echo $HOME`, `cd $PROJECT_DIR`. It raises if
+  the variable is unset, and it is one whole word: write
+  `$"{$HOME}/bin"`, not `$HOME/bin`.
+- `~` typed directly is your home
   directory: an unquoted word that is `~` or starts with `~/` is
   expanded when the line runs (`cat ~/.bashrc`). Quoted strings and
   spliced values are never expanded, so data is never treated as

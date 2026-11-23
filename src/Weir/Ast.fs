@@ -551,6 +551,31 @@ let reifiedProgSlot (v: string) : (int * int) option =
 
         Some(idx, idx + (if v.EndsWith "In" then 3 else 2))
 
+/// `$NAME` — an environment read [D:env-sigil]: a name that starts
+/// uppercase is no binder's (the casing law), so after `$` it is the
+/// variable, read as `Env.need "NAME"`
+let isEnvName (name: string) : bool =
+    name.Length > 0 && System.Char.IsUpper name[0]
+
+let envRead (name: string) (sp: Span) : Expr = {
+    Kind =
+        EApp(
+            {
+                Kind = EField({ Kind = EVar "Env"; Span = sp }, "need", sp)
+                Span = sp
+            },
+            { Kind = EStr name; Span = sp }
+        )
+    Span = sp
+}
+
+/// a `$name`'s expression: the binding, or the environment read
+let spliceName (name: string) (sp: Span) : Expr =
+    if isEnvName name then
+        envRead name sp
+    else
+        { Kind = EVar name; Span = sp }
+
 /// the literal program of a single reified command (`cmd | complete`),
 /// read off the saturated desugar application
 let reifiedHead (e: Expr) : (string * Span) option =

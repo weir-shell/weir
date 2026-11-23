@@ -1016,6 +1016,25 @@ let private splicePool (env: TypeEnv) (sigil: string) (word: string) : string li
             else
                 None)
         |> List.sort
+        |> fun bound ->
+            // `$NAME` reads the environment [D:env-sigil]: the set
+            // variables a `$` can name, after the bindings
+            if sigil = "$" then
+                let vars =
+                    System.Environment.GetEnvironmentVariables().Keys
+                    |> Seq.cast<obj>
+                    |> Seq.map string
+                    |> Seq.filter (fun n ->
+                        Weir.Ast.isEnvName n
+                        && n.StartsWith word
+                        && n <> word
+                        && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
+                    |> Seq.sort
+                    |> Seq.toList
+
+                bound @ vars
+            else
+                bound
 
 /// the `$` pool inside a yaml block [D:argv-splice-complete]: the
 /// bindings the yaml district's splice law admits (Check.yamlSpliceableWith)
