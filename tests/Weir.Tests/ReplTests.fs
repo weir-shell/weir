@@ -3915,6 +3915,18 @@ let contPromptTests =
             Expect.isFalse (safe.Contains "\n") "a newline is flattened"
             Expect.equal (vis safe) 6 "and the width holds"
             Expect.equal (Weir.Repl.deriveContPromptOfForTest (Some "x") 0) "" "no prompt, no continuation prompt"
+
+            // a cut never splits a character the terminal draws as one, and
+            // what is kept measures the prompt's width as a whole
+            for own in [ "👨‍👩‍👧 abcdefgh"; "🇵🇱🇵🇱🇵🇱🇵🇱"; "❤️❤️❤️❤️❤️"; "日本語のプロンプト" ] do
+                let got = Weir.Repl.deriveContPromptOfForTest (Some own) 6
+                Expect.equal (vis got) 6 $"six cells: {own}"
+
+            let flags = Weir.Repl.deriveContPromptOfForTest (Some "🇵🇱🇵🇱🇵🇱🇵🇱") 6
+
+            Expect.isFalse
+                (flags.TrimStart().Length % 4 <> 0)
+                "whole flags only (two code points, four UTF-16 units each)"
         }
     ]
 

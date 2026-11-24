@@ -4976,6 +4976,8 @@ let tintParityTests =
                     [ "let d = \"x\"" ], "git -C (Path.combine d (\"y\")) status"
                     [], "let r = git status | complete"
                     [], "git log --since=2.weeks ./src"
+                    [], "git -C $HOME status"
+                    [ "let n = 3" ], "git log $PWD -n $n"
                 ] do
                 let repl = replClasses line
                 let tokens = tokenClasses (pre @ [ line ]) (List.length pre)
