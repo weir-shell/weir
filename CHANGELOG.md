@@ -18,6 +18,12 @@
 
 ### Fixed
 
+- **`x.` on an untyped parameter offers your records' fields, not
+  everyone's.** Tab after a parameter with no known type listed the
+  fields of every record weir knew, imported modules' included. It now
+  offers the fields of records declared in the file or session (the
+  built-in ones only if there are none), never an import's, and keeps
+  only records that have the fields already read on that name.
 - **Shift+Tab completes, as Tab does.** In a terminal that reports
   keys in the kitty keyboard protocol's form, Shift+Tab abandoned the
   line and typed `[9;2u` into the next one. The REPL now reads these

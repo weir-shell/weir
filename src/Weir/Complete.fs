@@ -163,13 +163,48 @@ let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
         | _ -> None
     | _ -> None
 
-let private declaredFieldNames (env: TypeEnv) : string list =
-    env.Types
-    |> Map.toList
-    |> List.collect (fun (_, def) ->
-        match def with
-        | Record d -> d.Fields |> List.map fst
-        | Union _ -> [])
+// the pool behind an unresolved `x.` [D:row-field-pool]: the records
+// this file or session declares, else the prelude's — an import's never
+// — narrowed to those holding every field `x` is already read through,
+// which are offered too
+let private rowFieldPool (env: TypeEnv) (used: string list) : string list =
+    let tier (keep: string -> bool) =
+        env.Types
+        |> Map.toList
+        |> List.choose (fun (n, def) ->
+            match def with
+            | Record d when Types.isUserName n && keep n ->
+                let fields = d.Fields |> List.map fst
+
+                if used |> List.forall (fun u -> List.contains u fields) then
+                    Some fields
+                else
+                    None
+            | _ -> None)
+        |> List.concat
+
+    let builtin (n: string) = Check.builtinTypeNames.ContainsKey n
+
+    let own = tier (fun n -> not (builtin n) && not (env.TypeOrigins.ContainsKey n))
+
+    used @ (if own.IsEmpty then tier builtin else own) |> List.distinct
+
+// the fields `head` is read through in the raw text, less the one being
+// typed [D:row-field-pool]
+let private fieldsReadOn (head: string) (typing: string) (text: string) : string list =
+    let read = [
+        for m in
+            System.Text.RegularExpressions.Regex.Matches(
+                text,
+                @"(?<![\w.])"
+                + System.Text.RegularExpressions.Regex.Escape head
+                + @"\.([A-Za-z_]\w*)"
+            ) -> m.Groups[1].Value
+    ]
+
+    match List.tryFindIndex ((=) typing) read with
+    | Some i -> List.removeAt i read
+    | None -> read
     |> List.distinct
 
 let private typedBindings (env: TypeEnv) (t: Ty) : string list =
@@ -1405,7 +1440,7 @@ let rec suggestScopedWith
                                             // fallback, as the dotted arm does;
                                             // a bare unbound identifier source gets
                                             // nothing instead [D:complete-argv]
-                                            declaredFieldNames env |> Some
+                                            rowFieldPool env (fieldsReadOn (slice.Trim()) "" binderScope) |> Some
                                         | TVar _ -> Some []
                                         | ty ->
                                             // a known non-record has no updatable
@@ -1750,11 +1785,15 @@ let rec suggestScopedWith
                             | None -> []
                         | None when lexicallyBound head binderScope ->
                             // unresolvable but lexically bound head (a lambda
-                            // param, a mid-edit binder): no typed tree, but the
-                            // nominal records keep the fallback high-signal —
-                            // every declared record's fields
-                            // [D:declared-fields-fallback]
-                            declaredFieldNames env |> render
+                            // param, a mid-edit binder): no typed tree, so the
+                            // declared records stand in [D:row-field-pool]
+                            let used =
+                                if path.IsEmpty then
+                                    fieldsReadOn head prefix binderScope
+                                else
+                                    []
+
+                            rowFieldPool env used |> render
                         | None ->
                             // unbound head: no binding, no type, no basis for any
                             // candidate — nothing beats the union of everything
