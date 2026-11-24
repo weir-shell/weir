@@ -34,6 +34,16 @@
   inside a `$$<<<` text block or a yaml block, where it is refused.
 - **A `#session` value that names a declaration says so**, where it
   said the value "cannot run a command".
+- **An unbound name spelled like an environment variable points at
+  `$NAME`.** `print HOME`, `$"${HOME}"` and `$HOME` in a text block
+  said "Did you mean 'Ok'?".
+- **`within env FOO=$HOME/bin` and `f$HOME` name the problem**, where
+  they gave a list of expected tokens; `weir check` and running now
+  report the same thing for both.
+- **An init file that fails while loading is reported at the failing
+  word**, not at the start of its statement.
+- **The editor completes `#session` keys in any `#init` file**, not
+  only the one in the config directory.
 - **Tab inside a string no longer offers names.** In `print "pri`, Tab
   offered bindings and keywords that start with those letters; inside
   a string there is nothing to name.

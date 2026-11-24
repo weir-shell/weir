@@ -5538,7 +5538,15 @@ let run (debug: bool) : int =
                                 // only, nothing typed past the key yet), offer the
                                 // keys rather than the general pool
                                 let sessionKeys =
-                                    if not (isReplInitPath (uriToPath uri)) then
+                                    // an init file is one wherever it is kept:
+                                    // the `#init` marker makes it so
+                                    // [D:init-marker]
+                                    if
+                                        not (
+                                            isReplInitPath (uriToPath uri)
+                                            || Assemble.isInitMarked (ModuleLoader.splitSourceText text)
+                                        )
+                                    then
                                         []
                                     else
                                         let orig = (ModuleLoader.splitSourceText text |> Array.ofList)

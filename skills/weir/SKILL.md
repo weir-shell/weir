@@ -3266,7 +3266,11 @@ print c.flag
   argument. It is one whole word like any splice (`$HOME/bin` refuses,
   naming the interpolated spelling), has no default form (`Env.getOr`),
   and a lowercase-named variable keeps `Env.need "http_proxy"`. Inside
-  a `$$<<<` text block or a yaml block `$name` stays a weir binding only.
+  a `$$<<<` text block or a yaml block `$name` stays a weir binding only
+  (the variable there is `${$HOME}`). With a member path the name is a
+  binding or a module, never a variable (`$@Self.args`). An env prefix
+  is the CHILD's: `FOO=1 echo $FOO` reads weir's own `FOO`, as bash's
+  does.
 
 ```weir
 let home = Env.need "HOME"
