@@ -8,9 +8,14 @@
   `:<tag>-alpine`) is the release on Alpine with the musl build. It has
   a shell and `apk`, so a script can run other commands and you can
   build your own image on it. The default image is unchanged.
+- **Tab completes environment variable names in `Env.get "…"`**, and in
+  `Env.need` and `Env.getOr`.
 
 ### Fixed
 
+- **Tab inside a string no longer offers names.** In `print "pri`, Tab
+  offered bindings and keywords that start with those letters; inside
+  a string there is nothing to name.
 - **Tab completes a file name inside a quote you opened.** In
   `File.read "sig`, Tab did nothing unless the text contained a `/`;
   it now completes and lists files as it does outside quotes.
