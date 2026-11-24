@@ -110,6 +110,7 @@
   <ItemGroup>
     <Compile Include="Version.fs" />
     <Compile Include="Types.fs" />
+    <Compile Include="Json.fs" />
     <Compile Include="Ast.fs" />
     <Compile Include="Argv.fs" />
     <Compile Include="Scan.fs" />

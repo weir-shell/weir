@@ -18,6 +18,7 @@ open Weir.Check
 // (JsonSerializer<T> over F# records), not on this.
 
 open System.Text.Json
+open Weir.Json
 
 // the checker's fresh type variables ('a1, 'b3) never reach the editor
 // [D:no-raw-tyvars]: hover and signature help rename them to 'a, 'b, …
@@ -157,10 +158,12 @@ type private MsgId =
     | IdNum of int
     | IdStr of string
 
-let private writeId (w: Text.Json.Utf8JsonWriter) (id: MsgId) =
-    match id with
-    | IdNum n -> w.WriteNumber("id", n)
-    | IdStr s -> w.WriteString("id", s)
+let private writeId (id: MsgId) : Node =
+    jfields {
+        match id with
+        | IdNum n -> "id", n
+        | IdStr s -> "id", s
+    }
 
 // the last request answered — the dispatch backstop reads it so a
 // handler that throws after answering is not answered twice
@@ -168,13 +171,13 @@ let mutable private lastAnswered: MsgId option = None
 
 let private respond (id: MsgId) (writeResult: Text.Json.Utf8JsonWriter -> unit) =
     send (
-        Diagnostics.jsonBuild (fun w ->
-            w.WriteStartObject()
-            w.WriteString("jsonrpc", "2.0")
-            writeId w id
-            w.WritePropertyName "result"
-            writeResult w
-            w.WriteEndObject())
+        Diagnostics.jsonBuild (
+            jobj {
+                "jsonrpc", "2.0"
+                yield! writeId id
+                "result", writeResult
+            }
+        )
     )
 
     lastAnswered <- Some id
@@ -191,34 +194,47 @@ let private requestFailed = -32803
 
 let private respondError (id: MsgId option) (code: int) (message: string) =
     send (
-        Diagnostics.jsonBuild (fun w ->
-            w.WriteStartObject()
-            w.WriteString("jsonrpc", "2.0")
+        Diagnostics.jsonBuild (
+            jobj {
+                "jsonrpc", "2.0"
 
-            match id with
-            | Some i -> writeId w i
-            | None -> w.WriteNull "id"
+                match id with
+                | Some i -> yield! writeId i
+                | None -> "id", nil
 
-            w.WritePropertyName "error"
-            w.WriteStartObject()
-            w.WriteNumber("code", code)
-            w.WriteString("message", message)
-            w.WriteEndObject()
-            w.WriteEndObject())
+                "error",
+                jobj {
+                    "code", code
+                    "message", message
+                }
+            }
+        )
     )
 
     lastAnswered <- id
 
 let private notify (method: string) (writeParams: Text.Json.Utf8JsonWriter -> unit) =
     send (
-        Diagnostics.jsonBuild (fun w ->
-            w.WriteStartObject()
-            w.WriteString("jsonrpc", "2.0")
-            w.WriteString("method", method)
-            w.WritePropertyName "params"
-            writeParams w
-            w.WriteEndObject())
+        Diagnostics.jsonBuild (
+            jobj {
+                "jsonrpc", "2.0"
+                "method", method
+                "params", writeParams
+            }
+        )
     )
+
+let private pos (l: int) (c: int) : Node =
+    jobj {
+        "line", l
+        "character", c
+    }
+
+let private range (l1: int) (c1: int) (l2: int) (c2: int) : Node =
+    jobj {
+        "start", pos l1 c1
+        "end", pos l2 c2
+    }
 
 // ---- semantic tokens [D:semantic-tokens]: the mode boundary made
 // visible. Mode spans only — expression land emits nothing (TextMate
@@ -4709,20 +4725,8 @@ let signatureHelpAt (path: string) (lines: string list) (line: int) (col: int) :
 // stderr — editors surface server stderr (VS Code: the Output panel),
 // so the next blink-class mystery is a log read, not a rebuild
 // a one-line `range` property from 1-based physical (line, col, len)
-let private writeRange (w: Text.Json.Utf8JsonWriter) (pl: int) (pc: int) (len: int) =
-    w.WritePropertyName "range"
-    w.WriteStartObject()
-    w.WritePropertyName "start"
-    w.WriteStartObject()
-    w.WriteNumber("line", pl - 1)
-    w.WriteNumber("character", pc - 1)
-    w.WriteEndObject()
-    w.WritePropertyName "end"
-    w.WriteStartObject()
-    w.WriteNumber("line", pl - 1)
-    w.WriteNumber("character", pc - 1 + len)
-    w.WriteEndObject()
-    w.WriteEndObject()
+let private writeRange (pl: int) (pc: int) (len: int) : Node =
+    jfields { "range", range (pl - 1) (pc - 1) (pl - 1) (pc - 1 + len) }
 
 let run (debug: bool) : int =
     let stdin' = Console.OpenStandardInput()
@@ -4792,94 +4796,59 @@ let run (debug: bool) : int =
         |> Seq.tryFind (fun k -> uriToPath k = file)
         |> Option.defaultValue (pathToUri file)
 
-    let writeRange0 (w: Text.Json.Utf8JsonWriter) (l1: int) (c1: int) (l2: int) (c2: int) =
-        w.WritePropertyName "range"
-        w.WriteStartObject()
-        w.WritePropertyName "start"
-        w.WriteStartObject()
-        w.WriteNumber("line", l1)
-        w.WriteNumber("character", c1)
-        w.WriteEndObject()
-        w.WritePropertyName "end"
-        w.WriteStartObject()
-        w.WriteNumber("line", l2)
-        w.WriteNumber("character", c2)
-        w.WriteEndObject()
-        w.WriteEndObject()
-
     let publishFor (uri: string) (diags: Diagnostics.Diagnostic list) =
         lastPublished[uri] <- diags
 
         if debug then
             Console.Error.WriteLine $"weir lsp: -> publish {uri} ({List.length diags} diags)"
 
-        notify "textDocument/publishDiagnostics" (fun w ->
-            w.WriteStartObject()
-            w.WriteString("uri", uri)
-            w.WritePropertyName "diagnostics"
-            w.WriteStartArray()
+        notify
+            "textDocument/publishDiagnostics"
+            (jobj {
+                "uri", uri
 
-            for d in diags do
-                let el = d.EndLine |> Option.defaultValue d.Line
-                let ec = d.EndCol |> Option.defaultValue (d.Col + 1)
-                w.WriteStartObject()
-                w.WritePropertyName "range"
-                w.WriteStartObject()
-                w.WritePropertyName "start"
-                w.WriteStartObject()
-                w.WriteNumber("line", d.Line - 1)
-                w.WriteNumber("character", d.Col - 1)
-                w.WriteEndObject()
-                w.WritePropertyName "end"
-                w.WriteStartObject()
-                w.WriteNumber("line", el - 1)
-                w.WriteNumber("character", ec - 1)
-                w.WriteEndObject()
-                w.WriteEndObject()
+                "diagnostics",
+                arr (
+                    seq {
+                        for d in diags ->
+                            jobj {
+                                let el = d.EndLine |> Option.defaultValue d.Line
+                                let ec = d.EndCol |> Option.defaultValue (d.Col + 1)
+                                "range", range (d.Line - 1) (d.Col - 1) (el - 1) (ec - 1)
 
-                w.WriteNumber(
-                    "severity",
-                    (match d.Severity with
-                     | "warning" -> 2
-                     | "note" -> 3
-                     | _ -> 1)
+                                "severity",
+                                (match d.Severity with
+                                 | "warning" -> 2
+                                 | "note" -> 3
+                                 | _ -> 1)
+
+                                "code", d.Code
+                                "source", "weir"
+                                "message", d.Message
+
+                                let tags = diagnosticTags d |> List.filter (fun t -> Set.contains t clientTags)
+
+                                if not tags.IsEmpty then
+                                    "tags", [ for t in tags -> num t ]
+
+                                if clientRelated && not d.Related.IsEmpty then
+                                    "relatedInformation",
+                                    [
+                                        for (rf, rl, rc, rm) in d.Related ->
+                                            jobj {
+                                                "location",
+                                                jobj {
+                                                    "uri", uriFor rf
+                                                    "range", range (rl - 1) (rc - 1) (rl - 1) rc
+                                                }
+
+                                                "message", rm
+                                            }
+                                    ]
+                            }
+                    }
                 )
-
-                w.WriteString("code", d.Code)
-                w.WriteString("source", "weir")
-                w.WriteString("message", d.Message)
-
-                let tags = diagnosticTags d |> List.filter (fun t -> Set.contains t clientTags)
-
-                if not tags.IsEmpty then
-                    w.WritePropertyName "tags"
-                    w.WriteStartArray()
-
-                    for t in tags do
-                        w.WriteNumberValue t
-
-                    w.WriteEndArray()
-
-                if clientRelated && not d.Related.IsEmpty then
-                    w.WritePropertyName "relatedInformation"
-                    w.WriteStartArray()
-
-                    for (rf, rl, rc, rm) in d.Related do
-                        w.WriteStartObject()
-                        w.WritePropertyName "location"
-                        w.WriteStartObject()
-                        w.WriteString("uri", uriFor rf)
-                        writeRange0 w (rl - 1) (rc - 1) (rl - 1) rc
-                        w.WriteEndObject()
-                        w.WriteString("message", rm)
-                        w.WriteEndObject()
-
-                    w.WriteEndArray()
-
-                w.WriteEndObject()
-
-            w.WriteEndArray()
-            w.WriteEndObject())
+            })
 
     // re-check every open doc, publish per URI [D:modules-v1]: a module's
     // diagnostics land on the module's own file (even unopened), and an
@@ -5105,7 +5074,7 @@ let run (debug: bool) : int =
                     | "initialized" -> ()
                     | "shutdown" ->
                         shutDown <- true
-                        idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
+                        idStr |> Option.iter (fun id -> respond id nil)
                     | "textDocument/didOpen" ->
                         (match jObj "textDocument" ps with
                          | Some td ->
@@ -5140,30 +5109,32 @@ let run (debug: bool) : int =
                             | Some(_, text) ->
                                 let lines = ModuleLoader.splitSourceText text
                                 let toks = semanticTokensFor lines
-                                w.WriteStartObject()
-                                w.WritePropertyName "data"
-                                w.WriteStartArray()
 
-                                // the five-int delta scheme: deltaLine,
-                                // deltaStartChar (line-relative resets), length,
-                                // tokenType, modifiers
-                                let mutable pl = 0
-                                let mutable pc = 0
+                                w
+                                |> jobj {
+                                    "data",
+                                    (fun (w: Text.Json.Utf8JsonWriter) ->
+                                        w.WriteStartArray()
+                                        // the five-int delta scheme: deltaLine,
+                                        // deltaStartChar (line-relative resets), length,
+                                        // tokenType, modifiers
+                                        let mutable pl = 0
+                                        let mutable pc = 0
 
-                                for (l, c, len, ty) in toks do
-                                    let dl = l - pl
-                                    let dc = if dl = 0 then c - pc else c
-                                    w.WriteNumberValue dl
-                                    w.WriteNumberValue dc
-                                    w.WriteNumberValue len
-                                    w.WriteNumberValue ty
-                                    w.WriteNumberValue 0
-                                    pl <- l
-                                    pc <- c
+                                        for (l, c, len, ty) in toks do
+                                            let dl = l - pl
+                                            let dc = if dl = 0 then c - pc else c
+                                            w.WriteNumberValue dl
+                                            w.WriteNumberValue dc
+                                            w.WriteNumberValue len
+                                            w.WriteNumberValue ty
+                                            w.WriteNumberValue 0
+                                            pl <- l
+                                            pc <- c
 
-                                w.WriteEndArray()
-                                w.WriteEndObject()
-                            | None -> w.WriteNullValue()
+                                        w.WriteEndArray())
+                                }
+                            | None -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/codeAction" ->
@@ -5180,73 +5151,61 @@ let run (debug: bool) : int =
 
                                 let requestedLines = lineRangeOf ()
 
-                                let writeRange (l1: int) (c1: int) (l2: int) (c2: int) =
-                                    w.WritePropertyName "range"
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "start"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", l1 - 1)
-                                    w.WriteNumber("character", c1 - 1)
-                                    w.WriteEndObject()
-                                    w.WritePropertyName "end"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", l2 - 1)
-                                    w.WriteNumber("character", c2 - 1)
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
+                                w
+                                |> arr (
+                                    seq {
+                                        for a in codeActionsFor published requestedLines ->
+                                            jobj {
+                                                "title", a.Title
+                                                "kind", a.Kind
 
-                                w.WriteStartArray()
+                                                "diagnostics",
+                                                [
+                                                    for d in a.Diagnostics ->
+                                                        jobj {
+                                                            "range",
+                                                            range
+                                                                (d.Line - 1)
+                                                                (d.Col - 1)
+                                                                ((d.EndLine |> Option.defaultValue d.Line) - 1)
+                                                                ((d.EndCol |> Option.defaultValue (d.Col + 1)) - 1)
 
-                                for a in codeActionsFor published requestedLines do
-                                    w.WriteStartObject()
-                                    w.WriteString("title", a.Title)
-                                    w.WriteString("kind", a.Kind)
-                                    w.WritePropertyName "diagnostics"
-                                    w.WriteStartArray()
+                                                            "severity",
+                                                            (match d.Severity with
+                                                             | "warning" -> 2
+                                                             | "note" -> 3
+                                                             | _ -> 1)
 
-                                    for d in a.Diagnostics do
-                                        w.WriteStartObject()
+                                                            "code", d.Code
+                                                            "source", "weir"
+                                                            "message", d.Message
+                                                        }
+                                                ]
 
-                                        writeRange
-                                            d.Line
-                                            d.Col
-                                            (d.EndLine |> Option.defaultValue d.Line)
-                                            (d.EndCol |> Option.defaultValue (d.Col + 1))
+                                                "edit",
+                                                jobj {
+                                                    "changes",
+                                                    jobj {
+                                                        uri,
+                                                        [
+                                                            for e in a.Edits ->
+                                                                jobj {
+                                                                    "range",
+                                                                    range
+                                                                        (e.Line - 1)
+                                                                        (e.Col - 1)
+                                                                        (e.EndLine - 1)
+                                                                        (e.EndCol - 1)
 
-                                        w.WriteNumber(
-                                            "severity",
-                                            (match d.Severity with
-                                             | "warning" -> 2
-                                             | "note" -> 3
-                                             | _ -> 1)
-                                        )
-
-                                        w.WriteString("code", d.Code)
-                                        w.WriteString("source", "weir")
-                                        w.WriteString("message", d.Message)
-                                        w.WriteEndObject()
-
-                                    w.WriteEndArray()
-                                    w.WritePropertyName "edit"
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "changes"
-                                    w.WriteStartObject()
-                                    w.WritePropertyName uri
-                                    w.WriteStartArray()
-
-                                    for e in a.Edits do
-                                        w.WriteStartObject()
-                                        writeRange e.Line e.Col e.EndLine e.EndCol
-                                        w.WriteString("newText", e.NewText)
-                                        w.WriteEndObject()
-
-                                    w.WriteEndArray()
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
-
-                                w.WriteEndArray()
-                            | None -> w.WriteNullValue()
+                                                                    "newText", e.NewText
+                                                                }
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                    }
+                                )
+                            | None -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/hover" ->
@@ -5263,19 +5222,20 @@ let run (debug: bool) : int =
                                     |> Option.orElseWith (fun () -> hoverAt (uriToPath uri) lines line col)
                                 with
                                 | Some t ->
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "contents"
-                                    w.WriteStartObject()
-                                    w.WriteString("kind", "plaintext")
-                                    // each line ends in a space [D:hover-reflow]: a
-                                    // client that drops newlines (micro's
-                                    // one-line info bar) still separates
-                                    // the words; elsewhere it is invisible
-                                    w.WriteString("value", t.Replace("\n", " \n"))
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
-                                | None -> w.WriteNullValue()
-                            | _ -> w.WriteNullValue()
+                                    w
+                                    |> jobj {
+                                        "contents",
+                                        jobj {
+                                            "kind", "plaintext"
+                                            // each line ends in a space [D:hover-reflow]: a
+                                            // client that drops newlines (micro's
+                                            // one-line info bar) still separates
+                                            // the words; elsewhere it is invisible
+                                            "value", t.Replace("\n", " \n")
+                                        }
+                                    }
+                                | None -> nil w
+                            | _ -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/definition" ->
@@ -5291,12 +5251,13 @@ let run (debug: bool) : int =
                                         | None -> uri
                                         | Some f -> uriFor f
 
-                                    w.WriteStartObject()
-                                    w.WriteString("uri", targetUri)
-                                    writeRange w pl pc len
-                                    w.WriteEndObject()
-                                | None -> w.WriteNullValue()
-                            | _ -> w.WriteNullValue()
+                                    w
+                                    |> jobj {
+                                        "uri", targetUri
+                                        yield! writeRange pl pc len
+                                    }
+                                | None -> nil w
+                            | _ -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/references" ->
@@ -5312,17 +5273,16 @@ let run (debug: bool) : int =
 
                                 match referencesFor (uriToPath uri) lines line col includeDeclaration with
                                 | Some occs ->
-                                    w.WriteStartArray()
-
-                                    for pl, pc, len in occs do
-                                        w.WriteStartObject()
-                                        w.WriteString("uri", uri)
-                                        writeRange w pl pc len
-                                        w.WriteEndObject()
-
-                                    w.WriteEndArray()
-                                | None -> w.WriteNullValue()
-                            | _ -> w.WriteNullValue()
+                                    w
+                                    |> arr [
+                                        for pl, pc, len in occs ->
+                                            jobj {
+                                                "uri", uri
+                                                yield! writeRange pl pc len
+                                            }
+                                    ]
+                                | None -> nil w
+                            | _ -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/documentHighlight" ->
@@ -5333,17 +5293,16 @@ let run (debug: bool) : int =
 
                                 match documentHighlightFor (uriToPath uri) lines line col with
                                 | Some occs ->
-                                    w.WriteStartArray()
-
-                                    for pl, pc, len, kind in occs do
-                                        w.WriteStartObject()
-                                        writeRange w pl pc len
-                                        w.WriteNumber("kind", kind)
-                                        w.WriteEndObject()
-
-                                    w.WriteEndArray()
-                                | None -> w.WriteNullValue()
-                            | _ -> w.WriteNullValue()
+                                    w
+                                    |> arr [
+                                        for pl, pc, len, kind in occs ->
+                                            jobj {
+                                                yield! writeRange pl pc len
+                                                "kind", kind
+                                            }
+                                    ]
+                                | None -> nil w
+                            | _ -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/prepareRename" ->
@@ -5363,11 +5322,12 @@ let run (debug: bool) : int =
                         |> Option.iter (fun id ->
                             match outcome with
                             | Ok(lines, pl, pc, len) ->
-                                respond id (fun w ->
-                                    w.WriteStartObject()
-                                    writeRange w pl pc len
-                                    w.WriteString("placeholder", (List.item (pl - 1) lines).Substring(pc - 1, len))
-                                    w.WriteEndObject())
+                                respond
+                                    id
+                                    (jobj {
+                                        yield! writeRange pl pc len
+                                        "placeholder", (List.item (pl - 1) lines).Substring(pc - 1, len)
+                                    })
                             | Error reason -> respondError (Some id) requestFailed reason)
                     | "textDocument/rename" ->
                         let outcome =
@@ -5385,22 +5345,21 @@ let run (debug: bool) : int =
                             match outcome with
                             | Ok(uri, newName, edits) ->
                                 // the document's own URI spelling [D:lsp-uri-spelling]
-                                respond id (fun w ->
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "changes"
-                                    w.WriteStartObject()
-                                    w.WritePropertyName uri
-                                    w.WriteStartArray()
-
-                                    for pl, pc, len in edits do
-                                        w.WriteStartObject()
-                                        writeRange w pl pc len
-                                        w.WriteString("newText", newName)
-                                        w.WriteEndObject()
-
-                                    w.WriteEndArray()
-                                    w.WriteEndObject()
-                                    w.WriteEndObject())
+                                respond
+                                    id
+                                    (jobj {
+                                        "changes",
+                                        jobj {
+                                            uri,
+                                            [
+                                                for pl, pc, len in edits ->
+                                                    jobj {
+                                                        yield! writeRange pl pc len
+                                                        "newText", newName
+                                                    }
+                                            ]
+                                        }
+                                    })
                             | Error reason -> respondError (Some id) requestFailed reason)
                     | "textDocument/formatting" ->
                         // client-sent text only (the security non-claim holds);
@@ -5417,29 +5376,19 @@ let run (debug: bool) : int =
                                 | Ok(formatted, true) ->
                                     let arr = List.toArray lines
                                     let lastIdx = arr.Length - 1
-                                    w.WriteStartArray()
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "range"
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "start"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", 0)
-                                    w.WriteNumber("character", 0)
-                                    w.WriteEndObject()
-                                    w.WritePropertyName "end"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", lastIdx)
-                                    w.WriteNumber("character", arr[lastIdx].Length)
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
-                                    // the document's own line ending, as `weir fmt`
-                                    // keeps the file's
-                                    let nl = if text.Contains "\r\n" then "\r\n" else "\n"
-                                    w.WriteString("newText", String.concat nl formatted + nl)
-                                    w.WriteEndObject()
-                                    w.WriteEndArray()
-                                | _ -> w.WriteNullValue() // refusal or already canonical
-                            | None -> w.WriteNullValue()
+
+                                    w
+                                    |> Weir.Json.arr [
+                                        jobj {
+                                            "range", range 0 0 lastIdx arr[lastIdx].Length
+                                            // the document's own line ending, as `weir fmt`
+                                            // keeps the file's
+                                            let nl = if text.Contains "\r\n" then "\r\n" else "\n"
+                                            "newText", String.concat nl formatted + nl
+                                        }
+                                    ]
+                                | _ -> nil w // refusal or already canonical
+                            | None -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/completion" ->
@@ -5690,88 +5639,73 @@ let run (debug: bool) : int =
                                             None)
                                     |> Map.ofList
 
-                                w.WriteStartArray()
+                                w
+                                |> arr (
+                                    seq {
+                                        // textEdit with an explicit range: clients replace
+                                        // [wordStart, cursor) with the suggestion — bare
+                                        // labels double-insert after dots and get
+                                        // prefix-filtered inside parens [D:completion-textedit]
+                                        // past the cap PATH yields first: a binding is
+                                        // never cut for a command's sake
+                                        let items =
+                                            let items = List.distinct items
 
-                                // textEdit with an explicit range: clients replace
-                                // [wordStart, cursor) with the suggestion — bare
-                                // labels double-insert after dots and get
-                                // prefix-filtered inside parens [D:completion-textedit]
-                                // past the cap PATH yields first: a binding is
-                                // never cut for a command's sake
-                                let items =
-                                    let items = List.distinct items
+                                            if items.Length > 200 then
+                                                let ext = Extern.names ()
+                                                let cmds, names = items |> List.partition ext.Contains
+                                                names @ cmds
+                                            else
+                                                items
 
-                                    if items.Length > 200 then
-                                        let ext = Extern.names ()
-                                        let cmds, names = items |> List.partition ext.Contains
-                                        names @ cmds
-                                    else
-                                        items
+                                        for label in items |> List.truncate 200 ->
+                                            jobj {
+                                                "label", label
+                                                // the annotated signature as `detail` — the
+                                                // other surface names are read on
+                                                // [D:annotated-signature]
+                                                let kindDetail =
+                                                    if kindSlot then
+                                                        Ast.withinKinds
+                                                        |> List.tryPick (fun k ->
+                                                            if k.Name = label then
+                                                                Some(
+                                                                    (if k.Binds then "binds — " else "consumes — ")
+                                                                    + k.Doc
+                                                                )
+                                                            else
+                                                                None)
+                                                    else
+                                                        None
 
-                                for label in items |> List.truncate 200 do
-                                    w.WriteStartObject()
-                                    w.WriteString("label", label)
+                                                let sigDetail =
+                                                    Map.tryFind label Builtins.builtinDocs.Value
+                                                    |> Option.filter (fun d -> not (List.isEmpty d.Params))
+                                                    |> Option.bind (fun d ->
+                                                        valueTy env label
+                                                        |> Option.map (fun ty -> formatSignature label d.Params ty))
 
-                                    // the annotated signature as `detail` — the
-                                    // other surface names are read on
-                                    // [D:annotated-signature]
-                                    let kindDetail =
-                                        if kindSlot then
-                                            Ast.withinKinds
-                                            |> List.tryPick (fun k ->
-                                                if k.Name = label then
-                                                    Some((if k.Binds then "binds — " else "consumes — ") + k.Doc)
-                                                else
-                                                    None)
-                                        else
-                                            None
+                                                "detail", orOmit (kindDetail |> Option.orElse sigDetail)
+                                                // a user `///` doc wins; else the builtin's
+                                                // doc (Seq.map, print, …) [D:builtin-docs]
+                                                "documentation",
+                                                orOmit (
+                                                    Map.tryFind label docByName
+                                                    |> Option.orElse (
+                                                        Map.tryFind label Builtins.builtinDocs.Value
+                                                        |> Option.map Builtins.renderBuiltinDoc
+                                                    )
+                                                )
 
-                                    let sigDetail =
-                                        Map.tryFind label Builtins.builtinDocs.Value
-                                        |> Option.filter (fun d -> not (List.isEmpty d.Params))
-                                        |> Option.bind (fun d ->
-                                            valueTy env label
-                                            |> Option.map (fun ty -> formatSignature label d.Params ty))
-
-                                    match kindDetail |> Option.orElse sigDetail with
-                                    | Some s -> w.WriteString("detail", s)
-                                    | None -> ()
-
-                                    // a user `///` doc wins; else the builtin's
-                                    // doc (Seq.map, print, …) [D:builtin-docs]
-                                    match
-                                        Map.tryFind label docByName
-                                        |> Option.orElse (
-                                            Map.tryFind label Builtins.builtinDocs.Value
-                                            |> Option.map Builtins.renderBuiltinDoc
-                                        )
-                                    with
-                                    | Some doc -> w.WriteString("documentation", doc)
-                                    | None -> ()
-
-                                    w.WritePropertyName "textEdit"
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "range"
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "start"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", line - 1)
-                                    w.WriteNumber("character", wordStart)
-                                    w.WriteEndObject()
-                                    w.WritePropertyName "end"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", line - 1)
-                                    w.WriteNumber("character", col - 1)
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
-                                    w.WriteString("newText", label)
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
-
-                                w.WriteEndArray()
-                            | _ ->
-                                w.WriteStartArray()
-                                w.WriteEndArray()
+                                                "textEdit",
+                                                jobj {
+                                                    "range", range (line - 1) wordStart (line - 1) (col - 1)
+                                                    "newText", label
+                                                }
+                                            }
+                                    }
+                                )
+                            | _ -> w |> arr []
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "workspace/didChangeConfiguration" ->
@@ -5785,21 +5719,19 @@ let run (debug: bool) : int =
                             match docOf () with
                             | Some(uri, text) ->
                                 let lines = ModuleLoader.splitSourceText text
-                                w.WriteStartArray()
 
-                                for (s, e, kind) in foldingRangesFor (uriToPath uri) lines do
-                                    w.WriteStartObject()
-                                    w.WriteNumber("startLine", s - 1)
-                                    w.WriteNumber("endLine", e - 1)
-
-                                    match kind with
-                                    | Some k -> w.WriteString("kind", k)
-                                    | None -> ()
-
-                                    w.WriteEndObject()
-
-                                w.WriteEndArray()
-                            | None -> w.WriteNullValue()
+                                w
+                                |> arr (
+                                    seq {
+                                        for (s, e, kind) in foldingRangesFor (uriToPath uri) lines ->
+                                            jobj {
+                                                "startLine", s - 1
+                                                "endLine", e - 1
+                                                "kind", orOmit kind
+                                            }
+                                    }
+                                )
+                            | None -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/documentSymbol" ->
@@ -5809,76 +5741,56 @@ let run (debug: bool) : int =
                                 let lines = ModuleLoader.splitSourceText text
                                 let syms = documentSymbolsFor (uriToPath uri) lines
 
-                                let rec writeSymbol (sy: DocSymbol) =
+                                let rec writeSymbol (sy: DocSymbol) : Node =
                                     let l1, c1, l2, c2 = sy.Range
                                     let s1, t1, s2, t2 = sy.Selection
-                                    w.WriteStartObject()
-                                    w.WriteString("name", sy.Name)
 
-                                    match sy.Detail with
-                                    | Some d -> w.WriteString("detail", d)
-                                    | None -> ()
+                                    jobj {
+                                        "name", sy.Name
+                                        "detail", orOmit sy.Detail
+                                        "kind", sy.Kind
+                                        "range", range (l1 - 1) (c1 - 1) (l2 - 1) (c2 - 1)
+                                        "selectionRange", range (s1 - 1) (t1 - 1) (s2 - 1) (t2 - 1)
 
-                                    w.WriteNumber("kind", sy.Kind)
-                                    writeRange0 w (l1 - 1) (c1 - 1) (l2 - 1) (c2 - 1)
-                                    w.WritePropertyName "selectionRange"
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "start"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", s1 - 1)
-                                    w.WriteNumber("character", t1 - 1)
-                                    w.WriteEndObject()
-                                    w.WritePropertyName "end"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", s2 - 1)
-                                    w.WriteNumber("character", t2 - 1)
-                                    w.WriteEndObject()
-                                    w.WriteEndObject()
-
-                                    if not sy.Children.IsEmpty then
-                                        w.WritePropertyName "children"
-                                        w.WriteStartArray()
-
-                                        for c in sy.Children do
-                                            writeSymbol c
-
-                                        w.WriteEndArray()
-
-                                    w.WriteEndObject()
-
+                                        if not sy.Children.IsEmpty then
+                                            "children", [ for c in sy.Children -> writeSymbol c ]
+                                    }
                                 // the flat form for a client without
                                 // hierarchy support: children flattened,
                                 // containerName = the parent
-                                let rec writeFlat (container: string option) (sy: DocSymbol) =
-                                    let l1, c1, l2, c2 = sy.Range
-                                    w.WriteStartObject()
-                                    w.WriteString("name", sy.Name)
-                                    w.WriteNumber("kind", sy.Kind)
-                                    w.WritePropertyName "location"
-                                    w.WriteStartObject()
-                                    w.WriteString("uri", uri)
-                                    writeRange0 w (l1 - 1) (c1 - 1) (l2 - 1) (c2 - 1)
-                                    w.WriteEndObject()
+                                let rec writeFlat (container: string option) (sy: DocSymbol) : Node seq =
+                                    seq {
+                                        let l1, c1, l2, c2 = sy.Range
 
-                                    match container with
-                                    | Some c -> w.WriteString("containerName", c)
-                                    | None -> ()
+                                        yield
+                                            jobj {
+                                                "name", sy.Name
+                                                "kind", sy.Kind
 
-                                    w.WriteEndObject()
+                                                "location",
+                                                jobj {
+                                                    "uri", uri
+                                                    "range", range (l1 - 1) (c1 - 1) (l2 - 1) (c2 - 1)
+                                                }
 
-                                    for c in sy.Children do
-                                        writeFlat (Some sy.Name) c
+                                                "containerName", orOmit container
+                                            }
 
-                                w.WriteStartArray()
+                                        for c in sy.Children do
+                                            yield! writeFlat (Some sy.Name) c
+                                    }
 
-                                for sy in syms do
-                                    if hierarchicalSymbols then
-                                        writeSymbol sy
-                                    else
-                                        writeFlat None sy
-
-                                w.WriteEndArray()
-                            | None -> w.WriteNullValue()
+                                w
+                                |> arr (
+                                    seq {
+                                        for sy in syms do
+                                            if hierarchicalSymbols then
+                                                yield writeSymbol sy
+                                            else
+                                                yield! writeFlat None sy
+                                    }
+                                )
+                            | None -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/documentLink" ->
@@ -5886,17 +5798,19 @@ let run (debug: bool) : int =
                             match docOf () with
                             | Some(uri, text) ->
                                 let lines = ModuleLoader.splitSourceText text
-                                w.WriteStartArray()
 
-                                for (l, c, len, target, tip) in documentLinksFor (uriToPath uri) lines do
-                                    w.WriteStartObject()
-                                    writeRange0 w (l - 1) (c - 1) (l - 1) (c - 1 + len)
-                                    w.WriteString("target", uriFor target)
-                                    w.WriteString("tooltip", tip)
-                                    w.WriteEndObject()
-
-                                w.WriteEndArray()
-                            | None -> w.WriteNullValue()
+                                w
+                                |> arr (
+                                    seq {
+                                        for (l, c, len, target, tip) in documentLinksFor (uriToPath uri) lines ->
+                                            jobj {
+                                                "range", range (l - 1) (c - 1) (l - 1) (c - 1 + len)
+                                                "target", uriFor target
+                                                "tooltip", tip
+                                            }
+                                    }
+                                )
+                            | None -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/inlayHint" ->
@@ -5906,28 +5820,22 @@ let run (debug: bool) : int =
                             match docOf (), range with
                             | Some(uri, text), Some(fromLine, toLine) ->
                                 let lines = ModuleLoader.splitSourceText text
-                                w.WriteStartArray()
 
-                                for h in inlayHintsFor inlayOptions (uriToPath uri) lines fromLine toLine do
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "position"
-                                    w.WriteStartObject()
-                                    w.WriteNumber("line", h.Line - 1)
-                                    w.WriteNumber("character", h.Col - 1)
-                                    w.WriteEndObject()
-                                    w.WriteString("label", h.Label)
-                                    w.WriteNumber("kind", h.Kind)
-
-                                    match h.Tooltip with
-                                    | Some t -> w.WriteString("tooltip", t)
-                                    | None -> ()
-
-                                    w.WriteBoolean("paddingLeft", h.PaddingLeft)
-                                    w.WriteBoolean("paddingRight", h.PaddingRight)
-                                    w.WriteEndObject()
-
-                                w.WriteEndArray()
-                            | _ -> w.WriteNullValue()
+                                w
+                                |> arr (
+                                    seq {
+                                        for h in inlayHintsFor inlayOptions (uriToPath uri) lines fromLine toLine ->
+                                            jobj {
+                                                "position", pos (h.Line - 1) (h.Col - 1)
+                                                "label", h.Label
+                                                "kind", h.Kind
+                                                "tooltip", orOmit h.Tooltip
+                                                "paddingLeft", h.PaddingLeft
+                                                "paddingRight", h.PaddingRight
+                                            }
+                                    }
+                                )
+                            | _ -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/signatureHelp" ->
@@ -5938,33 +5846,33 @@ let run (debug: bool) : int =
 
                                 match signatureHelpAt (uriToPath uri) lines line col with
                                 | Some sh ->
-                                    w.WriteStartObject()
-                                    w.WritePropertyName "signatures"
-                                    w.WriteStartArray()
-                                    w.WriteStartObject()
-                                    w.WriteString("label", sh.Label)
-                                    sh.Doc |> Option.iter (fun d -> w.WriteString("documentation", d))
-                                    w.WritePropertyName "parameters"
-                                    w.WriteStartArray()
+                                    w
+                                    |> jobj {
+                                        "signatures",
+                                        [
+                                            jobj {
+                                                "label", sh.Label
+                                                "documentation", orOmit sh.Doc
 
-                                    for s, e, d in sh.Params do
-                                        w.WriteStartObject()
-                                        w.WritePropertyName "label"
-                                        w.WriteStartArray()
-                                        w.WriteNumberValue s
-                                        w.WriteNumberValue e
-                                        w.WriteEndArray()
-                                        d |> Option.iter (fun d -> w.WriteString("documentation", d))
-                                        w.WriteEndObject()
+                                                "parameters",
+                                                [
+                                                    for s, e, d in sh.Params ->
+                                                        jobj {
+                                                            "label", [ num s; num e ]
+                                                            "documentation", orOmit d
+                                                        }
+                                                ]
+                                            }
+                                        ]
 
-                                    w.WriteEndArray()
-                                    w.WriteEndObject()
-                                    w.WriteEndArray()
-                                    w.WriteNumber("activeSignature", 0)
-                                    sh.Active |> Option.iter (fun a -> w.WriteNumber("activeParameter", a))
-                                    w.WriteEndObject()
-                                | None -> w.WriteNullValue()
-                            | _ -> w.WriteNullValue()
+                                        "activeSignature", 0
+
+                                        match sh.Active with
+                                        | Some a -> "activeParameter", a
+                                        | None -> ()
+                                    }
+                                | None -> nil w
+                            | _ -> nil w
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "" when (tryProp "result" msg).IsSome || (tryProp "error" msg).IsSome -> () // a client response

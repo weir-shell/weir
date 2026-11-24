@@ -287,6 +287,7 @@ let allTests =
         portOverlayTests
         hunt4Tests
         framingTests
+        jsonBuilderTests
         valueRendererTests
         tintParityTests
     ]

@@ -900,51 +900,45 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
     (use w =
         new Text.Json.Utf8JsonWriter(ms, Text.Json.JsonWriterOptions(Indented = true))
 
-     w.WriteStartObject()
-     // a lock with no closure entry stays version 1, byte-identical; a
-     // closure entry is a shape version-1 weir would misread as a missing
-     // file, so it writes 2 and older weir refuses [D:add-module-closure]
-     w.WriteNumber(
+     (Json.jobj {
+         // a lock with no closure entry stays version 1, byte-identical; a
+         // closure entry is a shape version-1 weir would misread as a missing
+         // file, so it writes 2 and older weir refuses [D:add-module-closure]
          "schemaVersion",
          (if entries |> List.exists (fun e -> e.Closure.IsSome) then
               2
           else
               1)
-     )
 
-     w.WriteStartArray "artifacts"
+         "artifacts",
+         [
+             for e in entries ->
+                 Json.jobj {
+                     "kind", e.Kind
+                     "name", e.Name
+                     "url", e.Url
+                     "sha256", e.Sha256
+                     "path", e.Path
+                     "version", Json.orOmit e.Version
 
-     for e in entries do
-         w.WriteStartObject()
-         w.WriteString("kind", e.Kind)
-         w.WriteString("name", e.Name)
-         w.WriteString("url", e.Url)
-         w.WriteString("sha256", e.Sha256)
-         w.WriteString("path", e.Path)
+                     match e.Closure with
+                     | Some c ->
+                         "commit", Json.orOmit c.Commit
+                         "entry", c.Entry
 
-         match e.Version with
-         | Some v -> w.WriteString("version", v)
-         | None -> ()
-
-         match e.Closure with
-         | Some c ->
-             c.Commit |> Option.iter (fun v -> w.WriteString("commit", v))
-             w.WriteString("entry", c.Entry)
-             w.WriteStartArray "files"
-
-             for p, h in c.Files do
-                 w.WriteStartObject()
-                 w.WriteString("path", p)
-                 w.WriteString("sha256", h)
-                 w.WriteEndObject()
-
-             w.WriteEndArray()
-         | None -> ()
-
-         w.WriteEndObject()
-
-     w.WriteEndArray()
-     w.WriteEndObject())
+                         "files",
+                         [
+                             for p, h in c.Files ->
+                                 Json.jobj {
+                                     "path", p
+                                     "sha256", h
+                                 }
+                         ]
+                     | None -> ()
+                 }
+         ]
+     })
+         w)
 
     AtomicFile.replaceFile (lockPath weirDir) (ms.ToArray())
 

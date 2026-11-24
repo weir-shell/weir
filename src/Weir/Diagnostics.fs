@@ -544,70 +544,65 @@ let jsonBuild (build: System.Text.Json.Utf8JsonWriter -> unit) : string =
     Text.Encoding.UTF8.GetString(ms.ToArray())
 
 let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
-    w.WriteStartObject()
-    // one file identity per document [D:ci-matrix-triage round 26]: an
-    // imported module's diag carried the resolved path while the
-    // importer's carried argv's spelling verbatim — on Windows the same
-    // dir under two spellings (8.3 vs long, / vs \), breaking any
-    // consumer that groups by file. GetFullPath is the one spelling.
-    w.WriteString(
+    (Json.jobj {
+        // one file identity per document [D:ci-matrix-triage round 26]: an
+        // imported module's diag carried the resolved path while the
+        // importer's carried argv's spelling verbatim — on Windows the same
+        // dir under two spellings (8.3 vs long, / vs \), breaking any
+        // consumer that groups by file. GetFullPath is the one spelling.
         "file",
         (try
             IO.Path.GetFullPath d.File
          with _ ->
              d.File)
-    )
 
-    w.WriteNumber("line", d.Line)
-    w.WriteNumber("col", d.Col)
+        "line", d.Line
+        "col", d.Col
 
-    match d.EndLine, d.EndCol with
-    | Some el, Some ec ->
-        w.WriteNumber("endLine", el)
-        w.WriteNumber("endCol", ec)
-    | _ -> ()
+        match d.EndLine, d.EndCol with
+        | Some el, Some ec ->
+            "endLine", el
+            "endCol", ec
+        | _ -> ()
 
-    w.WriteString("severity", d.Severity)
-    w.WriteString("code", d.Code)
-    w.WriteString("message", d.Message)
+        "severity", d.Severity
+        "code", d.Code
+        "message", d.Message
 
-    // additive [D:diagnostic-tags]: present only when there is a site
-    if not d.Related.IsEmpty then
-        w.WritePropertyName "related"
-        w.WriteStartArray()
+        // additive [D:diagnostic-tags]: present only when there is a site
+        if not d.Related.IsEmpty then
+            "related",
+            [
+                for (rf, rl, rc, rm) in d.Related ->
+                    Json.jobj {
+                        "file", rf
+                        "line", rl
+                        "col", rc
+                        "message", rm
+                    }
+            ]
+        // the repair, when one is known [D:structured-fixes] — additive
+        match d.Fix with
+        | Some fix ->
+            "fix",
+            Json.jobj {
+                "title", fix.Title
 
-        for (rf, rl, rc, rm) in d.Related do
-            w.WriteStartObject()
-            w.WriteString("file", rf)
-            w.WriteNumber("line", rl)
-            w.WriteNumber("col", rc)
-            w.WriteString("message", rm)
-            w.WriteEndObject()
-
-        w.WriteEndArray()
-    // the repair, when one is known [D:structured-fixes] — additive
-    match d.Fix with
-    | Some fix ->
-        w.WritePropertyName "fix"
-        w.WriteStartObject()
-        w.WriteString("title", fix.Title)
-        w.WritePropertyName "edits"
-        w.WriteStartArray()
-
-        for e in fix.Edits do
-            w.WriteStartObject()
-            w.WriteNumber("line", e.Line)
-            w.WriteNumber("col", e.Col)
-            w.WriteNumber("endLine", e.EndLine)
-            w.WriteNumber("endCol", e.EndCol)
-            w.WriteString("newText", e.NewText)
-            w.WriteEndObject()
-
-        w.WriteEndArray()
-        w.WriteEndObject()
-    | None -> ()
-
-    w.WriteEndObject()
+                "edits",
+                [
+                    for e in fix.Edits ->
+                        Json.jobj {
+                            "line", e.Line
+                            "col", e.Col
+                            "endLine", e.EndLine
+                            "endCol", e.EndCol
+                            "newText", e.NewText
+                        }
+                ]
+            }
+        | None -> ()
+    })
+        w
 
 // doc-comment alignment lint [D:doc-comments]: a `///` attaches to the
 // declaration below it, so it must sit at that declaration's indent —

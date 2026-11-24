@@ -2241,3 +2241,99 @@ let hunt4Tests =
                 System.Environment.SetEnvironmentVariable(var, saved)
         }
     ]
+
+// the JSON builder writes what the writer calls it stands for write
+// [D:json-builder]
+let jsonBuilderTests =
+    let render (n: Weir.Json.Node) : string =
+        use ms = new System.IO.MemoryStream()
+
+        (use w = new System.Text.Json.Utf8JsonWriter(ms)
+         n w)
+
+        System.Text.Encoding.UTF8.GetString(ms.ToArray())
+
+    testList "the JSON builder [D:json-builder]" [
+        test "fields are bare pairs in source order, by the value's type" {
+            let n =
+                Weir.Json.jobj {
+                    "s", "a"
+                    "i", 3
+                    "l", 5L
+                    "b", true
+                    "none", (None: string option)
+                    "some", Some "x"
+                }
+
+            Expect.equal (render n) """{"s":"a","i":3,"l":5,"b":true,"none":null,"some":"x"}""" ""
+        }
+        test "a nested object, lists as arrays, and a field left out" {
+            let pos (l: int) (c: int) =
+                Weir.Json.jobj {
+                    "line", l
+                    "character", c
+                }
+
+            let code = ""
+
+            let n =
+                Weir.Json.jobj {
+                    "range",
+                    Weir.Json.jobj {
+                        "start", pos 1 2
+                        "end", pos 1 5
+                    }
+
+                    if code <> "" then
+                        "code", code
+
+                    "detail", Weir.Json.orOmit None
+                    "shown", Weir.Json.orOmit (Some "d")
+                    "tags", [ "a"; "b" ]
+                    "mixed", [ Weir.Json.str "a"; Weir.Json.num 1; Weir.Json.bool false; Weir.Json.nil ]
+                    "none", ([]: string list)
+                }
+
+            Expect.equal
+                (render n)
+                """{"range":{"start":{"line":1,"character":2},"end":{"line":1,"character":5}},"shown":"d","tags":["a","b"],"mixed":["a",1,false,null],"none":[]}"""
+                ""
+        }
+        test "a loop yields a field per item, and jfields splices into an object" {
+            let extra =
+                Weir.Json.jfields {
+                    "x", 1
+                    "y", 2
+                }
+
+            let n =
+                Weir.Json.jobj {
+                    for k in [ "a"; "b" ] do
+                        k, k.ToUpperInvariant()
+
+                    yield! extra
+
+                    "items", [ for i in 1..2 -> Weir.Json.jobj { "n", i } ]
+
+                    "lazy", Weir.Json.arr (seq { for i in 1..2 -> Weir.Json.num i })
+                }
+
+            Expect.equal (render n) """{"a":"A","b":"B","x":1,"y":2,"items":[{"n":1},{"n":2}],"lazy":[1,2]}""" ""
+        }
+        test "the getters default on an absent or wrong-typed property" {
+            use doc =
+                System.Text.Json.JsonDocument.Parse """{"s":"v","n":4,"b":false,"xs":["a",1,"b"],"bad":[1]}"""
+
+            let r = doc.RootElement
+            Expect.equal (Weir.Json.strOr "d" "s" r) "v" ""
+            Expect.equal (Weir.Json.strOr "d" "n" r) "d" "a number is no string"
+            Expect.equal (Weir.Json.intOr 9 "n" r) 4 ""
+            Expect.equal (Weir.Json.intOr 9 "absent" r) 9 ""
+            Expect.equal (Weir.Json.boolOr true "b" r) false ""
+            Expect.equal (Weir.Json.boolOr true "s" r) true "a string is no bool"
+            Expect.equal (Weir.Json.strListOr [ "z" ] "xs" r) [ "a"; "b" ] "the string elements"
+            Expect.equal (Weir.Json.strListOr [ "z" ] "s" r) [ "z" ] ""
+            Expect.isSome (Weir.Json.tryProp "bad" r) ""
+            Expect.isNone (Weir.Json.tryProp "absent" r) ""
+        }
+    ]
