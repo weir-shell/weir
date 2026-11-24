@@ -1,0 +1,19 @@
+# The Alpine image [D:image-alpine] — the release's musl binary
+# (weir-<tag>-linux-musl-x64 / -arm64 [D:musl-builds], the SHA256SUMS
+# ones) on Alpine, published beside the distroless image as
+# :<tag>-alpine and :alpine. It is the one with a shell in it: busybox
+# gives a script its `sh` and coreutils, and `apk add` gives it the rest,
+# so this is the base to build on (`USER root` first — the image runs as
+# the same uid the distroless one does).
+#
+# The binary sits at /weir, where the distroless image has it, so a
+# `COPY --from` reads the same from either; /usr/local/bin/weir puts it
+# on PATH for the shell that is here. The base is at or above the musl
+# build's floor (Alpine 3.20).
+FROM alpine:3.22
+ARG TARGETARCH
+RUN adduser -D -u 65532 -h /home/nonroot nonroot
+COPY dist-musl/${TARGETARCH}/weir /weir
+RUN ln -s /weir /usr/local/bin/weir
+USER nonroot
+ENTRYPOINT ["/weir"]
