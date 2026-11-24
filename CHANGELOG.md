@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.97
+
+### Added
+
+- **An Alpine container image.** `ghcr.io/weir-shell/weir:alpine` (and
+  `:<tag>-alpine`) is the release on Alpine with the musl build. It has
+  a shell and `apk`, so a script can run other commands and you can
+  build your own image on it. The default image is unchanged.
+
 ## v0.0.96
 
 ### Added

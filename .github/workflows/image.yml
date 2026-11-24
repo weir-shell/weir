@@ -42,12 +42,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}"
-          mkdir -p dist/amd64 dist/arm64
+          mkdir -p dist/amd64 dist/arm64 dist-musl/amd64 dist-musl/arm64
           gh release download "$tag" --repo "${{ github.repository }}" \
-            --pattern "weir-$tag-linux-x64" --pattern "weir-$tag-linux-arm64"
+            --pattern "weir-$tag-linux-x64" --pattern "weir-$tag-linux-arm64" \
+            --pattern "weir-$tag-linux-musl-x64" --pattern "weir-$tag-linux-musl-arm64"
           mv "weir-$tag-linux-x64"   dist/amd64/weir
           mv "weir-$tag-linux-arm64" dist/arm64/weir
           chmod 755 dist/amd64/weir dist/arm64/weir
+          # the Alpine image's [D:image-alpine] — a release from before
+          # the musl builds has none, and a rebuild of its image still
+          # builds the one it had
+          if [ -f "weir-$tag-linux-musl-x64" ] && [ -f "weir-$tag-linux-musl-arm64" ]; then
+            mv "weir-$tag-linux-musl-x64"   dist-musl/amd64/weir
+            mv "weir-$tag-linux-musl-arm64" dist-musl/arm64/weir
+            chmod 755 dist-musl/amd64/weir dist-musl/arm64/weir
+          fi
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: login ghcr
@@ -80,10 +89,31 @@ jobs:
             .
           digest=$(python3 -c "import json; print(json.load(open('/tmp/meta.json'))['containerimage.digest'])")
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          # the Alpine image [D:image-alpine]: the same tags with the
+          # variant's suffix — :<tag>-alpine always, :alpine exactly when
+          # :latest moves
+          if [ -f dist-musl/amd64/weir ]; then
+            alpine=$(printf '%s' "$tags" | sed -e "s|$image:latest|$image:alpine|" -e "s|$image:$tag|$image:$tag-alpine|")
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              -f Dockerfile.alpine \
+              $alpine \
+              --push \
+              --metadata-file /tmp/meta-alpine.json \
+              .
+            digest=$(python3 -c "import json; print(json.load(open('/tmp/meta-alpine.json'))['containerimage.digest'])")
+            echo "alpine=$digest" >> "$GITHUB_OUTPUT"
+          fi
       # provenance for the image, the shape the binaries already have
       # [D:install-checksum-scope]: the same pass, one more subject
       - uses: actions/attest-build-provenance@v3
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/attest-build-provenance@v3
+        if: ${{ steps.push.outputs.alpine != '' }}
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.push.outputs.alpine }}
           push-to-registry: true
