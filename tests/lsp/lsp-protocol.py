@@ -91,6 +91,13 @@ if code(m) != -32603:
 s.send({"jsonrpc": "2.0", "id": 6, "method": "weir/noSuchMethod", "params": {}})
 if code(s.reply(6)) != -32601:
     failures.append("an unknown request must answer -32601")
+# an id that is no int32 — a fraction, a wider integer — is echoed as
+# written, and the session keeps serving
+for wire, want in [(b"1.5", 1.5), (b"12345678901234567890", 12345678901234567890)]:
+    s.raw(b'{"jsonrpc":"2.0","id":' + wire + b',"method":"weir/noSuchMethod","params":{}}')
+    m = s.reply(want)
+    if code(m) != -32601:
+        failures.append(f"an id of {wire!r} must be answered under the same id: {m}")
 s.raw(b'{"jsonrpc":"2.0","id":')
 m = s.wait(lambda m: "error" in m and m.get("id") is None)
 if code(m) != -32700:
@@ -120,4 +127,4 @@ if failures:
     for f in failures:
         print("lsp-protocol FAIL:", f)
     sys.exit(1)
-print("lsp-protocol ok: throwing handler -32603, unknown method -32601, bad JSON -32700, after-shutdown -32600, exit 1 without shutdown, case-insensitive headers")
+print("lsp-protocol ok: throwing handler -32603, unknown method -32601, a non-int32 id echoed, bad JSON -32700, after-shutdown -32600, exit 1 without shutdown, case-insensitive headers")

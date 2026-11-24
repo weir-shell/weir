@@ -524,6 +524,9 @@ let private analyzeLinesBare
                 // a missing program suggests programs — externals and
                 // lowercase user bindings; a constructor (YMap) is never
                 // a plausible command (PLAN-dx-review D5)
+                // the name never suggests itself: a forced head that is a
+                // binding's own name (`^tool` beside `let tool = …`) is
+                // no typo of it
                 let hint =
                     didYouMean
                         prog
@@ -531,7 +534,14 @@ let private analyzeLinesBare
                             (Extern.names () :> seq<string>)
                             (Map.keys tenv.Values
                              |> Seq.filter Types.isUserName
-                             |> Seq.filter (fun n -> n.Length > 0 && System.Char.IsLower n[0])))
+                             |> Seq.filter (fun n -> n <> prog && n.Length > 0 && System.Char.IsLower n[0])))
+
+                // a string binding of that name is what the dynamic
+                // spelling runs [D:dynamic-head]
+                let namesProgram =
+                    match Map.tryFind prog tenv.Values with
+                    | Some sch -> Types.isUserName prog && sch.Ty = TStr
+                    | None -> false
 
                 let msg =
                     match Map.tryFind prog Builtins.bareAliasHomes with
@@ -539,6 +549,8 @@ let private analyzeLinesBare
                         $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
                     | None when prog.StartsWith "~/" || Extern.isPathy prog ->
                         $"no executable at {prog} — weir resolves commands at check time; the script runs once it exists"
+                    | None when namesProgram ->
+                        $"command not found on PATH: {prog} — '{prog}' is a binding here, and `^${prog}` runs the program it names"
                     | None ->
                         $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed"
 

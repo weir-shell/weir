@@ -2272,6 +2272,10 @@ out=$($BIN check "$svdir/nearmiss.weir" || true)
 echo "$out" | grep -qF "Did you mean 'target'?" || fail "cmd-not-found must hint the near-miss binding: $out"
 out=$($BIN check "$svdir/missing.weir")
 echo "$out" | grep -qF "Did you mean" && fail "no-near-miss heads must stay hint-free: $out"
+printf 'let tool = "ls"\n^tool -la\nprint tool\n' > "$svdir/selfhint.weir"
+out=$($BIN check "$svdir/selfhint.weir" || true)
+echo "$out" | grep -qF "Did you mean 'tool'" && fail "a forced head must not be hinted its own name: $out"
+echo "$out" | grep -qF "'tool' is a binding here, and \`^\$tool\` runs the program it names" || fail "a forced head named like a string binding must name the dynamic spelling: $out"
 echo "e2e ok: cmd-not-found hints near-miss bindings only"
 
 # per-statement resolver: script bindings shadow PATH commands
