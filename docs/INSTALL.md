@@ -137,6 +137,33 @@ Worth knowing:
   development container is a separate image, built from
   `ci/run.Dockerfile` in the repo.
 
+### The Alpine image
+
+`ghcr.io/weir-shell/weir:alpine` is the same release on Alpine, with
+the musl build. Use it when a script needs other commands: it has a
+shell and the usual small tools, and more can be added.
+
+```
+docker run --rm -v "$PWD:/w" -w /w ghcr.io/weir-shell/weir:alpine script.weir
+```
+
+To build an image of your own on it, switch to root to install
+packages, then back:
+
+```
+FROM ghcr.io/weir-shell/weir:alpine
+USER root
+RUN apk add --no-cache git curl
+USER nonroot
+```
+
+- `:alpine` follows `:latest`; a fixed release is `:<tag>-alpine`.
+- It runs as the same non-root user (uid 65532), works on amd64 and
+  arm64, and carries the same signed provenance.
+- The binary is at `/weir`, as in the default image, and is also on
+  `PATH`. It is the musl build: copy it into another image only if
+  that image is Alpine too.
+
 ## Unsigned binaries — the first-run dialogs
 
 The binaries are **not code-signed** yet; signing is planned for a
