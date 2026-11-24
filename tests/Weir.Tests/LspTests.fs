@@ -4977,6 +4977,8 @@ let tintParityTests =
                     [], "let r = git status | complete"
                     [], "git log --since=2.weeks ./src"
                     [], "git -C $HOME status"
+                    [], "let r = A=1 git log -n 5 | complete"
+                    [ "let x = \"a\"" ], "let ok = A=1 B=2 git tag $x v1 | succeeds"
                     [ "let n = 3" ], "git log $PWD -n $n"
                 ] do
                 let repl = replClasses line

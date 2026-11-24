@@ -10,6 +10,11 @@
   (`#infer raw from json as Name`, `#infer from json as Name`) still
   work and print a note with the line to write instead; a later
   release will refuse them.
+- **`NAME=value cmd $NAME` reads the value it just set.** An env
+  prefix now covers its command's own words, so `ETT=x echo $ETT`
+  prints `x`, exactly as `within env ETT=x` around the command does.
+  It used to read the variable from outside the line, as bash does,
+  and failed if there was none.
 
 ### Fixed
 

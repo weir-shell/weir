@@ -1006,6 +1006,22 @@ out=$($BIN "$dvdir/dash.weir" 2>&1) && fail "a missing dashed command must fail 
 expect "a dashed missing command is named whole at run" "unknown command 'no-such-cmd-zz'" "$out"
 out=$($BIN -e 'let n = echo a | complete in n.exitCode' 2>&1) && fail "a reifier in single-line let…in must refuse"
 expect "a reifier in single-line let…in teaches \$()" "wrap the chain: \$(<command> | complete)" "$out"
+# an env prefix covers its command's own words [D:env-prefix-scope]: the
+# one-line `within env`
+out=$(env -u WEIR_E2E_PFX $BIN -e 'WEIR_E2E_PFX=inner echo $WEIR_E2E_PFX')
+expect "a prefix's value is read by its own command's words" '["inner"]' "$out"
+out=$(WEIR_E2E_PFX=outer $BIN -e 'WEIR_E2E_PFX=inner echo $WEIR_E2E_PFX')
+expect "the prefix wins over the outer variable on its own line" '["inner"]' "$out"
+out=$(WEIR_E2E_PFX=outer $BIN -e 'let a = $(WEIR_E2E_PFX=inner echo $WEIR_E2E_PFX | line) in $"{a} {$WEIR_E2E_PFX}"')
+expect "the prefix ends with its command" '"inner outer"' "$out"
+out=$(env -u WEIR_E2E_A $BIN -e 'WEIR_E2E_A=1 WEIR_E2E_B=$WEIR_E2E_A echo x' 2>&1) && fail "a prefix value must not see an earlier pair of the same prefix"
+expect "a prefix's values are read before it applies" "WEIR_E2E_A is not set" "$out"
+out=$(env -u WEIR_E2E_PFX $BIN -e 'WEIR_E2E_PFX=sh ^$WEIR_E2E_PFX -c "echo head"')
+expect "a dynamic head is read under the prefix too" '["head"]' "$out"
+out=$(env -u WEIR_E2E_PFX $BIN -e 'WEIR_E2E_PFX=cap echo $WEIR_E2E_PFX | line')
+expect "a reified command reads its words under its prefix" '"cap"' "$out"
+out=$(env -u WEIR_E2E_PFX $BIN -e 'let c = $(WEIR_E2E_PFX=one echo $WEIR_E2E_PFX | sh -c "cat; echo [$WEIR_E2E_PFX]" | text) in c')
+expect "each stage of a reified chain has its own prefix" '"one\n[]"' "$out"
 # `$NAME` reads the environment [D:env-sigil]; a lowercase name stays a binding
 out=$(WEIR_E2E_SIGIL=v1 $BIN -e 'echo $WEIR_E2E_SIGIL')
 expect "\$NAME in argv is the environment variable" '["v1"]' "$out"

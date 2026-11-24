@@ -6958,6 +6958,21 @@ let rec private overlayOf (env: Scope) (cenvO: TypedExpr option) : (string * str
         envPairsOf "the env capture" (evalIn env ce)
         |> List.map (fun (k, v) -> k, noNul $"the env value for '{k}'" v)
 
+// a command's own words are read under its env prefix [D:env-prefix-scope]:
+// `NAME=value cmd $NAME` is `within env NAME=value` around the one command,
+// so the head and the arguments see the overlay the child will. The
+// prefix's values are read before it applies, each against what was there
+and private underPrefix (overlay: (string * string) list) (f: unit -> 'a) : 'a =
+    if overlay.IsEmpty then
+        f ()
+    else
+        Session.pushEnvOverlay overlay
+
+        try
+            f ()
+        finally
+            Session.popEnvOverlay ()
+
 // a NUL cannot cross the spawn hand-off [D:encoding-law]: argv and env
 // are NUL-terminated C strings, so the byte would silently truncate
 // the word at the child — and silent truncation is always wrong. The
@@ -7131,9 +7146,13 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
 
         let overlay = overlayOf env cenvO
 
+        let prog, argv =
+            underPrefix overlay (fun () ->
+                Proc.specProg (progOf env head (Proc.spawnPairs None overlay)), argvOf env args)
+
         Proc.runInherited {
-            Prog = Proc.specProg (progOf env head (Proc.spawnPairs None overlay))
-            Args = argvOf env args
+            Prog = prog
+            Args = argv
             Env = overlay
             Input = None
             Cwd = None
@@ -7766,9 +7785,12 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
     let spec h a e2 input : Proc.Spec =
         let overlay = overlayOf env e2
 
+        let prog, argv =
+            underPrefix overlay (fun () -> Proc.specProg (progOf env h (Proc.spawnPairs snapAmb overlay)), argvOf env a)
+
         {
-            Proc.Prog = Proc.specProg (progOf env h (Proc.spawnPairs snapAmb overlay))
-            Proc.Args = argvOf env a
+            Proc.Prog = prog
+            Proc.Args = argv
             Proc.Env = overlay
             Proc.Input = input
             Proc.Cwd = snapCwd
@@ -8074,7 +8096,11 @@ and private withinScope
             match (argOf "proc").Kind with
             | TECmd(h, args, cenvO) ->
                 let overlay = overlayOf env cenvO
-                progOf env h (Proc.spawnPairs None overlay), argvOf env args, overlay
+
+                let prog, argv =
+                    underPrefix overlay (fun () -> progOf env h (Proc.spawnPairs None overlay), argvOf env args)
+
+                prog, argv, overlay
             | _ -> unreachable "the parser guarantees a command in the proc slot"
 
         let spill =
@@ -8796,15 +8822,18 @@ and private commandSpec
     (args: TypedExpr list)
     (cenvO: TypedExpr option)
     : Proc.Spec =
-    let argv = argvOf env args
-
     // only the enclosing `within` scopes are captured
     // [D:ambient-capture-within]
     let overlay = overlayOf env cenvO
     let ambient = Weir.Session.scopedAmbient ()
 
+    let prog, argv =
+        underPrefix overlay (fun () ->
+            let argv = argvOf env args
+            Proc.specProg (progOf env head (Proc.spawnPairs ambient overlay)), argv)
+
     {
-        Prog = Proc.specProg (progOf env head (Proc.spawnPairs ambient overlay))
+        Prog = prog
         Args = argv
         Env = overlay
         Input = None
@@ -8984,11 +9013,15 @@ and [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices
                         System.Console.Out.Flush()
                         let overlay = overlayOf env cenvO
 
+                        let prog, argv =
+                            underPrefix overlay (fun () ->
+                                Proc.specProg (progOf env head (Proc.spawnPairs None overlay)), argvOf env args)
+
                         let _ =
                             awaitLeaf (
                                 Proc.runInheritedSuspended {
-                                    Prog = Proc.specProg (progOf env head (Proc.spawnPairs None overlay))
-                                    Args = argvOf env args
+                                    Prog = prog
+                                    Args = argv
                                     Env = overlay
                                     Input = None
                                     Cwd = None
@@ -9438,9 +9471,13 @@ let private commandStatementSpec (top: Env) (te: Check.TypedExpr) : Proc.Spec =
     | Check.TECmd(head, args, cenvO) ->
         let overlay = overlayOf env cenvO
 
+        let prog, argv =
+            underPrefix overlay (fun () ->
+                Proc.specProg (progOf env head (Proc.spawnPairs None overlay)), argvOf env args)
+
         {
-            Prog = Proc.specProg (progOf env head (Proc.spawnPairs None overlay))
-            Args = argvOf env args
+            Prog = prog
+            Args = argv
             Env = overlay
             Input = None
             Cwd = None
