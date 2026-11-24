@@ -3898,6 +3898,40 @@ let contPromptTests =
             Expect.equal (vis narrow) 2 "display width still matches"
             Expect.notEqual (narrow.Trim()) "" "the marker is not blank (the bug)"
         }
+        test "an extended key report behind an ESC is that key [D:csi-u-keys]" {
+            let key (tail: string) =
+                match Weir.Repl.csiKey tail with
+                | Some(n, Some k) -> Some(n, k.Key, k.KeyChar, k.Modifiers)
+                | _ -> None
+
+            let shift, alt, ctrl =
+                System.ConsoleModifiers.Shift, System.ConsoleModifiers.Alt, System.ConsoleModifiers.Control
+
+            let none = enum<System.ConsoleModifiers> 0
+
+            Expect.equal (key "[9;2u") (Some(5, System.ConsoleKey.Tab, '\t', shift)) "Shift+Tab, kitty"
+            Expect.equal (key "[27;2;9~") (Some(8, System.ConsoleKey.Tab, '\t', shift)) "Shift+Tab, modifyOtherKeys"
+            Expect.equal (key "[27u") (Some(4, System.ConsoleKey.Escape, '\027', none)) "Esc"
+            Expect.equal (key "[13;3u") (Some(6, System.ConsoleKey.Enter, '\r', alt)) "Alt+Enter"
+            Expect.equal (key "[127u") (Some(5, System.ConsoleKey.Backspace, '\127', none)) "Backspace"
+            Expect.equal (key "[99;5u") (Some(6, System.ConsoleKey.C, '\003', ctrl)) "Ctrl+C"
+            Expect.equal (key "[97;2u") (Some(6, System.ConsoleKey.A, 'A', shift)) "Shift+a"
+            Expect.equal (key "[9;2uX") (Some(5, System.ConsoleKey.Tab, '\t', shift)) "only the report is consumed"
+
+            Expect.equal
+                (key "[9:9;2:1u")
+                (Some(9, System.ConsoleKey.Tab, '\t', shift))
+                "alternate keys and a press event"
+
+            // a release, or a key the editor has none for: consumed, no key
+            Expect.equal (Weir.Repl.csiKey "[9;2:3u" |> Option.map fst) (Some 7) "a release is swallowed"
+            Expect.isTrue ((Weir.Repl.csiKey "[9;2:3u" |> Option.bind snd).IsNone) "and is no key"
+            Expect.isTrue ((Weir.Repl.csiKey "[57358u" |> Option.bind snd).IsNone) "Caps Lock is no key"
+
+            // everything else is not this: F1's tails, an arrow, plain text
+            for other in [ "[11~"; "[[A"; "OP"; "[A"; "[Z"; "abc"; ""; "[9;2"; "[u" ] do
+                Expect.isNone (Weir.Repl.csiKey other) other
+        }
         test "a session's continuationPrompt is the prompt's width whatever it says [D:continuation-prompt]" {
             let vis (s: string) = Weir.Repl.visibleWidthForTest s
             let fits = Weir.Repl.deriveContPromptOfForTest (Some "\x1b[90m>> \x1b[0m") 8

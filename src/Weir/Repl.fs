@@ -1460,11 +1460,90 @@ let private drainTypeAhead () =
     with _ ->
         ()
 
-let private readKey () =
-    if typeAhead.Count > 0 then
-        typeAhead.Dequeue()
+/// a key the terminal reported in an extended encoding [D:csi-u-keys],
+/// read off what follows its ESC: the kitty keyboard protocol's
+/// `[ code ; mods u` and xterm's modifyOtherKeys `[ 27 ; mods ; code ~`.
+/// A terminal left in such a mode by another program sends Shift+Tab,
+/// Esc and Ctrl+letter this way, and .NET hands the bytes over undecoded.
+/// The length consumed and the key — None for a report that is no press
+/// (a release) or names no key the editor has
+let csiKey (queued: string) : (int * ConsoleKeyInfo option) option =
+    let m =
+        Text.RegularExpressions.Regex.Match(queued, @"^\[(?:(\d+)(?::\d*)*(?:;(\d+)(?::(\d+))?)?u|27;(\d+);(\d+)~)")
+
+    if not m.Success then
+        None
     else
-        ttyIo (fun () -> Console.ReadKey(intercept = true))
+        let num (g: int) =
+            if m.Groups[g].Success then int m.Groups[g].Value else 0
+
+        let kitty = m.Groups[1].Success
+        let code = if kitty then num 1 else num 5
+        let mods = (max 1 (if kitty then num 2 else num 4)) - 1
+        let release = kitty && num 3 = 3
+        let shift, alt, ctrl = mods &&& 1 <> 0, mods &&& 2 <> 0, mods &&& 4 <> 0
+
+        let key =
+            // 0xE000–0xF8FF: the protocol's own codes for keys with no
+            // character (Caps Lock, the keypad, media keys)
+            if release || code <= 0 || code > 0x10FFFF || (code >= 0xE000 && code <= 0xF8FF) then
+                None
+            else
+                let c = if code <= 0xFFFF then char code else '\000'
+
+                match code with
+                | 9 -> Some(ConsoleKeyInfo('\t', ConsoleKey.Tab, shift, alt, ctrl))
+                | 13 -> Some(ConsoleKeyInfo('\r', ConsoleKey.Enter, shift, alt, ctrl))
+                | 27 -> Some(ConsoleKeyInfo('\027', ConsoleKey.Escape, shift, alt, ctrl))
+                | 8
+                | 127 -> Some(ConsoleKeyInfo('\127', ConsoleKey.Backspace, shift, alt, ctrl))
+                | _ when Char.IsAsciiLetter c ->
+                    let shown =
+                        if ctrl then char (code &&& 0x1f)
+                        elif shift then Char.ToUpperInvariant c
+                        else c
+
+                    Some(ConsoleKeyInfo(shown, enum<ConsoleKey>(int (Char.ToUpperInvariant c)), shift, alt, ctrl))
+                | _ when Char.IsAsciiDigit c -> Some(ConsoleKeyInfo(c, enum<ConsoleKey> code, shift, alt, ctrl))
+                | _ when code >= 32 && code <= 0xFFFF && not (Char.IsControl c) && not ctrl ->
+                    Some(ConsoleKeyInfo(c, enum<ConsoleKey> 0, shift, alt, ctrl))
+                | _ -> None
+
+        Some(m.Length, key)
+
+let rec private readKey () =
+    let k =
+        if typeAhead.Count > 0 then
+            typeAhead.Dequeue()
+        else
+            ttyIo (fun () -> Console.ReadKey(intercept = true))
+
+    // an ESC with an extended key report queued behind it is that key
+    // [D:csi-u-keys]; no waiting, as for the other ESC tails
+    // [D:repl-esc-enter]
+    if k.Key <> ConsoleKey.Escape then
+        k
+    else
+        while ttyIo (fun () -> Console.KeyAvailable) do
+            typeAhead.Enqueue(ttyIo (fun () -> Console.ReadKey(intercept = true)))
+
+        match
+            csiKey (
+                typeAhead
+                |> Seq.truncate 24
+                |> Seq.map (fun q -> q.KeyChar)
+                |> Array.ofSeq
+                |> String
+            )
+        with
+        | Some(n, key) ->
+            for _ in 1..n do
+                typeAhead.Dequeue() |> ignore
+
+            match key with
+            | Some decoded -> decoded
+            | None -> readKey ()
+        | None -> k
 
 /// what a statement binds, through the step every front end shares
 /// [D:statement-exec]: the values after it and the names it made; a
