@@ -4,7 +4,8 @@ weir is a single native binary with nothing else to install. Each
 release has one binary per platform, plus a `SHA256SUMS` file with
 their checksums.
 
-Linux builds need glibc; musl/Alpine isn't supported yet.
+Linux has two builds: one for glibc distributions and one for musl
+(Alpine 3.20 or newer). The installer picks the right one.
 
 ## The quick way
 
@@ -67,6 +68,8 @@ Download the binary for your platform, and that release's
 |---|---|
 | Linux x64 | `weir-<tag>-linux-x64` |
 | Linux arm64 | `weir-<tag>-linux-arm64` |
+| Linux x64, musl (Alpine) | `weir-<tag>-linux-musl-x64` |
+| Linux arm64, musl (Alpine) | `weir-<tag>-linux-musl-arm64` |
 | macOS (Apple silicon) | `weir-<tag>-osx-arm64` |
 | Windows x64 | `weir-<tag>-win-x64.exe` |
 | Windows arm64 | `weir-<tag>-win-arm64.exe` |

@@ -24,18 +24,38 @@ let cli = Args.load Cli
 
 let repo = "weir-shell/weir"
 
-// the canonical expected-asset set: 5 platform binaries + checksums +
-// the two pinned installers + the grammar manifest — 9 assets
+// the musl builds [D:musl-builds] join at v0.0.96: a release published
+// before that is immutable and was complete without them, and this
+// script also judges the latest PUBLISHED release
+// (ci/release-published.weir). A tag that is no plain version is taken
+// as newer
+let carriesMusl =
+    match cli.tag with
+    | Regex @"^v(\d+)\.(\d+)\.(\d+)" (ma, mi, pa) ->
+        (Str.toInt ma) * 1000000 + (Str.toInt mi) * 1000 + (Str.toInt pa) >= 96
+    | _ -> true
+
+let musl =
+    if carriesMusl then
+        [ $"weir-{cli.tag}-linux-musl-x64"; $"weir-{cli.tag}-linux-musl-arm64" ]
+    else
+        []
+
+// the canonical expected-asset set: 7 platform binaries (5 before the
+// musl builds) + checksums + the two pinned installers + the grammar
+// manifest — 11 assets
 let expected =
-    [ $"weir-{cli.tag}-linux-x64"
-      $"weir-{cli.tag}-linux-arm64"
-      $"weir-{cli.tag}-osx-arm64"
-      $"weir-{cli.tag}-win-x64.exe"
-      $"weir-{cli.tag}-win-arm64.exe"
-      "SHA256SUMS"
-      "install.sh"
-      "install.ps1"
-      "grammar-manifest.json" ]
+    [ [ $"weir-{cli.tag}-linux-x64"; $"weir-{cli.tag}-linux-arm64" ]
+      musl
+      [ $"weir-{cli.tag}-osx-arm64"
+        $"weir-{cli.tag}-win-x64.exe"
+        $"weir-{cli.tag}-win-arm64.exe"
+        "SHA256SUMS"
+        "install.sh"
+        "install.ps1"
+        "grammar-manifest.json" ] ]
+    |> Seq.concat
+    |> Seq.freeze
 
 let token = Env.get "GH_TOKEN" |> Option.orElse (Env.get "GITHUB_TOKEN")
 

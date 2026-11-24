@@ -9,7 +9,8 @@
 # builds on ubuntu-24.04 (glibc 2.39) and the binary references
 # GLIBC_2.38 symbols — cc-debian12 (2.36) failed at first `docker run`
 # with exactly that missing version; debian13 carries 2.41. Scratch
-# needs a musl build weir does not do; a distro base would wrap a
+# needs a static build weir does not do (its musl builds link musl
+# dynamically [D:musl-builds]); a distro base would wrap a
 # ~13 MB binary in ~120 MB of nothing. :nonroot (uid 65532, no shell,
 # no package manager).
 #

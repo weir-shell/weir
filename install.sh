@@ -47,6 +47,13 @@ WEIR_SUMS
         aarch64|arm64) arch=arm64 ;;
         *) echo "unsupported arch: $(uname -m) — download from https://github.com/$REPO/releases" >&2; exit 1 ;;
     esac
+    # a musl system (Alpine) takes the musl build [D:musl-builds]: musl's
+    # loader is there and glibc does not answer for itself — a glibc
+    # distro that merely has the musl package installed stays on glibc
+    if [ "$os" = linux ] && ls /lib/ld-musl-*.so.1 >/dev/null 2>&1 \
+        && ! getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+        os=linux-musl
+    fi
     rid="$os-$arch"
 
     name="weir-$TAG-$rid"
