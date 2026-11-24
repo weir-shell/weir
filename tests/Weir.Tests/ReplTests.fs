@@ -2385,6 +2385,28 @@ let completionTypeNameTests =
             Expect.equal (sug "x |> from table Po") [ "Pod" ] "table"
             Expect.contains (sug "x |> from yaml ") "stream" "yaml keeps its stream word"
         }
+        test "an unresolved head's field pool is the declared records [D:row-field-pool]" {
+            let run, env = Weir.Repl.sessionForTest ()
+            let dir = System.IO.Directory.CreateTempSubdirectory("weir-rowpool").FullName
+            let m = System.IO.Path.Combine(dir, "m.weir")
+            System.IO.File.WriteAllText(m, "type Theme = { palette: string; glyph: string }\n")
+
+            Expect.contains (sugIn (env ()) "fun q -> q.") "q.bytes" "no record declared: the prelude's"
+
+            run $"import \"{m}\" as M" |> ignore
+            Expect.isFalse (sugIn (env ()) "fun q -> q." |> List.contains "q.palette") "an import's never"
+
+            run "type Pod = { name: string; restarts: int }" |> ignore
+            run "type Job = { name: string; took: Duration }" |> ignore
+            let sug = sugIn (env ())
+
+            Expect.equal (sug "fun q -> q.") [ "q.name"; "q.restarts"; "q.took" ] "the session's records, alone"
+            Expect.equal (sug "fun q -> q.took + q.") [ "q.name"; "q.took" ] "narrowed by a field already read"
+            Expect.equal (sug "fun q -> q.na") [ "q.name" ] "the word being typed is not a read"
+            Expect.equal (sug "fun q -> q.zzz + q.") [ "q.zzz" ] "a field no record holds stands alone"
+            Expect.equal (sug "let f q = { q with ") [ "name"; "restarts"; "took" ] "the with slot draws on it too"
+            System.IO.Directory.Delete(dir, true)
+        }
         test "a type position in a declaration offers type names" {
             let run, env = Weir.Repl.sessionForTest ()
             run "type Pod = { name: string }" |> ignore
