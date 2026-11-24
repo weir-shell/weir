@@ -6212,20 +6212,36 @@ let childEnvTests =
             | other -> failtest $"unexpected: {other}"
         }
         test "env sigil x complete: routes through completedEnv" {
+            // the env is bound once and the argv reads under it
+            // [D:env-prefix-scope]: let |pfx = e in |completedEnv |pfx prog
+            // (within env |pfx: argv)
             match Weir.Parser.parseLine realResolver "let r = $e(git status | complete)" with
             | Ok(SLet("r",
                       {
                           Kind = ECapture {
-                                              Kind = EApp({
+                                              Kind = ELet("|pfx",
+                                                          _,
+                                                          { Kind = EVar "e" },
+                                                          {
                                                               Kind = EApp({
                                                                               Kind = EApp({
-                                                                                              Kind = EVar "|completedEnv"
+                                                                                              Kind = EApp({
+                                                                                                              Kind = EVar "|completedEnv"
+                                                                                                          },
+                                                                                                          {
+                                                                                                              Kind = EVar "|pfx"
+                                                                                                          })
                                                                                           },
-                                                                                          _)
+                                                                                          { Kind = EStr "git" })
                                                                           },
-                                                                          _)
-                                                          },
-                                                          _)
+                                                                          {
+                                                                              Kind = EWithin(WithinEnv,
+                                                                                             None,
+                                                                                             Some { Kind = EVar "|pfx" },
+                                                                                             None,
+                                                                                             _)
+                                                                          })
+                                                          })
                                           }
                       })) -> ()
             | other -> failtest $"unexpected: {other}"

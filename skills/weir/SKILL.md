@@ -3269,8 +3269,11 @@ print c.flag
   a `$$<<<` text block or a yaml block `$name` stays a weir binding only
   (the variable there is `${$HOME}`). With a member path the name is a
   binding or a module, never a variable (`$@Self.args`). An env prefix
-  is the CHILD's: `FOO=1 echo $FOO` reads weir's own `FOO`, as bash's
-  does.
+  covers its command's OWN WORDS too [D:env-prefix-scope]: `FOO=1 echo
+  $FOO` prints `1` (bash prints the outer `FOO`) — it is `within env
+  FOO=1` around the one command, head and arguments included; the
+  prefix's values are each read against what was there before
+  (`A=1 B=$A cmd`: `B` does not see `A`).
 
 ```weir
 let home = Env.need "HOME"

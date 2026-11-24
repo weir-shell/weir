@@ -727,9 +727,10 @@ Things weir command lines don't do:
 - `$name` splices a weir value. A name that starts uppercase is the
   environment variable: `echo $HOME`, `cd $PROJECT_DIR`. It raises if
   the variable is unset, and it is one whole word: write
-  `$"{$HOME}/bin"`, not `$HOME/bin`. As in bash, a `NAME=value` in
-  front of a command is for that command, not for the words on its
-  own line: `FOO=1 echo $FOO` reads the `FOO` weir already had.
+  `$"{$HOME}/bin"`, not `$HOME/bin`. A `NAME=value` in front of a
+  command covers that whole command, its own words included:
+  `FOO=1 echo $FOO` prints `1`, where bash would print the `FOO` it
+  had before. It is the one-line form of `within env FOO=1`.
 - `~` typed directly is your home
   directory: an unquoted word that is `~` or starts with `~/` is
   expanded when the line runs (`cat ~/.bashrc`). Quoted strings and

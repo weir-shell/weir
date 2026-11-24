@@ -434,6 +434,9 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     let rec emitArgv (ll: Assemble.LogicalLine) (te: Check.TypedExpr) =
         match te.Kind with
         | Check.TEList args -> args |> List.iter (emitArg ll)
+        // a prefixed reified command's argv stands inside the `within env`
+        // of its own prefix [D:env-prefix-scope]
+        | Check.TEWithin(Ast.WithinEnv, None, _, _, body) -> emitArgv ll body
         | Check.TEApp({
                           Kind = Check.TEApp({
                                                  Kind = Check.TEVar("Seq.append" | "|seqAppend")

@@ -639,20 +639,49 @@ let rec foldChain
                             | [] -> { Kind = EList []; Span = acc.Span }
                             | first :: rest -> rest |> List.fold seqAppend first
 
+                    // a reified command's words are read under its own env
+                    // [D:env-prefix-scope]: the env is bound once, handed to
+                    // the builtin, and a `within env` of that binding stands
+                    // around the argv (and a dynamic head) — the literal
+                    // program stays the literal the tooling reads
+                    let prefixed (name: string) (h: CmdHead) (hspan: Span) (args: Expr list) =
+                        let pfx = { Kind = EVar name; Span = mspan }
+
+                        let under (x: Expr) = {
+                            Kind = EWithin(WithinEnv, None, Some pfx, None, x)
+                            Span = x.Span
+                        }
+
+                        let progArg =
+                            match h with
+                            | HeadDyn _ -> under (progArgOf h hspan)
+                            | HeadLit _ -> progArgOf h hspan
+
+                        pfx, progArg, under (argvExpr args)
+
                     match acc.Kind with
-                    | ECmd(h, args, cenv) ->
+                    | ECmd(h, args, Some e) ->
                         let span = Span.union acc.Span mspan
+                        let pfx, progArg, argList = prefixed "|pfx" h acc.Span args
 
                         // env sigils route through the *Env twins — the same
                         // desugar family, env threaded up front
-                        let headVar =
-                            match cenv with
-                            | Some e -> {
-                                Kind = EApp({ Kind = EVar envVar; Span = mspan }, e)
-                                Span = mspan
-                              }
-                            | None -> { Kind = EVar plainVar; Span = mspan }
+                        let headVar = {
+                            Kind = EApp({ Kind = EVar envVar; Span = mspan }, pfx)
+                            Span = mspan
+                        }
 
+                        let applied =
+                            (extraArgs @ [ progArg; argList ])
+                            |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
+
+                        Result.Ok {
+                            Kind = ELet("|pfx", mspan, e, applied)
+                            Span = span
+                        }
+                    | ECmd(h, args, None) ->
+                        let span = Span.union acc.Span mspan
+                        let headVar = { Kind = EVar plainVar; Span = mspan }
                         let progArg = progArgOf h acc.Span
                         let argList = argvExpr args
 
@@ -715,11 +744,23 @@ let rec foldChain
                             let span = Span.union acc.Span mspan
                             let at k = { Kind = k; Span = span }
 
-                            let stage (seg: Expr) =
+                            // each stage's env is bound once, ahead of the
+                            // stages, so its own words are read under it
+                            // [D:env-prefix-scope]
+                            let bound =
+                                segs
+                                |> List.mapi (fun i seg ->
+                                    match seg.Kind with
+                                    | ECmd(_, _, Some e) -> Some($"|pfx{i}", e)
+                                    | _ -> None)
+
+                            let stage (i: int) (seg: Expr) =
                                 match seg.Kind with
-                                | ECmd(h, args, cenv) ->
-                                    let envE = cenv |> Option.defaultValue (at (EList []))
-                                    at (ETuple [ progArgOf h seg.Span; argvExpr args; envE ])
+                                | ECmd(h, args, Some _) ->
+                                    let pfx, progArg, argList = prefixed $"|pfx{i}" h seg.Span args
+                                    at (ETuple [ progArg; argList; pfx ])
+                                | ECmd(h, args, None) ->
+                                    at (ETuple [ progArgOf h seg.Span; argvExpr args; at (EList []) ])
                                 | _ -> seg
 
                             let stdinE =
@@ -729,9 +770,18 @@ let rec foldChain
 
                             let chainVar = "|chain" + plainVar.Substring(1, 1).ToUpper() + plainVar.Substring 2
 
-                            Result.Ok(
-                                (extraArgs @ [ at (EList(segs |> List.map stage)); stdinE ])
+                            let applied =
+                                (extraArgs @ [ at (EList(segs |> List.mapi stage)); stdinE ])
                                 |> List.fold (fun f a -> at (EApp(f, a))) (at (EVar chainVar))
+
+                            Result.Ok(
+                                List.foldBack
+                                    (fun b body ->
+                                        match b with
+                                        | Some(name, e) -> at (ELet(name, mspan, e, body))
+                                        | None -> body)
+                                    bound
+                                    applied
                             )
                         | _ -> Result.Error($"'{stageName}' must directly follow a command or a command chain", mspan)
                     | _ -> Result.Error($"'{stageName}' must directly follow a command or a command chain", mspan))
