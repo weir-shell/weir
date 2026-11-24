@@ -163,6 +163,24 @@ let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
         | _ -> None
     | _ -> None
 
+let private declaredFieldNames (env: TypeEnv) : string list =
+    env.Types
+    |> Map.toList
+    |> List.collect (fun (_, def) ->
+        match def with
+        | Record d -> d.Fields |> List.map fst
+        | Union _ -> [])
+    |> List.distinct
+
+let private typedBindings (env: TypeEnv) (t: Ty) : string list =
+    env.Values
+    |> Map.toList
+    |> List.choose (fun (n, sch) ->
+        if Types.isUserName n && sch.Forall.IsEmpty && sch.Ty = t then
+            Some n
+        else
+            None)
+
 // unbound lowercase names in the prefix become holes (fresh type
 // vars): the pipe source often mentions enclosing params
 // (`targetEnv t |> ...`) whose values are unknown but irrelevant —
@@ -237,17 +255,13 @@ let private pipelineElemTy (env: TypeEnv) (bareStage: bool) (text: string) : Ty 
 
             if m.Success then p.Substring m.Length else p
 
-        match Weir.Parser.parseExpr prefix with
-        | Error _ -> None
-        | Ok e ->
-            let envWithHoles = withHoles env e
-
-            match Weir.Check.typecheck envWithHoles e with
-            | Ok te ->
-                match te.Ty with
-                | TSeq elem when not bareStage -> Some elem
-                | t -> Some t
-            | Error _ -> None
+        Weir.Parser.parseExpr prefix
+        |> Result.toOption
+        |> Option.bind (fun e -> Weir.Check.typecheck (withHoles env e) e |> Result.toOption)
+        |> Option.map (fun te ->
+            match te.Ty with
+            | TSeq elem when not bareStage -> elem
+            | t -> t)
 
 /// the word sits alone in a pipeline stage: the text before it ends with
 /// the pipe itself (`ls |> _.`, a `|> _.` continuation line)
@@ -540,6 +554,17 @@ let openCaptureInner (before: string) : string option =
     | i :: _ when i > 0 && before[i - 1] = '$' -> Some(before.Substring(i + 1))
     | _ -> None
 
+let private stmtTail (s: string) : string =
+    s.Substring(max (s.LastIndexOf Weir.Parser.sibSep) (s.LastIndexOf '\n') + 1)
+
+let private endsWithWord (kw: string) (b: string) =
+    b.EndsWith kw
+    && (b.Length = kw.Length
+        || not (
+            System.Char.IsLetterOrDigit b[b.Length - kw.Length - 1]
+            || b[b.Length - kw.Length - 1] = '_'
+        ))
+
 /// the slot verdict for the word starting right after `before`
 /// [D:let-rhs-head]. Statement head = an empty statement prefix,
 /// deliberately untrimmed: the colorizer's continuation lines (a yaml
@@ -549,9 +574,7 @@ let headSlotAt (before: string) : HeadSlot =
     // inside `$(`, the captured command's head [D:capture-head-complete]
     let before = openCaptureInner before |> Option.defaultValue before
 
-    let stmt =
-        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
-        if i >= 0 then before.Substring(i + 1) else before
+    let stmt = stmtTail before
 
     let core, forced =
         if stmt.EndsWith "^" then
@@ -660,9 +683,7 @@ let private serveHeadKeys =
     System.Text.RegularExpressions.Regex(@"^within\s+serve\s+[A-Za-z_]\w*((?:\s+[A-Za-z_]\w*=" + keyValueAtom + @")*)$")
 
 let headKeyOffers (env: TypeEnv) (before: string) : string list option =
-    let stmt =
-        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
-        (if i >= 0 then before.Substring(i + 1) else before).Trim()
+    let stmt = (stmtTail before).Trim()
 
     let stmt = letRhsCut stmt |> Option.map _.Trim() |> Option.defaultValue stmt
     let m = loopHeadKeys.Match stmt
@@ -673,28 +694,25 @@ let headKeyOffers (env: TypeEnv) (before: string) : string list option =
         |> Seq.map _.Groups[1].Value
         |> Set.ofSeq
 
+    let fieldsOf (ty: string) =
+        match Map.tryFind ty env.Types with
+        | Some(Record d) -> d.Fields |> List.map fst
+        | _ -> []
+
+    let openKeys (keys: string list) (pairs: string) =
+        let given = givenIn pairs
+        Some(keys |> List.filter (given.Contains >> not) |> List.map (fun k -> k + "="))
+
     if serve.Success then
         // the options record's fields, as the loop heads' [D:serve-defaults]
-        let fields =
-            match Map.tryFind "ServerConfig" env.Types with
-            | Some(Record d) -> d.Fields |> List.map fst
-            | _ -> []
-
-        let given = givenIn serve.Groups[1].Value
-        Some(fields |> List.filter (given.Contains >> not) |> List.map (fun k -> k + "="))
+        openKeys (fieldsOf "ServerConfig") serve.Groups[1].Value
     elif m.Success then
         let head = m.Groups[1].Value
 
         let fields =
-            match Map.tryFind (string (System.Char.ToUpperInvariant head[0]) + head.Substring 1) env.Types with
-            | Some(Record d) -> d.Fields |> List.map fst
-            | _ -> []
+            fieldsOf (string (System.Char.ToUpperInvariant head[0]) + head.Substring 1)
 
-        let keys = if head = "poll" then fields @ [ "watch" ] else fields
-
-        let given = givenIn m.Groups[2].Value
-
-        Some(keys |> List.filter (given.Contains >> not) |> List.map (fun k -> k + "="))
+        openKeys (if head = "poll" then fields @ [ "watch" ] else fields) m.Groups[2].Value
     elif lockHeadKeys.IsMatch stmt then
         Some [ "timeout=" ]
     else
@@ -765,9 +783,7 @@ let private commandArgvStmt (env: TypeEnv) (anyHead: bool) (before: string) : st
     // inside an unclosed `$(`, the captured command [D:expr-paths-quoted]
     let before = openCaptureInner before |> Option.defaultValue before
 
-    let stmt =
-        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
-        (if i >= 0 then before.Substring(i + 1) else before).TrimStart()
+    let stmt = (stmtTail before).TrimStart()
 
     // a top-level let's RHS is a first-class command position
     // [D:let-rhs-head]: strip the binder and judge the remainder
@@ -890,12 +906,9 @@ let private pathParamAt (before: string) : bool =
     | head :: args ->
         let head = head.TrimStart '('
 
-        match Map.tryFind head Weir.Builtins.builtinDocs.Value with
-        | Some d when d.Params.Length > args.Length ->
-            match List.tryItem args.Length d.Params with
-            | Some p -> p = "path" || p = "src" || p = "dst" || (p = "base" && head.StartsWith "Path.")
-            | None -> false
-        | _ -> false
+        Map.tryFind head Weir.Builtins.builtinDocs.Value
+        |> Option.bind (fun d -> List.tryItem args.Length d.Params)
+        |> Option.exists (fun p -> p = "path" || p = "src" || p = "dst" || (p = "base" && head.StartsWith "Path."))
 
 // binder evidence in the raw text [D:complete-argv]: lambda params,
 // let/for/within binders are lexically visible even when no typed tree
@@ -1252,18 +1265,16 @@ let rec suggestScopedWith
                         if slice = "" then
                             None
                         else
-                            match Weir.Parser.parseExpr slice with
-                            | Error _ -> None
-                            | Ok e ->
-                                match Weir.Check.typecheck (withHoles env e) e with
-                                | Error _ -> None
-                                | Ok te ->
-                                    match te.Ty with
-                                    | TNamed(n, _) ->
-                                        match Map.tryFind n env.Types with
-                                        | Some(Record d) -> Some d
-                                        | _ -> None
-                                    | _ -> None)
+                            Weir.Parser.parseExpr slice
+                            |> Result.toOption
+                            |> Option.bind (fun e -> Weir.Check.typecheck (withHoles env e) e |> Result.toOption)
+                            |> Option.bind (fun te ->
+                                match te.Ty with
+                                | TNamed(n, _) ->
+                                    match Map.tryFind n env.Types with
+                                    | Some(Record d) -> Some d
+                                    | _ -> None
+                                | _ -> None))
 
                 // the typed value slot [D:typed-value-slot]: `{ src with field =
                 // <prefix>` — the field's declared type is known, so the candidate
@@ -1307,14 +1318,7 @@ let rec suggestScopedWith
                                 sourceDefOf (head.Substring(0, wi))
                                 |> Option.bind (fun def -> def.Fields |> List.tryFind (fst >> (=) field))
                                 |> Option.bind (fun (_, fty) ->
-                                    let typedBindings (t: Ty) =
-                                        env.Values
-                                        |> Map.toList
-                                        |> List.choose (fun (n, sch) ->
-                                            if Types.isUserName n && sch.Forall.IsEmpty && sch.Ty = t then
-                                                Some n
-                                            else
-                                                None)
+                                    let typedBindings = typedBindings env
 
                                     match fty with
                                     | TBool -> Some([ "false"; "true" ] @ typedBindings TBool)
@@ -1329,14 +1333,6 @@ let rec suggestScopedWith
                                     | _ -> None)
 
                 let withSlotFields: string list option =
-                    let endsWithWord (kw: string) (b: string) =
-                        b.EndsWith kw
-                        && (b.Length = kw.Length
-                            || not (
-                                System.Char.IsLetterOrDigit b[b.Length - kw.Length - 1]
-                                || b[b.Length - kw.Length - 1] = '_'
-                            ))
-
                     if not (endsWithWord "with" before) then
                         None
                     else
@@ -1374,23 +1370,18 @@ let rec suggestScopedWith
                                             // fallback, as the dotted arm does;
                                             // a bare unbound identifier source gets
                                             // nothing instead [D:complete-argv]
-                                            env.Types
-                                            |> Map.toList
-                                            |> List.collect (fun (_, def) ->
-                                                match def with
-                                                | Record d -> d.Fields |> List.map fst
-                                                | Union _ -> [])
-                                            |> List.distinct
-                                            |> Some
+                                            declaredFieldNames env |> Some
                                         | TVar _ -> Some []
                                         | ty ->
-                                            match recordFields env ty with
-                                            | Some fields -> Some(fields |> List.map fst)
                                             // a known non-record has no updatable
                                             // fields — a closed set with no members
                                             // beats the general pool (the nats pin's
                                             // reasoning)
-                                            | None -> Some [])
+                                            Some(
+                                                recordFields env ty
+                                                |> Option.map (List.map fst)
+                                                |> Option.defaultValue []
+                                            ))
 
                 // expression-position path completion quotes [D:repl-path-quote]:
                 // a bare filesystem path is not a valid weir expression, so
@@ -1404,9 +1395,7 @@ let rec suggestScopedWith
                 // inside it. A directory keeps its trailing `/` inside the quotes.
                 let expressionSlot (before: string) : bool =
                     pathParamAt before
-                    || (let stmt =
-                            let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
-                            (if i >= 0 then before.Substring(i + 1) else before)
+                    || (let stmt = stmtTail before
 
                         stmt.Contains "|>"
                         || stmt.Contains " = "
@@ -1418,9 +1407,7 @@ let rec suggestScopedWith
                 // [D:cd-bare-completion]; `let d = cd …`, `within cd …` and
                 // `(cd …)` are expressions and keep the quotes
                 let cdCommandArg (before: string) : bool =
-                    let stmt =
-                        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
-                        (if i >= 0 then before.Substring(i + 1) else before)
+                    let stmt = stmtTail before
 
                     stmt.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries) = [| "cd" |]
 
@@ -1498,9 +1485,7 @@ let rec suggestScopedWith
                 // the import path slot [D:import-path-complete]: a string
                 // literal naming a module — directories and .weir files
                 let importArg =
-                    let stmt =
-                        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
-                        (if i >= 0 then before.Substring(i + 1) else before).Trim()
+                    let stmt = (stmtTail before).Trim()
 
                     System.Text.RegularExpressions.Regex.IsMatch(stmt, "^import\\s*\"?$")
 
@@ -1513,9 +1498,7 @@ let rec suggestScopedWith
                     with :? System.Text.RegularExpressions.RegexMatchTimeoutException ->
                         None
 
-                let stmtBefore =
-                    let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
-                    if i >= 0 then before.Substring(i + 1) else before
+                let stmtBefore = stmtTail before
 
                 if splice.IsSome then
                     splice.Value
@@ -1584,14 +1567,7 @@ let rec suggestScopedWith
                     // target` applies the binding, so hard-removing identifiers
                     // would break documented weir; keywords and bare members
                     // cannot be arguments here [D:path-param-completion]
-                    let stringBindings =
-                        env.Values
-                        |> Map.toList
-                        |> List.choose (fun (n, sch) ->
-                            if Types.isUserName n && sch.Forall.IsEmpty && sch.Ty = TStr then
-                                Some n
-                            else
-                                None)
+                    let stringBindings = typedBindings env TStr
 
                     // this branch fires for a bare word (no `/`) at a builtin path
                     // param — it stays unquoted [D:repl-path-quote]: `cd w`/`File.copy
@@ -1704,14 +1680,7 @@ let rec suggestScopedWith
                             // nominal records keep the fallback high-signal —
                             // every declared record's fields
                             // [D:declared-fields-fallback]
-                            env.Types
-                            |> Map.toList
-                            |> List.collect (fun (_, def) ->
-                                match def with
-                                | Record d -> d.Fields |> List.map fst
-                                | Union _ -> [])
-                            |> List.distinct
-                            |> render
+                            declaredFieldNames env |> render
                         | None ->
                             // unbound head: no binding, no type, no basis for any
                             // candidate — nothing beats the union of everything
@@ -1726,13 +1695,7 @@ let rec suggestScopedWith
                     withSlotFields.Value
                     |> List.filter (fun f -> f.StartsWith word && f <> word)
                     |> List.sort
-                elif
-                    (let b = before.TrimEnd() in
-
-                     b.EndsWith "within"
-                     && (b.Length = "within".Length
-                         || not (System.Char.IsLetterOrDigit b[b.Length - 7] || b[b.Length - 7] = '_')))
-                then
+                elif endsWithWord "within" (before.TrimEnd()) then
                     // the within kind slot [D:within-kinds]: a closed set off the one
                     // table — the kinds and nothing else (an identifier cannot sit
                     // there); the schema= shape, its mechanism kin
@@ -1741,18 +1704,7 @@ let rec suggestScopedWith
                     |> List.filter (fun k -> not k.Standalone)
                     |> List.map (fun k -> k.Name)
                     |> List.filter (fun k -> k.StartsWith word && k <> word)
-                elif
-                    (let b = before.TrimEnd() in
-
-                     (b.EndsWith "from" || b.EndsWith "to")
-                     && (let kw = if b.EndsWith "from" then "from" else "to" in
-
-                         b.Length = kw.Length
-                         || not (
-                             System.Char.IsLetterOrDigit b[b.Length - kw.Length - 1]
-                             || b[b.Length - kw.Length - 1] = '_'
-                         )))
-                then
+                elif (let b = before.TrimEnd() in endsWithWord "from" b || endsWithWord "to" b) then
                     // the from/to adapter slot [D:form-word-hover]: direction-aware, off
                     // the one source (builtinDocs keys) — `to ` never offers a read-only
                     // adapter; a closed set, so nothing else completes here (the within
@@ -1895,9 +1847,7 @@ let private valueKeySlot (values: Map<string, Weir.Eval.Value>) (text: string) (
 
             // the let-RHS is the same slot [D:let-rhs-head]: strip the
             // binder and judge the remainder as a statement
-            match letRhsCut h with
-            | Some rest -> rest.Trim()
-            | None -> h
+            letRhsCut h |> Option.map _.Trim() |> Option.defaultValue h
 
         let m = mapLookupHead.Match head
 
@@ -2049,7 +1999,7 @@ let private binderSiteTy (env: TypeEnv) (head: string) (te: Weir.Check.TypedExpr
                 arms |> List.tryPick (fun (pat, _, _) -> patBinderTy env head pat scrut.Ty)
             | _ -> None
 
-        let best = if here.IsSome then here else best
+        let best = here |> Option.orElse best
         Weir.Check.childExprs node |> List.fold find best
 
     find None te
@@ -2065,37 +2015,25 @@ let tyAtRepaired
     (head: string)
     : Ty option =
     match parse repaired with
-    | Error _ -> None
-    | Ok stmt ->
-        let exprOf =
-            match stmt with
-            | Weir.Ast.SLet(_, e) -> Some e
-            | Weir.Ast.SLetPat(_, e) -> Some e
-            | Weir.Ast.SExpr e
-            | Weir.Ast.SCmd e -> Some e
-            | Weir.Ast.SType _
-            | Weir.Ast.SSig _
-            | Weir.Ast.SModule _
-            | Weir.Ast.SImport _ -> None
+    | Ok(Weir.Ast.SLet(_, e))
+    | Ok(Weir.Ast.SLetPat(_, e))
+    | Ok(Weir.Ast.SExpr e)
+    | Ok(Weir.Ast.SCmd e) ->
+        let envH = withHoles env e
 
-        exprOf
-        |> Option.bind (fun e ->
-            let envH = withHoles env e
+        Weir.Check.typecheck envH e
+        |> Result.toOption
+        |> Option.bind (fun te ->
+            let rec find (best: Ty option) (node: Weir.Check.TypedExpr) =
+                let best =
+                    match node.Kind with
+                    | Weir.Check.TEVar n when n = head -> Some node.Ty
+                    | _ -> best
 
-            match Weir.Check.typecheck envH e with
-            | Error _ -> None
-            | Ok te ->
-                let rec find (best: Ty option) (node: Weir.Check.TypedExpr) =
-                    let best =
-                        match node.Kind with
-                        | Weir.Check.TEVar n when n = head -> Some node.Ty
-                        | _ -> best
+                Weir.Check.childExprs node |> List.fold find best
 
-                    Weir.Check.childExprs node |> List.fold find best
-
-                match find None te with
-                | Some t -> Some t
-                | None -> binderSiteTy envH head te)
+            find None te |> Option.orElseWith (fun () -> binderSiteTy envH head te))
+    | _ -> None
 
 // the statement's own binders in scope at the hole [D:splice-locals]
 let bindersAtRepaired
@@ -2126,13 +2064,10 @@ let bindersAtRepaired
     | Ok(Weir.Ast.SLetPat(_, e))
     | Ok(Weir.Ast.SExpr e)
     | Ok(Weir.Ast.SCmd e) ->
-        match Weir.Check.typecheck (withHoles env e) e with
-        | Error _ -> None
-        | Ok te ->
+        Weir.Check.typecheck (withHoles env e) e
+        |> Result.toOption
+        |> Option.bind (fun te ->
             let rec walk (scope: (string * Ty) list) (node: Weir.Check.TypedExpr) =
-                let orElse (f: unit -> (string * Ty) list option) (r: (string * Ty) list option) =
-                    if r.IsSome then r else f ()
-
                 match node.Kind with
                 | Weir.Check.TEVar n when n = hole -> Some scope
                 | Weir.Check.TELambda(p, _, body) ->
@@ -2140,19 +2075,21 @@ let bindersAtRepaired
                 | Weir.Check.TELambdaPat(pat, body) ->
                     walk (scope @ (domain node.Ty |> Option.map (patBinds pat) |> Option.defaultValue [])) body
                 | Weir.Check.TELet(n, _, value, body) ->
-                    walk scope value |> orElse (fun () -> walk (scope @ [ n, value.Ty ]) body)
+                    walk scope value
+                    |> Option.orElseWith (fun () -> walk (scope @ [ n, value.Ty ]) body)
                 | Weir.Check.TELetPat(pat, value, body) ->
-                    walk scope value |> orElse (fun () -> walk (scope @ patBinds pat value.Ty) body)
+                    walk scope value
+                    |> Option.orElseWith (fun () -> walk (scope @ patBinds pat value.Ty) body)
                 | Weir.Check.TEMatch(scrut, arms) ->
                     walk scope scrut
-                    |> orElse (fun () ->
+                    |> Option.orElseWith (fun () ->
                         arms
                         |> List.tryPick (fun (pat, guard, body) ->
                             let s = scope @ patBinds pat scrut.Ty
-                            guard |> Option.bind (walk s) |> orElse (fun () -> walk s body)))
+                            guard |> Option.bind (walk s) |> Option.orElseWith (fun () -> walk s body)))
                 | _ -> Weir.Check.childExprs node |> List.tryPick (walk scope)
 
-            walk [] te
+            walk [] te)
     | _ -> None
 
 /// a resolved type's completable field names: a record's fields, an

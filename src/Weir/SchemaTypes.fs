@@ -154,11 +154,16 @@ let generate
         jsonKinds Set.empty s
         |> Set.map (fun k ->
             match k with
-            | "array" -> "array"
-            | "object" -> "object"
-            | "null" -> "null"
+            | "array"
+            | "object"
+            | "null" -> k
             | _ -> "scalar")
         |> Set.remove "null"
+
+    let nullScalar (inner: Schema) =
+        match inner with
+        | SScalar kinds -> kinds.Contains "null"
+        | _ -> false
 
     let rec shape (desired: string) (srcKey: string) (parentStem: string) (path: string) (s: Schema) : string =
         let where = if path = "" then "the schema root" else path
@@ -240,26 +245,16 @@ let generate
         | SIntOrStringFormat inner ->
             // [D:schema-num-or-string]: the int-or-string fix's
             // class, spelled as a string format
-            let nullable =
-                match inner with
-                | SScalar kinds -> kinds.Contains "null"
-                | _ -> false
-
             reg.AddNote $"{where}: format int-or-string — drafted Yaml; an int reads as YInt n, a string as YStr s"
 
-            if nullable then opt "Yaml" else "Yaml"
+            if nullScalar inner then opt "Yaml" else "Yaml"
         | SUint64Format inner ->
             // [D:schema-uint64]: int would refuse a value past int64 and
             // float would round it; the node keeps its digits both ways
-            let nullable =
-                match inner with
-                | SScalar kinds -> kinds.Contains "null"
-                | _ -> false
-
             reg.AddNote
                 $"{where}: format uint64 — drafted Yaml; a value reads as YInt n, one past int64 as YFloat f that writes back its digits"
 
-            if nullable then opt "Yaml" else "Yaml"
+            if nullScalar inner then opt "Yaml" else "Yaml"
         | SAny ->
             reg.AddNote $"{where}: unconstrained in the schema — drafted string (edit if the real shape is known)"
             "string"
@@ -555,9 +550,8 @@ let moduleText
             | SRef key -> defStem key
             | _ -> moduleName
 
-    match generate reserved taken schemaName topName doc with
-    | Error e -> Error e
-    | Ok(decls, notes, top) ->
+    generate reserved taken schemaName topName doc
+    |> Result.map (fun (decls, notes, top) ->
         let header =
             [
                 $"module {moduleName}"
@@ -570,10 +564,10 @@ let moduleText
 
         let text = String.Join("\n", header) + "\n\n" + String.Join("\n\n", decls) + "\n"
 
-        Ok {
+        {
             Text = text
             ModuleName = moduleName
             TopType = top
             TypeCount = List.length decls
             NoteCount = List.length notes
-        }
+        })

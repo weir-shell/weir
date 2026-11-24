@@ -150,14 +150,13 @@ let rec private envNamesOf
 
     let pairKey (item: TypedExpr) =
         match item.Kind with
-        | TEApp({
-                    Kind = TEApp({ Kind = TEVar "Env.pair" }, { Kind = TEStr k })
-                },
-                _) -> Some k
         // the NAME=value words — `within env A=1` and a command's prefix
         // [D:within-env-pairs] [D:env-prefix]
         | TEApp({
-                    Kind = TEApp({ Kind = TEVar "|envPair" }, { Kind = TEStr k })
+                    Kind = TEApp({
+                                     Kind = TEVar("Env.pair" | "|envPair")
+                                 },
+                                 { Kind = TEStr k })
                 },
                 _) -> Some k
         | TETuple [ { Kind = TEStr k }; _ ] -> Some k
@@ -189,6 +188,23 @@ let rec private walkExpr
         | TEStr s -> Some s
         | _ -> None
 
+    let addProg (slot: TypedExpr) =
+        match literalStr slot with
+        | Some p ->
+            add (Runs p) slot.Span
+
+            if interpreters.Contains p then
+                add (OpaqueArg p) slot.Span
+        | None ->
+            // a reified dynamic head [D:dynamic-head]: the
+            // prog slot carries the head value, not a literal
+            let display =
+                match slot.Kind with
+                | TEVar n -> $"^${n}"
+                | _ -> "^$(…)"
+
+            add (RunsDyn display) slot.Span
+
     // a request argument's literal url, one constructor deep
     // [D:fetch-retired]: `Http.get "lit"` (and its method siblings)
     // names the url; a `with`-updated or computed request is the bare
@@ -215,13 +231,9 @@ let rec private walkExpr
              | TSecret -> add (SecretArgv(theadDisplay head)) a.Span
              | _ -> ()
 
-         match envO with
-         | Some ov -> add (EnvWrite("env sigil", envNamesOf binds ov)) te.Span
-         | None -> ()
-     | TELet(n, _, v, _) ->
-         (match envNamesOf binds v with
-          | Some ns -> binds[n] <- ns
-          | None -> ())
+         envO
+         |> Option.iter (fun ov -> add (EnvWrite("env sigil", envNamesOf binds ov)) te.Span)
+     | TELet(n, _, v, _) -> envNamesOf binds v |> Option.iter (fun ns -> binds[n] <- ns)
      | TEWithin(kind, _, arg, _, _) ->
          // exhaustive on the kind union [D:within-kind-union] — no
          // wildcard, so a new kind cannot silently drift past this
@@ -329,7 +341,7 @@ let rec private walkExpr
      | TEVar "ls" -> add (FsRead("ls", Some "(the working directory)")) te.Span
      | TEApp({ Kind = TEVar "exit" }, _) -> add (Terminates "exit") te.Span
      | TEApp({ Kind = TEVar "fail" }, _) -> add (Terminates "fail") te.Span
-     | TEApp(f, args) ->
+     | TEApp _ ->
          // the reifier desugar [D:exit-reifiers]: the program rides as
          // a literal argument to the internal |complete family — the
          // third spawn shape, still statically visible
@@ -337,6 +349,11 @@ let rec private walkExpr
              match e.Kind with
              | TEApp(g, _) -> headOf g
              | k -> k
+
+         let rec argsOf (e: TypedExpr) =
+             match e.Kind with
+             | TEApp(g, a) -> argsOf g @ [ a ]
+             | _ -> []
 
          match headOf te with
          // only a command reifier is a spawn here [D:desugar-namespace]:
@@ -347,11 +364,6 @@ let rec private walkExpr
          // (prog, argv, env) is its own spawn — the same facts a single
          // command reports (orFail's msg rides ahead of the stage list)
          | TEVar h when h.StartsWith "|chain" ->
-             let rec argsOf (e: TypedExpr) =
-                 match e.Kind with
-                 | TEApp(g, a) -> argsOf g @ [ a ]
-                 | _ -> []
-
              match argsOf te |> List.tryItem (if h = "|chainOrFailed" then 1 else 0) with
              | Some { Kind = TEList stages } ->
                  // each stage at its program's own span — the tuple spans
@@ -359,19 +371,7 @@ let rec private walkExpr
                  for st in stages do
                      match st.Kind with
                      | TETuple [ prog; argv; envE ] ->
-                         (match literalStr prog with
-                          | Some p ->
-                              add (Runs p) prog.Span
-
-                              if interpreters.Contains p then
-                                  add (OpaqueArg p) prog.Span
-                          | None ->
-                              let display =
-                                  match prog.Kind with
-                                  | TEVar n -> $"^${n}"
-                                  | _ -> "^$(…)"
-
-                              add (RunsDyn display) prog.Span)
+                         addProg prog
 
                          match argv.Kind with
                          | TEList items ->
@@ -392,37 +392,15 @@ let rec private walkExpr
              // orFailedEnv has both. Filtering to literal strings
              // first would mis-slot whenever the msg is interpolated,
              // reporting the message as a command
-             let rec argsOf (e: TypedExpr) =
-                 match e.Kind with
-                 | TEApp(g, a) -> argsOf g @ [ a ]
-                 | _ -> []
-
              let progSlot =
                  if h.StartsWith "|orFailedEnv" then 2
                  elif h.StartsWith "|orFailed" then 1
                  elif h.EndsWith "Env" then 1
                  else 0
 
-             match argsOf te |> List.tryItem progSlot with
-             | Some slot ->
-                 (match literalStr slot with
-                  | Some prog ->
-                      // the program slot carries the command's own span;
-                      // the application's starts at the reifier marker
-                      add (Runs prog) slot.Span
-
-                      if interpreters.Contains prog then
-                          add (OpaqueArg prog) slot.Span
-                  | None ->
-                      // a reified dynamic head [D:dynamic-head]: the
-                      // prog slot carries the head value, not a literal
-                      let display =
-                          match slot.Kind with
-                          | TEVar n -> $"^${n}"
-                          | _ -> "^$(…)"
-
-                      add (RunsDyn display) slot.Span)
-             | None -> ()
+             // the program slot carries the command's own span;
+             // the application's starts at the reifier marker
+             argsOf te |> List.tryItem progSlot |> Option.iter addProg
 
              // an Env twin leads its program with the overlay — the same
              // fact the plain command's sigil or prefix reports
@@ -452,8 +430,6 @@ let rec private walkExpr
                          add (SecretArgv prog) a.Span
              | _ -> ()
          | _ -> ()
-
-         ignore args
      | _ -> ())
 
     if not skipChildren then
@@ -471,15 +447,12 @@ let rec private walkStmts (file: string) (acc: ResizeArray<Cap>) (pairs: (Logica
 
         match stmt with
         | CLet(n, te) ->
-            (match envNamesOf binds te with
-             | Some ns -> binds[n] <- ns
-             | None -> ())
-
+            envNamesOf binds te |> Option.iter (fun ns -> binds[n] <- ns)
             walkExpr binds site acc te
-        | CLetPat(_, te) -> walkExpr binds site acc te
-        | CExpr te -> walkExpr binds site acc te
+        | CLetPat(_, te)
+        | CExpr te
         | CCmd te -> walkExpr binds site acc te
-        | CType _ -> ()
+        | CType _
         | CNoop -> ()
         | CImport lm -> walkStmts lm.AbsPath acc lm.Body
 
@@ -543,8 +516,8 @@ let private sectionOrder = [
 // query read.
 let private factClass (f: Fact) : Weir.Effects.EffectClass =
     match f with
-    | FsRead _ -> Weir.Effects.Ambient
-    | EnvRead _ -> Weir.Effects.Ambient
+    | FsRead _
+    | EnvRead _
     | SecretLoad _ -> Weir.Effects.Ambient // loading a secret reads a channel
     | Network(m, _) ->
         match Weir.Effects.effectClass m with

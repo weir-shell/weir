@@ -64,17 +64,14 @@ let rec private patBound (p: Pattern) : string list =
 let private dropPat (p: Pattern) (env: Map<string, bool>) =
     patBound p |> List.fold (fun e n -> mapDrop n e) env
 
+let rec private headOf (e: TypedExpr) : TypedExpr =
+    match e.Kind with
+    | TEApp(g, _) -> headOf g
+    | _ -> e
+
 /// conservative purity of a typed expression; `env` carries the purity
 /// of known user bindings (earlier top-level lets, local lets)
 let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
-    let headOf (e: TypedExpr) =
-        let rec go (e: TypedExpr) =
-            match e.Kind with
-            | TEApp(g, _) -> go g
-            | _ -> e
-
-        go e
-
     match te.Kind with
     | TECmd _ -> false
     | TEWithin(kind, _, _, _, body) ->
@@ -104,19 +101,14 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
     // a held scope waits for a stop signal [D:held-scope] — ambient input
     | TEHold _ -> false
     | TEVar n ->
-        if effectfulName n then
-            false
-        elif builtinNames.Force().Contains n then
-            true
-        elif isCtorName n then
-            true
-        else
-            match Map.tryFind n env with
-            | Some p -> p
-            | None ->
-                // a data-typed unknown is inert; an unknown callable
-                // could do anything, so no purity claim
-                not (tyHasFun te.Ty)
+        not (effectfulName n)
+        && (builtinNames.Force().Contains n
+            || isCtorName n
+            || (Map.tryFind n env
+                |> Option.defaultWith (fun () ->
+                    // a data-typed unknown is inert; an unknown callable
+                    // could do anything, so no purity claim
+                    not (tyHasFun te.Ty))))
     | TELet(n, _, v, b) ->
         let pv = isPureExpr env v
         pv && isPureExpr (Map.add n pv env) b
@@ -193,14 +185,6 @@ let rec private effectPhrase (n: string) : string =
 /// judgement exactly (same env discipline, same conservatism); where
 /// isPureExpr answers false, this names why and where.
 let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) option =
-    let headOf (e: TypedExpr) =
-        let rec go (e: TypedExpr) =
-            match e.Kind with
-            | TEApp(g, _) -> go g
-            | _ -> e
-
-        go e
-
     match te.Kind with
     | TECmd(h, _, _) -> Some(te.Span, $"'{theadDisplay h}' runs a command")
     | TEWithin(kind, _, _, _, body) ->
@@ -290,9 +274,7 @@ let rec private httpSendMethod (arg: TypedExpr) : string option =
     | TEApp(f, _) -> httpSendMethod f
     | TEPipe(a, f) ->
         // `u |> Http.get` shape: the fn carries the method
-        match httpSendMethod f with
-        | Some m -> Some m
-        | None -> httpSendMethod a
+        httpSendMethod f |> Option.orElseWith (fun () -> httpSendMethod a)
     | TEVar n ->
         match n.Split '.' with
         | [| "Http"; ("get" | "head" | "options" | "query" | "post" | "put" | "delete" | "patch") as m |] ->
@@ -349,14 +331,6 @@ let private httpSendIsKnownMutation (arg: TypedExpr) : bool =
 /// discipline and conservatism as firstEffect; reuses
 /// Effects.effectClass as the line.
 let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string) option =
-    let headOf (e: TypedExpr) =
-        let rec go (e: TypedExpr) =
-            match e.Kind with
-            | TEApp(g, _) -> go g
-            | _ -> e
-
-        go e
-
     // the reusable teaching: "'File.write' writes the filesystem"
     let mut (span: Span) (n: string) = Some(span, mutationPhrase n)
 
@@ -444,16 +418,13 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
             Some(te.Span, httpSendPhrase sendName (Some reqArg))
         else
             firstMutation env reqArg
-    | TEApp(_, _) ->
+    | TEApp(_, a) ->
         // the per-method net split's check-time site: an Http.send (or
         // Http.expect) application resolves its method from the request
         // argument
         (match (headOf te).Kind with
          | TEVar(("Http.send" | "Http.expect") as sendName) ->
-             let reqArg =
-                 match te.Kind with
-                 | TEApp(_, a) -> Some a
-                 | _ -> None
+             let reqArg = Some a
 
              if httpSendIsMutation reqArg then
                  Some((headOf te).Span, httpSendPhrase sendName reqArg)
@@ -656,11 +627,6 @@ let rec execScopeViolation (helpers: Set<string>) (te: TypedExpr) : (Span * stri
     let without names =
         names |> List.fold (fun h n -> setDrop n h) helpers
 
-    let rec headOf (e: TypedExpr) =
-        match e.Kind with
-        | TEApp(g, _) -> headOf g
-        | _ -> e
-
     match te.Kind with
     | TEWithin(kind, _, arg, opts, body) when (Check.execScopeLoss kind).IsSome ->
         let what = (Check.execScopeLoss kind).Value
@@ -722,26 +688,18 @@ let rec pureViolation (refused: Map<string, string>) (env: Map<string, bool>) (t
          // captured (fine), proc and nested apply refuse — then keep
          // walking the body for nested pure/readonly/plan regions
          | WithinPlan ->
-             match firstPlanRefusal refused body with
-             | Some _ as r -> r
-             | None -> pureViolation refused env body
+             firstPlanRefusal refused body
+             |> Option.orElseWith (fun () -> pureViolation refused env body)
          | WithinTmp
          | WithinCd
          | WithinEnv
          | WithinProc
          | WithinServe
          | WithinLock ->
-             let viaArg (o: TypedExpr option) =
-                 match o with
-                 | Some e -> pureViolation refused env e
-                 | None -> None
-
-             match viaArg arg with
-             | Some _ as r -> r
-             | None ->
-                 match viaArg opts with
-                 | Some _ as r -> r
-                 | None -> pureViolation refused env body)
+             [ arg; opts ]
+             |> List.choose id
+             |> List.tryPick (pureViolation refused env)
+             |> Option.orElseWith (fun () -> pureViolation refused env body))
     | TELet(n, _, v, b) ->
         match pureViolation refused env v with
         | Some _ as r -> r

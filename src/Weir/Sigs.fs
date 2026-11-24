@@ -104,15 +104,13 @@ let private pathish (names: string list) (doc: string option) : bool =
         |> Array.filter (fun w -> w <> "")
 
     names |> List.exists (fun n -> words n |> Array.exists pathWords.Contains)
-    || (match doc with
-        | Some d -> words (d.Split('\n')[0]) |> Array.exists pathWords.Contains
-        | None -> false)
+    || doc
+       |> Option.exists (fun d -> words (d.Split('\n')[0]) |> Array.exists pathWords.Contains)
 
 let private sigSurface (choicesOf: string -> string list option) (def: RecordDef) : SigSurface =
     let positional f =
-        match Map.tryFind f def.Attrs with
-        | Some specs -> specs |> List.exists (fun (n, _) -> n = "Positional")
-        | None -> false
+        Map.tryFind f def.Attrs
+        |> Option.exists (List.exists (fun (n, _) -> n = "Positional"))
 
     // a [<Wire "type">] field carries the flag spelling the field name
     // cannot (keywords) [D:sig-version-probe] — the language-wide Wire
@@ -414,6 +412,11 @@ let internal typeDocFor (rawLines: string list) (ll: LogicalLine) : Map<string, 
     |> Option.map (fun p -> Map.ofList [ "", p ])
     |> Option.defaultValue Map.empty
 
+let private strOf (a: Check.TypedExpr) : string option =
+    match a.Kind with
+    | Check.TEStr s -> Some s
+    | _ -> None
+
 /// load the signatures a file declared; errors become diagnostics at
 /// the declaring line. The sig file is an ordinary weir module
 /// (decl-only + weak purity for free): `module X`, `let version =
@@ -485,22 +488,20 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                 match loadModuleCachedWith true resolver (ModuleLoads()) [ absScript ] absScript sigFile None with
                 | Error ie -> diags.Add(mk decl.Line $"#sig {quoteData decl.Tool}: {ie.Message}")
                 | Ok lm ->
-                    let letStr name =
+                    let letOf pick name =
                         lm.Body
                         |> List.tryPick (function
-                            | _, CLet(n, te) when n = name ->
-                                match te.Kind with
-                                | Check.TEStr s -> Some s
-                                | _ -> None
+                            | _, CLet(n, te) when n = name -> pick te.Kind
                             | _ -> None)
 
-                    let letBool name =
-                        lm.Body
-                        |> List.tryPick (function
-                            | _, CLet(n, te) when n = name ->
-                                match te.Kind with
-                                | Check.TEBool b -> Some b
-                                | _ -> None
+                    let letStr =
+                        letOf (function
+                            | Check.TEStr s -> Some s
+                            | _ -> None)
+
+                    let letBool =
+                        letOf (function
+                            | Check.TEBool b -> Some b
                             | _ -> None)
 
                     // `let version` is optional [D:sig-version-probe]: a
@@ -543,20 +544,9 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 | _ -> Some rd
                             | _ -> None)
 
-                    let letStrs name =
-                        lm.Body
-                        |> List.tryPick (function
-                            | _, CLet(n, te) when n = name ->
-                                match te.Kind with
-                                | Check.TEList items ->
-                                    Some(
-                                        items
-                                        |> List.choose (fun i ->
-                                            match i.Kind with
-                                            | Check.TEStr s -> Some s
-                                            | _ -> None)
-                                    )
-                                | _ -> None
+                    let letStrs =
+                        letOf (function
+                            | Check.TEList items -> Some(items |> List.choose strOf)
                             | _ -> None)
 
                     // the convention lets [D:sig-conventions]: absent = GNU,
@@ -590,12 +580,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
 
                             ""
 
-                        match
-                            lm.Body
-                            |> List.tryPick (function
-                                | _, CLet(n, te) when n = "dynamic" -> Some te.Kind
-                                | _ -> None)
-                        with
+                        match letOf Some "dynamic" with
                         | None -> ""
                         | Some(Check.TEStr("git" | "cobra" as m)) -> m
                         | Some(Check.TEStr s) -> bad $"`let dynamic = \"{quoteData s}\"` names no completion mechanism"
@@ -656,9 +641,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 let flags =
                                     match payload with
                                     | Some(TNamed(rn, [])) ->
-                                        match recordOf rn with
-                                        | Some rd -> sigSurface rd
-                                        | None -> emptySigSurface
+                                        recordOf rn |> Option.map sigSurface |> Option.defaultValue emptySigSurface
                                     | _ -> emptySigSurface
 
                                 Weir.Argv.kebabFlag case, flags)
@@ -743,6 +726,17 @@ let sigHasChildren (si: SigInfo) (key: string) : bool =
     not (Map.containsKey "" si.Surfaces)
     && (key = "" || si.Surfaces |> Map.exists (fun k _ -> k.StartsWith(key + "-")))
 
+let private stmtRoots (chk: CheckedStatement) : Check.TypedExpr list =
+    match chk.Kind with
+    | KLet(_, _, te)
+    | KLetPat(_, _, te)
+    | KCmd te
+    | KExpr te -> [ te ]
+    | KType _
+    | KSig _
+    | KModule _
+    | KImport _ -> []
+
 let sigCmdDiagnostics
     (path: string)
     (infos: SigInfo list)
@@ -755,16 +749,7 @@ let sigCmdDiagnostics
 
         pairs
         |> List.collect (fun (ll, chk) ->
-            let roots =
-                match chk.Kind with
-                | KLet(_, _, te)
-                | KLetPat(_, _, te)
-                | KCmd te
-                | KExpr te -> [ te ]
-                | KType _
-                | KSig _
-                | KModule _
-                | KImport _ -> []
+            let roots = stmtRoots chk
 
             let rec cmds (te: Check.TypedExpr) =
                 (match te.Kind with
@@ -788,12 +773,7 @@ let sigCmdDiagnostics
                          let prog =
                              // orFail's spine carries (msg, prog, argv) —
                              // the prog is the last string before the list
-                             args
-                             |> List.choose (fun a ->
-                                 match a.Kind with
-                                 | Check.TEStr p -> Some p
-                                 | _ -> None)
-                             |> List.tryLast
+                             args |> List.choose strOf |> List.tryLast
 
                          let words =
                              // a splatted reified argv is a Seq.append fold
@@ -824,12 +804,7 @@ let sigCmdDiagnostics
                     // a spliced word is a placeholder: its text is unknown
                     // at check, but it still takes its place — a flag's
                     // value, or an operand naming no case
-                    let words =
-                        args
-                        |> List.map (fun a ->
-                            match a.Kind with
-                            | Check.TEStr w -> Some w, a.Span
-                            | _ -> None, a.Span)
+                    let words = args |> List.map (fun a -> strOf a, a.Span)
 
                     let surfaceAt = sigSurfaceAt si
                     let hasChildren = sigHasChildren si
@@ -988,10 +963,8 @@ let sigCmdDiagnostics
 
                             match exact with
                             | Some a -> [], after a attached
-                            | None ->
-                                match glued () with
-                                | Some _ -> [], 0
-                                | None -> [ unknown sf typed name sp ], 0
+                            | None when (glued ()).IsSome -> [], 0
+                            | None -> [ unknown sf typed name sp ], 0
                         | _ ->
                             if w.StartsWith "--" then
                                 let long = name.Substring 2
@@ -1016,12 +989,9 @@ let sigCmdDiagnostics
                                         None
 
                                 let hit =
-                                    match Map.tryFind long sf.Longs with
-                                    | Some a -> Some a
-                                    | None ->
-                                        match Map.tryFind name sf.Literals with
-                                        | Some a -> Some a
-                                        | None -> negated () |> Option.orElse (abbreviated ())
+                                    Map.tryFind long sf.Longs
+                                    |> Option.orElseWith (fun () -> Map.tryFind name sf.Literals)
+                                    |> Option.orElseWith (fun () -> negated () |> Option.orElse (abbreviated ()))
 
                                 match hit with
                                 | Some a -> [], after a attached
@@ -1071,10 +1041,7 @@ let sigCmdDiagnostics
                     let subAt key (ws: (string option * Span) list) =
                         let run =
                             ws
-                            |> List.takeWhile (fun (w, _) ->
-                                match w with
-                                | Some w -> not (isFlag w)
-                                | None -> false)
+                            |> List.takeWhile (fst >> Option.exists (isFlag >> not))
                             |> List.truncate 4
                             |> List.choose fst
 
@@ -1146,13 +1113,13 @@ let sigCmdDiagnostics
                                             | _ -> None
 
                                         let landed =
-                                            match deeper rest with
-                                            | Some r -> Some(r, false)
-                                            | None ->
+                                            deeper rest
+                                            |> Option.map (fun r -> r, false)
+                                            |> Option.orElseWith (fun () ->
                                                 match rest with
                                                 | (Some v, _) :: tail when not (isFlag v) ->
                                                     deeper tail |> Option.map (fun r -> r, true)
-                                                | _ -> None
+                                                | _ -> None)
 
                                         match landed with
                                         | Some((k, t), tookValue) ->
@@ -1169,7 +1136,6 @@ let sigCmdDiagnostics
                                 match step, rest with
                                 | 0, _ -> walk acc key typed rest
                                 | 1, _ :: rest' -> walk acc key typed rest'
-                                | 1, [] -> acc
                                 | _ -> acc
                         | _ :: rest ->
                             if hasChildren key then
@@ -1274,14 +1240,8 @@ let continuedCommands
         | Some si ->
             let run =
                 args
-                |> List.map (fun a ->
-                    match a.Kind with
-                    | Check.TEStr w -> Some w
-                    | _ -> None)
-                |> List.takeWhile (fun w ->
-                    match w with
-                    | Some w -> not (w.StartsWith "-")
-                    | None -> false)
+                |> List.map strOf
+                |> List.takeWhile (Option.exists (fun (w: string) -> not (w.StartsWith "-")))
                 |> List.choose id
 
             Set.contains "" si.StopAtOperand
@@ -1399,16 +1359,7 @@ let continuedCommandDiagnostics
     (pairs: (LogicalLine * CheckedStatement) list)
     : Diagnostic list =
     pairs
-    |> List.collect (fun (ll, chk) ->
-        match chk.Kind with
-        | KLet(_, _, te)
-        | KLetPat(_, _, te)
-        | KCmd te
-        | KExpr te -> continuedCommands resolvesAsProgram infos ll te
-        | KType _
-        | KSig _
-        | KModule _
-        | KImport _ -> [])
+    |> List.collect (fun (ll, chk) -> stmtRoots chk |> List.collect (continuedCommands resolvesAsProgram infos ll))
     |> List.map (fun h -> {
         File = path
         Line = h.CLine
@@ -1543,6 +1494,10 @@ module SigComplete =
                 bundle 1
             | None -> None
 
+    let private flagHit (si: SigInfo) (key: string) (name: string) : (SigArity * SigValue option) option =
+        sigSurfaceAt si key
+        |> Option.bind (fun sf -> flagArity si sf name |> Option.map (fun (a, k) -> a, Map.tryFind k sf.Values))
+
     // the surfaces a flag word completes from: the case's, or — at a top
     // level no rule gives a surface — every case's
     let private flagSurfaces (si: SigInfo) (key: string) : SigSurface list =
@@ -1628,11 +1583,7 @@ module SigComplete =
                 | -1 -> w, false
                 | i -> w.Substring(0, i), true
 
-            let hit =
-                sigSurfaceAt si key
-                |> Option.bind (fun sf -> flagArity si sf name |> Option.map (fun (a, k) -> a, Map.tryFind k sf.Values))
-
-            match hit with
+            match flagHit si key name with
             | Some(AOne, v) when not attached ->
                 match rest with
                 | [] -> Value v
@@ -1683,18 +1634,22 @@ module SigComplete =
         | Some(VChoices cs) -> SigWords(cs |> List.filter (fun c -> c.StartsWith typed) |> List.sort)
         | None -> SigNothing
 
+    /// the argv words of `argText`, the complete ones and the one at its
+    /// end ("" after whitespace)
+    let split (argText: string) : string list * string =
+        let ts = tokens argText
+
+        if argText = "" || Char.IsWhiteSpace argText[argText.Length - 1] then
+            ts, ""
+        else
+            List.truncate (ts.Length - 1) ts, List.last ts
+
     /// complete at the end of `argText` — the text after the tool's name
     /// up to the cursor. `word` is the editor's word there (Complete.
     /// wordStartAt): offers come back as its replacements, so a value
     /// typed after `--flag=` completes alone
     let private completeRaw (si: SigInfo) (argText: string) (word: string) : SigCompletion =
-        let ts = tokens argText
-
-        let before, cur =
-            if argText = "" || Char.IsWhiteSpace argText[argText.Length - 1] then
-                ts, ""
-            else
-                List.truncate (ts.Length - 1) ts, List.last ts
+        let before, cur = split argText
 
         // the token's part before the editor's word stays typed; offers
         // that keep it are cut back to the word
@@ -1717,19 +1672,12 @@ module SigComplete =
         else
             match walk si "" before with
             | Open -> SigPaths
-            | Value v ->
-                match value v cur with
-                | SigWords cs -> asWord (SigWords cs)
-                | r -> r
+            | Value v -> asWord (value v cur)
             | InCase key when isFlag cur && cur.Contains '=' ->
                 let i = cur.IndexOf '='
                 let name, typed = cur.Substring(0, i), cur.Substring(i + 1)
 
-                match
-                    sigSurfaceAt si key
-                    |> Option.bind (fun sf ->
-                        flagArity si sf name |> Option.map (fun (a, k) -> a, Map.tryFind k sf.Values))
-                with
+                match flagHit si key name with
                 | Some(ANone, _)
                 | None -> SigNothing
                 | Some(_, v) ->
@@ -1769,16 +1717,6 @@ module SigComplete =
         match completeRaw si argText word with
         | SigWords cs -> SigWords(cs |> List.filter spellable)
         | r -> r
-
-    /// the argv words of `argText`, the complete ones and the one at its
-    /// end ("" after whitespace)
-    let split (argText: string) : string list * string =
-        let ts = tokens argText
-
-        if argText = "" || Char.IsWhiteSpace argText[argText.Length - 1] then
-            ts, ""
-        else
-            List.truncate (ts.Length - 1) ts, List.last ts
 
     /// where the word at the end of `argText` sits, for the tool's own
     /// values [D:sig-dynamic-complete]: an operand or a flag's value may
@@ -1854,11 +1792,10 @@ module SigLookup =
             | Ok p when IO.File.Exists p -> load p tool
             | _ -> None
 
-        match project with
-        | Some si -> Some si
-        | None ->
+        project
+        |> Option.orElseWith (fun () ->
             let file = IO.Path.Combine(user, sigFileName tool)
-            if IO.File.Exists file then load file tool else None
+            if IO.File.Exists file then load file tool else None)
 
     let find (cwd: string) (tool: string) : SigInfo option = findIn cwd (userDir ()) tool
 
@@ -2042,9 +1979,7 @@ let sigArgvCompleteWith
 
                 match hooks, layer1 with
                 | Some h, (SigPaths | SigNothing) ->
-                    match dynamicAnswer h userDir si tool (argText + word) word with
-                    | Some offers -> Some offers
-                    | None -> static'
+                    dynamicAnswer h userDir si tool (argText + word) word |> Option.orElse static'
                 | _ -> static'
 
 let sigArgvComplete aliases env text wordStart =
@@ -2098,9 +2033,9 @@ let suggestEntryWith
         | Some(_ :: _ as fields) -> fields
         | _ ->
             // a command argv word under a sig'd head [D:sig-arg-complete]
-            match sigArgvCompleteWith hooks (SigLookup.userDir ()) aliases ctxEnv text wordStart with
-            | Some offers -> offers
-            | None -> Complete.suggestSession (aliases |> Map.keys |> Set.ofSeq) values ctxEnv text wordStart
+            sigArgvCompleteWith hooks (SigLookup.userDir ()) aliases ctxEnv text wordStart
+            |> Option.defaultWith (fun () ->
+                Complete.suggestSession (aliases |> Map.keys |> Set.ofSeq) values ctxEnv text wordStart)
 
 let suggestEntry aliases values env entry text wordStart =
     suggestEntryWith None aliases values env entry text wordStart

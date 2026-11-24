@@ -1401,19 +1401,6 @@ let generalize (ty: Ty) : Scheme = {
     HoleDefaults = []
 }
 
-// generalization with the checker's constraint residue: only
-// constraints on vars actually quantified ride into the scheme
-let generalizeWith (cs: Map<string, Set<Cls>>) (ty: Ty) : Scheme =
-    let fa = tyVarsOf ty
-
-    {
-        Forall = fa
-        Cs = cs |> Map.filter (fun v _ -> fa.Contains v)
-        Ty = ty
-        RowOrigins = Map.empty
-        HoleDefaults = []
-    }
-
 // generalizeWith + row origins [D:row-provenance], filtered like Cs:
 // only origins for quantified row vars ride into the scheme; hole
 // defaults ride whole (they anchor prose, not vars)
@@ -1432,6 +1419,11 @@ let generalizeWithOrigins
         RowOrigins = origins |> Map.filter (fun v _ -> fa.Contains v)
         HoleDefaults = holeDefaults
     }
+
+// generalization with the checker's constraint residue: only
+// constraints on vars actually quantified ride into the scheme
+let generalizeWith (cs: Map<string, Set<Cls>>) (ty: Ty) : Scheme =
+    generalizeWithOrigins cs Map.empty [] ty
 
 let mono (ty: Ty) : Scheme = {
     Forall = Set.empty
@@ -1471,21 +1463,20 @@ type RecordDef = {
     Docs: Map<string, string>
 }
 
+let private attrPick (def: RecordDef) (field: string) (pick: string * AttrArg option -> 'a option) : 'a option =
+    Map.tryFind field def.Attrs |> Option.bind (List.tryPick pick)
+
 /// The wire-key attribute's single reader [D:wire-keys]: a field
 /// carrying [<Wire "…">] uses that string as its adapter key
 /// (json/jsonl/yaml — and csv when it lands); everywhere else the
 /// attribute is inert (Args/Env derive from the field name, documented
 /// verbatim)
 let wireName (def: RecordDef) (field: string) : string =
-    match Map.tryFind field def.Attrs with
-    | Some specs ->
-        specs
-        |> List.tryPick (fun (n, a) ->
-            match n, a with
-            | "Wire", Some(AStr s) -> Some s
-            | _ -> None)
-        |> Option.defaultValue field
-    | None -> field
+    attrPick def field (fun (n, a) ->
+        match n, a with
+        | "Wire", Some(AStr s) -> Some s
+        | _ -> None)
+    |> Option.defaultValue field
 
 /// The declared value encodings [D:wire-codecs]: a closed set, one field
 /// attribute each, read by the json/yaml boundaries only — never by show
@@ -1516,35 +1507,25 @@ let codecOfName (name: string) : Codec option =
 /// The codec attribute's single reader [D:wire-codecs]: the field's
 /// declared encoding, if any (fit was validated at the declaration)
 let fieldCodec (def: RecordDef) (field: string) : Codec option =
-    match Map.tryFind field def.Attrs with
-    | Some specs -> specs |> List.tryPick (fun (n, _) -> codecOfName n)
-    | None -> None
+    attrPick def field (fun (n, _) -> codecOfName n)
 
 /// The XML attribute a field reads [D:from-xml]: Some name when the field
 /// carries [<Attr>] (name defaults to the field) — else None (an element)
 let xmlAttr (def: RecordDef) (field: string) : string option =
-    match Map.tryFind field def.Attrs with
-    | Some specs ->
-        specs
-        |> List.tryPick (fun (n, a) ->
-            match n, a with
-            | "Attr", Some(AStr s) -> Some s
-            | "Attr", None -> Some field
-            | _ -> None)
-    | None -> None
+    attrPick def field (fun (n, a) ->
+        match n, a with
+        | "Attr", Some(AStr s) -> Some s
+        | "Attr", None -> Some field
+        | _ -> None)
 
 /// The element name a seq< > field reads [D:from-xml]: the [<Elem "X">]
 /// override, else the supplied fallback (the element type / field name)
 let xmlElem (def: RecordDef) (field: string) (fallback: string) : string =
-    match Map.tryFind field def.Attrs with
-    | Some specs ->
-        specs
-        |> List.tryPick (fun (n, a) ->
-            match n, a with
-            | "Elem", Some(AStr s) -> Some s
-            | _ -> None)
-        |> Option.defaultValue fallback
-    | None -> fallback
+    attrPick def field (fun (n, a) ->
+        match n, a with
+        | "Elem", Some(AStr s) -> Some s
+        | _ -> None)
+    |> Option.defaultValue fallback
 
 type UnionDef = {
     Name: string
@@ -1596,26 +1577,18 @@ let validatedNameAttr = "|validName"
 
 /// a flat boundary field's `create` ids, outermost first
 let fieldValidators (def: RecordDef) (field: string) : string list =
-    match Map.tryFind field def.Attrs with
-    | Some specs ->
-        specs
-        |> List.tryPick (fun (n, a) ->
-            match n, a with
-            | n, Some(AStr ids) when n = validatedAttr -> Some(ids.Split(' ') |> List.ofArray)
-            | _ -> None)
-        |> Option.defaultValue []
-    | None -> []
+    attrPick def field (fun (n, a) ->
+        match n, a with
+        | n, Some(AStr ids) when n = validatedAttr -> Some(ids.Split(' ') |> List.ofArray)
+        | _ -> None)
+    |> Option.defaultValue []
 
 /// a flat boundary field's validated type name, for `--help`
 let fieldValidatedName (def: RecordDef) (field: string) : string option =
-    match Map.tryFind field def.Attrs with
-    | Some specs ->
-        specs
-        |> List.tryPick (fun (n, a) ->
-            match n, a with
-            | n, Some(AStr t) when n = validatedNameAttr -> Some t
-            | _ -> None)
-    | None -> None
+    attrPick def field (fun (n, a) ->
+        match n, a with
+        | n, Some(AStr t) when n = validatedNameAttr -> Some t
+        | _ -> None)
 
 /// A tagged case's tag value — the [<Wire>] override or the case name
 let caseWire (def: UnionDef) (case: string) : string =
@@ -2212,10 +2185,13 @@ let checkInstant (who: string) (ms: int64) : int64 =
 let formatInstant (ms: int64) : string =
     let dto = System.DateTimeOffset.FromUnixTimeMilliseconds ms
 
-    if ms % 1000L = 0L then
-        dto.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture)
-    else
-        dto.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture)
+    let fmt =
+        if ms % 1000L = 0L then
+            "yyyy-MM-dd'T'HH:mm:ss'Z'"
+        else
+            "yyyy-MM-dd'T'HH:mm:ss.fff'Z'"
+
+    dto.ToString(fmt, System.Globalization.CultureInfo.InvariantCulture)
 
 // the uuid text forms [D:uuid]: 8-4-4-4-12 hex or 32 bare hex, any case,
 // an optional urn:uuid: prefix. Only these — never the platform parser's
@@ -2558,15 +2534,14 @@ let parseDurationMs (text: string) : Result<int64, string> =
                                 go k acc
 
     // overflow in its own words, never Int64.Parse's [D:transport-words]
-    match go 0 0I with
-    | Error e -> Error e
-    | Ok mag ->
+    go 0 0I
+    |> Result.bind (fun mag ->
         let v = if neg then -mag else mag
 
         if inInt64 v then
             Ok(int64 v)
         else
-            Error $"not a duration: '{excerpt text}' — beyond the 64-bit millisecond range"
+            Error $"not a duration: '{excerpt text}' — beyond the 64-bit millisecond range")
 
 // The one JSON string encoder: CLI/LSP payloads and user `to json` /
 // `to jsonl` / `--can --json` [D:json-raw-user].

@@ -721,14 +721,9 @@ let private lastImpl: Value =
         | VSeq items ->
             // asserts non-empty (the X/tryX rule); forces the whole
             // source by necessity
-            let mutable acc = ValueNone
-
-            for x in items do
-                acc <- ValueSome x
-
-            match acc with
-            | ValueSome x -> x
-            | ValueNone -> failwith "last: empty sequence"
+            match Seq.tryLast items with
+            | Some x -> x
+            | None -> failwith "last: empty sequence"
         | v -> unreachable $"the checker rejects 'last' on {formatValue v}")
 
 let private tryLastImpl: Value =
@@ -740,14 +735,9 @@ let private tryLastImpl: Value =
             else
                 VUnion("Some", Some l[l.Count - 1])
         | VSeq items ->
-            let mutable acc = ValueNone
-
-            for x in items do
-                acc <- ValueSome x
-
-            match acc with
-            | ValueSome x -> VUnion("Some", Some x)
-            | ValueNone -> VUnion("None", None)
+            match Seq.tryLast items with
+            | Some x -> VUnion("Some", Some x)
+            | None -> VUnion("None", None)
         | v -> unreachable $"the checker rejects 'tryLast' on {formatValue v}")
 
 let private toListImpl: Value =
@@ -897,15 +887,16 @@ let private suspendingN (arity: int) (run: Flow -> Value list -> Task<Value>) (b
 
     b
 
+let private orFailCode (msg: string) (code: int) : Value =
+    if code <> 0 then
+        failwith $"{msg} (exit {code})"
+
+    VUnit
+
 let private orFailedWith (overlay: (string * string) list) : Value =
     suspendingN 3 (fun _ args ->
         match args with
-        | [ VStr msg; progV; argsV ] ->
-            streamCodeSuspended overlay progV argsV (fun code ->
-                if code <> 0 then
-                    failwith $"{msg} (exit {code})"
-
-                VUnit)
+        | [ VStr msg; progV; argsV ] -> streamCodeSuspended overlay progV argsV (orFailCode msg)
         | _ -> null)
     <| VBuiltin(fun msgV ->
         VBuiltin(fun progV ->
@@ -913,12 +904,7 @@ let private orFailedWith (overlay: (string * string) list) : Value =
                 match msgV, progV, argsV with
                 | VStr msg, VStr prog, VSeq args ->
                     let argv = argStrings args
-                    let code = Proc.streamCode overlay (Proc.specProg prog) argv
-
-                    if code <> 0 then
-                        failwith $"{msg} (exit {code})"
-
-                    VUnit
+                    orFailCode msg (Proc.streamCode overlay (Proc.specProg prog) argv)
                 | _ -> unreachable "the checker rejects 'orFailed' on these arguments")))
 
 let private exitCodedWith (overlay: (string * string) list) : Value =
@@ -1005,7 +991,7 @@ let private textedWithIn (overlay: (string * string) list) : Value =
                     wholeText (Proc.linesWith overlay (Proc.specProg prog) (argStrings args) (Some input))
                 | _ -> unreachable "the checker rejects 'textIn' on these arguments")))
 
-let private linedWithIn (overlay: (string * string) list) : Value =
+let private reifiedIn (name: string) (k: string -> string list -> seq<string> -> Value) : Value =
     VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
             VBuiltin(fun stdinV ->
@@ -1013,8 +999,27 @@ let private linedWithIn (overlay: (string * string) list) : Value =
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
                     let input = stdin |> Seq.map asString |> Eval.pinnedFeed
-                    oneLine prog argv (Proc.linesWith overlay (Proc.specProg prog) argv (Some input))
-                | _ -> unreachable "the checker rejects 'lineIn' on these arguments")))
+                    k prog argv input
+                | _ -> unreachable $"the checker rejects '{name}' on these arguments")))
+
+let private streamCodeIn
+    (overlay: (string * string) list)
+    (prog: string)
+    (argv: string list)
+    (input: seq<string>)
+    : int =
+    Proc.streamCodeOf {
+        Prog = Proc.specProg prog
+        Args = argv
+        Env = overlay
+        Input = Some input
+        Cwd = None
+        Ambient = None
+    }
+
+let private linedWithIn (overlay: (string * string) list) : Value =
+    reifiedIn "lineIn" (fun prog argv input ->
+        oneLine prog argv (Proc.linesWith overlay (Proc.specProg prog) argv (Some input)))
 
 // stdin-carrying reifier twins [D:value-headed-pipe]: `xs | grep foo |
 // complete` reifies the segment with the value as stdin. Internal —
@@ -1024,53 +1029,20 @@ let private linedWithIn (overlay: (string * string) list) : Value =
 // (Env twins are unpopulated: a value-headed pipe carries no env
 // sigil today — spawn-park pressure note in NOTES.)
 let private completedWithIn (overlay: (string * string) list) : Value =
-    VBuiltin(fun progV ->
-        VBuiltin(fun argsV ->
-            VBuiltin(fun stdinV ->
-                match progV, argsV, stdinV with
-                | VStr prog, VSeq args, VSeq stdin ->
-                    let argv = argStrings args
-                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
-                    let started = System.Diagnostics.Stopwatch.GetTimestamp()
+    reifiedIn "completedIn" (fun prog argv input ->
+        let started = System.Diagnostics.Stopwatch.GetTimestamp()
 
-                    let code, out, err =
-                        Proc.completeWith overlay (Proc.specProg prog) argv (Some input)
+        let code, out, err =
+            Proc.completeWith overlay (Proc.specProg prog) argv (Some input)
 
-                    completedOf started code out err
-                | _ -> unreachable "the checker rejects 'completedIn' on these arguments")))
+        completedOf started code out err)
 
 let private succeededWithIn (overlay: (string * string) list) : Value =
-    VBuiltin(fun progV ->
-        VBuiltin(fun argsV ->
-            VBuiltin(fun stdinV ->
-                match progV, argsV, stdinV with
-                | VStr prog, VSeq args, VSeq stdin ->
-                    let argv = argStrings args
-                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
-                    VBool(Proc.completeCode overlay (Proc.specProg prog) argv (Some input) = 0)
-                | _ -> unreachable "the checker rejects 'succeededIn' on these arguments")))
+    reifiedIn "succeededIn" (fun prog argv input ->
+        VBool(Proc.completeCode overlay (Proc.specProg prog) argv (Some input) = 0))
 
 let private exitCodedWithIn (overlay: (string * string) list) : Value =
-    VBuiltin(fun progV ->
-        VBuiltin(fun argsV ->
-            VBuiltin(fun stdinV ->
-                match progV, argsV, stdinV with
-                | VStr prog, VSeq args, VSeq stdin ->
-                    let argv = argStrings args
-                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
-
-                    let code =
-                        Proc.streamCodeOf {
-                            Prog = Proc.specProg prog
-                            Args = argv
-                            Env = overlay
-                            Input = Some input
-                            Cwd = None
-                            Ambient = None
-                        }
-
-                    VInt(int64 code)
-                | _ -> unreachable "the checker rejects 'exitCodedIn' on these arguments")))
+    reifiedIn "exitCodedIn" (fun prog argv input -> VInt(int64 (streamCodeIn overlay prog argv input)))
 
 let private orFailedWithIn (overlay: (string * string) list) : Value =
     VBuiltin(fun msgV ->
@@ -1081,21 +1053,7 @@ let private orFailedWithIn (overlay: (string * string) list) : Value =
                     | VStr msg, VStr prog, VSeq args, VSeq stdin ->
                         let argv = argStrings args
                         let input = stdin |> Seq.map asString |> Eval.pinnedFeed
-
-                        let code =
-                            Proc.streamCodeOf {
-                                Prog = Proc.specProg prog
-                                Args = argv
-                                Env = overlay
-                                Input = Some input
-                                Cwd = None
-                                Ambient = None
-                            }
-
-                        if code <> 0 then
-                            failwith $"{msg} (exit {code})"
-
-                        VUnit
+                        orFailCode msg (streamCodeIn overlay prog argv input)
                     | _ -> unreachable "the checker rejects 'orFailedIn' on these arguments"))))
 
 // the expression-side regex family [D:regex-pattern] — computed
@@ -1290,6 +1248,20 @@ let private rreplaceImpl: Value =
                     )
                 | _ -> unreachable "the checker rejects 'rreplace' on these arguments")))
 
+let private codePointsOf (s: string) : int[] =
+    let out = ResizeArray<int>(s.Length)
+    let mutable q = 0
+
+    while q < s.Length do
+        if System.Char.IsSurrogatePair(s, q) then
+            out.Add(System.Char.ConvertToUtf32(s, q))
+            q <- q + 2
+        else
+            out.Add(int s[q])
+            q <- q + 1
+
+    out.ToArray()
+
 // Path.glob [D:path-glob] — the standard subset (`*` within-segment,
 // `**` cross-segment, `?`, `[abc]`/`[!abc]`), bash's laws: `*` never
 // matches dotfiles (a `.`-leading segment does); sorted per level
@@ -1328,17 +1300,7 @@ let private globClass (seg: string) (i: int) : (bool * (int * int) list * int) o
     else
         let body = seg.Substring(start, k - start)
 
-        let cps = [
-            let mutable q = 0
-
-            while q < body.Length do
-                if System.Char.IsSurrogatePair(body, q) then
-                    yield System.Char.ConvertToUtf32(body, q)
-                    q <- q + 2
-                else
-                    yield int body[q]
-                    q <- q + 1
-        ]
+        let cps = codePointsOf body |> List.ofArray
 
         let rec ranges acc cps =
             match cps with
@@ -1359,20 +1321,6 @@ let private isStar (u: GlobUnit) =
     match u with
     | GStar -> true
     | _ -> false
-
-let private codePointsOf (s: string) : int[] =
-    let out = ResizeArray<int>(s.Length)
-    let mutable q = 0
-
-    while q < s.Length do
-        if System.Char.IsSurrogatePair(s, q) then
-            out.Add(System.Char.ConvertToUtf32(s, q))
-            q <- q + 2
-        else
-            out.Add(int s[q])
-            q <- q + 1
-
-    out.ToArray()
 
 let private globUnits (seg: string) : GlobUnit[] =
     let units = ResizeArray<GlobUnit>()
@@ -1646,6 +1594,11 @@ let private str2Bool (name: string) (f: string -> string -> bool) : Value =
 let private vSome (v: Value) : Value = VUnion("Some", Some v)
 let private vNone: Value = VUnion("None", None)
 
+let private vOpt (o: Value option) : Value =
+    match o with
+    | Some v -> vSome v
+    | None -> vNone
+
 // the cardinality assertion [D:exactly-one]: head silently accepts a
 // second element, so a wrong-arity command output passes quietly at
 // the boundary where it is most likely. Two distinct messages — a
@@ -1688,10 +1641,7 @@ let private tryExactlyOneImpl: Value =
 let private tryHeadImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VSeq items ->
-            match Seq.tryHead items with
-            | Some x -> vSome x
-            | None -> vNone
+        | VSeq items -> vOpt (Seq.tryHead items)
         | v -> unreachable $"the checker rejects 'tryHead' on {formatValue v}")
 
 let private seqLengthImpl: Value =
@@ -1717,23 +1667,9 @@ let private foldImpl: Value =
                 | VSeq items -> items |> Seq.fold (fun acc v -> apply2 folder acc v) init
                 | v -> unreachable $"the checker rejects 'fold' on {formatValue v}")))
 
-let private sortByImpl: Value =
-    VBuiltin(fun keyf ->
-        VBuiltin(fun s ->
-            match s with
-            | VSeq items ->
-                VSeq(
-                    delayedSeq items (fun items ->
-                        items
-                        |> Seq.map (fun item -> apply keyf item, item)
-                        |> Seq.sortWith (fun (k1, _) (k2, _) -> orderCompare "sortBy" k1 k2)
-                        |> Seq.map snd)
-                )
-            | v -> unreachable $"the checker rejects 'sortBy' on {formatValue v}"))
-
 // reversed comparison args keep Seq.sortWith's stability, matching
 // F#'s sortByDescending (equal keys stay in input order)
-let private sortByDescImpl: Value =
+let private sortByWith (name: string) (desc: bool) : Value =
     VBuiltin(fun keyf ->
         VBuiltin(fun s ->
             match s with
@@ -1742,10 +1678,18 @@ let private sortByDescImpl: Value =
                     delayedSeq items (fun items ->
                         items
                         |> Seq.map (fun item -> apply keyf item, item)
-                        |> Seq.sortWith (fun (k1, _) (k2, _) -> orderCompare "sortByDescending" k2 k1)
+                        |> Seq.sortWith (fun (k1, _) (k2, _) ->
+                            if desc then
+                                orderCompare name k2 k1
+                            else
+                                orderCompare name k1 k2)
                         |> Seq.map snd)
                 )
-            | v -> unreachable $"the checker rejects 'sortByDescending' on {formatValue v}"))
+            | v -> unreachable $"the checker rejects '{name}' on {formatValue v}"))
+
+let private sortByImpl: Value = sortByWith "sortBy" false
+
+let private sortByDescImpl: Value = sortByWith "sortByDescending" true
 
 let private splitImpl: Value =
     VBuiltin(fun sep ->
@@ -1773,60 +1717,41 @@ let private fieldsImpl: Value =
 // correction): "at most one split" is a different operation from
 // "split into pieces", and Str.split + a seq pattern silently misses
 // when the tail contains the separator
-let private splitOnceImpl: Value =
+let private splitOnceWith
+    (name: string)
+    (indexOf: string -> string -> int)
+    (miss: string -> Value)
+    (hit: Value -> Value)
+    : Value =
     VBuiltin(fun sep ->
         VBuiltin(fun subject ->
             match sep, subject with
             | VStr sep, VStr s ->
                 if sep = "" then
-                    failwith "splitOnce: the separator cannot be empty"
+                    failwith $"{name}: the separator cannot be empty"
                 else
-                    match s.IndexOf sep with
-                    | -1 -> failwith $"splitOnce: no \"{quoteData sep}\" in the input"
-                    | i -> VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ]
-            | _ -> unreachable "the checker rejects 'splitOnce' on these arguments"))
+                    match indexOf s sep with
+                    | -1 -> miss sep
+                    | i -> hit (VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ])
+            | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
+
+let private noSep (name: string) (sep: string) : Value =
+    failwith $"{name}: no \"{quoteData sep}\" in the input"
+
+let private splitOnceImpl: Value =
+    splitOnceWith "splitOnce" (fun (s: string) (sep: string) -> s.IndexOf sep) (noSep "splitOnce") id
 
 let private trySplitOnceImpl: Value =
-    VBuiltin(fun sep ->
-        VBuiltin(fun subject ->
-            match sep, subject with
-            | VStr sep, VStr s ->
-                if sep = "" then
-                    failwith "trySplitOnce: the separator cannot be empty"
-                else
-                    match s.IndexOf sep with
-                    | -1 -> vNone
-                    | i -> vSome (VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ])
-            | _ -> unreachable "the checker rejects 'trySplitOnce' on these arguments"))
+    splitOnceWith "trySplitOnce" (fun (s: string) (sep: string) -> s.IndexOf sep) (fun _ -> vNone) vSome
 
 // split at the last occurrence [D:split-once] — splitOnce from the
 // right (Rust's rsplit_once): `user@host:port` wants the last colon,
 // a path its last `/`. Same at-most-one-split shape, LastIndexOf.
 let private rsplitOnceImpl: Value =
-    VBuiltin(fun sep ->
-        VBuiltin(fun subject ->
-            match sep, subject with
-            | VStr sep, VStr s ->
-                if sep = "" then
-                    failwith "rsplitOnce: the separator cannot be empty"
-                else
-                    match s.LastIndexOf sep with
-                    | -1 -> failwith $"rsplitOnce: no \"{quoteData sep}\" in the input"
-                    | i -> VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ]
-            | _ -> unreachable "the checker rejects 'rsplitOnce' on these arguments"))
+    splitOnceWith "rsplitOnce" (fun (s: string) (sep: string) -> s.LastIndexOf sep) (noSep "rsplitOnce") id
 
 let private tryRsplitOnceImpl: Value =
-    VBuiltin(fun sep ->
-        VBuiltin(fun subject ->
-            match sep, subject with
-            | VStr sep, VStr s ->
-                if sep = "" then
-                    failwith "tryRsplitOnce: the separator cannot be empty"
-                else
-                    match s.LastIndexOf sep with
-                    | -1 -> vNone
-                    | i -> vSome (VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ])
-            | _ -> unreachable "the checker rejects 'tryRsplitOnce' on these arguments"))
+    splitOnceWith "tryRsplitOnce" (fun (s: string) (sep: string) -> s.LastIndexOf sep) (fun _ -> vNone) vSome
 
 let private joinImpl: Value =
     VBuiltin(fun sep ->
@@ -1888,16 +1813,12 @@ let private tryFindImpl: Value =
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                let found =
-                    items
-                    |> Seq.tryFind (fun item ->
-                        match apply pred item with
-                        | VBool b -> b
-                        | v -> unreachable $"the checker rejects a non-bool predicate result: {formatValue v}")
-
-                match found with
-                | Some x -> vSome x
-                | None -> vNone
+                items
+                |> Seq.tryFind (fun item ->
+                    match apply pred item with
+                    | VBool b -> b
+                    | v -> unreachable $"the checker rejects a non-bool predicate result: {formatValue v}")
+                |> vOpt
             | v -> unreachable $"the checker rejects 'tryFind' on {formatValue v}"))
 
 let private tryIndexOfImpl: Value =
@@ -2716,32 +2637,23 @@ let private piterImpl: Value = piterAs "piter"
 
 let private pforImpl: Value = piterAs "pfor"
 
+let private boolOf (pred: Value) (v: Value) : bool =
+    match apply pred v with
+    | VBool b -> b
+    | r -> unreachable $"the checker rejects a non-bool predicate: {formatValue r}"
+
 let private existsImpl: Value =
     VBuiltin(fun pred ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items ->
-                VBool(
-                    items
-                    |> Seq.exists (fun v ->
-                        match apply pred v with
-                        | VBool b -> b
-                        | r -> unreachable $"the checker rejects a non-bool predicate: {formatValue r}")
-                )
+            | VSeq items -> VBool(Seq.exists (boolOf pred) items)
             | v -> unreachable $"the checker rejects 'exists' on {formatValue v}"))
 
 let private forallImpl: Value =
     VBuiltin(fun pred ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items ->
-                VBool(
-                    items
-                    |> Seq.forall (fun v ->
-                        match apply pred v with
-                        | VBool b -> b
-                        | r -> unreachable $"the checker rejects a non-bool predicate: {formatValue r}")
-                )
+            | VSeq items -> VBool(Seq.forall (boolOf pred) items)
             | v -> unreachable $"the checker rejects 'forall' on {formatValue v}"))
 
 let private containsImpl: Value =
@@ -2840,9 +2752,11 @@ let private tryItemImpl: Value =
                 else
                     VUnion("None", None)
             | VInt i, VSeq items ->
-                match items |> Seq.indexed |> Seq.tryFind (fun (j, _) -> int64 j = i) with
-                | Some(_, v) -> VUnion("Some", Some v)
-                | None -> VUnion("None", None)
+                items
+                |> Seq.indexed
+                |> Seq.tryFind (fun (j, _) -> int64 j = i)
+                |> Option.map snd
+                |> vOpt
             | _ -> unreachable "the checker rejects 'tryItem' on these arguments"))
 
 let private skipImpl: Value =
@@ -3026,6 +2940,17 @@ let private distinctByImpl: Value =
                     stage (fun x -> if seen.Add(apply keyf x) then Emit x else Skip))
             | v -> unreachable $"the checker rejects 'distinctBy' on {formatValue v}"))
 
+let private reduceOpt (folder: Value) (items: seq<Value>) : Value voption =
+    let mutable acc = ValueNone
+
+    for x in items do
+        acc <-
+            match acc with
+            | ValueNone -> ValueSome x
+            | ValueSome a -> ValueSome(apply2 folder a x)
+
+    acc
+
 // fold without a seed: the first element is the accumulator (raises on
 // empty — the head message shape)
 let private reduceImpl: Value =
@@ -3033,15 +2958,7 @@ let private reduceImpl: Value =
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                let mutable acc = ValueNone
-
-                for x in items do
-                    acc <-
-                        match acc with
-                        | ValueNone -> ValueSome x
-                        | ValueSome a -> ValueSome(apply2 folder a x)
-
-                match acc with
+                match reduceOpt folder items with
                 | ValueSome a -> a
                 | ValueNone -> failwith "reduce: empty sequence"
             | v -> unreachable $"the checker rejects 'reduce' on {formatValue v}"))
@@ -3054,15 +2971,7 @@ let private tryReduceImpl: Value =
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                let mutable acc = ValueNone
-
-                for x in items do
-                    acc <-
-                        match acc with
-                        | ValueNone -> ValueSome x
-                        | ValueSome a -> ValueSome(apply2 folder a x)
-
-                match acc with
+                match reduceOpt folder items with
                 | ValueSome a -> vSome a
                 | ValueNone -> vNone
             | v -> unreachable $"the checker rejects 'tryReduce' on {formatValue v}"))
@@ -3098,20 +3007,17 @@ let private scanImpl: Value =
                         })
                 | v -> unreachable $"the checker rejects 'scan' on {formatValue v}")))
 
+let private pickerOf (f: Value) (x: Value) : Value option =
+    match apply f x with
+    | VUnion("Some", Some v) -> Some v
+    | VUnion("None", None) -> None
+    | v -> unreachable $"the checker guarantees an Option picker, got {formatValue v}"
+
 let private tryPickImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items ->
-                items
-                |> Seq.tryPick (fun x ->
-                    match apply f x with
-                    | VUnion("Some", Some v) -> Some v
-                    | VUnion("None", None) -> None
-                    | v -> unreachable $"the checker guarantees an Option picker, got {formatValue v}")
-                |> function
-                    | Some v -> VUnion("Some", Some v)
-                    | None -> VUnion("None", None)
+            | VSeq items -> vOpt (Seq.tryPick (pickerOf f) items)
             | v -> unreachable $"the checker rejects 'tryPick' on {formatValue v}"))
 
 let private pickImpl: Value =
@@ -3119,15 +3025,9 @@ let private pickImpl: Value =
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                items
-                |> Seq.tryPick (fun x ->
-                    match apply f x with
-                    | VUnion("Some", Some v) -> Some v
-                    | VUnion("None", None) -> None
-                    | v -> unreachable $"the checker guarantees an Option picker, got {formatValue v}")
-                |> function
-                    | Some v -> v
-                    | None -> failwith "pick: no matching element"
+                match Seq.tryPick (pickerOf f) items with
+                | Some v -> v
+                | None -> failwith "pick: no matching element"
             | v -> unreachable $"the checker rejects 'pick' on {formatValue v}"))
 
 // set difference, F#'s argument order: the exclusions first, the
@@ -3760,17 +3660,20 @@ let private withReadStream (r: string) (f: Stream -> 'a) : 'a =
             use s = openShared r
             f (s :> Stream))
 
+let private readAllLines (sr: StreamReader) : string[] =
+    let acc = ResizeArray()
+    let mutable line = sr.ReadLine()
+
+    while line <> null do
+        acc.Add line
+        line <- sr.ReadLine()
+
+    acc.ToArray()
+
 let private readLinesShared (r: string) : string[] =
     withReadStream r (fun s ->
         use sr = new StreamReader(s)
-        let acc = ResizeArray()
-        let mutable line = sr.ReadLine()
-
-        while line <> null do
-            acc.Add line
-            line <- sr.ReadLine()
-
-        acc.ToArray())
+        readAllLines sr)
 
 // a read-only window [start, start+len) over a seekable stream — the
 // byte range File.readFrom decodes [D:file-readfrom]
@@ -3874,14 +3777,7 @@ let private readLinesFrom (op: string) (r: string) (off: int64) : string[] * int
             let next = lastLf + 1L
             use w = new WindowStream(s, off, next - off)
             use sr = new StreamReader(w, System.Text.UTF8Encoding(false), (off = 0L))
-            let acc = ResizeArray()
-            let mutable line = sr.ReadLine()
-
-            while line <> null do
-                acc.Add line
-                line <- sr.ReadLine()
-
-            acc.ToArray(), next)
+            readAllLines sr, next)
 
 let private readTextShared (r: string) : string =
     withReadStream r (fun s ->
@@ -3950,9 +3846,8 @@ let private fromBase64Text (name: string) (s: string) : Result<string, string> =
         with _ ->
             Error $"{name}: invalid base64: \"{excerpt s}\""
 
-    match bytes with
-    | Error e -> Error e
-    | Ok(b: byte[]) ->
+    bytes
+    |> Result.bind (fun (b: byte[]) ->
         // NUL is non-text too [D:encoding-law]: it is valid UTF-8, but
         // it is the byte the binary detector keys on [D:binary-echo],
         // and a NUL-bearing string silently truncates at every C
@@ -3964,7 +3859,7 @@ let private fromBase64Text (name: string) (s: string) : Result<string, string> =
             try
                 Ok(utf8Strict.GetString b)
             with _ ->
-                Error $"{name}: the decoded content is not text (not valid UTF-8)"
+                Error $"{name}: the decoded content is not text (not valid UTF-8)")
 
 let private strMembers: (string * Ty * Value) list = [
     "contains", TFun(TStr, TFun(TStr, TBool)), str2Bool "contains" (fun needle s -> s.Contains needle)
@@ -4016,15 +3911,15 @@ let private strMembers: (string * Ty * Value) list = [
     "sha256",
     TFun(TStr, TStr),
     str1 "sha256" (fun s ->
-        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes s)
-        |> Array.map (fun b -> b.ToString "x2")
-        |> String.concat "")
+        System.Convert.ToHexStringLower(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes s)
+        ))
     "sha1",
     TFun(TStr, TStr),
     str1 "sha1" (fun s ->
-        System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.UTF8.GetBytes s)
-        |> Array.map (fun b -> b.ToString "x2")
-        |> String.concat "")
+        System.Convert.ToHexStringLower(
+            System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.UTF8.GetBytes s)
+        ))
     // unwrapped by construction — GNU base64 wraps at 76 cols (the -w0
     // tax); Convert.ToBase64String simply does not have the problem
     "toBase64",
@@ -4320,9 +4215,8 @@ let pathToName (s: string) : string =
 // them — the home a child would see [D:home-overlay]
 let homeDir () : string =
     let home =
-        match Session.getEnv "HOME" with
-        | None -> System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
-        | Some h -> h
+        Session.getEnv "HOME"
+        |> Option.defaultWith (fun () -> System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile)
 
     if home = "" then
         failwith "Path.home: no home directory — HOME is empty (or unset with no OS home); `~` and Path.home need one"
@@ -4381,10 +4275,7 @@ let private pathMembers: (string * Ty * Value) list = [
     TFun(TStr, TNamed("Option", [ TStr ])),
     VBuiltin(fun v ->
         match v with
-        | VStr prog ->
-            match Extern.which (Proc.spawnPairs None []) prog with
-            | Some full -> VUnion("Some", Some(VStr full))
-            | None -> VUnion("None", None)
+        | VStr prog -> Extern.which (Proc.spawnPairs None []) prog |> Option.map VStr |> vOpt
         | v -> unreachable $"the checker rejects 'Path.which' on {formatValue v}")
     // home + XDG dirs [D:path-home] — the typed replacement for `~`/`$HOME`
     // (weir expands nothing in argv): `cat $"{Path.home ()}/.bashrc"`
@@ -4521,13 +4412,10 @@ let private argsValueImpl: Value =
     VBuiltin(fun l ->
         match l with
         | VStr flag ->
-            let rec find =
-                function
-                | f :: v :: _ when f = flag -> VUnion("Some", Some(VStr v))
-                | _ :: rest -> find rest
-                | [] -> VUnion("None", None)
-
-            find Session.ScriptArgs
+            Session.ScriptArgs
+            |> Seq.pairwise
+            |> Seq.tryPick (fun (f, v) -> if f = flag then Some(VStr v) else None)
+            |> vOpt
         | v -> unreachable $"the checker rejects 'Args.value' on {formatValue v}")
 
 let private argsMembers: (string * Ty * Value) list = [
@@ -4666,11 +4554,8 @@ let private envPairImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun v ->
             match n, v with
-            | VStr n, VStr v ->
-                Proc.envKeyRefusal "Env.pair" n
-                recordOf envVarDef [ VStr n; VStr v ]
             // the `NAME=$s` desugar admits a Secret [D:secret]
-            | VStr n, VSecret v ->
+            | VStr n, (VStr v | VSecret v) ->
                 Proc.envKeyRefusal "Env.pair" n
                 recordOf envVarDef [ VStr n; VStr v ]
             | _ -> unreachable "the checker rejects 'Env.pair' on these arguments"))
@@ -4720,9 +4605,7 @@ let private envMembers: (string * Ty * Value) list = [
         match v with
         | VStr name ->
             // the `within env` overlay included [D:env-overlay-read]
-            match Session.getEnv name with
-            | None -> VUnion("None", None)
-            | Some value -> VUnion("Some", Some(VStr value))
+            Session.getEnv name |> Option.map VStr |> vOpt
         | v -> unreachable $"the checker rejects 'Env.get' on {formatValue v}")
     // the one-var string forms [D:env-need-getor]: Env.get's read
     // (overlay included, set-but-empty is set) with the unwrap built in
@@ -4917,14 +4800,17 @@ let private refuseInPlan (op: string) (why: string) : Value option =
 // the performers [D:plan-apply]: one body per mutation, shared by the
 // direct builtin and Plan.apply's replay of its Op, so an applied plan
 // runs exactly the direct call's checks. `op` names the caller in messages.
-let private preFileDelete (pr: FsProbe) (op: string) (r: string) : unit =
+let private requireFileIn (pr: FsProbe) (op: string) (r: string) (dirHint: string) : unit =
     let k = pr.Kind r
 
     if k = 2 then
-        failwith $"{op}: {quoteData r} is a directory — Dir.delete removes a directory"
+        failwith $"{op}: {quoteData r} is a directory — {dirHint}"
 
     if k <> 1 then
         failwith $"{op}: no such file: {quoteData r}"
+
+let private preFileDelete (pr: FsProbe) (op: string) (r: string) : unit =
+    requireFileIn pr op r "Dir.delete removes a directory"
 
 let private doFileDelete (op: string) (r: string) : unit =
     preFileDelete realProbe op r
@@ -4935,13 +4821,7 @@ let private refuseExistingDst (pr: FsProbe) (op: string) (dst: string) : unit =
         failwith $"{op}: destination exists: {quoteData dst}"
 
 let private preFileCopy (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
-    let k = pr.Kind src
-
-    if k = 2 then
-        failwith $"{op}: {quoteData src} is a directory — Dir.copy copies a directory"
-
-    if k <> 1 then
-        failwith $"{op}: no such file: {quoteData src}"
+    requireFileIn pr op src "Dir.copy copies a directory"
 
     if pr.Dangling src then
         failwith $"{op}: dangling symlink: {quoteData src} — its target does not exist"
@@ -4963,13 +4843,7 @@ let private doFileCopy (op: string) (src: string) (dst: string) : unit =
             System.IO.File.Copy(src, dst))
 
 let private preFileMove (pr: FsProbe) (op: string) (src: string) (dst: string) : unit =
-    let k = pr.Kind src
-
-    if k = 2 then
-        failwith $"{op}: {quoteData src} is a directory — Dir.move moves a directory"
-
-    if k <> 1 then
-        failwith $"{op}: no such file: {quoteData src}"
+    requireFileIn pr op src "Dir.move moves a directory"
 
     refuseExistingDst pr op dst
     requireParent pr op dst
@@ -4987,6 +4861,20 @@ let private crossDevice (src: string) (dst: string) (e: System.IO.IOException) :
     else
         e.HResult = 18 // EXDEV on Linux and macOS
 
+let private ioReason (e: exn) : string =
+    match e with
+    | :? System.UnauthorizedAccessException -> "permission denied"
+    | e -> e.Message
+
+let private renamedInPlace (op: string) (src: string) (dst: string) : bool =
+    try
+        System.IO.Directory.Move(src, dst)
+        true
+    with
+    | :? System.UnauthorizedAccessException -> failwith $"{op}: permission denied: {quoteData src}"
+    | :? System.IO.IOException as e when crossDevice src dst e -> false
+    | :? System.IO.IOException as e -> failwith $"{op}: cannot access {quoteData src} — {quoteData e.Message}"
+
 let private doFileMove (op: string) (src: string) (dst: string) : unit =
     preFileMove realProbe op src dst
 
@@ -4997,32 +4885,18 @@ let private doFileMove (op: string) (src: string) (dst: string) : unit =
         // or not — File.Move's cross-filesystem fallback would copy what
         // it points at [D:file-move-link]. Directory.Move is the bare
         // rename(2), EXDEV surfacing as an IOException, as Dir.move uses.
-        let renamed =
-            try
-                System.IO.Directory.Move(src, dst)
-                true
-            with
-            | :? System.UnauthorizedAccessException -> failwith $"{op}: permission denied: {quoteData src}"
-            | :? System.IO.IOException as e when crossDevice src dst e -> false
-            | :? System.IO.IOException as e -> failwith $"{op}: cannot access {quoteData src} — {quoteData e.Message}"
-
-        if not renamed then
-            let reason (e: exn) =
-                match e with
-                | :? System.UnauthorizedAccessException -> "permission denied"
-                | e -> e.Message
-
+        if not (renamedInPlace op src dst) then
             try
                 System.IO.File.CreateSymbolicLink(dst, target) |> ignore
             with e ->
                 failwith
-                    $"{op}: cannot move the link {quoteData src} to {quoteData dst} across filesystems ({quoteData (reason e)}); the source is unchanged"
+                    $"{op}: cannot move the link {quoteData src} to {quoteData dst} across filesystems ({quoteData (ioReason e)}); the source is unchanged"
 
             try
                 System.IO.File.Delete src
             with e ->
                 failwith
-                    $"{op}: linked {quoteData dst} across filesystems, but could not remove the source link {quoteData src} — {quoteData (reason e)}"
+                    $"{op}: linked {quoteData dst} across filesystems, but could not remove the source link {quoteData src} — {quoteData (ioReason e)}"
 
 // mkdir -p: a file at the path or at any ancestor blocks it
 let private preDirCreate (pr: FsProbe) (op: string) (r: string) : unit =
@@ -5033,9 +4907,10 @@ let private preDirCreate (pr: FsProbe) (op: string) (r: string) : unit =
         | parent when parent = p -> [ p ]
         | parent -> p :: ancestors parent
 
-    match ancestors r |> List.rev |> List.tryFind (fun p -> pr.Kind p = 1) with
-    | Some f -> failwith $"{op}: {quoteData f} is a file — a directory cannot be created there"
-    | None -> ()
+    ancestors r
+    |> List.rev
+    |> List.tryFind (fun p -> pr.Kind p = 1)
+    |> Option.iter (fun f -> failwith $"{op}: {quoteData f} is a file — a directory cannot be created there")
 
 let private doDirCreate (op: string) (r: string) : unit =
     // mkdir -p: parents created, existing = the post-condition
@@ -5143,9 +5018,9 @@ let private copyTree (op: string) (keepTimes: bool) (src: string) (dst: string) 
                     // opened — `cp -R`'s reading [D:dircopy-special]
                     match Session.specialFile e.FullName with
                     | Some special ->
-                        match Session.makeSpecialFile target special with
-                        | None -> ()
-                        | Some why -> failwith $"{op}: cannot create the special file {quoteData target} — {why}"
+                        Session.makeSpecialFile target special
+                        |> Option.iter (fun why ->
+                            failwith $"{op}: cannot create the special file {quoteData target} — {why}")
                     | None -> System.IO.File.Copy(e.FullName, target)
             | link ->
                 match e with
@@ -5171,21 +5046,7 @@ let private doDirCopy (op: string) (src: string) (dst: string) : unit =
 let private doDirMove (op: string) (src: string) (dst: string) : unit =
     preDirMove realProbe op src dst
 
-    let moved =
-        try
-            System.IO.Directory.Move(src, dst)
-            true
-        with
-        | :? System.UnauthorizedAccessException -> failwith $"{op}: permission denied: {quoteData src}"
-        | :? System.IO.IOException as e when crossDevice src dst e -> false
-        | :? System.IO.IOException as e -> failwith $"{op}: cannot access {quoteData src} — {quoteData e.Message}"
-
-    if not moved then
-        let reason (e: exn) =
-            match e with
-            | :? System.UnauthorizedAccessException -> "permission denied"
-            | e -> e.Message
-
+    if not (renamedInPlace op src dst) then
         // a final symlink moves as the link, its target text verbatim —
         // what the rename would have done; nothing is read through it
         // [D:dir-move-cross-device]
@@ -5206,28 +5067,48 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
 
                         ""
                     with ce ->
-                        $"; the partial copy at {quoteData dst} could not be removed ({quoteData (reason ce)})"
+                        $"; the partial copy at {quoteData dst} could not be removed ({quoteData (ioReason ce)})"
 
                 failwith
-                    $"{op}: cannot move {quoteData src} to {quoteData dst} across filesystems — the copy failed ({quoteData (reason e)}); the source is unchanged{leftover}"
+                    $"{op}: cannot move {quoteData src} to {quoteData dst} across filesystems — the copy failed ({quoteData (ioReason e)}); the source is unchanged{leftover}"
 
             try
                 System.IO.Directory.Delete(src, true)
             with e ->
                 failwith
-                    $"{op}: copied {quoteData src} to {quoteData dst} across filesystems, but could not remove the source — {quoteData (reason e)}"
+                    $"{op}: copied {quoteData src} to {quoteData dst} across filesystems, but could not remove the source — {quoteData (ioReason e)}"
         | target ->
             try
                 System.IO.Directory.CreateSymbolicLink(dst, target) |> ignore
             with e ->
                 failwith
-                    $"{op}: cannot move the link {quoteData src} to {quoteData dst} across filesystems ({quoteData (reason e)}); the source is unchanged"
+                    $"{op}: cannot move the link {quoteData src} to {quoteData dst} across filesystems ({quoteData (ioReason e)}); the source is unchanged"
 
             try
                 System.IO.Directory.Delete(System.IO.Path.TrimEndingDirectorySeparator src)
             with e ->
                 failwith
-                    $"{op}: linked {quoteData dst} across filesystems, but could not remove the source link {quoteData src} — {quoteData (reason e)}"
+                    $"{op}: linked {quoteData dst} across filesystems, but could not remove the source link {quoteData src} — {quoteData (ioReason e)}"
+
+let private overwriteKeepingBom (r: string) (lines: Value seq) : unit =
+    // one handle for peek + truncate + write — a separate
+    // read-open racing the write-open trips a Windows sharing
+    // violation [D:encoding-law]. Peek the existing first
+    // bytes to decide the BOM, truncate, then write.
+    use fs =
+        new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
+
+    // preserve an existing UTF-8 BOM; a new or no-BOM file
+    // stays bare, so this never adds a BOM
+    let keepBom = bomAt fs
+
+    // LF bytes on every platform [D:lf-output] — a
+    // written file is data (hashes, sigs, diffs).
+    let payload = writePayload keepBom lines
+
+    fs.SetLength 0L
+    fs.Seek(0L, SeekOrigin.Begin) |> ignore
+    fs.Write(payload, 0, payload.Length)
 
 let private fileMembers: (string * Ty * Value) list = [
     "read",
@@ -5294,25 +5175,7 @@ let private fileMembers: (string * Ty * Value) list = [
                             use s = s
                             let payload = writePayload false lines
                             s.Write(payload, 0, payload.Length)
-                        | None ->
-                            // one handle for peek + truncate + write — a separate
-                            // read-open racing the write-open trips a Windows sharing
-                            // violation [D:encoding-law]. Peek the existing first
-                            // bytes to decide the BOM, truncate, then write.
-                            use fs =
-                                new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
-
-                            // preserve an existing UTF-8 BOM; a new or no-BOM file
-                            // stays bare, so this never adds a BOM
-                            let keepBom = bomAt fs
-
-                            // LF bytes on every platform [D:lf-output] — a
-                            // written file is data (hashes, sigs, diffs).
-                            let payload = writePayload keepBom lines
-
-                            fs.SetLength 0L
-                            fs.Seek(0L, SeekOrigin.Begin) |> ignore
-                            fs.Write(payload, 0, payload.Length))
+                        | None -> overwriteKeepingBom r lines)
 
                     VUnit
             | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
@@ -5351,12 +5214,7 @@ let private fileMembers: (string * Ty * Value) list = [
                     writeGuard "File.append" r
 
                     ioGuarded "File.append" r (fun () ->
-                        let sb = System.Text.StringBuilder()
-
-                        for l in lines do
-                            sb.Append(asString l).Append '\n' |> ignore
-
-                        let bytes = utf8Strict.GetBytes(sb.ToString())
+                        let bytes = writePayload false lines
 
                         match Session.openPolledWrite r with
                         | Some s ->
@@ -5498,6 +5356,39 @@ let private fsStr2
                     VUnit
             | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
 
+let private fsStr1
+    (name: string)
+    (opCase: string)
+    (pre: FsProbe -> string -> string -> unit)
+    (f: string -> string -> unit)
+    : Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+
+            match capPath1 (fun pr -> pre pr name r) opCase r with
+            | Some captured -> captured
+            | None ->
+                f name r
+                VUnit
+        | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
+
+let private fileHashImpl (name: string) (hash: Stream -> byte[]) : Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr p ->
+            let r = Session.resolveFs p
+            PlanMode.checkRead name r
+            readGuard name r
+
+            VStr(
+                ioGuarded name r (fun () ->
+                    // a FIFO is cut as File.read's is [D:fifo-ops-polled]
+                    withReadStream r (fun fs -> System.Convert.ToHexStringLower(hash fs)))
+            )
+        | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
+
 let private fsMoreFileMembers: (string * Ty * Value) list = [
     "mode",
     // the narrow fact stays a query, not a column [D:filerow]:
@@ -5622,55 +5513,12 @@ let private fsMoreFileMembers: (string * Ty * Value) list = [
     // implementation is not required to materialise; the install
     // story hashes files bigger than a value should be
     TFun(TStr, TStr),
-    VBuiltin(fun v ->
-        match v with
-        | VStr p ->
-            let r = Session.resolveFs p
-            PlanMode.checkRead "File.sha256" r
-            readGuard "File.sha256" r
-
-            VStr(
-                ioGuarded "File.sha256" r (fun () ->
-                    // a FIFO is cut as File.read's is [D:fifo-ops-polled]
-                    withReadStream r (fun fs ->
-                        System.Security.Cryptography.SHA256.HashData fs
-                        |> Array.map (fun x -> x.ToString "x2")
-                        |> String.concat ""))
-            )
-        | v -> unreachable $"the checker rejects 'File.sha256' on {formatValue v}")
+    fileHashImpl "File.sha256" (fun s -> System.Security.Cryptography.SHA256.HashData s)
     "sha1",
     // streamed like File.sha256 [D:sha1]
     TFun(TStr, TStr),
-    VBuiltin(fun v ->
-        match v with
-        | VStr p ->
-            let r = Session.resolveFs p
-            PlanMode.checkRead "File.sha1" r
-            readGuard "File.sha1" r
-
-            VStr(
-                ioGuarded "File.sha1" r (fun () ->
-                    // a FIFO is cut as File.read's is [D:fifo-ops-polled]
-                    withReadStream r (fun fs ->
-                        System.Security.Cryptography.SHA1.HashData fs
-                        |> Array.map (fun x -> x.ToString "x2")
-                        |> String.concat ""))
-            )
-        | v -> unreachable $"the checker rejects 'File.sha1' on {formatValue v}")
-    "delete",
-    TFun(TStr, TUnit),
-    VBuiltin(fun v ->
-        match v with
-        | VStr p ->
-            let r = Session.resolveFs p
-
-            match capPath1 (fun pr -> preFileDelete pr "File.delete" r) "DeleteFile" r with
-            | Some captured -> captured
-            | None ->
-
-                doFileDelete "File.delete" r
-                VUnit
-        | v -> unreachable $"the checker rejects 'File.delete' on {formatValue v}")
+    fileHashImpl "File.sha1" (fun s -> System.Security.Cryptography.SHA1.HashData s)
+    "delete", TFun(TStr, TUnit), fsStr1 "File.delete" "DeleteFile" preFileDelete doFileDelete
     "copy", TFun(TStr, TFun(TStr, TUnit)), fsStr2 "File.copy" "Copy" preFileCopy (doFileCopy "File.copy")
     "move", TFun(TStr, TFun(TStr, TUnit)), fsStr2 "File.move" "Move" preFileMove (doFileMove "File.move")
     "size",
@@ -5721,20 +5569,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list = [
 ]
 
 let private dirMembers: (string * Ty * Value) list = [
-    "create",
-    TFun(TStr, TUnit),
-    VBuiltin(fun v ->
-        match v with
-        | VStr p ->
-            let r = Session.resolveFs p
-
-            match capPath1 (fun pr -> preDirCreate pr "Dir.create" r) "MakeDir" r with
-            | Some captured -> captured
-            | None ->
-
-                doDirCreate "Dir.create" r
-                VUnit
-        | v -> unreachable $"the checker rejects 'Dir.create' on {formatValue v}")
+    "create", TFun(TStr, TUnit), fsStr1 "Dir.create" "MakeDir" preDirCreate doDirCreate
     "exists",
     TFun(TStr, TBool),
     VBuiltin(fun v ->
@@ -5744,34 +5579,8 @@ let private dirMembers: (string * Ty * Value) list = [
             PlanMode.checkRead "Dir.exists" r
             VBool(System.IO.Directory.Exists r)
         | v -> unreachable $"the checker rejects 'Dir.exists' on {formatValue v}")
-    "delete",
-    TFun(TStr, TUnit),
-    VBuiltin(fun v ->
-        match v with
-        | VStr p ->
-            let r = Session.resolveFs p
-
-            match capPath1 (fun pr -> preDirDelete pr "Dir.delete" r) "DeleteDir" r with
-            | Some captured -> captured
-            | None ->
-
-                doDirDelete "Dir.delete" r
-                VUnit
-        | v -> unreachable $"the checker rejects 'Dir.delete' on {formatValue v}")
-    "deleteAll",
-    TFun(TStr, TUnit),
-    VBuiltin(fun v ->
-        match v with
-        | VStr p ->
-            let r = Session.resolveFs p
-
-            match capPath1 (fun pr -> requireDirIn pr "Dir.deleteAll" r) "DeleteTree" r with
-            | Some captured -> captured
-            | None ->
-
-                doDirDeleteAll "Dir.deleteAll" r
-                VUnit
-        | v -> unreachable $"the checker rejects 'Dir.deleteAll' on {formatValue v}")
+    "delete", TFun(TStr, TUnit), fsStr1 "Dir.delete" "DeleteDir" preDirDelete doDirDelete
+    "deleteAll", TFun(TStr, TUnit), fsStr1 "Dir.deleteAll" "DeleteTree" requireDirIn doDirDeleteAll
     "list",
     TFun(TStr, TSeq TStr),
     VBuiltin(fun v ->
@@ -5972,23 +5781,13 @@ let private bytesMembers: (string * Ty * Value) list = [
     TFun(TBytes, TStr),
     VBuiltin(fun v ->
         match v with
-        | VBytes b ->
-            VStr(
-                System.Security.Cryptography.SHA256.HashData b
-                |> Array.map (fun x -> x.ToString "x2")
-                |> String.concat ""
-            )
+        | VBytes b -> VStr(System.Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData b))
         | v -> unreachable $"the checker rejects 'Bytes.sha256' on {formatValue v}")
     "sha1",
     TFun(TBytes, TStr),
     VBuiltin(fun v ->
         match v with
-        | VBytes b ->
-            VStr(
-                System.Security.Cryptography.SHA1.HashData b
-                |> Array.map (fun x -> x.ToString "x2")
-                |> String.concat ""
-            )
+        | VBytes b -> VStr(System.Convert.ToHexStringLower(System.Security.Cryptography.SHA1.HashData b))
         | v -> unreachable $"the checker rejects 'Bytes.sha1' on {formatValue v}")
     "length",
     TFun(TBytes, TSize),
@@ -6479,9 +6278,8 @@ let private headerPairs (v: Value) : (string * string) list =
         items
         |> Seq.map (fun it ->
             match it with
-            | VTuple [ VStr k; VStr hv ] -> k, hv
             // secretHeaders: revealed at send, the same deliberate reveal
-            | VTuple [ VStr k; VSecret hv ] -> k, hv
+            | VTuple [ VStr k; (VStr hv | VSecret hv) ] -> k, hv
             | v -> unreachable $"the checker rejects a header pair {formatValue v}")
         |> List.ofSeq
     | v -> unreachable $"the checker rejects a header seq {formatValue v}"
@@ -6501,6 +6299,14 @@ let private httpDefaults: Value =
         ]
     )
 
+let private isAuthorization (k: string, _: string) : bool =
+    System.String.Equals(k, "Authorization", System.StringComparison.OrdinalIgnoreCase)
+
+let private requestUrl (f: (string * Value) list) : string =
+    match recGet "url" f with
+    | VStr s -> s
+    | v -> unreachable $"url {formatValue v}"
+
 // translate the request record to Http.Req, send, raise on transport
 // failure (status is data — the caller decides) [D:http]
 let private prepareRequest (reqV: Value) : Http.Req * string =
@@ -6515,15 +6321,11 @@ let private prepareRequest (reqV: Value) : Http.Req * string =
         // `auth` and an explicit Authorization header would merge into one
         // invalid header on the wire — two credentials, refused
         if not auth.IsEmpty then
-            match
-                (plain @ secret)
-                |> List.tryFind (fun (k, _) ->
-                    System.String.Equals(k, "Authorization", System.StringComparison.OrdinalIgnoreCase))
-            with
-            | Some(k, _) ->
+            (plain @ secret)
+            |> List.tryFind isAuthorization
+            |> Option.iter (fun (k, _) ->
                 failwith
-                    $"Http: the request sets both `auth` and an '{k}' header — two credentials for one header; keep one (`auth` is the usual spelling)"
-            | None -> ()
+                    $"Http: the request sets both `auth` and an '{k}' header — two credentials for one header; keep one (`auth` is the usual spelling)")
 
         // the credential channels [D:secret-redirect]: auth's Authorization
         // and every secretHeaders name are dropped on a cross-origin
@@ -6538,19 +6340,12 @@ let private prepareRequest (reqV: Value) : Http.Req * string =
             |> Set.ofList
             |> Set.union (Set.ofList [ "authorization"; "proxy-authorization"; "cookie" ])
 
-        let url =
-            match get "url" with
-            | VStr s -> s
-            | v -> unreachable $"url {formatValue v}"
+        let url = requestUrl f
 
         // the URL's userinfo rides as Basic auth, as curl sends it, unless
         // the request already sets Authorization [D:url-redact]
         let urlAuth =
-            if
-                (auth @ plain @ secret)
-                |> List.exists (fun (k, _) ->
-                    System.String.Equals(k, "Authorization", System.StringComparison.OrdinalIgnoreCase))
-            then
+            if (auth @ plain @ secret) |> List.exists isAuthorization then
                 []
             else
                 Http.userinfoAuth url |> Option.toList
@@ -6593,9 +6388,8 @@ let private prepareRequest (reqV: Value) : Http.Req * string =
 
         // `Other v` is refused before send when v is not a method token
         // [D:http-method-token] — the header rule's sibling
-        match Http.methodUnsendable req.Method with
-        | Some why -> failwith $"Http: {why}"
-        | None -> ()
+        Http.methodUnsendable req.Method
+        |> Option.iter (fun why -> failwith $"Http: {why}")
 
         let host =
             try
@@ -6734,10 +6528,7 @@ let private httpCtor (methodCase: string) : Value =
 // when the error body is data to inspect, Http.send binds it instead.
 let private expectedBody (f: (string * Value) list) (resp: Http.Resp) : Value =
     if resp.Status < 200 || resp.Status >= 300 then
-        let url =
-            match recGet "url" f with
-            | VStr s -> s
-            | v -> unreachable $"url {formatValue v}"
+        let url = requestUrl f
 
         let snippet =
             let flat = resp.Body.Replace("\r", " ").Replace("\n", " ").Trim()
@@ -6917,15 +6708,7 @@ let private applyOp (op: Value) : unit =
     | VUnion("WriteFile", Some(VTuple [ VStr r; VSeq lines ])) ->
         writeGuard "Plan.apply (WriteFile)" r
 
-        ioGuarded "Plan.apply (WriteFile)" r (fun () ->
-            use fs =
-                new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
-
-            let keepBom = bomAt fs
-            let payload = writePayload keepBom lines
-            fs.SetLength 0L
-            fs.Seek(0L, SeekOrigin.Begin) |> ignore
-            fs.Write(payload, 0, payload.Length))
+        ioGuarded "Plan.apply (WriteFile)" r (fun () -> overwriteKeepingBom r lines)
     | VUnion("WriteFileAtomic", Some(VTuple [ VStr r; VSeq lines ])) ->
         writeGuard "Plan.apply (WriteFileAtomic)" r
         refuseFifoAtomic "Plan.apply (WriteFileAtomic)" r
@@ -7418,10 +7201,7 @@ let private uuidMembers: (string * Ty * Value) list =
         "version", TFun(TUuid, TInt), one "version" (fun g -> VInt(int64 (uuidVersion g)))
         "instant",
         TFun(TUuid, TNamed("Option", [ TInstant ])),
-        one "instant" (fun g ->
-            match uuidInstant g with
-            | Some ms -> VUnion("Some", Some(VInstant ms))
-            | None -> VUnion("None", None))
+        one "instant" (uuidInstant >> Option.map VInstant >> vOpt)
         "nil", TUuid, VUuid System.Guid.Empty
         "max", TUuid, VUuid System.Guid.AllBitsSet
         "toBytes", TFun(TUuid, TBytes), one "toBytes" (fun g -> VBytes(uuidBytes g))
@@ -7470,11 +7250,7 @@ let private mapMembers: (string * Ty * Value) list = [
                 | k -> failwith $"Map.get: no key {quoteData (formatValue k)}"))
     "tryGet",
     TFun(tK, TFun(mapTy tA, TNamed("Option", [ tA ]))),
-    VBuiltin(fun k ->
-        VBuiltin(fun mv ->
-            match Map.tryFind k (asMap "Map.tryGet" mv) with
-            | Some v -> VUnion("Some", Some v)
-            | None -> VUnion("None", None)))
+    VBuiltin(fun k -> VBuiltin(fun mv -> vOpt (Map.tryFind k (asMap "Map.tryGet" mv))))
     "has",
     TFun(tK, TFun(mapTy tA, TBool)),
     VBuiltin(fun k -> VBuiltin(fun mv -> VBool(Map.containsKey k (asMap "Map.has" mv))))
@@ -7512,10 +7288,7 @@ let private frontierWalk
     // seq or frontier raises at its 100001st node instead of filling
     // memory before the first step
     let enqueue (node: Value) =
-        let fresh =
-            match keyFor node with
-            | Some k -> visited.Add k
-            | None -> true
+        let fresh = keyFor node |> Option.forall visited.Add
 
         if fresh then
             if steps + queue.Count >= frontierBudget then
@@ -7668,21 +7441,20 @@ let private treeMembers: (string * Ty * Value) list = [
 // round-trip is composition (File.read |> Yaml.parse |> Yaml.merge p
 // |> to yaml |> File.write), so the one mutation stays visible.
 
+let private ymapPairs (xs: Value seq) : (string * Value) list =
+    xs
+    |> Seq.map (fun p ->
+        match p with
+        | VTuple [ VStr k; v ] -> k, v
+        | v -> unreachable $"a YMap pair is (string, Yaml): {formatValue v}")
+    |> List.ofSeq
+
 // structural node equality: YMap order-insensitive (a reordered mapping
 // is the same document), YSeq order-sensitive; seqs forced
 let rec private yamlEq (a: Value) (b: Value) : bool =
     match a, b with
     | VUnion("YMap", Some(VSeq ap)), VUnion("YMap", Some(VSeq bp)) ->
-        let pairs (xs: Value seq) =
-            xs
-            |> Seq.map (fun p ->
-                match p with
-                | VTuple [ VStr k; v ] -> k, v
-                | v -> unreachable $"a YMap pair is (string, Yaml): {formatValue v}")
-            |> List.ofSeq
-            |> List.sortBy fst
-
-        let al, bl = pairs ap, pairs bp
+        let al, bl = ymapPairs ap |> List.sortBy fst, ymapPairs bp |> List.sortBy fst
 
         al.Length = bl.Length
         && List.forall2 (fun (ka, va) (kb, vb) -> ka = kb && yamlEq va vb) al bl
@@ -7742,16 +7514,8 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
 
     match patch, target with
     | VUnion("YMap", Some(VSeq ppairs)), VUnion("YMap", Some(VSeq tpairs)) ->
-        let asPairs (xs: Value seq) =
-            xs
-            |> Seq.map (fun p ->
-                match p with
-                | VTuple [ VStr k; v ] -> k, v
-                | v -> unreachable $"a YMap pair is (string, Yaml): {formatValue v}")
-            |> List.ofSeq
-
         let merged =
-            asPairs ppairs
+            ymapPairs ppairs
             |> List.fold
                 (fun (acc: (string * Value) list) (k, pv) ->
                     match pv with
@@ -7764,7 +7528,7 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
                             match fresh pv with
                             | Some sv -> acc @ [ (k, sv) ]
                             | None -> acc)
-                (asPairs tpairs)
+                (ymapPairs tpairs)
 
         VUnion("YMap", Some(VSeq(merged |> List.map (fun (k, v) -> VTuple [ VStr k; v ]) |> List.toSeq)))
     | VUnion("YSeq", Some(VSeq pitems)), VUnion("YSeq", Some(VSeq titems)) ->
@@ -7779,10 +7543,7 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
                         let matches (t: Value) =
                             match (if by = "" then None else keyValOf by content), keyValOf by t with
                             | Some pk, Some tk -> yamlEq pk tk
-                            | _ ->
-                                match stripDrops content with
-                                | Some sc -> yamlEq sc t
-                                | None -> false
+                            | _ -> stripDrops content |> Option.exists (fun sc -> yamlEq sc t)
 
                         // every match goes: a patch applied twice is applied once
                         acc |> List.filter (fun t -> not (matches t))
@@ -7796,9 +7557,7 @@ let rec private yamlMerge (by: string) (patch: Value) (target: Value) : Value =
                         match keyed with
                         | Some pkv ->
                             let hit =
-                                acc
-                                |> List.tryFindIndex (fun t ->
-                                    keyValOf by t |> Option.map (yamlEq pkv) |> Option.defaultValue false)
+                                acc |> List.tryFindIndex (fun t -> keyValOf by t |> Option.exists (yamlEq pkv))
 
                             match hit with
                             | Some i -> acc |> List.mapi (fun j t -> if j = i then yamlMerge by pi t else t)
@@ -10244,25 +10003,17 @@ let private chainExitCodedImpl =
     suspendingN 2 (chainSuspended (chainCodeSuspended (fun code -> VInt(int64 code))))
     <| chainBuiltin (fun specs -> VInt(int64 (Proc.chainStreamCodeOf specs)))
 
+let private chainOrFail (msgV: Value) (code: int) : Value =
+    match msgV with
+    | VStr msg when code <> 0 -> failwith $"{msg} (exit {code})"
+    | _ -> VUnit
+
 let private chainOrFailedImpl =
     suspendingN 3 (fun flow args ->
         match args with
-        | msgV :: rest ->
-            chainSuspended
-                (chainCodeSuspended (fun code ->
-                    match msgV with
-                    | VStr msg when code <> 0 -> failwith $"{msg} (exit {code})"
-                    | _ -> VUnit))
-                flow
-                rest
+        | msgV :: rest -> chainSuspended (chainCodeSuspended (chainOrFail msgV)) flow rest
         | _ -> null)
-    <| VBuiltin(fun msgV ->
-        chainBuiltin (fun specs ->
-            let code = Proc.chainStreamCodeOf specs
-
-            match msgV with
-            | VStr msg when code <> 0 -> failwith $"{msg} (exit {code})"
-            | _ -> VUnit))
+    <| VBuiltin(fun msgV -> chainBuiltin (fun specs -> chainOrFail msgV (Proc.chainStreamCodeOf specs)))
 
 let private chainLinedImpl =
     chainBuiltin (fun specs ->

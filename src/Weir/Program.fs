@@ -132,8 +132,9 @@ let private evalOnce (input: string) : int =
                 // but the program must end in an expression — each kind
                 // keeps its own specific refusal message
                 let lastKindError =
-                    match checked' |> List.tryLast with
-                    | Some(_, chk) ->
+                    checked'
+                    |> List.tryLast
+                    |> Option.bind (fun (_, chk) ->
                         match chk.Kind with
                         | Statements.KType _ -> Some "-e takes an expression, not a declaration"
                         | Statements.KLet _ -> Some "-e takes an expression, not a let statement"
@@ -145,8 +146,7 @@ let private evalOnce (input: string) : int =
                             // form already refused [D:module-signatures]
                             Some "signatures belong to module APIs — scripts infer"
                         | Statements.KExpr _
-                        | Statements.KCmd _ -> None
-                    | None -> None
+                        | Statements.KCmd _ -> None)
 
                 match lastKindError with
                 | Some m ->
@@ -204,11 +204,10 @@ let private evalOnce (input: string) : int =
                                             // a named function short of arguments
                                             // echoes what it lacks [D:partial-echo]
                                             let names (head: string) =
-                                                match Statements.builtinParamNames chk.Env head with
-                                                | Some r -> Some r
-                                                | None ->
+                                                Statements.builtinParamNames chk.Env head
+                                                |> Option.orElseWith (fun () ->
                                                     Eval.lookupValue head venv
-                                                    |> Option.map (fun f -> head, Eval.closureParamNames f)
+                                                    |> Option.map (fun f -> head, Eval.closureParamNames f))
 
                                             match Statements.partialApp names te with
                                             | Some p ->
@@ -251,6 +250,12 @@ let private userinfoNote (url: string) : unit =
     if Http.stripUserinfo url <> url then
         Console.Error.WriteLine
             "weir add: note: the URL's credentials are not written to .weir/lock.json (it is committed) — `weir restore` fetches without them"
+
+let private weirDirOrLocal () : string =
+    Contracts.findWeirDir "."
+    // computed, not created [D:add-validates]: a failed add must
+    // leave the tree byte-identical, including no empty .weir/
+    |> Result.defaultWith (fun _ -> IO.Path.GetFullPath ".weir")
 
 // a script (or -e) tears down on its main thread: signals and a closed
 // stdout end it with their own code [D:signal-main-unwind] [D:stdout-epipe]
@@ -399,12 +404,7 @@ let main argv =
         // operate on the lockfile and are kind-agnostic by construction.
         // All resolve .weir/ from the CWD; check never does any of this.
         | [ "add"; "schema"; url; "--as"; name ] ->
-            let weirDir =
-                match Contracts.findWeirDir "." with
-                | Ok d -> d
-                // computed, not created [D:add-validates]: a failed add must
-                // leave the tree byte-identical, including no empty .weir/
-                | Error _ -> IO.Path.GetFullPath ".weir"
+            let weirDir = weirDirOrLocal ()
 
             // the vendor-name guard at the argv crossing [D:lockfile-confinement]
             // — the name becomes the vendored file, so a separator/`..`/absolute
@@ -426,10 +426,7 @@ let main argv =
                      1)
         | [ "add"; "sig"; tool ]
         | [ "add"; "sig"; "--global"; tool ] when not (tool.StartsWith "-") ->
-            let weirDir =
-                match Contracts.findWeirDir "." with
-                | Ok d -> d
-                | Error _ -> IO.Path.GetFullPath ".weir"
+            let weirDir = weirDirOrLocal ()
 
             // --global: the user dir, no lock [D:sig-arg-complete]
             let globalDir =
@@ -479,10 +476,7 @@ let main argv =
                 | Ok None -> None, (asName |> Option.defaultValue ""), None
                 | Ok(Some l) -> Some l, (asName |> Option.defaultValue l.Name), None
 
-            let weirDir =
-                match Contracts.findWeirDir "." with
-                | Ok d -> d
-                | Error _ -> IO.Path.GetFullPath ".weir"
+            let weirDir = weirDirOrLocal ()
 
             // R5: the alias namespace — a builtin module's name is reserved,
             // and the name must be able to derive an import alias. The
@@ -546,12 +540,11 @@ let main argv =
                              | Some old when old <> hash ->
                                  // a re-add is the update path: the sha
                                  // pair signals there is a diff to review
-                                 Console.WriteLine
-                                     $"updated module {name}: {old.Substring(0, 12)}… → {hash.Substring(0, 12)}…"
-                             | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
+                                 Console.WriteLine $"updated module {name}: {shortSha old} → {shortSha hash}"
+                             | Some _ -> Console.WriteLine $"module {name}: unchanged ({shortSha hash})"
                              | None ->
                                  Console.WriteLine
-                                     $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {quoteData (Http.redactUrl url)}")
+                                     $"added module {name} ({shortSha hash}, {memberCount} member(s)) from {quoteData (Http.redactUrl url)}")
 
                             Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
                             userinfoNote url

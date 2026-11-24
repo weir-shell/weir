@@ -344,14 +344,17 @@ let private freePort () : int =
     s.Bind(IPEndPoint(IPAddress.Loopback, 0))
     (s.LocalEndPoint :?> IPEndPoint).Port
 
-let private addressInUse (ex: exn) : bool =
+let private socketErrorIn (codes: Sockets.SocketError list) (ex: exn) : bool =
     let rec go (e: exn) =
         match e with
         | null -> false
-        | :? Sockets.SocketException as se -> se.SocketErrorCode = Sockets.SocketError.AddressAlreadyInUse
+        | :? Sockets.SocketException as se -> List.contains se.SocketErrorCode codes
         | e -> go e.InnerException
 
     go ex
+
+let private addressInUse (ex: exn) : bool =
+    socketErrorIn [ Sockets.SocketError.AddressAlreadyInUse ] ex
 
 /// bind loopback:port and start serving; port 0 binds a free port, and
 /// the handle's Port is the one bound [D:serve-port-option]. Raises a
@@ -438,15 +441,12 @@ let start (port: int) (lim: Limits) : Handle =
         | e -> e
 
     let v6Absent (ex: exn) =
-        let rec go (e: exn) =
-            match e with
-            | null -> false
-            | :? Sockets.SocketException as se ->
-                se.SocketErrorCode = Sockets.SocketError.AddressFamilyNotSupported
-                || se.SocketErrorCode = Sockets.SocketError.AddressNotAvailable
-            | e -> go e.InnerException
-
-        go ex
+        socketErrorIn
+            [
+                Sockets.SocketError.AddressFamilyNotSupported
+                Sockets.SocketError.AddressNotAvailable
+            ]
+            ex
 
     try
         if Sockets.Socket.OSSupportsIPv6 then
@@ -650,15 +650,17 @@ let framingHeaders: Set<string> =
         "upgrade"
     ]
 
+let private nonFraming (headers: (string * string) list) : (string * string) list =
+    headers
+    |> List.filter (fun (k, _) -> not (framingHeaders.Contains(k.ToLowerInvariant())))
+
 /// refuse the first response header the server cannot send
 /// [D:http-header-unsendable]: the shared predicate words the reason, so a
 /// header the wire would refuse is never dropped unnamed (writeResponse's
 /// add raises the same refusal as a backstop). Framing headers are
 /// skipped — the server owns them (dropped by design)
 let refuseUnsendableResponseHeaders (headers: (string * string) list) : unit =
-    for (k, v) in
-        headers
-        |> List.filter (fun (k, _) -> not (framingHeaders.Contains(k.ToLowerInvariant()))) do
+    for (k, v) in nonFraming headers do
         match Http.headerUnsendable (k, v) with
         | Some reason -> raise (ResponseHeaderRefused(Http.headerUnsendableMessage "response header" k reason))
         | None -> ()
@@ -712,9 +714,7 @@ let writeResponse (ctx: SCtx) (resp: SResp) (onStreamFailure: string -> unit) : 
             if ctx.CloseAfter then
                 out.Headers.Connection <- "close"
 
-            for (k, v) in
-                resp.Headers
-                |> List.filter (fun (k, _) -> not (framingHeaders.Contains(k.ToLowerInvariant()))) do
+            for (k, v) in nonFraming resp.Headers do
                 try
                     out.Headers.Append(k, Microsoft.Extensions.Primitives.StringValues v)
                 with ex ->

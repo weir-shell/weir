@@ -34,27 +34,21 @@ let internal scriptBody (rawLines: string list) : string list * int * SigDecl li
         | first :: tail when first.TrimStart().StartsWith "#sig" ->
             let t = (stripComment first).Trim()
 
-            let decl =
+            let tool, over =
                 match t.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) |> List.ofArray with
-                | [ "#sig"; tool ] -> {
-                    Tool = tool
-                    Override = None
-                    Line = off + 1
-                  }
-                | [ "#sig"; tool; path ] when path.StartsWith "\"" && path.EndsWith "\"" && path.Length > 1 -> {
-                    Tool = tool
-                    Override = Some(path.Substring(1, path.Length - 2))
-                    Line = off + 1
-                  }
+                | [ "#sig"; tool ] -> tool, None
+                | [ "#sig"; tool; path ] when path.StartsWith "\"" && path.EndsWith "\"" && path.Length > 1 ->
+                    tool, Some(path.Substring(1, path.Length - 2))
                 | _ ->
                     // malformed: carry the raw for the diagnostic
-                    {
-                        Tool = ""
-                        Override = Some t
-                        Line = off + 1
-                    }
+                    "", Some t
 
-            sigs.Add decl
+            sigs.Add {
+                Tool = tool
+                Override = over
+                Line = off + 1
+            }
+
             rest <- tail
             off <- off + 1
         | _ -> go <- false
@@ -957,11 +951,12 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
                     let t = yieldTransitive n t
 
                     if Map.containsKey n t.Types then
-                        match plainHolder t n with
-                        | Some holder ->
-                            let t = renameEnvTypes (Map [ n, qualifiedKey t taken holder n ]) t
-                            claim t (qualifiedKey t taken lm.Alias n)
-                        | None -> claim t (qualifiedKey t taken lm.Alias n)
+                        let t =
+                            match plainHolder t n with
+                            | Some holder -> renameEnvTypes (Map [ n, qualifiedKey t taken holder n ]) t
+                            | None -> t
+
+                        claim t (qualifiedKey t taken lm.Alias n)
                     elif anyOwner t n then
                         claim t (qualifiedKey t taken lm.Alias n)
                     else
@@ -1074,6 +1069,13 @@ let rec private checkStatementCore
             Note = None
             Related = []
             Warnings = []
+        }
+
+    let typedAt (tag: StmtTag) (span: Span) (msg: string) =
+        typed tag {
+            Span = span
+            Message = msg
+            Origin = None
         }
 
     let warningsOf te = [
@@ -1189,16 +1191,20 @@ let rec private checkStatementCore
     // runner's hard resolver — gets the unknown-command teaching; the
     // name must be the whole head, so `let y = lenth-1` stays arithmetic
     // [D:missing-command-diagnosis]
-    let typedOrMissing (tag: StmtTag) (terr: Check.TypeError) =
+    let orMissing (exact: bool) (tag: StmtTag) (terr: Check.TypeError) =
         let unboundName =
             if terr.Message.StartsWith "unbound variable '" then
                 Some(terr.Message.Substring(18).Split('\'').[0], terr.Message.Contains "Did you mean")
             else
                 None
 
-        match unboundName |> Option.bind (fun n -> missingCommandDiagWith true (Some n)) with
-        | Some d -> Error d
-        | None -> Error(typed tag terr)
+        Error(
+            unboundName
+            |> Option.bind (fun n -> missingCommandDiagWith exact (Some n))
+            |> Option.defaultWith (fun () -> typed tag terr)
+        )
+
+    let typedOrMissing (tag: StmtTag) (terr: Check.TypeError) = orMissing true tag terr
 
     try
         match Parser.parseLineFull r ll.Text with
@@ -1214,13 +1220,13 @@ let rec private checkStatementCore
             // (`xs |> contains x` is module-qualified, not a program)
             // [D:assume-resolver]
             let runnersVerdict =
-                if f.Message.StartsWith "'|>' applies functions" then
-                    match Parser.parseLineFull (resolver tenv) ll.Text with
-                    | Ok _ ->
-                        match checkStatementCore gateExprs sigCtx resolver loadImport tenv ll with
-                        | Error d -> Some d
-                        | Ok _ -> None
-                    | Error _ -> None
+                if
+                    f.Message.StartsWith "'|>' applies functions"
+                    && Result.isOk (Parser.parseLineFull (resolver tenv) ll.Text)
+                then
+                    match checkStatementCore gateExprs sigCtx resolver loadImport tenv ll with
+                    | Error d -> Some d
+                    | Ok _ -> None
                 else
                     None
 
@@ -1258,30 +1264,19 @@ let rec private checkStatementCore
             | Ok tenv' ->
                 // the `validate` block types against the declared type
                 // [D:validated-types] — its purity is the post-check layer's
-                let validator =
-                    match decl.Validate, Types.typeDefFor tenv' decl.Name with
-                    | Some v, Some(Union { Validated = Some id }) ->
-                        Check.typecheckValidator tenv' decl.Name v
-                        |> Result.map (fun te -> Some(id, te))
-                    | _ -> Ok None
-
-                match validator with
-                | Error terr -> Error(typed StmtTag.Type terr)
-                | Ok validator ->
-                    Ok {
-                        Kind = KType(decl, validator)
-                        Env = tenv'
-                        Warnings = []
-                    }
+                (match decl.Validate, Types.typeDefFor tenv' decl.Name with
+                 | Some v, Some(Union { Validated = Some id }) ->
+                     Check.typecheckValidator tenv' decl.Name v
+                     |> Result.map (fun te -> Some(id, te))
+                 | _ -> Ok None)
+                |> Result.mapError (typed StmtTag.Type)
+                |> Result.map (fun validator -> {
+                    Kind = KType(decl, validator)
+                    Env = tenv'
+                    Warnings = []
+                })
         | Ok(SSig(name, ty, nameSpan)) ->
-            let sigErr msg =
-                Error(
-                    typed StmtTag.Let {
-                        Span = nameSpan
-                        Message = msg
-                        Origin = None
-                    }
-                )
+            let sigErr msg = Error(typedAt StmtTag.Let nameSpan msg)
 
             match sigCtx with
             | None ->
@@ -1326,12 +1321,10 @@ let rec private checkStatementCore
             // [D:unused-bindings]; gateExprs scopes the refusal with the
             // discard family (the REPL and -e keep their echo regime)
             Error(
-                typed StmtTag.LetPat {
-                    Span = pat.PSpan
-                    Message =
-                        "a bare '_' binder discards its value anonymously — name the discard (let _r = …) so the intent survives a grep"
-                    Origin = None
-                }
+                typedAt
+                    StmtTag.LetPat
+                    pat.PSpan
+                    "a bare '_' binder discards its value anonymously — name the discard (let _r = …) so the intent survives a grep"
             )
         | Ok(SLetPat(pat, e)) ->
             // a destructuring let cannot implement a signature
@@ -1353,12 +1346,10 @@ let rec private checkStatementCore
             match sigClash with
             | Some n ->
                 Error(
-                    typed StmtTag.LetPat {
-                        Span = pat.PSpan
-                        Message =
-                            $"'{n}' has a signature, and a signature pairs with a plain implementation — write 'let {n} … = …'"
-                        Origin = None
-                    }
+                    typedAt
+                        StmtTag.LetPat
+                        pat.PSpan
+                        $"'{n}' has a signature, and a signature pairs with a plain implementation — write 'let {n} … = …'"
                 )
             | None ->
                 // anonymous adapter shapes persist their defs [D:anon-records]
@@ -1401,11 +1392,7 @@ let rec private checkStatementCore
                 // the signature line rides as related [D:diagnostic-tags]
                 let sigErrAt (span: Span) msg =
                     Error {
-                        typed StmtTag.Let {
-                            Span = span
-                            Message = msg
-                            Origin = None
-                        } with
+                        typedAt StmtTag.Let span msg with
                             Related = [ sd.Line, sd.Col, $"the signature declares {formatTy sd.Ty}" ]
                     }
 
@@ -1470,12 +1457,10 @@ let rec private checkStatementCore
                     // last binding win at replay while the export keeps the
                     // signature's, so the split is refused
                     Error(
-                        typed StmtTag.Let {
-                            Span = nameSpan
-                            Message =
-                                $"'{name}' already implements its signature — one implementation per signed member"
-                            Origin = None
-                        }
+                        typedAt
+                            StmtTag.Let
+                            nameSpan
+                            $"'{name}' already implements its signature — one implementation per signed member"
                     )
                 | _ ->
                     match
@@ -1498,15 +1483,7 @@ let rec private checkStatementCore
             | Error terr ->
                 // a near-miss binding suggestion means a likely typo of a
                 // weir name: keep it; otherwise the head is a missing program
-                let unboundName =
-                    if terr.Message.StartsWith "unbound variable '" then
-                        Some(terr.Message.Substring(18).Split('\'').[0], terr.Message.Contains "Did you mean")
-                    else
-                        None
-
-                match unboundName |> Option.bind (fun n -> missingCommandDiag (Some n)) with
-                | Some d -> Error d
-                | None -> Error(typed StmtTag.Cmd terr)
+                orMissing false StmtTag.Cmd terr
             | Ok te ->
                 // a bool-valued chain (| succeeds) as a bare statement is a
                 // discarded value, not a stream — the discard family
@@ -1557,36 +1534,30 @@ let rec private checkStatementCore
                     }
                 | TBool ->
                     Error(
-                        typed StmtTag.Cmd {
-                            Span = wholeSpan
-                            Message =
-                                "this statement computes a bool and discards it — bind it "
-                                + "(let ok = ... | succeeds) or use it in a condition"
-                            Origin = None
-                        }
+                        typedAt
+                            StmtTag.Cmd
+                            wholeSpan
+                            ("this statement computes a bool and discards it — bind it "
+                             + "(let ok = ... | succeeds) or use it in a condition")
                     )
                 // `set +e; cmd; rc=$?` muscle memory lands here [D:exit-reifiers]
                 | TInt when exitCodeSpine te ->
                     Error(
-                        typed StmtTag.Cmd {
-                            Span = wholeSpan
-                            Message =
-                                "this statement computes the exit code and discards it — bind it "
-                                + "(let rc = <command> | exitCode), match on it, or drop '| exitCode' if you don't need the code"
-                            Origin = None
-                        }
+                        typedAt
+                            StmtTag.Cmd
+                            wholeSpan
+                            ("this statement computes the exit code and discards it — bind it "
+                             + "(let rc = <command> | exitCode), match on it, or drop '| exitCode' if you don't need the code")
                     )
                 // `| complete` captures a Completed record — reading it is
                 // the point, so discarding it is the family mistake
                 | TNamed("Completed", _) ->
                     Error(
-                        typed StmtTag.Cmd {
-                            Span = wholeSpan
-                            Message =
-                                "this statement computes a Completed record and discards it — bind it "
-                                + "(let r = ... | complete) or read a field (.exitCode, .stdout)"
-                            Origin = None
-                        }
+                        typedAt
+                            StmtTag.Cmd
+                            wholeSpan
+                            ("this statement computes a Completed record and discards it — bind it "
+                             + "(let r = ... | complete) or read a field (.exitCode, .stdout)")
                     )
                 | _ ->
                     Ok {
@@ -1614,15 +1585,7 @@ let rec private checkStatementCore
             | Error terr ->
                 // a near-miss binding suggestion means a likely typo of a
                 // weir name: keep it; otherwise the head is a missing program
-                let unboundName =
-                    if terr.Message.StartsWith "unbound variable '" then
-                        Some(terr.Message.Substring(18).Split('\'').[0], terr.Message.Contains "Did you mean")
-                    else
-                        None
-
-                match unboundName |> Option.bind (fun n -> missingCommandDiag (Some n)) with
-                | Some d -> Error d
-                | None -> Error(typed StmtTag.Expr terr)
+                orMissing false StmtTag.Expr terr
             | Ok te ->
                 // the likeliest intent behind a discarded $(cmd) is "run
                 // it" — the wrapper is what is in the way, so the error
@@ -1647,11 +1610,7 @@ let rec private checkStatementCore
                     let msg = msg + dropClause
 
                     Error {
-                        typed StmtTag.Expr {
-                            Span = e.Span
-                            Message = msg
-                            Origin = None
-                        } with
+                        typedAt StmtTag.Expr e.Span msg with
                             Warnings = warningsOf te
                     }
                 | None ->
@@ -1956,43 +1915,36 @@ type UnusedTracker() =
     member this.LetBinder (ll: LogicalLine) (name: string) =
         let m = Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+(?:pure\s+)?")
 
-        if m.Success then
-            this.Binder ll name (m.Length + 1) (m.Length + 1 + name.Length)
-        else
-            this.Binder ll name 1 (1 + name.Length)
+        let at = if m.Success then m.Length + 1 else 1
+        this.Binder ll name at (at + name.Length)
 
     /// one checked statement, in file order: mark its uses, collect its
     /// block-local findings, then register its own binders (a
     /// same-statement read of the same name reads the outer binding —
     /// no `let rec` exists)
     member this.Feed (ll: LogicalLine) (chk: CheckedStatement) =
-        match chk.Kind with
-        // a validator reads like a function body [D:validated-types]
-        | KType(_, Some(_, te)) ->
+        let usage (te: Check.TypedExpr) =
             let free, locals = Check.bindingUsage te
             this.Uses free
             this.Locals ll locals
+
+        match chk.Kind with
+        // a validator reads like a function body [D:validated-types]
+        | KType(_, Some(_, te))
+        | KCmd te
+        | KExpr te -> usage te
         | KType _
         | KSig _
         | KModule _
         | KImport _ -> ()
         | KLet(name, _, te) ->
-            let free, locals = Check.bindingUsage te
-            this.Uses free
-            this.Locals ll locals
+            usage te
             this.LetBinder ll name
         | KLetPat(pat, _, te) ->
-            let free, locals = Check.bindingUsage te
-            this.Uses free
-            this.Locals ll locals
+            usage te
 
             for n, sp in Check.patNameSpans pat do
                 this.Binder ll n sp.Start.Col sp.End.Col
-        | KCmd te
-        | KExpr te ->
-            let free, locals = Check.bindingUsage te
-            this.Uses free
-            this.Locals ll locals
 
     /// end of file: every still-unread binder errors — signed module
     /// members exempt (the signature is the use); an unsigned module

@@ -106,19 +106,8 @@ let internal declName (code: string) : (int * int) option =
 // third consumer [D:fmt-respace]: respacing must never touch
 // string interiors.
 let inStringMask (s: string) : bool[] =
-    let mask = Array.create s.Length false
-    let mutable outside = System.Collections.Generic.HashSet<int>()
-
-    foldOutsideStrings
-        (fun () i _ ->
-            outside.Add i |> ignore
-            ())
-        ()
-        s
-
-    for i in 0 .. s.Length - 1 do
-        mask[i] <- not (outside.Contains i)
-
+    let mask = Array.create s.Length true
+    foldOutsideStrings (fun () i _ -> mask[i] <- false) () s
     mask
 
 // Canonical intra-line spacing [D:fmt-respace], bounded: collapse
@@ -287,8 +276,7 @@ let classifyLine (raw: string) : LineKind =
 let isInitMarked (lines: string list) : bool =
     lines
     |> List.tryFind (fun l -> classifyLine l = LineKind.Code)
-    |> Option.map (fun l -> (stripComment l).Trim() = "#init")
-    |> Option.defaultValue false
+    |> Option.exists (fun l -> (stripComment l).Trim() = "#init")
 
 // init.weir carries init-only directives (#session, #alias) the script
 // checker does not know [D:repl-init][D:session-prompt] — rewrite them
@@ -334,14 +322,10 @@ let stripInitDirectives (lines: string list) : string list =
                             yield "let " + binder + " = " + m.Groups.[4].Value
                     else
                         yield l // a continuation line (list entry) is part of the value
-            elif t = "#init" then
-                yield ""
             elif t.StartsWith "#session" then
                 inBlock <- t.EndsWith "{"
                 yield ""
-            elif t = "#alias" || t.StartsWith "#alias " then
-                yield ""
-            elif l.StartsWith "#" then
+            elif t = "#init" || t = "#alias" || t.StartsWith "#alias " || l.StartsWith "#" then
                 // any other directive line is splitInit's to report
                 // [D:directive-diagnostic]
                 yield ""
@@ -691,16 +675,16 @@ let dangleEnders = [| "="; "then"; "else"; "with"; "->" |]
 // behind `let <name> =`) opens its block — the head ends with arbitrary
 // argument words, so the classifier keys on the keyword, as the yaml
 // marker does (a lexical rule shared by assembler and REPL, never a parse)
-let isWithinHead (piece: string) : bool =
-    let t = piece.Trim()
+let private afterLetEq (t: string) : string =
+    if t.StartsWith "let " then
+        match t.IndexOf '=' with
+        | -1 -> t
+        | i -> t.Substring(i + 1).TrimStart()
+    else
+        t
 
-    let afterLet =
-        if t.StartsWith "let " then
-            match t.IndexOf '=' with
-            | -1 -> t
-            | i -> t.Substring(i + 1).TrimStart()
-        else
-            t
+let isWithinHead (piece: string) : bool =
+    let afterLet = afterLetEq (piece.Trim())
 
     afterLet = "within"
     || afterLet.StartsWith "within " && not (afterLet.Contains ";")
@@ -713,15 +697,7 @@ let private isDistrictHead (keyword: string) (piece: string) : bool =
         false
     else
 
-        let t = piece.Trim()
-
-        let afterLet =
-            if t.StartsWith "let " then
-                match t.IndexOf '=' with
-                | -1 -> t
-                | i -> t.Substring(i + 1).TrimStart()
-            else
-                t
+        let afterLet = afterLetEq (piece.Trim())
 
         afterLet = keyword
         || afterLet.StartsWith(keyword + " ") && not (afterLet.Contains ";")
@@ -796,9 +772,7 @@ let private endsInBinderHeadSeg (needsEq: bool) (marker: string) (lastSeg: strin
 // the last segment of a full logical-line text (after the last sibling
 // sentinel) — the whole-text callers (dangleOpensBlock on a short piece)
 let private lastSegOf (text: string) : string =
-    match text.LastIndexOf Parser.sibSep with
-    | -1 -> text
-    | i -> text.Substring(i + 1)
+    text.Substring(text.LastIndexOf Parser.sibSep + 1)
 
 let private endsInBinderHead (needsEq: bool) (marker: string) (text: string) : bool =
     endsInBinderHeadSeg needsEq marker (lastSegOf text)
@@ -816,13 +790,7 @@ let endsInServeHead (text: string) : bool =
     endsInBinderHead false "within serve " text
 
 let private isLoopHead (t: string) : bool =
-    let afterLet =
-        if t.StartsWith "let " then
-            match t.IndexOf '=' with
-            | -1 -> t
-            | i -> t.Substring(i + 1).TrimStart()
-        else
-            t
+    let afterLet = afterLetEq t
 
     // repeat joins retry/poll [D:repeat]
     [ "retry"; "poll"; "repeat" ]
@@ -1021,20 +989,14 @@ let retiredDistrictMarker (piece: string) : bool =
         false
     else
 
-        let lastToken =
-            match piece.LastIndexOf ' ' with
-            | -1 -> piece
-            | i -> piece.Substring(i + 1)
+        let lastToken = piece.Substring(piece.LastIndexOf ' ' + 1)
 
         // the district marker ended a COMMAND line; a `!name` after an
         // expression-position token (or alone) is C negation, which the
         // parser teaches as `not` [D:left-to-right-ops]
         let before =
             let rest = piece.Substring(0, piece.Length - lastToken.Length).TrimEnd()
-
-            match rest.LastIndexOf ' ' with
-            | -1 -> rest
-            | i -> rest.Substring(i + 1)
+            rest.Substring(rest.LastIndexOf ' ' + 1)
 
         // (a standalone `!e`, or one after then/else/->, was a district header
         // and keeps its retirement teaching)
@@ -1817,10 +1779,7 @@ let withPhysicalIndents (indents: Map<int, int>) (ll: LogicalLine) : LogicalLine
             ll with
                 Segments =
                     ll.Segments
-                    |> List.map (fun (js, l, i) ->
-                        match indents.TryFind l with
-                        | Some phys -> js, l, phys
-                        | None -> js, l, i)
+                    |> List.map (fun (js, l, i) -> js, l, indents.TryFind l |> Option.defaultValue i)
                 PosIndex = null
         }
     else
@@ -3200,9 +3159,8 @@ let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) li
                                     false)))
                 (Ok(None, [], false))
 
-        match folded with
-        | Error e -> Error e
-        | Ok(current, acc, _) -> close current acc |> Result.map List.rev
+        folded
+        |> Result.bind (fun (current, acc, _) -> close current acc |> Result.map List.rev)
 
 // how many logical statements a raw physical buffer assembles to
 // [D:repl-multiline] — comment-only lines filtered, comments stripped
@@ -3227,7 +3185,7 @@ let assemblyErrorAt (numbered: (int * string) list) (msg: string) : (int * int *
         let col =
             numbered
             |> List.tryFind (fun (n, _) -> n = line)
-            |> Option.map (fun (_, raw: string) -> (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) + 1)
+            |> Option.map (fun (_, raw: string) -> leadingSpaces raw + 1)
             |> Option.defaultValue 1
 
         Some(line, col, msg.Substring m.Length)
@@ -3246,9 +3204,7 @@ let statementCount (bufLines: string list) : int option =
         |> List.filter (fun (_, raw) -> classifyLine raw <> LineKind.CommentOnly)
         |> List.map (fun (n, raw) -> n, stripComment raw)
 
-    match assemble numbered with
-    | Ok lls -> Some(List.length lls)
-    | Error _ -> None
+    assemble numbered |> Result.toOption |> Option.map List.length
 
 /// does `next` continue the already-complete statement in `buf`?
 /// [D:repl-multiline] The assembler's own answer, no second parser: a
@@ -3275,7 +3231,7 @@ let pipedAttaches (buf: string list) (next: string) : bool =
             && statementCount [ next ] = None
             ->
             false
-        | _, None -> true
+        | _, None
         | None, Some _ -> true
         | Some a, Some b -> b <= a
 

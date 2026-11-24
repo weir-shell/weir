@@ -41,12 +41,12 @@ let private pathExts () : string list =
 
 let private pathDirsOf (value: string) = PathLookup.dirsOf value
 
-let private pathDirs () =
-    pathDirsOf (
-        Environment.GetEnvironmentVariable "PATH"
-        |> Option.ofObj
-        |> Option.defaultValue ""
-    )
+let private envPath () : string =
+    Environment.GetEnvironmentVariable "PATH"
+    |> Option.ofObj
+    |> Option.defaultValue ""
+
+let private pathDirs () = pathDirsOf (envPath ())
 
 // the env a command runs with, as pairs applied in order (the `within env`
 // layers outer-first, then its own NAME=value prefix): the last pair for a
@@ -67,28 +67,21 @@ let private isPathyName (prog: string) =
     prog.Contains '/'
     || (OperatingSystem.IsWindows() && (prog.Contains '\\' || prog.Contains ':'))
 
+let private extsUnder (pairs: (string * string) list) : string list =
+    match lastPair pairs "PATHEXT" with
+    | Some v -> pathExtsOf (Some v)
+    | None -> pathExts ()
+
 /// the PATH a command's env sets, when it differs from weir's own — None
 /// means the child searches the PATH weir resolves on [D:overlay-path]
 let overlayPath (pairs: (string * string) list) : string option =
-    match lastPair pairs "PATH" with
-    | Some v when
-        v
-        <> (Environment.GetEnvironmentVariable "PATH"
-            |> Option.ofObj
-            |> Option.defaultValue "")
-        ->
-        Some v
-    | _ -> None
+    lastPair pairs "PATH" |> Option.filter (fun v -> v <> envPath ())
 
 /// a bare program on the given PATH (and the env's PATHEXT on Windows):
 /// the name as-given first in each dir, then each extension; a relative
 /// entry reads from weir's working directory, where the child starts
 let resolveOn (pairs: (string * string) list) (pathValue: string) (prog: string) : string option =
-    let exts =
-        match lastPair pairs "PATHEXT" with
-        | Some v -> pathExtsOf (Some v)
-        | None -> pathExts ()
-
+    let exts = extsUnder pairs
     PathLookup.find shellRule exts (pathDirsOf pathValue) prog
 
 /// the file a command head names [D:path-which]: a bare name on the
@@ -98,22 +91,10 @@ let which (pairs: (string * string) list) (prog: string) : string option =
     if prog = "" || prog.Contains '\000' then
         None
     elif isPathyName prog then
-        let exts =
-            match lastPair pairs "PATHEXT" with
-            | Some v -> pathExtsOf (Some v)
-            | None -> pathExts ()
-
+        let exts = extsUnder pairs
         PathLookup.fileOrExt shellRule exts (Session.resolve prog)
     else
-        let pathValue =
-            match lastPair pairs "PATH" with
-            | Some v -> v
-            | None ->
-                Environment.GetEnvironmentVariable "PATH"
-                |> Option.ofObj
-                |> Option.defaultValue ""
-
-        resolveOn pairs pathValue prog
+        resolveOn pairs (lastPair pairs "PATH" |> Option.defaultWith envPath) prog
 
 let names () : Set<string> =
     lock cacheGate (fun () ->

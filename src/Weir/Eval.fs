@@ -136,19 +136,20 @@ let private tapRaise (onRaise: exn -> unit) (inner: seq<'a>) : seq<'a> = {
             ((this :?> System.Collections.Generic.IEnumerable<'a>).GetEnumerator()) :> System.Collections.IEnumerator
 }
 
+let private blameExact (node: obj) (ex: exn) : unit =
+    let b = blameFor ex
+
+    if isNull b.Node then
+        b.Node <- node
+        b.Exact <- true
+
 // a command's failure surfaces where its output is READ, maybe statements
 // later: the seq blames the command that produced it
 let private blameOn (node: obj) (inner: seq<'a>) : seq<'a> =
     if isNull node then
         inner
     else
-        inner
-        |> tapRaise (fun ex ->
-            let b = blameFor ex
-
-            if isNull b.Node then
-                b.Node <- node
-                b.Exact <- true)
+        inner |> tapRaise (blameExact node)
 
 /// pin a raise to the node THIS thread was evaluating [D:runtime-position]:
 /// positions are per thread, so a raise caught on a worker (a parallel
@@ -353,10 +354,8 @@ type Value =
             // order-insensitive like record equality [D:record-order]:
             // the field mix is a commutative sum
             | VRecord(n, fields) -> fields |> List.fold (fun h (k, x) -> h + mix (hash k) (child x)) (hash n)
-            | VUnion(c, p) ->
-                match p with
-                | Some x -> mix (hash c) (child x)
-                | None -> hash c
+            | VUnion(c, Some x) -> mix (hash c) (child x)
+            | VUnion(c, None) -> hash c
             | VSeq _ -> 0
             | VMap m -> m |> Map.fold (fun h k x -> h + mix (hash k) (child x)) (hash ("map", m.Count))
             | VTuple items -> items |> List.fold (fun h x -> mix h (child x)) (List.length items)
@@ -432,11 +431,11 @@ type Value =
                     | VBool x, VBool y -> result <- compare x y
                     | VUnit, VUnit -> ()
                     | VRecord(n1, f1), VRecord(n2, f2) ->
-                        let s1 =
-                            List.sortWith (fun (k1, _) (k2, _) -> System.String.CompareOrdinal(k1, k2)) f1
+                        let byName (fs: (string * Value) list) =
+                            List.sortWith (fun (k1, _) (k2, _) -> System.String.CompareOrdinal(k1, k2)) fs
 
-                        let s2 =
-                            List.sortWith (fun (k1, _) (k2, _) -> System.String.CompareOrdinal(k1, k2)) f2
+                        let s1 = byName f1
+                        let s2 = byName f2
 
                         result <- System.String.CompareOrdinal(n1, n2)
 
@@ -733,7 +732,7 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
 
             let ellipsis = if shown.Length > lim.MaxItems then lim.Ellipsis else ""
             $"[{body}{ellipsis}]"
-        | VClosure _ -> "<fun>"
+        | VClosure _
         | VClosurePat _ -> "<fun>"
         | VBuiltin _ -> "<builtin>"
         | VProc h ->
@@ -1268,9 +1267,7 @@ module PlanMode =
 
             i <- i + 1
 
-        match result with
-        | ValueSome r -> r
-        | ValueNone -> struct (0, null, p)
+        ValueOption.defaultValue (struct (0, null, p)) result
 
     // `real` answers for a path no layer decided — the full kind, or
     // only as much of it as the caller asks (one stat for "a directory?")
@@ -1394,6 +1391,9 @@ module PlanMode =
 
         s
 
+    let private layerInput (s: LayerAt) =
+        if s.Dead || s.Cleared then null else s.Below
+
     // every layer's view of one path, innermost (the top frame) first;
     // a layer's input is the path the one above asks below
     let private cursorWalk (frames: PlanFrame[]) (from: int) (into: LayerAt[]) (p: string) =
@@ -1404,15 +1404,7 @@ module PlanMode =
                 into[i] <- layerDead
             else
                 into[i] <- layerWalk frames[i].Sim path
-
-                path <-
-                    if into[i].Dead || into[i].Cleared then
-                        null
-                    else
-                        into[i].Below
-
-    let private layerInput (s: LayerAt) =
-        if s.Dead || s.Cleared then null else s.Below
+                path <- layerInput into[i]
 
     let private cursorStep (frames: PlanFrame[]) (cur: LayerAt[]) (c: string) : LayerAt[] =
         let out = Array.zeroCreate cur.Length
@@ -1675,6 +1667,13 @@ module PlanMode =
 
         node
 
+    let private becomeDir (n: SimNode) =
+        if n.State = 0 || n.State = 3 then
+            if n.State = 3 then
+                n.Cleared <- true
+
+            n.State <- 2
+
     // every proper ancestor exists as a directory once an entry is made
     let private markParents (root: SimNode) (p: string) =
         let comps = compsOf p
@@ -1682,12 +1681,7 @@ module PlanMode =
 
         for i in 0 .. comps.Length - 2 do
             node <- node.Find comps[i]
-
-            if node.State = 0 || node.State = 3 then
-                if node.State = 3 then
-                    node.Cleared <- true
-
-                node.State <- 2
+            becomeDir node
 
     let private setLeaf (root: SimNode) (p: string) (state: int) =
         let n = ensure root p
@@ -1721,12 +1715,6 @@ module PlanMode =
         let top = (List.head frames).Sim
         (List.head frames).Mirrored <- true
         let struct (_, node, below) = viewIn top src
-
-        let mirror =
-            match below with
-            | null -> null
-            | b -> b
-
         let d = ensure top dst
         d.Clear()
 
@@ -1736,7 +1724,7 @@ module PlanMode =
 
         d.State <- 2
         d.Cleared <- true
-        d.Mirror <- mirror
+        d.Mirror <- below
         markParents top dst
 
     // a captured op's effect on the top layer
@@ -1750,49 +1738,28 @@ module PlanMode =
 
         match op with
         | VUnion(("WriteFile" | "WriteFileAtomic"), Some(VTuple [ VStr p; _ ])) -> setLeaf top (through p) 1
-        | VUnion("DeleteFile", Some(VStr p))
-        | VUnion("DeleteDir", Some(VStr p))
-        | VUnion("DeleteTree", Some(VStr p)) -> setLeaf top (entry p) 3
+        | VUnion(("DeleteFile" | "DeleteDir" | "DeleteTree"), Some(VStr p)) -> setLeaf top (entry p) 3
         | VUnion("MakeDir", Some(VStr p)) ->
             let p = through p
-            let n = ensure top p
-
-            if n.State = 0 || n.State = 3 then
-                if n.State = 3 then
-                    n.Cleared <- true
-
-                n.State <- 2
-
+            becomeDir (ensure top p)
             markParents top p
         | VUnion("Copy", Some(VTuple [ VStr _; VStr d ])) -> setLeaf top (entry d) 1
-        | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
+        | VUnion((("Move" | "MoveDir") as case), Some(VTuple [ VStr s; VStr d ])) ->
             let s, d = entry s, entry d
             let link = linkIn frames s
 
-            if isNull link then
-                setLeaf top d 1
-            else
-                setLink frames d link
+            if not (isNull link) then setLink frames d link
+            elif case = "Move" then setLeaf top d 1
+            else copyTree frames (through s) d
 
             setLeaf top s 3
         | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> copyTree frames (through s) (entry d)
-        | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) ->
-            let s, d = entry s, entry d
-            let link = linkIn frames s
-
-            if isNull link then
-                copyTree frames (through s) d
-            else
-                setLink frames d link
-
-            setLeaf top s 3
         | _ -> ()
 
     // the filesystem paths an Op names (HttpSend names none)
     let private opPaths (op: Value) : string list =
         match op with
-        | VUnion("WriteFile", Some(VTuple [ VStr p; _ ]))
-        | VUnion("WriteFileAtomic", Some(VTuple [ VStr p; _ ])) -> [ p ]
+        | VUnion(("WriteFile" | "WriteFileAtomic"), Some(VTuple [ VStr p; _ ])) -> [ p ]
         | VUnion(_, Some(VStr p)) -> [ p ]
         | VUnion(_, Some(VTuple [ VStr a; VStr b ])) -> [ a; b ]
         | _ -> []
@@ -2320,9 +2287,7 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
             | None -> cappedPull cap items
 
         match shown with
-        | VRecord(n0, f0) :: _ when shown.Length > 1 || true ->
-            let visible = shown
-
+        | VRecord(n0, f0) :: _ ->
             let keys0 = f0 |> List.map fst
             // rows of one type carry the same fields in any order
             // [D:record-order]: a literal keeps its written order, a wire
@@ -2335,13 +2300,9 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
             // a general table rule, not a FileRow special case; one
             // Some anywhere brings the column back
             let allNone k =
-                visible
-                |> List.forall (fun r ->
-                    match r with
-                    | VRecord(_, f) ->
-                        match recTryGet k f with
-                        | Some(VUnion("None", None)) -> true
-                        | _ -> false
+                shown
+                |> List.forall (function
+                    | VRecord(_, f) -> recTryGet k f = Some(VUnion("None", None))
                     | _ -> false)
 
             let showKeys = keys0 |> List.filter (allNone >> not)
@@ -2349,24 +2310,20 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
             let cellsOf (r: Value) =
                 match r with
                 | VRecord(n, f) when n = n0 && (f |> List.map fst |> List.sort) = keySet0 ->
-                    showKeys
-                    |> List.map (fun k -> tableCell clipCells (recGet k f))
-                    |> List.fold
-                        (fun acc c ->
-                            match acc, c with
-                            | Some rows, Some cell -> Some(cell :: rows)
-                            | _ -> None)
-                        (Some [])
-                    |> Option.map List.rev
+                    let found = showKeys |> List.map (fun k -> tableCell clipCells (recGet k f))
+
+                    if List.forall Option.isSome found then
+                        Some(List.map Option.get found)
+                    else
+                        None
                 | _ -> None
 
-            let rows = visible |> List.map cellsOf
+            let rows = shown |> List.map cellsOf
 
             if rows |> List.exists Option.isNone then
                 None
             else
                 let rows = rows |> List.map Option.get
-                let truncated = clipped
 
                 let numeric =
                     [ 0 .. showKeys.Length - 1 ]
@@ -2448,9 +2405,9 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                 let header = line showKeys
                 let rule = line (widths |> List.map (fun w -> System.String('\u2500', w)))
                 let body = rows |> List.map (fun r -> line (r |> List.map fst))
-                let ellipsisRow = if truncated then [ "…" ] else []
+                let ellipsisRow = if clipped then [ "…" ] else []
 
-                let hint = if truncated then Some(unforcedHint cap.Value) else None
+                let hint = if clipped then Some(unforcedHint cap.Value) else None
 
                 Some(header :: rule :: (body @ ellipsisRow), hint)
         | _ -> None
@@ -2879,13 +2836,14 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
 let private yamlSourceText =
     System.Runtime.CompilerServices.ConditionalWeakTable<Value, string>()
 
-let private integerShaped (raw: string) =
-    let r =
-        if raw.StartsWith "-" || raw.StartsWith "+" then
-            raw.Substring 1
-        else
-            raw
+let private unsigned (raw: string) =
+    if raw.StartsWith "-" || raw.StartsWith "+" then
+        raw.Substring 1
+    else
+        raw
 
+let private integerShaped (raw: string) =
+    let r = unsigned raw
     r.Length > 0 && r |> Seq.forall System.Char.IsAsciiDigit
 
 let private withSourceText (raw: string) (node: Value) : Value =
@@ -2966,12 +2924,7 @@ let yamlPlainText (node: Value) : string option =
 /// `0644`, `-007`: YAML 1.2 reads decimal, YAML 1.1 readers octal (or a
 /// string, with an 8 or 9) [D:yaml-number-text]
 let yamlLeadingZero (raw: string) =
-    let r =
-        if raw.StartsWith "-" || raw.StartsWith "+" then
-            raw.Substring 1
-        else
-            raw
-
+    let r = unsigned raw
     r.Length > 1 && r[0] = '0' && r |> Seq.forall System.Char.IsAsciiDigit
 
 /// the YAML 1.2 core schema's other ints: 0x1F, 0o17 (unsigned) —
@@ -3027,20 +2980,24 @@ let yamlCoreNonFinite (raw: string) =
     | ".NAN" -> true
     | _ -> false
 
+let private jsonLastWins (o: System.Text.Json.JsonElement) : (string * System.Text.Json.JsonElement) list =
+    let props = o.EnumerateObject() |> List.ofSeq
+    let last = props |> List.map (fun p -> p.Name, p.Value) |> Map.ofList
+
+    props
+    |> List.map (fun p -> p.Name)
+    |> List.distinct
+    |> List.map (fun k -> k, last[k])
+
 let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) : Value =
     match e.ValueKind with
     | System.Text.Json.JsonValueKind.Object ->
-        let props = e.EnumerateObject() |> List.ofSeq
-        let last = props |> List.map (fun p -> p.Name, p.Value) |> Map.ofList
-
         VUnion(
             "YMap",
             Some(
                 VSeq(
-                    props
-                    |> List.map (fun p -> p.Name)
-                    |> List.distinct
-                    |> List.map (fun k -> VTuple [ VStr k; jsonYamlNode where last[k] ])
+                    jsonLastWins e
+                    |> List.map (fun (k, v) -> VTuple [ VStr k; jsonYamlNode where v ])
                 )
             )
         )
@@ -3400,13 +3357,8 @@ let private jsonDocRead
             else
                 // forced before the document disposes; a repeated key
                 // last-wins at its first position [D:mapping-dupkeys]
-                let props = prop.EnumerateObject() |> List.ofSeq
-                let last = props |> List.map (fun p -> p.Name, p.Value) |> Map.ofList
-
-                props
-                |> List.map (fun p -> p.Name)
-                |> List.distinct
-                |> List.map (fun k -> VTuple [ VStr k; readValue $"{name}[\"{k}\"]" v last[k] ])
+                jsonLastWins prop
+                |> List.map (fun (k, el) -> VTuple [ VStr k; readValue $"{name}[\"{k}\"]" v el ])
                 |> List.toSeq
                 |> VSeq
         | TSeq elem ->
@@ -3574,17 +3526,9 @@ let private jsonDocRead
         let ordered =
             if rdef.Name.StartsWith "{|" then
                 let wireIndex (k: string) =
-                    let mutable i = 0
-                    let mutable found = System.Int32.MaxValue
-
-                    for p in root.EnumerateObject() do
-                        if found = System.Int32.MaxValue then
-                            (if p.Name = k then
-                                 found <- i)
-
-                            i <- i + 1
-
-                    found
+                    root.EnumerateObject()
+                    |> Seq.tryFindIndex (fun p -> p.Name = k)
+                    |> Option.defaultValue System.Int32.MaxValue
 
                 fields |> List.sortBy (fst >> wireIndex)
             else
@@ -3732,12 +3676,10 @@ let private jsonTopHoldsSecret (top: JsonTop) (defs: Map<string, RecordDef>) (ud
 
     and named (n: string) =
         seen.Add n
-        && (match Map.tryFind n defs with
-            | Some d -> record d
-            | None ->
-                match Map.tryFind n udefs with
-                | Some u -> union u
-                | None -> false)
+        && (Map.tryFind n defs
+            |> Option.map record
+            |> Option.orElseWith (fun () -> Map.tryFind n udefs |> Option.map union)
+            |> Option.defaultValue false)
 
     and record (d: RecordDef) = d.Fields |> List.exists (snd >> ty)
 
@@ -4161,12 +4103,10 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
                     | Ok f -> VFloat f
                     | Error _ -> failwith $"{at}: expected float, got '{quoteData s}'"
                 | TBool ->
-                    if s = "true" then
-                        VBool true
-                    elif s = "false" then
-                        VBool false
-                    else
-                        failwith $"{at}: expected bool (exactly true/false), got '{quoteData s}'"
+                    match s with
+                    | "true" -> VBool true
+                    | "false" -> VBool false
+                    | _ -> failwith $"{at}: expected bool (exactly true/false), got '{quoteData s}'"
                 | t -> unreachable $"the checker restricts table cells to scalars: {formatTy t}"
 
             match ty with
@@ -4197,6 +4137,11 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
             |> List.toSeq
         )
 
+let private lineText (who: string) (l: Value) : string =
+    match l with
+    | VStr s -> s
+    | v -> unreachable $"the checker rejects '{who}' on non-string elements: {formatValue v}"
+
 let private fromAdapter
     (fmt: string)
     (seqOf: bool)
@@ -4217,13 +4162,7 @@ let private fromAdapter
         VBuiltin(fun v ->
             match v with
             | VSeq lines ->
-                let text =
-                    lines
-                    |> Seq.map (fun l ->
-                        match l with
-                        | VStr s -> s
-                        | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
-                    |> String.concat "\n"
+                let text = lines |> Seq.map (lineText "from") |> String.concat "\n"
 
                 if text.Trim() = "" then
                     failwith "from json: empty input — expected one JSON document"
@@ -4252,13 +4191,7 @@ let private fromAdapter
         VBuiltin(fun v ->
             match v with
             | VSeq lines ->
-                let text =
-                    lines
-                    |> Seq.map (fun l ->
-                        match l with
-                        | VStr s -> s
-                        | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
-                    |> String.concat "\n"
+                let text = lines |> Seq.map (lineText "from") |> String.concat "\n"
 
                 if text.Trim() = "" then
                     failwith "from xml: empty input — expected one XML document"
@@ -4278,13 +4211,7 @@ let private fromAdapter
         VBuiltin(fun v ->
             match v with
             | VSeq lines ->
-                let strs =
-                    lines
-                    |> Seq.map (fun l ->
-                        match l with
-                        | VStr s -> s
-                        | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
-                    |> List.ofSeq
+                let strs = lines |> Seq.map (lineText "from") |> List.ofSeq
 
                 match top with
                 | TopRec def -> tableRows "from table" def strs
@@ -4528,8 +4455,7 @@ let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.
 
                 match get wire, fshape with
                 | None, Yaml.SOpt _ -> fname, VUnion("None", None)
-                | None, Yaml.SSeq _ -> fname, VSeq Seq.empty
-                | None, Yaml.SPairs _ -> fname, VSeq Seq.empty
+                | None, (Yaml.SSeq _ | Yaml.SPairs _) -> fname, VSeq Seq.empty
                 | None, _ ->
                     failwith
                         $"from yaml: line {line}: missing field '{fname}'{wireNote} in '{name}' — if the field is sometimes absent, declare it Option<…>; a type drafted from a sample only sees what the sample had"
@@ -4614,13 +4540,7 @@ let private yamlFromImpl (shape: Yaml.Shape) (stream: bool) : Value =
     VBuiltin(fun v ->
         match v with
         | VSeq lines ->
-            let numbered =
-                lines
-                |> Seq.map (fun l ->
-                    match l with
-                    | VStr s -> s
-                    | v -> unreachable $"the checker rejects 'from yaml' on non-string elements: {formatValue v}")
-                |> Yaml.numberLines
+            let numbered = lines |> Seq.map (lineText "from yaml") |> Yaml.numberLines
 
             match Yaml.parseDocs numbered with
             | Error msg -> failwith $"from yaml: {msg}"
@@ -4671,13 +4591,7 @@ let private tomlFromImpl (shape: Yaml.Shape) : Value =
     VBuiltin(fun v ->
         match v with
         | VSeq lines ->
-            let text =
-                lines
-                |> Seq.map (fun l ->
-                    match l with
-                    | VStr s -> s
-                    | v -> unreachable $"the checker rejects 'from toml' on non-string elements: {formatValue v}")
-                |> String.concat "\n"
+            let text = lines |> Seq.map (lineText "from toml") |> String.concat "\n"
 
             match Toml.parseDocAt text with
             // a parse detail quotes the document [D:from-secret-excerpt]
@@ -4761,6 +4675,9 @@ let private renderString (s: string) : Rendered =
 // the stack cannot reach. The guard turns the crash into a clean error.
 let private yamlMaxDepth = 100
 
+let private indent2 (lines: string list) =
+    lines |> List.map (fun l -> if l = "" then "" else "  " + l)
+
 let rec private yamlRender
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, WireCase>)
@@ -4770,9 +4687,6 @@ let rec private yamlRender
     : Rendered =
     if depth > yamlMaxDepth then
         failwith $"to yaml: the value nests deeper than {yamlMaxDepth} — the emitter needs finite trees"
-
-    let indent2 (lines: string list) =
-        lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
     // a None record field omits its key [D:json-option]'s yaml face; a
     // None pair value is the entry's data and writes null, as to json
@@ -4816,10 +4730,16 @@ let rec private yamlRender
         if lines.IsEmpty then Inline "{}" else Block lines
 
     // the child guides [D:yaml-empty-typed]
-    let fieldGuide (f: string) =
-        match guide with
+    let recGuide (g: Yaml.Shape option) (f: string) =
+        match g with
         | Some(Yaml.SRec(_, fs)) -> fs |> List.tryPick (fun (n, _, sh) -> if n = f then Some sh else None)
         | _ -> None
+
+    let wireEntries (rname: string) (fields: (string * Value) list) (g: Yaml.Shape option) =
+        let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
+
+        fields
+        |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv, recGuide g f)
 
     let itemGuide, valueGuide =
         match guide with
@@ -4896,30 +4816,14 @@ let rec private yamlRender
 
         let payloadEntries =
             match payload with
-            | Some(VRecord(rname, fields)) ->
-                let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
-
-                let g (f: string) =
-                    match caseGuide with
-                    | Some(Yaml.SRec(_, fs)) -> fs |> List.tryPick (fun (n, _, sh) -> if n = f then Some sh else None)
-                    | _ -> None
-
-                fields
-                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv, g f)
+            | Some(VRecord(rname, fields)) -> wireEntries rname fields caseGuide
             | None -> []
             | Some v -> unreachable $"the declaration law rejects a tagged payload of {formatValue v}"
 
         Block(renderMap ((tagField, VStr tagValue, None) :: payloadEntries))
     | VRecord(rname, fields) ->
         // wire keys on the yaml wire too [D:wire-keys]
-        let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
-
-        mapping (
-            renderMap (
-                fields
-                |> List.map (fun (f, fv) -> (Map.tryFind f rens |> Option.defaultValue f), fv, fieldGuide f)
-            )
-        )
+        mapping (renderMap (wireEntries rname fields guide))
     | VSeq items ->
         let items = List.ofSeq items
 
@@ -4963,7 +4867,7 @@ let private yamlToLines
     | Inline "" -> [ "null" ]
     | Inline s -> [ s ]
     | Block lines -> lines
-    | BlockScalar(h, content) -> h :: (content |> List.map (fun l -> if l = "" then "" else "  " + l))
+    | BlockScalar(h, content) -> h :: indent2 content
 
 let private yamlToImpl
     (renames: Map<string, Map<string, string>>)
@@ -5030,11 +4934,7 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
                     | None -> unreachable $"the checker guarantees record-pattern field '{f}'"))
             (Some [])
     | PRecord _, v -> unreachable $"the checker rejects record patterns on {formatValue v}"
-    | PTuple ps, VTuple vs when List.length ps = List.length vs ->
-        List.zip ps vs
-        |> List.fold
-            (fun acc (subP, subV) -> acc |> Option.bind (fun bs -> tryBind subP subV |> Option.map (fun b -> bs @ b)))
-            (Some [])
+    | PTuple ps, VTuple vs when List.length ps = List.length vs -> bindAll (List.zip ps vs)
     | PTuple _, v -> unreachable $"the checker rejects tuple patterns on {formatValue v}"
     | PCase(ctor, None, _), VUnion(case, None) -> if ctor = case then Some [] else None
     | PCase(ctor, Some argPat, _), VUnion(case, Some payload) -> if ctor = case then tryBind argPat payload else None
@@ -5082,11 +4982,12 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
         if List.length probe <> List.length ps then
             None
         else
-            List.zip ps probe
-            |> List.fold
-                (fun acc (p, v) -> acc |> Option.bind (fun bs -> tryBind p v |> Option.map (fun b -> bs @ b)))
-                (Some [])
+            bindAll (List.zip ps probe)
     | (PSeqNil | PCons _ | PSeqList _), v -> unreachable $"the checker rejects seq patterns on {formatValue v}"
+
+and private bindAll (pairs: (Pattern * Value) list) : (string * Value) list option =
+    (Some [], pairs)
+    ||> List.fold (fun acc (p, v) -> acc |> Option.bind (fun bs -> tryBind p v |> Option.map (fun b -> bs @ b)))
 
 
 // binder patterns are irrefutable by checking, so the bind always
@@ -5146,12 +5047,7 @@ let private validateFlat
     let build (f: string) (ids: string list) (v: Value) =
         ids
         |> List.rev
-        |> List.fold
-            (fun acc id ->
-                match acc with
-                | Ok payload -> runCreate id payload
-                | Error _ -> acc)
-            (Ok v)
+        |> List.fold (fun acc id -> acc |> Result.bind (runCreate id)) (Ok v)
         |> function
             | Ok built -> built
             | Error msg ->
@@ -5179,21 +5075,19 @@ let private validateFlat
 // type (bare and Option alike — an optional still takes a value). bool
 // is presence-only, so it never shows one.
 let private argvValueSlot (ty: Ty) : string =
-    match ty with
-    | TInt
-    | TNamed("Option", [ TInt ]) -> " <int>"
-    | TStr
-    | TNamed("Option", [ TStr ]) -> " <string>"
-    | TFloat
-    | TNamed("Option", [ TFloat ]) -> " <float>"
-    | TDur
-    | TNamed("Option", [ TDur ]) -> " <duration>"
-    | TSize
-    | TNamed("Option", [ TSize ]) -> " <size>"
-    | TInstant
-    | TNamed("Option", [ TInstant ]) -> " <instant>"
-    | TSecret
-    | TNamed("Option", [ TSecret ]) -> " <secret>"
+    let inner =
+        match ty with
+        | TNamed("Option", [ t ]) -> t
+        | t -> t
+
+    match inner with
+    | TInt -> " <int>"
+    | TStr -> " <string>"
+    | TFloat -> " <float>"
+    | TDur -> " <duration>"
+    | TSize -> " <size>"
+    | TInstant -> " <instant>"
+    | TSecret -> " <secret>"
     | _ -> ""
 
 // a string default shows as data [D:args-help-default]: escapes render
@@ -5243,12 +5137,7 @@ let private argvUsageLinesWith (flagShorts: Map<string, string>) (def: RecordDef
             | _, _ -> "required"
 
         let right =
-            [
-                need
-                match Argv.docOf def f with
-                | Some d -> d
-                | None -> ""
-            ]
+            [ need; Argv.docOf def f |> Option.defaultValue "" ]
             |> List.filter (fun s -> s <> "")
             |> String.concat " — "
 
@@ -5371,9 +5260,8 @@ let private typeDesc (docs: Map<string, string>) : string option = Map.tryFind "
 // a case's description: its own doc's first line, else its payload
 // record's doc (the case doc wins)
 let private caseDesc (udef: UnionDef) (payloads: Map<string, RecordDef>) (c: string) : string option =
-    match Map.tryFind c udef.Docs with
-    | Some d -> Some d
-    | None -> Map.tryFind c payloads |> Option.bind (fun rd -> typeDesc rd.Docs)
+    Map.tryFind c udef.Docs
+    |> Option.orElseWith (fun () -> Map.tryFind c payloads |> Option.bind (fun rd -> typeDesc rd.Docs))
 
 // the commands list [D:help-case-docs]: each case's description (first
 // line) beside its token, aligned; a case with none shows the bare token
@@ -5424,8 +5312,7 @@ let argvUsage (target: ArgsTarget) (argv: string list) : string =
         // as the shared-flags twin scopes it — no global flags precede it
         let scoped =
             argv
-            |> List.filter (fun t -> t <> "--help" && t <> "-h")
-            |> List.tryHead
+            |> List.tryFind (fun t -> t <> "--help" && t <> "-h")
             |> Option.bind (fun tok -> udef.Cases |> List.tryFind (fun (c, _) -> c.ToLowerInvariant() = tok))
 
         match scoped with
@@ -5759,13 +5646,27 @@ let private attachedShortMessage (t: string) (shorts: Map<string, ShortOwner>) (
     | Some(AmbiguousShort _)
     | None -> $"unexpected argument '{quoteData short}…'"
 
-let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string list) : Value =
-    // minted --no-X twins ride the index as negative entries
-    // [D:default-attr]; they join did-you-mean via the same list
-    let flagged =
-        (def.Fields |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty, false)))
-        @ (Argv.mintedFlags def |> List.map (fun (f, m) -> "--" + m, (f, TBool, true)))
+// minted --no-X twins ride the index as negative entries
+// [D:default-attr]; they join did-you-mean via the same list
+let private argvLongFlags (def: RecordDef) : (string * (string * Ty * bool)) list =
+    (def.Fields |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty, false)))
+    @ (Argv.mintedFlags def |> List.map (fun (f, m) -> "--" + m, (f, TBool, true)))
 
+let private argvFields
+    (problems: ArgvProblems)
+    (def: RecordDef)
+    (values: System.Collections.Generic.Dictionary<string, Value>)
+    : (string * Value) list =
+    argvFill problems def values
+    |> validateFlat (fun f m -> problems.AddFor(f, m)) (fun f -> "--" + Argv.kebabFlag f) def
+
+let private argvUnknownCommand (problems: ArgvProblems) (tok: string) (words: string list) : unit =
+    match didYouMean tok words with
+    | "" -> problems.AddCommands $"unknown command '{quoteData tok}' — one of:"
+    | hint -> problems.Add $"unknown command '{quoteData tok}'{hint}"
+
+let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string list) : Value =
+    let flagged = argvLongFlags def
     let longIndex = Map.ofList flagged
     let shortOf, shortIndex = Argv.shortTables def
     let problems = ArgvProblems()
@@ -5779,6 +5680,9 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
 
     let parseValue = argvParseValue problems values
 
+    let tyOf n =
+        Map.tryFind n longIndex |> Option.map (fun (_, ty, _) -> ty)
+
     let rec go tokens =
         match tokens with
         | [] -> ()
@@ -5786,9 +5690,6 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
             match Map.tryFind t longIndex with
             | Some(f, ty, neg) -> consume f ty neg t rest
             | None ->
-                let tyOf n =
-                    Map.tryFind n longIndex |> Option.map (fun (_, ty, _) -> ty)
-
                 problems.Add(unknownFlagMessage t (flagged |> List.map fst) tyOf)
                 unknownValue t rest
         | t :: rest when t.StartsWith "-" && t.Length = 2 ->
@@ -5803,9 +5704,6 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
                 problems.Add $"unknown flag '{quoteData t}'"
                 unknownValue t rest
         | t :: rest when t.StartsWith "-" && t.Length > 2 ->
-            let tyOf flag =
-                Map.tryFind flag longIndex |> Option.map (fun (_, ty, _) -> ty)
-
             problems.Add(attachedShortMessage t shortIndex tyOf)
             unknownValue t rest
         | t :: rest ->
@@ -5837,9 +5735,7 @@ let private argvParseRecord (helpScope: string) (def: RecordDef) (tokens: string
 
     go tokens
 
-    let fields =
-        argvFill problems def values
-        |> validateFlat (fun f m -> problems.AddFor(f, m)) (fun f -> "--" + Argv.kebabFlag f) def
+    let fields = argvFields problems def values
 
     if problems.Count > 0 then
         argvUsageFail problems [] (argvFlagLinesOf shortOf def) helpScope
@@ -5859,12 +5755,7 @@ let private argvLoadShared
     : Value =
     let sharedDef = Argv.sharedOf outer unionField
 
-    let sharedLong =
-        (sharedDef.Fields
-         |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty, false)))
-        @ (Argv.mintedFlags sharedDef
-           |> List.map (fun (f, m) -> "--" + m, (f, TBool, true)))
-        |> Map.ofList
+    let sharedLong = argvLongFlags sharedDef |> Map.ofList
 
     let caseTable = udef.Cases |> List.map (fun (c, p) -> c.ToLowerInvariant(), (c, p))
     let caseAt = argvFindCase sharedDef unionField (List.map fst caseTable) argv
@@ -5880,10 +5771,7 @@ let private argvLoadShared
 
     let payloadLong =
         payloadDef
-        |> Option.map (fun pd ->
-            (pd.Fields |> List.map (fun (f, ty) -> "--" + Argv.kebabFlag f, (f, ty, false)))
-            @ (Argv.mintedFlags pd |> List.map (fun (f, m) -> "--" + m, (f, TBool, true)))
-            |> Map.ofList)
+        |> Option.map (argvLongFlags >> Map.ofList)
         |> Option.defaultValue Map.empty
 
     let _, scopeShorts = Argv.shortTables (scopeDef sharedDef payloadDef)
@@ -5909,39 +5797,35 @@ let private argvLoadShared
 
     let parseValue = argvParseValue problems
 
+    let tyOf n =
+        Map.tryFind n sharedLong
+        |> Option.orElse (Map.tryFind n payloadLong)
+        |> Option.map (fun (_, ty, _) -> ty)
+
     let rec go i (ts: string list) =
         match ts with
         | [] -> ()
         | _ :: rest when i = caseIdx -> go (i + 1) rest
         | t :: rest ->
+            let byLong (flag: string) =
+                match Map.tryFind flag sharedLong with
+                | Some(f, ty, neg) -> Choice1Of3(sharedValues, f, ty, neg)
+                | None ->
+                    match Map.tryFind flag payloadLong with
+                    | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
+                    | _ -> Choice2Of3 true
+
             let resolved =
                 if t.StartsWith "--" then
-                    match Map.tryFind t sharedLong with
-                    | Some(f, ty, neg) -> Choice1Of3(sharedValues, f, ty, neg)
-                    | None ->
-                        match Map.tryFind t payloadLong with
-                        | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
-                        | _ -> Choice2Of3 true
+                    byLong t
                 elif t.StartsWith "-" && t.Length = 2 then
                     match Map.tryFind (t.Substring 1) scopeShorts with
-                    | Some(ShortOf flag) ->
-                        (match Map.tryFind flag sharedLong with
-                         | Some(f, ty, neg) -> Choice1Of3(sharedValues, f, ty, neg)
-                         | None ->
-                             match Map.tryFind flag payloadLong with
-                             | Some(f, ty, neg) when i > caseIdx -> Choice1Of3(payloadValues, f, ty, neg)
-                             | _ -> Choice2Of3 true)
+                    | Some(ShortOf flag) -> byLong flag
                     | Some(AmbiguousShort candidates) ->
                         problems.Add $"""'{quoteData t}' is ambiguous: {String.concat ", " candidates}"""
                         Choice2Of3 false
                     | None -> Choice2Of3 true
                 elif t.StartsWith "-" && t.Length > 2 then
-                    let tyOf flag =
-                        match Map.tryFind flag sharedLong, Map.tryFind flag payloadLong with
-                        | Some(_, ty, _), _
-                        | None, Some(_, ty, _) -> Some ty
-                        | _ -> None
-
                     problems.Add(attachedShortMessage t scopeShorts tyOf)
                     Choice2Of3 false
                 else
@@ -5964,12 +5848,6 @@ let private argvLoadShared
                      | [] -> problems.AddFor(f, $"flag '{t}' needs a value"))
             | Choice2Of3 report ->
                 let cands = if i < caseIdx then beforeCandidates else afterCandidates
-
-                let tyOf n =
-                    match Map.tryFind n sharedLong, Map.tryFind n payloadLong with
-                    | Some(_, ty, _), _
-                    | None, Some(_, ty, _) -> Some ty
-                    | _ -> None
 
                 // the command slot derives no flag [D:shared-flags]: a
                 // `--mode pub` reader meant the bare command
@@ -6005,15 +5883,10 @@ let private argvLoadShared
 
     (match caseAt, selected with
      | None, _ -> problems.AddCommands "missing command — one of:"
-     | Some(_, tok), None ->
-         match didYouMean tok (caseTable |> List.map fst) with
-         | "" -> problems.AddCommands $"unknown command '{quoteData tok}' — one of:"
-         | hint -> problems.Add $"unknown command '{quoteData tok}'{hint}"
+     | Some(_, tok), None -> argvUnknownCommand problems tok (caseTable |> List.map fst)
      | Some _, Some _ -> ())
 
-    let collectFields def values =
-        argvFill problems def values
-        |> validateFlat (fun f m -> problems.AddFor(f, m)) (fun f -> "--" + Argv.kebabFlag f) def
+    let collectFields = argvFields problems
 
     let sharedFields = collectFields sharedDef sharedValues
 
@@ -6099,10 +5972,7 @@ let argvLoadWith (target: ArgsTarget) (argv: string list) : Value =
                 let payload = argvParseRecord (tok + " ") (Map.find c payloads) rest
                 VUnion(c, Some payload)
             | None ->
-                match didYouMean tok (table |> List.map fst) with
-                | "" -> problems.AddCommands $"unknown command '{quoteData tok}' — one of:"
-                | hint -> problems.Add $"unknown command '{quoteData tok}'{hint}"
-
+                argvUnknownCommand problems tok (table |> List.map fst)
                 fail ""
 
 let private argvLoad (target: ArgsTarget) : Value = argvLoadWith target Session.ScriptArgs
@@ -6278,12 +6148,7 @@ type private CommandEnum(blocking: seq<Value>, statement: bool, specs: Proc.Spec
         match ex with
         | ExitRequest _ -> ()
         | _ when isNull node -> ()
-        | _ ->
-            let b = blameFor ex
-
-            if isNull b.Node then
-                b.Node <- node
-                b.Exact <- true
+        | _ -> blameExact node ex
 
     interface ISuspPull with
         member _.TryNext() : bool =
@@ -7070,6 +6935,22 @@ let inline private armHold
 
     v
 
+let private withinArg (targ: TypedExpr option) (what: string) : TypedExpr =
+    match targ with
+    | Some a -> a
+    | None -> unreachable $"the parser gives within {what} its argument"
+
+let private withinBinder (binder: (string * Span) option) (what: string) : string =
+    match binder with
+    | Some(b, _) -> b
+    | None -> unreachable $"the parser gives within {what} its binder"
+
+let private deleteTreeQuiet (dir: string) : unit =
+    try
+        System.IO.Directory.Delete(dir, true)
+    with _ ->
+        ()
+
 let rec private overlayOf (env: Scope) (cenvO: TypedExpr option) : (string * string) list =
     match cenvO with
     | None -> []
@@ -7586,16 +7467,6 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
         // the tuple: a wildcard would absorb a malformed node of any
         // kind instead of reaching the unreachable guard, which is what
         // makes the guard worth having.
-        let argOf (what: string) =
-            match targ with
-            | Some a -> a
-            | None -> unreachable $"the parser gives within {what} its argument"
-
-        let binderOf (what: string) =
-            match binder with
-            | Some(b, _) -> b
-            | None -> unreachable $"the parser gives within {what} its binder"
-
         match kind with
         | WithinPure
         | WithinReadonly ->
@@ -7692,6 +7563,17 @@ and private repeatCtl (env: Scope) (optsE: TypedExpr) (until: ((string * Span) *
         | :? System.AggregateException as a when a.InnerExceptions.Count = 1 -> stopCaused a.InnerException
         | _ -> false
 
+    let slice (left: int64) =
+        let budget =
+            match timeoutMs with
+            | Some t -> t - sw.ElapsedMilliseconds
+            | None -> System.Int64.MaxValue
+
+        if budget <= 0L then
+            0L
+        else
+            min left (min budget maxSliceMs)
+
     // the interval in timer-sized slices, each bounded by what is left
     // of the timeout: Some true = the stop request woke it, Some false =
     // the timeout ended it, None = it elapsed
@@ -7701,22 +7583,15 @@ and private repeatCtl (env: Scope) (optsE: TypedExpr) (until: ((string * Span) *
         let mutable ended = None
 
         while left > 0L && ended.IsNone do
-            let budget =
-                match timeoutMs with
-                | Some t -> t - sw.ElapsedMilliseconds
-                | None -> System.Int64.MaxValue
+            let s = slice left
 
-            if budget <= 0L then
+            if s <= 0L then
                 ended <- Some false
             else
-                let slice = min left (min budget maxSliceMs)
-
-                if
-                    Session.waitOrCancel (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond)) token
-                then
+                if Session.waitOrCancel (System.TimeSpan.FromTicks(s * System.TimeSpan.TicksPerMillisecond)) token then
                     ended <- Some true
 
-                left <- left - slice
+                left <- left - s
 
         match ended with
         | None when pastDeadline () -> Some false
@@ -7754,17 +7629,7 @@ and private repeatCtl (env: Scope) (optsE: TypedExpr) (until: ((string * Span) *
         WaitLabel = $"repeat: waiting {formatDuration intervalMs}"
         WaitInterval = waitInterval
         IntervalMs = intervalMs
-        Slice =
-            (fun left ->
-                let budget =
-                    match timeoutMs with
-                    | Some t -> t - sw.ElapsedMilliseconds
-                    | None -> System.Int64.MaxValue
-
-                if budget <= 0L then
-                    0L
-                else
-                    min left (min budget maxSliceMs))
+        Slice = slice
     }
 
 and private evalRepeat
@@ -7898,35 +7763,22 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
 
     let snapAmb = Weir.Session.scopedAmbient ()
 
+    let spec h a e2 input : Proc.Spec =
+        let overlay = overlayOf env e2
+
+        {
+            Proc.Prog = Proc.specProg (progOf env h (Proc.spawnPairs snapAmb overlay))
+            Proc.Args = argvOf env a
+            Proc.Env = overlay
+            Proc.Input = input
+            Proc.Cwd = snapCwd
+            Proc.Ambient = snapAmb
+        }
+
     let rec collect (e: TypedExpr) (acc: Proc.Spec list) : TypedExpr option * Proc.Spec list =
         match e.Kind with
-        | TECmd(h2, a2, e2) ->
-            let overlay = overlayOf env e2
-
-            None,
-            {
-                Proc.Prog = Proc.specProg (progOf env h2 (Proc.spawnPairs snapAmb overlay))
-                Proc.Args = argvOf env a2
-                Proc.Env = overlay
-                Proc.Input = None
-                Proc.Cwd = snapCwd
-                Proc.Ambient = snapAmb
-            }
-            :: acc
-        | TEPipe(l, { Kind = TECmd(h2, a2, e2) }) ->
-            let overlay = overlayOf env e2
-
-            collect
-                l
-                ({
-                    Proc.Prog = Proc.specProg (progOf env h2 (Proc.spawnPairs snapAmb overlay))
-                    Proc.Args = argvOf env a2
-                    Proc.Env = overlay
-                    Proc.Input = None
-                    Proc.Cwd = snapCwd
-                    Proc.Ambient = snapAmb
-                 }
-                 :: acc)
+        | TECmd(h2, a2, e2) -> None, spec h2 a2 e2 None :: acc
+        | TEPipe(l, { Kind = TECmd(h2, a2, e2) }) -> collect l (spec h2 a2 e2 None :: acc)
         | _ -> Some e, acc
 
     let valueHead, leftSpecs = collect arg []
@@ -7946,24 +7798,10 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
                 |> Some
             | v -> unreachable $"the checker rejects piping {formatValue v} into a command"
 
-    let tailOverlay = overlayOf env cenvO
-
-    let specs =
-        (match leftSpecs with
-         | first :: rest -> { first with Proc.Input = stdin } :: rest
-         | [] -> [])
-        @ [
-            {
-                Proc.Prog = Proc.specProg (progOf env chead (Proc.spawnPairs snapAmb tailOverlay))
-                Proc.Args = argvOf env cargs
-                Proc.Env = tailOverlay
-                Proc.Input = (if leftSpecs.IsEmpty then stdin else None)
-                Proc.Cwd = snapCwd
-                Proc.Ambient = snapAmb
-            }
-        ]
-
-    specs
+    (match leftSpecs with
+     | first :: rest -> { first with Proc.Input = stdin } :: rest
+     | [] -> [])
+    @ [ spec chead cargs cenvO (if leftSpecs.IsEmpty then stdin else None) ]
 
 and private fieldOf (field: string) (target: Value) : Value =
     match target with
@@ -8116,15 +7954,8 @@ and private withinScope
     (targ: TypedExpr option)
     (topts: TypedExpr option)
     : struct (Scope * (unit -> unit)) =
-    let argOf (what: string) =
-        match targ with
-        | Some a -> a
-        | None -> unreachable $"the parser gives within {what} its argument"
-
-    let binderOf (what: string) =
-        match binder with
-        | Some(b, _) -> b
-        | None -> unreachable $"the parser gives within {what} its binder"
+    let argOf = withinArg targ
+    let binderOf = withinBinder binder
 
     match kind with
     | WithinLock ->
@@ -8266,11 +8097,7 @@ and private withinScope
             try
                 Proc.startSpilled overlay (Proc.specProg prog) argv outPath errPath
             with _ ->
-                (try
-                    System.IO.Directory.Delete(spill, true)
-                 with _ ->
-                     ())
-
+                deleteTreeQuiet spill
                 Session.deregisterTmpDir spill
                 reraise ()
 
@@ -8290,12 +8117,7 @@ and private withinScope
             // pumps settle before the spill dir goes (Windows would
             // refuse the delete under a live write handle)
             drain ()
-
-            (try
-                System.IO.Directory.Delete(spill, true)
-             with _ ->
-                 ())
-
+            deleteTreeQuiet spill
             Session.deregisterTmpDir spill
 
         struct (env.Add(binderName, (VProc handle)), release)
@@ -8319,11 +8141,7 @@ and private withinScope
         PlanMode.noteTmp dir
 
         let release () =
-            (try
-                System.IO.Directory.Delete(dir, true)
-             with _ ->
-                 ())
-
+            deleteTreeQuiet dir
             Session.deregisterTmpDir dir
 
         struct (env.Add(binderName, (VStr dir)), release)
@@ -8428,6 +8246,17 @@ and private retryCtl
         | Some t -> sw.ElapsedMilliseconds >= t
         | None -> false
 
+    let slice (left: int64) =
+        let budget =
+            match timeoutMs with
+            | Some t -> t - sw.ElapsedMilliseconds
+            | None -> System.Int64.MaxValue
+
+        if budget <= 0L then
+            0L
+        else
+            min left (min budget maxSliceMs)
+
     // the delay in timer-sized slices, each bounded by what is left of
     // the timeout — true when the timeout ended the wait
     let waitDelay () =
@@ -8435,22 +8264,15 @@ and private retryCtl
         let mutable cancelled = false
 
         while left > 0L && not cancelled do
-            let budget =
-                match timeoutMs with
-                | Some t -> t - sw.ElapsedMilliseconds
-                | None -> System.Int64.MaxValue
+            let s = slice left
 
-            if budget <= 0L then
+            if s <= 0L then
                 cancelled <- true
             else
-                let slice = min left (min budget maxSliceMs)
-
                 cancelled <-
-                    Session.waitOrCancel
-                        (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
-                        cts.Token
+                    Session.waitOrCancel (System.TimeSpan.FromTicks(s * System.TimeSpan.TicksPerMillisecond)) cts.Token
 
-                left <- left - slice
+                left <- left - s
 
         cancelled
 
@@ -8499,17 +8321,7 @@ and private retryCtl
         Exhausted = exhausted
         WaitLabel = $"{head}: waiting {formatDuration delayMs}"
         WaitDelay = waitDelay
-        Slice =
-            (fun left ->
-                let budget =
-                    match timeoutMs with
-                    | Some t -> t - sw.ElapsedMilliseconds
-                    | None -> System.Int64.MaxValue
-
-                if budget <= 0L then
-                    0L
-                else
-                    min left (min budget maxSliceMs))
+        Slice = slice
         Cts = cts
     }
 
@@ -8551,15 +8363,8 @@ and private serveScope
     (topts: TypedExpr option)
     (body: TypedExpr)
     : struct (Scope * Session.Node * Session.Node * Session.Frame * (unit -> unit)) =
-    let argOf (what: string) =
-        match targ with
-        | Some a -> a
-        | None -> unreachable $"the parser gives within {what} its argument"
-
-    let binderOf (what: string) =
-        match binder with
-        | Some(b, _) -> b
-        | None -> unreachable $"the parser gives within {what} its binder"
+    let argOf = withinArg targ
+    let binderOf = withinBinder binder
 
     // the scoped listener [D:http-serve]: open the socket,
     // serve on a pool of handler threads (the maxConcurrent
@@ -8770,18 +8575,23 @@ and private serveScope
 
         Serve.recordStreamError handle $"serve handler{where} failed: {msg}"
 
-    let internalError ctx =
+    let answer (ctx: Serve.SCtx) (status: int) (text: string) =
+        Serve.writeResponse
+            ctx
+            {
+                Status = status
+                Headers = []
+                Body = Serve.RText text
+            }
+            ignore
+
+    let answerQuiet (ctx: Serve.SCtx) (status: int) (text: string) =
         try
-            Serve.writeResponse
-                ctx
-                {
-                    Status = 500
-                    Headers = []
-                    Body = Serve.RText "internal error"
-                }
-                ignore
+            answer ctx status text
         with _ ->
             ()
+
+    let internalError ctx = answerQuiet ctx 500 "internal error"
 
     // one request as a flow of its own. Past the drain a handler still
     // running is cut at its next effect boundary [D:serve-cut]: the
@@ -8817,14 +8627,7 @@ and private serveScope
                     // byte-class refusal Bundle C's
                     // guard performs
                     if not (Serve.methodTokenOk req.Method) then
-                        Serve.writeResponse
-                            ctx
-                            {
-                                Status = 400
-                                Headers = []
-                                Body = Serve.RText "malformed request method"
-                            }
-                            ignore
+                        answer ctx 400 "malformed request method"
                     else
                         let hv = awaitFrame flow (applyAsync flow handler (requestValue req))
                         let resp = responseOf hv
@@ -8838,49 +8641,20 @@ and private serveScope
                     // the client dribbled its body past the
                     // bound [D:serve-body-timeout] — refuse
                     // rather than park unboundedly
-                    (try
-                        Serve.writeResponse
-                            ctx
-                            {
-                                Status = 408
-                                Headers = []
-                                Body = Serve.RText "request body read timed out"
-                            }
-                            ignore
-                     with _ ->
-                         ())
+                    answerQuiet ctx 408 "request body read timed out"
                 | Serve.BodyTooLarge ->
                     // past maxBody [D:serve-max-body]: the
                     // rest of the body is never read, so the
                     // connection closes after the 413
-                    (try
-                        Serve.writeResponse
-                            ctx
-                            {
-                                Status = 413
-                                Headers = []
-                                Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})"
-                            }
-                            ignore
-                     with _ ->
-                         ())
+                    answerQuiet ctx 413 $"request body exceeds maxBody ({formatSize maxBody})"
                 | Serve.BodyCharsetUnknown cs ->
                     // a body in a charset weir cannot decode
                     // [D:serve-charset]: refused before the
                     // handler, never decoded as UTF-8
-                    (try
-                        Serve.writeResponse
-                            ctx
-                            {
-                                Status = 415
-                                Headers = []
-                                Body =
-                                    Serve.RText
-                                        $"request body charset '{cs}' is not one weir decodes — utf-8, utf-16, utf-32, us-ascii or iso-8859-1"
-                            }
-                            ignore
-                     with _ ->
-                         ())
+                    answerQuiet
+                        ctx
+                        415
+                        $"request body charset '{cs}' is not one weir decodes — utf-8, utf-16, utf-32, us-ascii or iso-8859-1"
                 | Serve.ResponseHeaderRefused msg ->
                     // a handler returned a header carrying
                     // CR/LF/NUL [D:http-header-bytes] or one

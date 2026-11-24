@@ -591,38 +591,33 @@ module SigGen =
                     None)
             |> List.ofArray
 
+        let doc (d: string) = if d = "" then None else Some d
+
         let rec go (acc: Flag list) rows =
             match rows with
             | [] -> List.rev acc
             | (n: string, d) :: rest when n.StartsWith "--" ->
-                let long = n.Substring 2
+                let shorts, rest =
+                    match rest with
+                    | (s: string, d2) :: rest' when s.Length = 2 && not (s.StartsWith "--") && d2 = d ->
+                        [ s.Substring 1 ], rest'
+                    | _ -> [], rest
 
-                match rest with
-                | (s: string, d2) :: rest' when s.Length = 2 && not (s.StartsWith "--") && d2 = d ->
-                    go
-                        ({
-                            noFlag with
-                                Long = long
-                                Shorts = [ s.Substring 1 ]
-                                Doc = (if d = "" then None else Some d)
-                         }
-                         :: acc)
-                        rest'
-                | _ ->
-                    go
-                        ({
-                            noFlag with
-                                Long = long
-                                Doc = (if d = "" then None else Some d)
-                         }
-                         :: acc)
-                        rest
+                go
+                    ({
+                        noFlag with
+                            Long = n.Substring 2
+                            Shorts = shorts
+                            Doc = doc d
+                     }
+                     :: acc)
+                    rest
             | (s, d) :: rest when s.Length = 2 ->
                 go
                     ({
                         noFlag with
                             Shorts = [ s.Substring 1 ]
-                            Doc = (if d = "" then None else Some d)
+                            Doc = doc d
                      }
                      :: acc)
                     rest
@@ -1043,9 +1038,8 @@ module SigGen =
             with _ ->
                 p
 
-        match resolved with
-        | None -> None
-        | Some bin ->
+        resolved
+        |> Option.bind (fun bin ->
             [ bin; real bin ]
             |> List.distinct
             |> List.collect (fun b ->
@@ -1059,7 +1053,7 @@ module SigGen =
                     IO.Path.Combine(prefix, "share", "fish", "completions", name + ".fish")
                   ]
                 | None -> [])
-            |> List.tryFind IO.File.Exists
+            |> List.tryFind IO.File.Exists)
 
     let generateTo (globalDir: string option) (weirDir: string) (tool: string) : Result<string, string> =
         cutProbes.Clear()
@@ -1091,14 +1085,10 @@ module SigGen =
                 | None -> runToolAnyExit tool [ "--help" ]
 
             let topHelp =
-                match topHelp with
-                | Some t -> Some t
-                | None ->
+                topHelp
+                |> Option.orElseWith (fun () ->
                     [ [ "-h" ]; [ "-help" ] ]
-                    |> List.tryPick (fun a ->
-                        match runTool tool a with
-                        | Some t when (parseHelp t).Length > 0 -> Some t
-                        | _ -> None)
+                    |> List.tryPick (fun a -> runTool tool a |> Option.filter (fun t -> (parseHelp t).Length > 0)))
 
             let advertised = topHelp |> Option.map commandTokens |> Option.defaultValue []
 
@@ -1129,25 +1119,18 @@ module SigGen =
                 match fishText with
                 | Some t -> t.Contains "__complete"
                 | None ->
-                    match shippedFish tool with
-                    | Some f ->
+                    shippedFish tool
+                    |> Option.exists (fun f ->
                         try
                             (IO.File.ReadAllText f).Contains "__complete"
                         with _ ->
-                            false
-                    | None -> false
+                            false)
 
-            let isGit =
-                match version with
-                | Some v -> v.StartsWith "git version "
-                | None -> false
+            let isGit = version |> Option.exists (fun v -> v.StartsWith "git version ")
 
             // the full-help switches a help page names [D:sig-sources]
             // (GnuPG's tools answer --dump-options without naming it)
-            let gnupg =
-                match version with
-                | Some v -> v.Contains "(GnuPG)"
-                | None -> false
+            let gnupg = version |> Option.exists (fun v -> v.Contains "(GnuPG)")
 
             let fullHelp =
                 [
@@ -1216,6 +1199,12 @@ module SigGen =
                 IO.File.WriteAllText(IO.Path.Combine(d, ".git", "HEAD"), "ref: refs/heads/main\n")
                 d
 
+            let walkNoteOf (nodes: Node list) (probed: int) =
+                if nodes.IsEmpty && probed > 0 then
+                    $" (walked {probed} subcommand help(s), none yielded a case)"
+                else
+                    ""
+
             let source, flags, nodes, unchecked, walkNote =
                 if isGit then
                     // git [D:sig-sources]: its own builtin list; per builtin
@@ -1244,22 +1233,29 @@ module SigGen =
                                        System.Char.IsLower ch || System.Char.IsDigit ch || ch = '-'))
                             |> List.truncate 200
 
+                        let rows (t: string option) =
+                            t
+                            |> Option.map (fun t -> mergeFlags [ parseHelp t; parseUsage t ])
+                            |> Option.defaultValue []
+
                         let mutable opened = []
 
                         // one parse-options command: unchecked when it passes
                         // an unknown option on, else its helper's longs and
                         // its -h's shorts
                         let probeCmd (parentHelper: string option) (path: string list) : Node option =
-                            match run (path @ [ "--weir-probe-unknown"; "--git-completion-helper-all" ]) with
-                            | Some _ ->
-                                opened <- String.concat " " path :: opened
-
+                            let case (flags: Flag list) : Node option =
                                 Some {
                                     Path = path
-                                    Flags = []
+                                    Flags = flags
                                     Stop = false
                                     Aliases = []
                                 }
+
+                            match run (path @ [ "--weir-probe-unknown"; "--git-completion-helper-all" ]) with
+                            | Some _ ->
+                                opened <- String.concat " " path :: opened
+                                case []
                             | None ->
                                 // `-all` lists the hidden options too (--allow-empty)
                                 // a sub whose helper is its parent's is the
@@ -1297,10 +1293,7 @@ module SigGen =
                                                 "<[a-z-]*(diff|log)-options>"
                                             ))
 
-                                    let dashH =
-                                        dashText
-                                        |> Option.map (fun t -> mergeFlags [ parseHelp t; parseUsage t ])
-                                        |> Option.defaultValue []
+                                    let dashH = rows dashText
 
                                     let byLong =
                                         dashH
@@ -1326,20 +1319,9 @@ module SigGen =
 
                                     if passesOn then
                                         opened <- String.concat " " path :: opened
-
-                                        Some {
-                                            Path = path
-                                            Flags = []
-                                            Stop = false
-                                            Aliases = []
-                                        }
+                                        case []
                                     else
-                                        Some {
-                                            Path = path
-                                            Flags = mergeFlags [ helper; dashH ]
-                                            Stop = false
-                                            Aliases = []
-                                        }
+                                        case (mergeFlags [ helper; dashH ])
                                 | _ -> None
 
                         // a builtin's own subcommands (remote add, notes add,
@@ -1406,26 +1388,18 @@ module SigGen =
                                     | None ->
                                         let union = subs |> List.map (fun n -> n.Flags) |> mergeFlags
 
-                                        match
-                                            union
-                                            |> List.tryFind (fun f ->
-                                                f.Long <> "" && (f.Arity = None || f.Arity = Some ANone))
-                                        with
-                                        | None -> None
-                                        | Some first ->
-                                            let rows (t: string option) =
-                                                t
-                                                |> Option.map (fun t -> mergeFlags [ parseHelp t; parseUsage t ])
-                                                |> Option.defaultValue []
-
+                                        union
+                                        |> List.tryFind (fun f ->
+                                            f.Long <> "" && (f.Arity = None || f.Arity = Some ANone))
+                                        |> Option.map (fun first ->
                                             let older = rows (runAny [ c; "--" + first.Long; "-h" ])
 
-                                            Some {
+                                            {
                                                 Path = [ c ]
                                                 Flags = mergeFlags [ union; older; rows (runAny [ c; "-h" ]) ]
                                                 Stop = false
                                                 Aliases = []
-                                            }
+                                            })
 
                                 Option.toList own @ Option.toList parent @ subs)
 
@@ -1469,14 +1443,7 @@ module SigGen =
 
                     let root = mergeFlags [ arityFrom helpRows (complete []); helpRows ]
 
-                    "cobra-complete",
-                    root,
-                    nodes,
-                    [],
-                    (if nodes.IsEmpty && probed > 0 then
-                         $" (walked {probed} subcommand help(s), none yielded a case)"
-                     else
-                         "")
+                    "cobra-complete", root, nodes, [], walkNoteOf nodes probed
                 else
                     let fish =
                         match fishText with
@@ -1501,19 +1468,18 @@ module SigGen =
                             (if label = "help-all" then label else "help+" + label), mergeFlags [ full; helpRows ]
                         | Some(label, fs), _ -> label, mergeFlags [ fs; helpRows ]
                         | None, _ ->
-                            match topHelp with
-                            | Some _ when not helpRows.IsEmpty -> "help", helpRows
-                            | Some t ->
-                                match parseUsage t with
-                                | [] -> "help-scan", harvestHelp t
+                            match topHelp, harvestOnly with
+                            | Some _, _ when not helpRows.IsEmpty -> "help", helpRows
+                            | Some t, _ ->
+                                "help-scan",
+                                (match parseUsage t with
+                                 | [] -> harvestHelp t
+                                 | fs -> fs)
+                            | None, Some dump ->
+                                match harvestHelp dump with
+                                | [] -> "help", []
                                 | fs -> "help-scan", fs
-                            | None ->
-                                match harvestOnly with
-                                | Some dump ->
-                                    match harvestHelp dump with
-                                    | [] -> "help", []
-                                    | fs -> "help-scan", fs
-                                | None -> "help", []
+                            | None, None -> "help", []
 
                     let top =
                         match convention with
@@ -1588,13 +1554,7 @@ module SigGen =
                         let nodes, probed =
                             walkTree (IO.Path.GetFileName tool) t (fun p -> runTool tool (p @ [ "--help" ])) flagsAt
 
-                        let note =
-                            if nodes.IsEmpty && probed > 0 then
-                                $" (walked {probed} subcommand help(s), none yielded a case)"
-                            else
-                                ""
-
-                        source, top, nodes, [], note
+                        source, top, nodes, [], walkNoteOf nodes probed
                     | _ -> source, top, [], [], ""
 
             // GNU getopt's unique-prefix longs [D:sig-conventions]: the
@@ -1607,18 +1567,16 @@ module SigGen =
                 && not cobra
                 && not isGit
                 && System.Text.RegularExpressions.Regex.IsMatch(help, "--[a-z][a-z0-9-]*=[A-Z<\\[]")
-                && (match version with
-                    | Some v ->
-                        match runTool tool [ "--versio" ] with
-                        | Some out ->
+                && (version
+                    |> Option.exists (fun v ->
+                        runTool tool [ "--versio" ]
+                        |> Option.exists (fun out ->
                             let first =
                                 out.Split('\n')
                                 |> Array.tryFind (fun l -> l.Trim() <> "")
                                 |> Option.defaultValue ""
 
-                            System.Text.RegularExpressions.Regex.Replace(first.Trim(), "\\s+", " ") = v
-                        | None -> false
-                    | None -> false)
+                            System.Text.RegularExpressions.Regex.Replace(first.Trim(), "\\s+", " ") = v)))
 
             // V8 documents `--no-flag` for every bool flag, node for its own
             let negatable = fullHelp |> List.exists (fun (m, _) -> m = "--v8-options")
@@ -1910,6 +1868,9 @@ module SigGen =
 
                 let caseKey (path: string list) = String.concat " " path
 
+                let quoted (xs: string list) =
+                    xs |> List.map (fun s -> $"\"{escape s}\"") |> String.concat "; "
+
                 let stops =
                     [
                         if topStop && nodes.IsEmpty then
@@ -1927,8 +1888,7 @@ module SigGen =
                 if not stops.IsEmpty then
                     line "/// the first operand of these ends the tool's own options (what follows is"
                     line "/// handed on — a container's command, a script's arguments)"
-                    let joined = stops |> List.map (fun s -> $"\"{escape s}\"") |> String.concat "; "
-                    line $"let stopAtOperand = [ {joined} ]"
+                    line $"let stopAtOperand = [ {quoted stops} ]"
 
                 if unchecked = [ "" ] then
                     line "/// the tool takes any config key as a flag (its help: `--key=value`):"
@@ -1937,11 +1897,7 @@ module SigGen =
                 elif not unchecked.IsEmpty then
                     line "/// these pass options the source cannot list (git's revision options):"
                     line "/// reaching one ends the check"
-
-                    let joined =
-                        unchecked |> List.map (fun s -> $"\"{escape s}\"") |> String.concat "; "
-
-                    line $"let unchecked = [ {joined} ]"
+                    line $"let unchecked = [ {quoted unchecked} ]"
 
                 if nodes.IsEmpty then
                     renderRecord "Cmd" flags
@@ -1996,20 +1952,20 @@ module SigGen =
                         |> List.distinctBy (fun (an, _, _) -> an)
                         |> List.filter (fun (an, _, _) -> cases |> List.forall (fun (_, cn, _) -> cn <> an))
 
-                    for an, cn, own in aliasCases do
+                    let caseLine (name: string) (cn: string) (own: Flag list) =
                         if own.IsEmpty then
-                            line $"    | {an}"
+                            line $"    | {name}"
                         else
-                            line $"    | {an} of {cn}Flags"
+                            line $"    | {name} of {cn}Flags"
+
+                    for an, cn, own in aliasCases do
+                        caseLine an cn own
 
                     for _, cn, own in cases do
                         // the matching key is the kebab of the case — it
                         // must round-trip to the sub token the user types;
                         // a case with no flags of its own takes the Globals
-                        if own.IsEmpty then
-                            line $"    | {cn}"
-                        else
-                            line $"    | {cn} of {cn}Flags"
+                        caseLine cn cn own
 
                 let text = sb.ToString()
 
@@ -2063,6 +2019,12 @@ module SigGen =
 
                                 $"{total} flag(s) across {nodes.Length} subcommand case(s)"
 
+                        let cutTail =
+                            [ cutNote; slowNote ]
+                            |> List.filter ((<>) "")
+                            |> List.map (fun n -> "; " + n)
+                            |> String.concat ""
+
                         match globalDir with
                         | Some dir ->
                             // the user dir [D:sig-arg-complete]: no lock — a
@@ -2072,21 +2034,14 @@ module SigGen =
                             IO.Directory.CreateDirectory dir |> ignore
                             Contracts.AtomicFile.replaceFile dest (Text.UTF8Encoding(false).GetBytes text)
 
-                            let cutTail =
-                                [ cutNote; slowNote ]
-                                |> List.filter ((<>) "")
-                                |> List.map (fun n -> "; " + n)
-                                |> String.concat ""
-
                             Ok
                                 $"added sig {tool} to {dest} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — user-level: the REPL's Tab reads it in every directory; no lock entry"
                         | None ->
                             let rel = "sigs/" + sigFileName tool
 
                             Contracts.AtomicFile.withWeirDirLock weirDir (fun () ->
-                                match Contracts.readLock weirDir with
-                                | Error e -> Error e
-                                | Ok entries0 ->
+                                Contracts.readLock weirDir
+                                |> Result.bind (fun entries0 ->
                                     // a file another lock entry records under this name
                                     // (a legacy name: `a b` wrote sigs/a_b.weir) is that
                                     // tool's signature — never overwritten: it moves to
@@ -2130,18 +2085,11 @@ module SigGen =
                                                         $"{rel} is the signature of '{shown}', and moving it to sigs/{ownName} failed: {ex.Message}"
 
                                     // a write that would be refused moves nothing first
-                                    let moved =
-                                        match
-                                            Contracts.confinedLeaf
-                                                weirDir
-                                                (IO.Path.Combine(weirDir, "sigs", sigFileName tool))
-                                        with
-                                        | Error e -> Error e
-                                        | Ok() -> moveLegacy ()
-
-                                    match moved with
-                                    | Error e -> Error e
-                                    | Ok(entries, movedNote) ->
+                                    Contracts.confinedLeaf
+                                        weirDir
+                                        (IO.Path.Combine(weirDir, "sigs", sigFileName tool))
+                                    |> Result.bind moveLegacy
+                                    |> Result.bind (fun (entries, movedNote) ->
                                         let dest = IO.Path.Combine(weirDir, "sigs", sigFileName tool)
                                         let bytes = Text.UTF8Encoding(false).GetBytes text
 
@@ -2149,14 +2097,14 @@ module SigGen =
                                         // [D:lockfile-symlink-confinement]: a linked
                                         // sigs/ or leaf is refused, never written
                                         // through — and replaced whole
-                                        match Contracts.replaceConfined weirDir dest bytes with
-                                        | Error e -> Error e
-                                        | Ok() ->
+                                        Contracts.replaceConfined weirDir dest bytes
+                                        |> Result.bind (fun () ->
 
                                             let entry: Contracts.LockEntry = {
                                                 Kind = "sig"
                                                 Name = tool
-                                                Url = "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
+                                                Url =
+                                                    "generated:" + source + (if nodes.IsEmpty then "" else "+subs")
                                                 Sha256 = Contracts.sha256Hex bytes
                                                 Path = IO.Path.Combine("sigs", sigFileName tool)
                                                 Version = version
@@ -2164,7 +2112,8 @@ module SigGen =
                                             }
 
                                             let others =
-                                                entries |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
+                                                entries
+                                                |> List.filter (fun e -> not (e.Kind = "sig" && e.Name = tool))
 
                                             Contracts.writeLock weirDir (others @ [ entry ])
 
@@ -2181,7 +2130,8 @@ module SigGen =
                                                        && e.Name = tool
                                                        && e.Path.Replace('\\', '/') = legacy)
                                                 && not (
-                                                    others |> List.exists (fun e -> e.Path.Replace('\\', '/') = legacy)
+                                                    others
+                                                    |> List.exists (fun e -> e.Path.Replace('\\', '/') = legacy)
                                                 )
                                             then
                                                 try
@@ -2189,15 +2139,8 @@ module SigGen =
                                                 with _ ->
                                                     ()
 
-                                            let cutTail =
-                                                ([ cutNote; slowNote ]
-                                                 |> List.filter ((<>) "")
-                                                 |> List.map (fun n -> "; " + n)
-                                                 |> String.concat "")
-                                                + movedNote
-
                                             Ok
-                                                $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}) — partial by default; verify and mark exhaustive by hand")
+                                                $"added sig {tool} ({surfaceNote}, source: {fullSource}, version: {versionNote}{cutTail}{movedNote}) — partial by default; verify and mark exhaustive by hand"))))
                 finally
                     try
                         IO.File.Delete tmp
