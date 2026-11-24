@@ -9408,7 +9408,7 @@ let fieldSpliceTests =
                 | _ -> ()
 
             Expect.stringContains (sx "FOO=$HOME echo a") "Env.need" "an env-prefix value"
-            Expect.stringContains (sx "^$EDITOR f") "Env.need" "a dynamic head"
+            Expect.stringContains (sx "^$EDITOR f") "^$EDITOR" "a dynamic head shows as it was written"
             Expect.isFalse ((sx "echo $home").Contains "Env") "a lowercase name is the binding"
         }
         test "$NAME checks as a string, stays one word, and is no binding in a text block [D:env-sigil]" {
@@ -9426,6 +9426,47 @@ let fieldSpliceTests =
 
             let ms = errs [ "let t = $$<<<"; "    a $HOME"; "print (show t)" ]
             Expect.isTrue (ms |> List.exists (fun m -> m.Contains "unbound variable 'HOME'")) $"{ms}"
+        }
+        test "a $ name with a member path is a binding or a module, never the environment [D:env-sigil]" {
+            Expect.isEmpty
+                (errs [ "let n = $(echo $@Self.args) |> Seq.length"; "print (show n)" ])
+                "a module member splats as it did"
+
+            Expect.stringContains (sx "echo $@Self.args") "Self.args" "the module path, no Env.need"
+            Expect.isFalse ((sx "echo $@Self.args").Contains "Env") "no environment read"
+
+            let ms = errs [ "echo $HX.txt" ]
+
+            Expect.isTrue (ms |> List.exists (fun m -> m.Contains "interpolate one word: $\"{$HX}.txt\"")) $"{ms}"
+        }
+        test "a $ word in an expression that is no whole $NAME names its repair [D:env-sigil]" {
+            let refuses (line: string) (needle: string) =
+                match Weir.Parser.parseLineFull cmdResolver line with
+                | Ok s -> failtest $"{line} must refuse, got {Weir.Ast.sexprStmt s}"
+                | Error f -> Expect.stringContains f.Message needle line
+
+            refuses "FOO=$HOME/bin/echo hi" "is one whole word"
+            refuses "FOO=$x/bin/echo hi" "one whole word"
+            refuses "let a = $HX$X" "is one whole word"
+            refuses "let a = echo $HX/bin" "is one whole word"
+            refuses "let a = ${HX}" "`${NAME}` is bash"
+            refuses "FOO=${HX} env" "`${NAME}` is bash"
+            refuses "let v = $x" "in an expression the binding is just `x`"
+            refuses "let v = $_X" "Env.need \"_X\""
+
+            let ms = errs [ "let a = $HX $X"; "print a" ]
+            Expect.isTrue (ms |> List.exists (fun m -> m.Contains "`$HX` is a string, not a function")) $"{ms}"
+            Expect.isFalse (ms |> List.exists (fun m -> m.Contains "Env.need")) "the desugar is not named"
+
+            Expect.isEmpty
+                (errs [
+                    "let x = \"a\""
+                    "if true then"
+                    "    echo $x $HOME"
+                    "let y = $(echo $x | text)"
+                    "print $\"{y} {$HOME}\""
+                ])
+                "whole words stay legal in blocks, captures and holes"
         }
         test "$NAME reads the variable and raises when it is unset [D:env-sigil]" {
             System.Environment.SetEnvironmentVariable("WEIR_SIGIL_SET_ZZ", "v1")
@@ -9449,6 +9490,30 @@ let fieldSpliceTests =
             Expect.isEmpty
                 (Weir.Complete.suggest env low (Weir.Complete.wordStartAt low low.Length))
                 "a lowercase-named variable is not a $ name"
+
+            // wherever the sigil is read: an expression, a hole, an
+            // env-prefix value, a dynamic head — and not glued to a flag
+            for line in
+                [
+                    "let h = $WEIR_SIGIL_T"
+                    "print $\"{$WEIR_SIGIL_T"
+                    "FOO=$WEIR_SIGIL_T"
+                    "^$WEIR_SIGIL_T"
+                    "if true then echo ($WEIR_SIGIL_T"
+                ] do
+                Expect.contains
+                    (Weir.Complete.suggest env line (Weir.Complete.wordStartAt line line.Length))
+                    "WEIR_SIGIL_TAB_ZZ"
+                    line
+
+            for line in [ "echo --x=$WEIR_SIGIL_T"; "print \"$WEIR_SIGIL_T"; "echo a // $WEIR_SIGIL_T" ] do
+                Expect.isEmpty (Weir.Complete.suggest env line (Weir.Complete.wordStartAt line line.Length)) line
+
+            // a `$$<<<` body and a yaml block name bindings only
+            Expect.isTrue (Weir.Complete.dollarBindingOnly [| "let t = $$<<<" |] "    a ") "a splicing text block"
+            Expect.isTrue (Weir.Complete.dollarBindingOnly [| "let y = yaml"; "    k:" |] "        v: ") "a yaml block"
+            Expect.isFalse (Weir.Complete.dollarBindingOnly [| "if true then" |] "    echo ") "an ordinary block"
+            Expect.isFalse (Weir.Complete.dollarBindingOnly [||] "echo ") "the top level"
         }
     ]
 

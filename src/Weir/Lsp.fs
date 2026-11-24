@@ -402,6 +402,14 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
         | Check.TEStr _, Some c when c <> '"' && c <> '@' && c <> '$' -> emitSpan ll s len 1
         // $name splice: the island marker, whole token
         | Check.TEVar _, Some '$' -> emitSpan ll s len 2
+        // $NAME, the environment read [D:env-sigil]: an application whose
+        // span is the `$` word — the same marker
+        | Check.TEApp _, Some '$' when
+            (match charAt ll (s + 1) with
+             | Some c -> System.Char.IsLetter c
+             | None -> false)
+            ->
+            emitSpan ll s len 2
         // (expr) splice: delimiters only — the interior is expression
         // code and stays lexically colored
         | _, Some '(' when charAt ll (s + len - 1) = Some ')' ->
@@ -5547,9 +5555,20 @@ let run (debug: bool) : int =
                                         let cur = if line - 1 < orig.Length then orig[line - 1] else ""
                                         let up = cur.Substring(0, min (col - 1) cur.Length)
 
+                                        // a key is given once: one the block
+                                        // already holds is not offered again
+                                        let given (k: string) =
+                                            orig
+                                            |> Array.indexed
+                                            |> Array.exists (fun (i, l) ->
+                                                i <> line - 1
+                                                && (let t = l.TrimStart()
+
+                                                    t.StartsWith k && t.Substring(k.Length).TrimStart().StartsWith "="))
+
                                         if inBlock && cur.Trim() <> "}" && not (up.Contains "=") then
                                             [ "continuationPrompt"; "cwd"; "echoCap"; "env"; "logLevel"; "prompt" ]
-                                            |> List.filter (fun k -> k.StartsWith word)
+                                            |> List.filter (fun k -> k.StartsWith word && not (given k))
                                         else
                                             []
 
@@ -5614,6 +5633,19 @@ let run (debug: bool) : int =
                                             | _ -> env
 
                                         Complete.suggestScoped env text upto wordStart
+
+                                // in a `$$<<<` body a `$` names a binding only
+                                // [D:env-sigil] (a yaml block's pool is its own)
+                                let items =
+                                    if
+                                        sigil = 1
+                                        && Complete.dollarBindingOnly
+                                            lines[0 .. min (line - 2) (lines.Length - 1)]
+                                            (upto.Substring(0, wordStart - sigil))
+                                    then
+                                        items |> List.filter (fun c -> not (Ast.isEnvName c))
+                                    else
+                                        items
 
                                 // line-head position: PATH commands join (the
                                 // command-mode classifier's territory) — but not

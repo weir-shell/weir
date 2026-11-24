@@ -965,7 +965,13 @@ let private splicePathAt (st: St) (sigilLen: int) : Expr =
         refuse st
     else
         let sp = { Start = at s; End = here st }
-        let mutable e = spliceName w sp
+        // with a path the name is a binding or a module, never the
+        // environment [D:env-sigil]
+        let mutable e =
+            if peek st = '.' && isIdentStart (peekAt st 1) then
+                { Kind = EVar w; Span = sp }
+            else
+                spliceName w sp
 
         while peek st = '.' && isIdentStart (peekAt st 1) do
             st.I <- st.I + 1
@@ -3155,8 +3161,14 @@ and private envAssigns (st: St) : ((string * Expr) * Span) list =
                     let vs = st.I
                     st.I <- st.I + 1
                     let w = takeWord st
+                    let after = peek st
 
-                    spliceName w { Start = at vs; End = here st }
+                    // glued text after the name is the grammar's to refuse
+                    // [D:argv-splat]
+                    if after = eos || after = ' ' || after = '\t' then
+                        spliceName w { Start = at vs; End = here st }
+                    else
+                        refuse st
                 else
                     refuse st
             elif c = '"' then
@@ -3240,7 +3252,7 @@ and private headSegment (st: St) (h: Head) (stops: int) (sigilEnv: Expr option) 
                 cmdCapture st, "$(…)"
             else
                 let e = splicePathAt st 1
-                e, (if st.Ok then "$" + sexpr e else null)
+                e, (if st.Ok then spliceDisplay sexpr e else null)
 
         if not st.Ok then
             Unchecked.defaultof<_>

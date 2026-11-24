@@ -1553,22 +1553,21 @@ let private deriveContPromptOf (own: string option) (w: int) =
     elif width <= w then
         String(' ', w - width) + text
     else
+        // cut between whole characters as the terminal draws them — a
+        // joined emoji or a flag is several code points and one cell pair —
+        // and measure what is kept as one string, the way the prompt is
+        // measured, never as a sum of its parts
         let plain = ReplColor.stripAnsi text
-        let cut = Text.StringBuilder()
-        let mutable cells = 0
+        let elements = Globalization.StringInfo.GetTextElementEnumerator plain
+        let mutable cut = ""
         let mutable go = true
-        let runes = plain.EnumerateRunes()
 
-        for r in runes do
-            let c = visibleWidth (r.ToString())
+        while go && elements.MoveNext() do
+            let next = cut + elements.GetTextElement()
 
-            if go && cells + c <= w then
-                cut.Append(r.ToString()) |> ignore
-                cells <- cells + c
-            else
-                go <- false
+            if visibleWidth next <= w then cut <- next else go <- false
 
-        String(' ', w - cells) + cut.ToString()
+        String(' ', w - visibleWidth cut) + cut
 
 // a session with redirected input keeps the default mark, as it keeps
 // the default prompt [D:session-prompt]
@@ -2124,6 +2123,20 @@ let private readLineTty () : string option =
                     // character (a newline submits a statement, an escape
                     // repaints) is never offered, whatever produced it
                     let offered = all |> List.filter (fun c -> not (c |> Seq.exists Char.IsControl))
+
+                    // in a `$$<<<` body or a yaml block a `$` names a binding
+                    // only [D:env-sigil]: no variable is offered where the
+                    // checker would refuse it
+                    let offered =
+                        if
+                            sigil = 1
+                            && Complete.dollarBindingOnly
+                                [| for i in 0 .. row - 1 -> lines[i].ToString() |]
+                                (text.Substring(0, ws - sigil))
+                        then
+                            offered |> List.filter (fun c -> not (Ast.isEnvName c))
+                        else
+                            offered
 
                     if row = 0 then
                         offered

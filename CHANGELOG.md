@@ -13,6 +13,27 @@
 
 ### Fixed
 
+- **`$@Self.args` works again.** In 0.0.96 a `$` splice of a module
+  member (`$@Self.args`) was read as an environment variable named
+  after the module and refused. With a `.member` after it, the name is
+  a binding or a module, as before.
+- **`FOO=$HOME/bin/tool args` is refused.** It ended the value at the
+  name and ran `/bin/tool`. An environment value is one whole word, as
+  a command argument is.
+- **`$NAME` mistakes say what to write.** Text joined onto a `$NAME`
+  inside a block or after `let`, `${NAME}` anywhere, a lowercase `$x`
+  used as an expression, and `$NAME` followed by more words each get
+  their own message at the right column; none mentions `Env.need`.
+- **A long continuation prompt is cut between whole characters.**
+  Joined emoji and flags were split or miscounted, which left the
+  line a different width from the prompt.
+- **The editor colors `$NAME` like other splices**, and offers no
+  `#session` key the block already has.
+- **Tab after `$` offers variables wherever `$NAME` is read** (an
+  expression, a `{…}` hole, an env-prefix value, a `^$` head) and not
+  inside a `$$<<<` text block or a yaml block, where it is refused.
+- **A `#session` value that names a declaration says so**, where it
+  said the value "cannot run a command".
 - **Tab inside a string no longer offers names.** In `print "pri`, Tab
   offered bindings and keywords that start with those letters; inside
   a string there is nothing to name.

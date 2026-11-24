@@ -992,6 +992,20 @@ let private spliceSegment (pre: string) : string =
 
     pre.Substring cut
 
+// the set variables a `$` can name [D:env-sigil]: uppercase-first, and
+// spelled in identifier characters
+let private envSigilNames (word: string) : string list =
+    System.Environment.GetEnvironmentVariables().Keys
+    |> Seq.cast<obj>
+    |> Seq.map string
+    |> Seq.filter (fun n ->
+        Weir.Ast.isEnvName n
+        && n.StartsWith word
+        && n <> word
+        && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
+    |> Seq.sort
+    |> Seq.toList
+
 // a `$name` splice completes exactly what the checker admits there
 // [D:argv-splice-complete]: after `$`, the Check.argvSpliceable
 // bindings; after `$@`, seq<string>; a record only through its fields
@@ -1047,22 +1061,7 @@ let private splicePool (env: TypeEnv) (sigil: string) (word: string) : string li
         |> fun bound ->
             // `$NAME` reads the environment [D:env-sigil]: the set
             // variables a `$` can name, after the bindings
-            if sigil = "$" then
-                let vars =
-                    System.Environment.GetEnvironmentVariables().Keys
-                    |> Seq.cast<obj>
-                    |> Seq.map string
-                    |> Seq.filter (fun n ->
-                        Weir.Ast.isEnvName n
-                        && n.StartsWith word
-                        && n <> word
-                        && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
-                    |> Seq.sort
-                    |> Seq.toList
-
-                bound @ vars
-            else
-                bound
+            if sigil = "$" then bound @ envSigilNames word else bound
 
 /// the `$` pool inside a yaml block [D:argv-splice-complete]: the
 /// bindings the yaml district's splice law admits (Check.yamlSpliceableWith)
@@ -1138,6 +1137,27 @@ let dollarLiteral (above: string[]) (pre: string) : bool =
                 walk (indentOf above[k]) (k - 1) (above[k] :: chain)
 
     Weir.Scan.commentAt pre >= 0 || walk (indentOf pre) (above.Length - 1) []
+
+/// a `$` here names a binding and never the environment [D:env-sigil]:
+/// the cursor line sits in a `$$<<<` body or a yaml block
+let dollarBindingOnly (above: string[]) (pre: string) : bool =
+    let indentOf (s: string) = s.Length - s.TrimStart().Length
+
+    let rec walk (ind: int) (j: int) =
+        let mutable k = j
+
+        while k >= 0 && (above[k].Trim() = "" || indentOf above[k] >= ind) do
+            k <- k - 1
+
+        k >= 0
+        && (let c = Weir.Scan.commentAt above[k]
+            let p = (if c >= 0 then above[k].Substring(0, c) else above[k]).Trim()
+
+            Parser.isHeredocMarkerPiece p
+            || Parser.isYamlMarkerPiece p
+            || walk (indentOf above[k]) (k - 1))
+
+    walk (indentOf pre) (above.Length - 1)
 
 // the binder scope can be wider than the completion text: the LSP
 // completes one line but its binders (a let's params two lines up)
@@ -1469,8 +1489,16 @@ let rec suggestScopedWith
                         let at = wordStart - sigil.Length
                         let pre = text.Substring(0, at)
 
-                        if Weir.Scan.endsInsideString pre || Weir.Scan.commentAt pre >= 0 then
+                        if Weir.Scan.commentAt pre >= 0 then
                             Some []
+                        elif Weir.Scan.endsInsideString pre then
+                            // literal text, except in a hole: an expression,
+                            // where a `$` word is the environment's
+                            // [D:env-sigil]
+                            if sigil = "$" && (interpHoleStart pre).IsSome then
+                                Some(envSigilNames word)
+                            else
+                                Some []
                         elif
                             sigil = "$"
                             && at > 0
@@ -1488,11 +1516,23 @@ let rec suggestScopedWith
                                     else
                                         None)
                                 |> List.sort
+                                |> fun bound -> bound @ envSigilNames word
                             )
-                        elif at > 0 && not (pre[at - 1] = ' ' || pre[at - 1] = '\t') then
+                        elif
+                            sigil = "$"
+                            && System.Text.RegularExpressions.Regex.IsMatch(pre, @"(?:^|[\s(])[A-Za-z_][A-Za-z0-9_]*=$")
+                        then
+                            // an env-prefix value, glued to its `=` by design
+                            // [D:env-prefix]
+                            Some(splicePool env sigil word)
+                        elif at > 0 && not (pre[at - 1] = ' ' || pre[at - 1] = '\t' || pre[at - 1] = '(') then
                             Some []
                         elif commandArgvPosition env true (spliceSegment pre + sigil) then
                             Some(splicePool env sigil word)
+                        elif sigil = "$" then
+                            // an expression: the one `$` word there is the
+                            // environment's [D:env-sigil]
+                            Some(envSigilNames word)
                         else
                             None
                     | None -> None

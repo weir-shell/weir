@@ -6734,6 +6734,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             return! err a.Span $"$@ splices a seq<string>; this is {formatTy t} — one value? use $x"
                         | t -> return! err a.Span $"$@ splices a seq<string>; this is {formatTy t}"
                     }
+                // `$HOME.bak`: with a path the name is no environment read
+                // [D:env-sigil], and an uppercase name that is neither a
+                // binding nor a module was meant as one
+                | EField({ Kind = EVar n }, field, _) when
+                    Ast.isEnvName n
+                    && not (Map.containsKey n env.Values)
+                    && not (Map.containsKey n env.Modules)
+                    ->
+                    err
+                        a.Span
+                        $"`${n}.{field}`: '{n}' is no binding or module here — to join text onto the environment variable, interpolate one word: $\"{{${n}}}.{field}\""
                 // bash's `$file.bak` reads a field here [D:field-splices]:
                 // on a non-record, name the glued spelling
                 | EField({ Kind = EVar n } as target, field, _) ->
@@ -7164,8 +7175,19 @@ and private checkSpineOn
                 | None ->
                     let available = fst (arrows 0 thead.Ty)
 
-                    match thead.Kind with
-                    | TEVar name when available > 0 ->
+                    match thead.Kind, args with
+                    // `$NAME extra`: the sugar is one span over head and name
+                    // [D:env-sigil], and the message is about what was written
+                    | TEVar "Env.need",
+                      ({
+                           Kind = EStr variable
+                           Span = nameSpan
+                       } :: extra :: _) when nameSpan = head.Span ->
+                        return!
+                            err
+                                extra.Span
+                                $"`${variable}` is a string, not a function — it takes no arguments (a second word here is not joined onto it either: interpolate, `$\"{{${variable}}}…\"`)"
+                    | TEVar name, _ when available > 0 ->
                         // point at the first extra argument, not the head — and
                         // when it sits on a different physical line, the extra
                         // args are an indented continuation the writer likely
@@ -7186,7 +7208,7 @@ and private checkSpineOn
                         let span = extra |> Option.map (fun e -> e.Span) |> Option.defaultValue head.Span
 
                         return! err span $"'{name}' takes at most {available} argument(s), but got {args.Length}{hint}"
-                    | TEVar name when (name = "ls" || name = "pwd") && not (List.isEmpty args) ->
+                    | TEVar name, _ when (name = "ls" || name = "pwd") && not (List.isEmpty args) ->
                         // a command-name builtin VALUE applied to args is almost
                         // always a shell-command reflex (`ls -la`) [D:ls-command-teach]
                         // — it is weir's typed listing, not the external command,

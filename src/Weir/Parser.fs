@@ -366,7 +366,10 @@ let private rawWord =
 
 // a splice's name and its `.field` path [D:field-splices]: `$cli.tag`
 // is one word, the field's value — only an identifier tail extends it,
-// so `$x.` and `$x/y` still meet the concatenation guard
+// so `$x.` and `$x/y` still meet the concatenation guard. With a path
+// the name is a binding or a module (`$@Self.args`), never the
+// environment: a variable's value is a string and has no members
+// [D:env-sigil]
 let private splicePath (sigil: Parser<unit, unit>) : Parser<Expr, unit> =
     spanned (sigil >>. rawWord) .>>. many (attempt (pchar '.' >>. spanned rawWord))
     |>> fun ((n, sp), fields) ->
@@ -376,16 +379,63 @@ let private splicePath (sigil: Parser<unit, unit>) : Parser<Expr, unit> =
                 Kind = EField(target, f, fsp)
                 Span = { Start = sp.Start; End = fsp.End }
             })
-            (spliceName n sp)
+            (if fields.IsEmpty then
+                 spliceName n sp
+             else
+                 { Kind = EVar n; Span = sp })
 
-// `$NAME` in expression position [D:env-sigil]; no label of its own, so
-// the atom's Expecting list stands as it is
+// what may follow a `$` name for it to be one whole word [D:argv-splat]
+let private endsDollarWord (c: char) : bool =
+    c = FParsec.CharStream.EndOfStreamChar
+    || System.Char.IsWhiteSpace c
+    || c = ')'
+    || c = ']'
+    || c = '}'
+    || c = ','
+    || c = ';'
+    || c = '|'
+    || c = sibSep
+    || c = fieldSep
+
+let private bashBracesTeach =
+    "`${NAME}` is bash — use '$NAME' for an environment variable, one whole word; inside a word, interpolate: `$\"{$NAME}/bin\"`"
+
+// a `$` in expression position [D:env-sigil]: `$NAME` whole is the
+// environment read; every other `$` word here gets its repair named,
+// where the atom's token list would be all it had. `$name(` is the
+// capture sigil's and `$"`/`$@` have their own readers, so none of
+// those reach this. No label of its own: off a `$` the atom's Expecting
+// list stands as it is
 let private envAtom: Parser<Expr, unit> =
     fun stream ->
-        if stream.Peek() = '$' && System.Char.IsUpper(stream.Peek 1) then
-            (spanned (pchar '$' >>. rawWord) .>> ws |>> fun (n, sp) -> envRead n sp) stream
-        else
+        let fatal (msg: string) =
+            Reply(ReplyStatus.FatalError, messageError msg)
+
+        if stream.Peek() <> '$' then
             Reply(ReplyStatus.Error, NoErrorMessages)
+        elif stream.Peek 1 = '{' then
+            fatal bashBracesTeach
+        elif not (isIdentStart (stream.Peek 1)) then
+            Reply(ReplyStatus.Error, NoErrorMessages)
+        else
+            let mutable len = 1
+
+            while isIdentCont (stream.Peek(1 + len)) do
+                len <- len + 1
+
+            let name = stream.PeekString(1 + len).Substring 1
+            let next = stream.Peek(1 + len)
+
+            if next = '(' then
+                Reply(ReplyStatus.Error, NoErrorMessages)
+            elif not (endsDollarWord next) then
+                fatal
+                    $"`${name}` is one whole word — text cannot be joined onto it. Build the word with an interpolated string: `$\"{{${name}}}…\"`"
+            elif isEnvName name then
+                (spanned (pchar '$' >>. rawWord) .>> ws |>> fun (n, sp) -> envRead n sp) stream
+            else
+                fatal
+                    $"`${name}` splices a binding into a command's words; in an expression the binding is just `{name}`. (An environment variable is `$NAME` when its name starts uppercase, `Env.need \"{name}\"` otherwise.)"
 
 // the two-pipe cliff [D:pipe-hint]: a bare `|` after a completed
 // expression is not an operator — name the spelling instead of
@@ -4584,11 +4634,7 @@ let private spliceVar =
     // bash's `${NAME}` [D:env-sigil]: name the spelling, as the other
     // `$` teaches do
     >>. ((lookAhead (pstring "${") >>. getPosition
-          >>= fun at ->
-              pchar '$'
-              >>. failFatallyAt
-                      at
-                      "`${NAME}` is bash — use '$NAME' for an environment variable, one whole word; inside a word, interpolate: `$\"{$NAME}/bin\"`")
+          >>= fun at -> pchar '$' >>. failFatallyAt at bashBracesTeach)
          <|> preturn ())
     >>. splicePath (skipChar '$')
     .>> ws
@@ -4731,7 +4777,20 @@ let private envValue: Parser<Expr, unit> =
         lookAhead (pstring "$\"\"\"") >>. interpRawLit
         lookAhead (pstring "$\"") >>. interpLit
         lookAhead (pstring "$(") >>. captureSigil
-        spanned (pchar '$' >>. rawWord) |>> fun (n, sp) -> spliceName n sp
+        lookAhead (pstring "${") >>. failFatally bashBracesTeach
+        // the value is one whole word too [D:argv-splat]: `FOO=$HOME/bin/x`
+        // would otherwise end the value at the name and run `/bin/x`
+        (spanned (pchar '$' >>. rawWord)
+         .>> (fun stream ->
+             if endsDollarWord (stream.Peek()) then
+                 Reply(())
+             else
+                 Reply(
+                     ReplyStatus.FatalError,
+                     messageError
+                         "an environment value is one whole word — text cannot be joined onto a `$` name here. Build it with an interpolated string: `NAME=$\"{$HOME}/bin\" cmd`"
+                 )))
+        |>> fun (n, sp) -> spliceName n sp
         lookAhead (pstring "\"\"\"") >>. tripleLit
         lookAhead (pchar '"') >>. strLit
         lookAhead (pchar '\'') >>. singleQuoted
@@ -4809,7 +4868,8 @@ let private dynHead: Parser<HeadKind * string * Span, unit> =
     attempt (getPosition .>> pchar '^' .>> followedBy (pchar '$'))
     >>= fun startP ->
         (captureSigil |>> (fun e -> "$(…)", e)
-         <|> (splicePath (skipChar '$') |>> fun e -> $"${Weir.Ast.sexpr e}", e))
+         <|> (splicePath (skipChar '$')
+              |>> fun e -> Weir.Ast.spliceDisplay Weir.Ast.sexpr e, e))
         .>> ws
         |>> fun (disp, e) ->
             let span = { Start = pos startP; End = e.Span.End }

@@ -576,6 +576,23 @@ let spliceName (name: string) (sp: Span) : Expr =
     else
         { Kind = EVar name; Span = sp }
 
+/// the variable a `$NAME` named, read back off its desugar: one span
+/// covers the whole of it, which a written `Env.need "NAME"` never does
+let envReadName (e: Expr) : string option =
+    match e.Kind with
+    | EApp({
+               Kind = EField({ Kind = EVar "Env" }, "need", _)
+               Span = hsp
+           },
+           { Kind = EStr name; Span = asp }) when hsp = e.Span && asp = e.Span -> Some name
+    | _ -> None
+
+/// a splice as it was written, for a message: `$NAME`, else its tree
+let spliceDisplay (show: Expr -> string) (e: Expr) : string =
+    match envReadName e with
+    | Some n -> "$" + n
+    | None -> "$" + show e
+
 /// the literal program of a single reified command (`cmd | complete`),
 /// read off the saturated desugar application
 let reifiedHead (e: Expr) : (string * Span) option =

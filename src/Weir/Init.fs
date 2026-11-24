@@ -505,6 +505,24 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                         elif Set.contains key seen then
                             keyError $"duplicate #session key '{key}'"
                         elif Check.runsCommandT te then
+                            // a bare name of one of the file's own
+                            // declarations reads as a command head here: the
+                            // values are read before the declarations exist
+                            let named =
+                                if ll.Head >= 1 && ll.Head <= ownLines.Length then
+                                    let m =
+                                        System.Text.RegularExpressions.Regex.Match(
+                                            ownLines[ll.Head - 1],
+                                            @"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*([A-Za-z_][A-Za-z0-9_]*)"
+                                        )
+
+                                    if m.Success && Set.contains m.Groups[1].Value declNames then
+                                        Some m.Groups[1].Value
+                                    else
+                                        None
+                                else
+                                    None
+
                             diags.Add(
                                 initError
                                     file
@@ -512,7 +530,11 @@ let checkInit (mkR: TypeEnv -> Parser.Resolver) (file: string) (lines: string li
                                     vc
                                     None
                                     "session-command"
-                                    "a #session value cannot run a command — settings are read, not computed by running things"
+                                    (match named with
+                                     | Some n ->
+                                         $"a #session value is read before the file's declarations, so '{key}' cannot name '{n}' — write the value here (only 'prompt' may name a declaration)"
+                                     | None ->
+                                         "a #session value cannot run a command — settings are read, not computed by running things")
                             )
                         else
                             seen <- Set.add key seen
