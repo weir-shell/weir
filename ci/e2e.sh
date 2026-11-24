@@ -1802,6 +1802,13 @@ infout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   "#save $infdir/explore.weir" \
   '#quit' | $BIN)
 echo "$infout" | grep -qF "defined: Item, Root" || fail "#infer did not define the auto-named types: $infout"
+# the piped spelling of the one-step form reads in the two-step form too
+# [D:infer-one-shot]: `<source> |> from <fmt> as <Name>`
+pipout=$(printf '%s\n%s\n%s\n' \
+  'let lines = ["{\"n\": 1}"; "{\"n\": 2}"; "{\"n\": 3}"]' \
+  '#infer lines |> Seq.take 2 |> from jsonl as Rowz' \
+  '#quit' | $BIN 2>&1)
+echo "$pipout" | grep -qF "defined: Rowz" || fail "#infer must read '<source> |> from <fmt> as <Name>': $pipout"
 echo "$infout" | grep -qF "#save: wrote" || fail "#save did not report a write: $infout"
 [ -f "$infdir/explore.weir" ] || fail "#save did not write the file"
 # (a) the acceptance-defining guarantee: the distilled file weir-checks clean

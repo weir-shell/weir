@@ -8,6 +8,11 @@
   keys in the kitty keyboard protocol's form, Shift+Tab abandoned the
   line and typed `[9;2u` into the next one. The REPL now reads these
   reports, for Esc, Enter, Backspace and Ctrl+letter as well.
+- **`#infer <source> |> from jsonl as Name` works.** Only the form
+  without the pipe did (`#infer <source> from jsonl as Name`), though
+  `#infer let x = <source> |> from …` takes the pipe.
+- **`#infer … as seq<Row>` says to write `as Row`.** It said the name
+  "must start with an uppercase letter".
 
 ## v0.0.97
 

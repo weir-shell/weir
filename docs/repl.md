@@ -396,7 +396,8 @@ defined: Pods, Metadata, Status (3 types)
 weir> raw |> from json Pods |> _.items |> Seq.map _.⟨TAB⟩
 ```
 
-`#infer <source> from <json|jsonl|yaml|table> as <Name>` evaluates the
+`#infer <source> from <json|jsonl|yaml|table> as <Name>` (a `|>`
+before `from` is fine too) evaluates the
 source once, parses it in that format, derives named `type`
 declarations from it, and adds them to the session as if you had typed
 them. After that, `from json Pods` checks and field completion works.

@@ -3640,7 +3640,17 @@ let private parseInfer (rest: string) : Result<string * string * string, string>
             else
                 Error "#infer <source> from <json|jsonl|yaml|table> as <Name> — missing 'from <format>'"
         else
-            let source = head.Substring(0, fromIdx).Trim()
+            // the piped spelling the one-step form has
+            // [D:infer-one-shot] reads here too: `<source> |> from <fmt>`
+            // is the same source, its pipe the adapter's
+            let source =
+                let s = head.Substring(0, fromIdx).Trim()
+
+                if s.EndsWith "|>" then
+                    s.Substring(0, s.Length - 2).TrimEnd()
+                else
+                    s
+
             let fmt = head.Substring(fromIdx + 6).Trim()
             Ok(source, fmt, name)
 
@@ -3877,7 +3887,17 @@ let private bindParsed
         st
 
 let private inferNameRefusal (name: string) : string option =
-    if name <> "_" && (name = "" || not (Char.IsUpper name[0])) then
+    // `as seq<Row>`: the note says the value reads as `seq<Row>`, and the
+    // name to give is the element's [D:repl-infer]
+    let wrapped =
+        Text.RegularExpressions.Regex.Match(name, @"^(?:seq|list|array)\s*<\s*([A-Za-z_][A-Za-z0-9_]*)\s*>$")
+
+    if wrapped.Success then
+        let inner = wrapped.Groups[1].Value
+
+        Some
+            $"#infer: 'as' names the type to define, and that is one row's — write 'as {inner}'. For an array or jsonl sample the value then reads as 'seq<{inner}>'"
+    elif name <> "_" && (name = "" || not (Char.IsUpper name[0])) then
         Some $"#infer: the type name '{name}' must start with an uppercase letter ('_' auto-names)"
     elif
         name <> "_"
