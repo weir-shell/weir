@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.98
+
+### Fixed
+
+- **Shift+Tab completes, as Tab does.** In a terminal that reports
+  keys in the kitty keyboard protocol's form, Shift+Tab abandoned the
+  line and typed `[9;2u` into the next one. The REPL now reads these
+  reports, for Esc, Enter, Backspace and Ctrl+letter as well.
+
 ## v0.0.97
 
 ### Added
