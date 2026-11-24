@@ -506,7 +506,7 @@ let completionTests =
             Expect.contains (ask "#infer let y = xs |> Seq.ma") "Seq.map" "a member completes in the RHS"
             // the strip is the delta: `#infer ` off, only the let form
             Expect.equal (Weir.Complete.inferLetStrip "#infer let y = x") (Some 7) "strips '#infer '"
-            Expect.equal (Weir.Complete.inferLetStrip "#infer from json as N") None "only the let form strips"
+            Expect.equal (Weir.Complete.inferLetStrip "#infer it |> from json as N") None "only the let form strips"
             Expect.equal (Weir.Complete.inferLetStrip "let y = x") None "a plain let is not touched"
             // the general/head pool is unchanged outside the prefix
             Expect.isFalse (List.contains "Seq.map" (ask "Seq.z")) "no leak on a non-member word"

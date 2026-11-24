@@ -3620,39 +3620,43 @@ let sessionForTest () : (string -> string) * (unit -> TypeEnv) =
 
 /// split "src from fmt as Name" on the literal markers; source may be
 /// empty (defaults to `it`). Returns (source, format, name) or an error.
-let private parseInfer (rest: string) : Result<string * string * string, string> =
+let private inferUsage =
+    "#infer <source> |> from <json|jsonl|yaml|table> as <Name> (the last result is 'it')"
+
+// the directive reads as the language does [D:infer-piped]: a source
+// piped into the adapter, `as <Name>` where the type would stand. The
+// two spellings it had before the pipe — no `|>`, and no source at all
+// (the last result) — still read, and say so: `legacy` is the line to
+// write instead
+let private parseInfer (rest: string) : Result<string * string * string * string option, string> =
     // find ` as ` last (a name has no spaces), ` from ` before it
     let asIdx = rest.LastIndexOf " as "
 
     if asIdx < 0 then
-        Error "#infer <source> from <json|jsonl|yaml|table> as <Name> — missing 'as <Name>'"
+        Error $"{inferUsage} — missing 'as <Name>'"
     else
         let head = rest.Substring(0, asIdx)
         let name = rest.Substring(asIdx + 4).Trim()
         let fromIdx = head.LastIndexOf " from "
 
+        let piped (source: string) (fmt: string) =
+            $"#infer {source} |> from {fmt} as {name}"
+
         if fromIdx < 0 then
-            // allow "#infer from json as N": the head is " from …" with an
-            // empty source when it starts with the marker
+            // "#infer from json as N": an empty source, the last result
             if head.TrimStart().StartsWith "from " then
                 let fmt = head.TrimStart().Substring(5).Trim()
-                Ok("", fmt, name)
+                Ok("", fmt, name, Some(piped "it" fmt))
             else
-                Error "#infer <source> from <json|jsonl|yaml|table> as <Name> — missing 'from <format>'"
+                Error $"{inferUsage} — missing 'from <format>'"
         else
-            // the piped spelling the one-step form has
-            // [D:infer-one-shot] reads here too: `<source> |> from <fmt>`
-            // is the same source, its pipe the adapter's
-            let source =
-                let s = head.Substring(0, fromIdx).Trim()
-
-                if s.EndsWith "|>" then
-                    s.Substring(0, s.Length - 2).TrimEnd()
-                else
-                    s
-
+            let s = head.Substring(0, fromIdx).Trim()
             let fmt = head.Substring(fromIdx + 6).Trim()
-            Ok(source, fmt, name)
+
+            if s.EndsWith "|>" then
+                Ok(s.Substring(0, s.Length - 2).TrimEnd(), fmt, name, None)
+            else
+                Ok(s, fmt, name, Some(piped s fmt))
 
 /// evaluate a source expression to a seq<string> for the adapter (checked
 /// against the session env, evaluated once); teaches on a non-seq<string>
@@ -4009,7 +4013,7 @@ let private inferDirective (state: State) (rest: string) : State =
 
         match parseInfer rest with
         | Error msg -> fail msg
-        | Ok(source, fmtStr, name) ->
+        | Ok(source, fmtStr, name, legacy) ->
             match Infer.parseFormat fmtStr with
             | Error msg -> fail msg
             | Ok fmt ->
@@ -4026,7 +4030,7 @@ let private inferDirective (state: State) (rest: string) : State =
                 let refusal =
                     if sourceMissing then
                         Some
-                            "#infer: no prior result — write '#infer <source> from … as <Name>', or run an expression first (it binds 'it')"
+                            "#infer: no prior result — write '#infer <source> |> from … as <Name>', or run an expression first (it binds 'it')"
                     else
                         inferNameRefusal name
 
@@ -4053,6 +4057,12 @@ let private inferDirective (state: State) (rest: string) : State =
                             | Error msg -> fail msg
                             | Ok(state', defined) ->
                                 reportDrafted decls defined notes
+
+                                legacy
+                                |> Option.iter (fun line ->
+                                    Console.WriteLine
+                                        $"  note: write this as '{line}' — #infer without '|>' is going away")
+
                                 state'
 
 // ---- #save [D:repl-save]: distill the session to a runnable script ----

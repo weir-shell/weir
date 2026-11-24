@@ -104,7 +104,7 @@ if "to capture (and bind 'it')" in out:
 
 # --- (b2): #infer over the unit `it` is the same misuse — the adapter
 # error appends the same repair ---
-out = session([(cmd.encode() + b"\r", 1.2), (b"#infer it from yaml as Podz\r", 0.8)])
+out = session([(cmd.encode() + b"\r", 1.2), (b"#infer it |> from yaml as Podz\r", 0.8)])
 if "#infer: the source has type unit" not in out:
     failures.append(f"(b2) #infer must name the unit source: {out!r}")
 if f"to capture: let x = {cmd}" not in out:
