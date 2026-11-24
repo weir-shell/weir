@@ -363,7 +363,7 @@ first data row, so az output reads without a garbage row and `#infer`
 types from the real rows. Only a row of nothing but dashes and spaces,
 in first position, is dropped; kubectl and docker output is unaffected.
 
-`#infer <src> from table as Pod` (or `sample |> Table.inferShape`)
+`#infer <src> |> from table as Pod` (or `sample |> Table.inferShape`)
 drafts the row record from a real sample: each column's type, `Option`
 where a column has empty or `<none>` cells, and a note that the value
 reads as `seq<Pod>`.

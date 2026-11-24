@@ -2,15 +2,21 @@
 
 ## v0.0.98
 
+### Changed
+
+- **`#infer` is written as the language is: `#infer <source> |> from
+  json as Name`.** The last result is `it`, so `#infer it |> from json
+  as Name` replaces the form with no source. The older spellings
+  (`#infer raw from json as Name`, `#infer from json as Name`) still
+  work and print a note with the line to write instead; a later
+  release will refuse them.
+
 ### Fixed
 
 - **Shift+Tab completes, as Tab does.** In a terminal that reports
   keys in the kitty keyboard protocol's form, Shift+Tab abandoned the
   line and typed `[9;2u` into the next one. The REPL now reads these
   reports, for Esc, Enter, Backspace and Ctrl+letter as well.
-- **`#infer <source> |> from jsonl as Name` works.** Only the form
-  without the pipe did (`#infer <source> from jsonl as Name`), though
-  `#infer let x = <source> |> from …` takes the pipe.
 - **`#infer … as seq<Row>` says to write `as Row`.** It said the name
   "must start with an uppercase letter".
 

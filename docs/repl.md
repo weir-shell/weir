@@ -378,7 +378,7 @@ the exact command you ran:
 ```
 weir> kubectl get po -A -o yaml
 …the pods, live…
-weir> #infer it from yaml as Pods
+weir> #infer it |> from yaml as Pods
 #infer: the source has type unit; the adapter needs seq<string> (a captured JSON/YAML sample)
 to capture: let x = kubectl get po -A -o yaml
 ```
@@ -391,19 +391,23 @@ drafts the types for you from a sample:
 
 ```
 weir> let raw = kubectl get po -o json
-weir> #infer raw from json as Pods
+weir> #infer raw |> from json as Pods
 defined: Pods, Metadata, Status (3 types)
 weir> raw |> from json Pods |> _.items |> Seq.map _.⟨TAB⟩
 ```
 
-`#infer <source> from <json|jsonl|yaml|table> as <Name>` (a `|>`
-before `from` is fine too) evaluates the
-source once, parses it in that format, derives named `type`
-declarations from it, and adds them to the session as if you had typed
-them. After that, `from json Pods` checks and field completion works.
+`#infer <source> |> from <json|jsonl|yaml|table> as <Name>` reads as
+the language does, with `as <Name>` where the type would stand. It
+evaluates the source once, parses it in that format, derives named
+`type` declarations from it, and adds them to the session as if you
+had typed them. After that, `from json Pods` checks and field
+completion works.
 
-- Leave out the source and it defaults to `it`: `#infer from json as
-  Pods` reads the last result. That's how you "pipe" into a directive.
+- The last result is `it`, so `#infer it |> from json as Pods` drafts
+  from whatever you just looked at.
+- Two older spellings still work and print a note saying what to write
+  instead: without the `|>` (`#infer raw from json as Pods`), and
+  without a source (`#infer from json as Pods`, which read `it`).
 - For a top-level array (or `from jsonl`), `Name` is the element type,
   and you read the value as `seq<Name>`.
 - `from table` drafts the row record from the header and each column's
@@ -509,7 +513,7 @@ key twice), `#infer` shows the `line:col` within the drafted type and
 prints the offending line with a caret, like any parse or type error:
 
 ```
-weir> #infer sample from json as Pods
+weir> #infer sample |> from json as Pods
 #infer: a drafted type did not check at line 1, col 1: duplicate field 'a'
   type Pods = {
   ^

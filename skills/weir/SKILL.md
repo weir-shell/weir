@@ -2532,7 +2532,7 @@ m |> to json |> Seq.iter print // JSON object keys are strings — show the key 
   key sets across sibling elements, or an empty `{}` — drafts the
   `seq<string * _>` mapping; a table drafts the flat ROW record per
   column [D:from-table]; empty-array/null/type-conflict cases ride as
-  `//` notes). The REPL's `#infer <source> from <json|jsonl|yaml|table> as <Name>`
+  `//` notes). The REPL's `#infer <source> |> from <json|jsonl|yaml|table> as <Name>`
   directive also INJECTS the drafted types into the session (so
   `from json <Name>` and field completion light up); the one-shot
   `#infer let <x> = <src> |> from <fmt> as <Name|_>` [D:infer-one-shot]
@@ -2670,7 +2670,7 @@ refs |> Seq.iter (fun r -> print r.Include)
   Rows are already plural — no `seq`/`stream`/`Map` wrap — and there
   is NO `to table` (the REPL's record echo already renders tables
   for display). `table` stays an ordinary identifier elsewhere.
-  `#infer <src> from table as Pod` / `sample |> Table.inferShape`
+  `#infer <src> |> from table as Pod` / `sample |> Table.inferShape`
   draft the row record from a live sample (per-column type scan;
   `Option` + a note where a column has empty/`<none>` cells; the
   value reads as `seq<Pod>`).

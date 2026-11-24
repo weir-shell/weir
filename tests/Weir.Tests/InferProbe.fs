@@ -794,7 +794,7 @@ let saveQualify =
     ]
 
 // ---- the table drafting arm [D:from-table] ----------------------------
-// `#infer … from table as Name` drafts the row record: header offsets
+// `#infer … |> from table as Name` drafts the row record: header offsets
 // name the columns, a per-column token scan types them, empty/`<none>`
 // cells draft Option with a note, and a note says the value reads as
 // seq<Name>. The fixtures pad by width so header and cell offsets agree

@@ -1931,7 +1931,7 @@ pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print p.name)
 ```
 
 In a real script that's `kubectl get po |> from table Pod`, and
-`#infer it from table as Pod` in the REPL writes the record type for
+`#infer it |> from table as Pod` in the REPL writes the record type for
 you.
 
 - `az … -o table` output works too: the line of dashes az prints
@@ -1948,7 +1948,7 @@ Here's a real REPL session that cleans up every evicted pod:
 
 ```text
 weir> let pods = kubectl get po -A |> Seq.freeze
-weir> #infer pods from table as Pod
+weir> #infer pods |> from table as Pod
 weir> pods |> from table Pod
        |> where (fun p -> p.status == "Evicted")
        |> map (fun p -> p.name, p.namespace)

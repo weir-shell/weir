@@ -1793,7 +1793,7 @@ infdir=$(mkweirtmp)
 infout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   'let sample = ["{\"items\": [{\"name\": \"a\", \"port\": 8080}], \"count\": 1}"]' \
   'sample' \
-  '#infer from json as Root' \
+  '#infer it |> from json as Root' \
   'sample |> from json Root |> _.items |> map _.name |> Seq.length' \
   'type Mode = Fast | Slow' \
   'type Mode = Fast | Slow | Idle' \
@@ -1809,6 +1809,19 @@ pipout=$(printf '%s\n%s\n%s\n' \
   '#infer lines |> Seq.take 2 |> from jsonl as Rowz' \
   '#quit' | $BIN 2>&1)
 echo "$pipout" | grep -qF "defined: Rowz" || fail "#infer must read '<source> |> from <fmt> as <Name>': $pipout"
+echo "$pipout" | grep -qF "is going away" && fail "the piped spelling is the spelling — no note: $pipout"
+# the two spellings from before the pipe still read, and name the line to
+# write instead [D:infer-piped]
+oldout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  'let lines = ["{\"n\": 1}"]' \
+  '#infer lines from jsonl as Rowa' \
+  'lines' \
+  '#infer from jsonl as Rowb' \
+  '#quit' | $BIN 2>&1)
+echo "$oldout" | grep -qF "defined: Rowa" || fail "#infer without '|>' must still read: $oldout"
+echo "$oldout" | grep -qF "write this as '#infer lines |> from jsonl as Rowa'" || fail "#infer without '|>' must name the piped line: $oldout"
+echo "$oldout" | grep -qF "defined: Rowb" || fail "#infer without a source must still read 'it': $oldout"
+echo "$oldout" | grep -qF "write this as '#infer it |> from jsonl as Rowb'" || fail "#infer without a source must name the piped line: $oldout"
 echo "$infout" | grep -qF "#save: wrote" || fail "#save did not report a write: $infout"
 [ -f "$infdir/explore.weir" ] || fail "#save did not write the file"
 # (a) the acceptance-defining guarantee: the distilled file weir-checks clean
@@ -1864,7 +1877,7 @@ echo "e2e ok: #save keeps shadowing chains; its path unquotes; write refusals in
 # for a future one.
 idout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
   'let js = ["{\"a\": 1, \"a\": \"x\"}"]' \
-  '#infer js from json as PodsJson' \
+  '#infer js |> from json as PodsJson' \
   'let v = js |> from json PodsJson' \
   'print $"read={v.a}"' \
   '#quit' | $BIN 2>&1)
@@ -1889,7 +1902,7 @@ echo "e2e ok: -e echoes a reified command; a script refuses the discard"
 # (in -> inField) — the draft checks and reads the sample
 inpos=$(printf '%s\n%s\n%s\n%s\n%s\n' \
   'let js = ["{\"in\": 2}"]' \
-  '#infer js from json as InJson' \
+  '#infer js |> from json as InJson' \
   'let v = js |> from json InJson' \
   'print $"read={v.inField}"' \
   '#quit' | $BIN 2>&1)
@@ -1902,7 +1915,7 @@ echo "$inpos" | grep -qF "read=2" || fail "the Wire'd keyword-key field must REA
 # readers tolerate an undeclared key)
 ekout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
   'let ek = ["{\"\": 1, \"a\": 2}"]' \
-  '#infer ek from json as EmptyKey' \
+  '#infer ek |> from json as EmptyKey' \
   'let w = ek |> from json EmptyKey' \
   'print $"a={w.a}"' \
   '#quit' | $BIN 2>&1)
@@ -1977,7 +1990,7 @@ volumes:
 YEOF
 ivout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
   "let raw = File.read \"$ivdir/pod-volumes.yaml\" |> Seq.freeze" \
-  '#infer raw from yaml as PodSpec' \
+  '#infer raw |> from yaml as PodSpec' \
   'let vol = raw |> from yaml PodSpec |> _.volumes |> Seq.head' \
   'print vol.secret.secretName' \
   'print (show vol.secret.defaultMode)' \
@@ -1994,7 +2007,7 @@ echo "e2e ok: a k8s secret volume infers around the builtin Secret (VolumeSecret
 # user chose the name, so renaming it silently would be worse
 asout=$(printf '%s\n%s\n%s\n' \
   'let js = ["{\"x\": 1}"]' \
-  '#infer js from json as Secret' \
+  '#infer js |> from json as Secret' \
   '#quit' | $BIN 2>&1)
 echo "$asout" | grep -qF "#infer: 'Secret' is a built-in type" || fail "a builtin 'as'-name must refuse: $asout"
 echo "$asout" | grep -qF "pick another 'as' name" || fail "the refusal must carry the teaching: $asout"
@@ -2068,7 +2081,7 @@ cat > "$cmdir/cmlist.json" <<'JEOF'
 JEOF
 cmout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   "let cm = File.read \"$cmdir/cmlist.json\" |> Seq.freeze" \
-  '#infer cm from json as ConfigMapList' \
+  '#infer cm |> from json as ConfigMapList' \
   'let v = cm |> from json ConfigMapList' \
   'print (v |> _.metadata.resourceVersion)' \
   'let hit = v.items |> Seq.head |> _.data |> Seq.tryFind (fun (k, _) -> k == "Corefile")' \
@@ -2108,7 +2121,7 @@ kind: List
 YEOF
 cmyout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
   "let cmy = File.read \"$cmdir/cmlist.yaml\" |> Seq.freeze" \
-  '#infer cmy from yaml as CmListY' \
+  '#infer cmy |> from yaml as CmListY' \
   'let vy = cmy |> from yaml CmListY' \
   'let hy = vy.items |> Seq.skip 1 |> Seq.head |> _.data |> Seq.tryFind (fun (k, _) -> k == "network.yml")' \
   'print (match hy with | Some (_, c) -> $"content={c}" | None -> "miss")' \
@@ -7541,20 +7554,20 @@ echo "$taz" | grep -qF -- "------" && fail "az separator must not become a data 
 echo "e2e ok: from table — header-offset slicing, Wire + Option/<none>, located errors, az separator skip, no to table, 'table' unreserved"
 rm -rf "$tdir"
 
-# --- #infer from table [D:from-table]: the REPL drafts the row record
+# --- #infer it |> from table [D:from-table]: the REPL drafts the row record
 # from an aligned sample, injects it, and the typed read lights up in
 # the same session; the as-name guard still refuses a builtin landing
 tinf=$(printf '%s\n%s\n%s\n%s\n%s\n' \
   'let tsample = ["NAME    STATUS    RESTARTS"; "web-1   Running   0"; "db-0    Pending   3"]' \
-  '#infer tsample from table as Pod' \
+  '#infer tsample |> from table as Pod' \
   'tsample |> from table Pod |> Seq.where (fun p -> p.restarts > 0) |> Seq.map (fun p -> p.name) |> Seq.length |> show' \
-  '#infer tsample from table as Yaml' \
+  '#infer tsample |> from table as Yaml' \
   '#quit' | $BIN)
-echo "$tinf" | grep -qF "defined: Pod (1 type)" || fail "#infer from table did not define the row type: $tinf"
-echo "$tinf" | grep -qF "read the value as 'seq<Pod>'" || fail "#infer from table lost the seq note: $tinf"
+echo "$tinf" | grep -qF "defined: Pod (1 type)" || fail "#infer it |> from table did not define the row type: $tinf"
+echo "$tinf" | grep -qF "read the value as 'seq<Pod>'" || fail "#infer it |> from table lost the seq note: $tinf"
 echo "$tinf" | grep -qF '"1" : string' || fail "the injected type must read typed rows: $tinf"
 echo "$tinf" | grep -qF "'Yaml' is a built-in type" || fail "the as-name guard must refuse a builtin landing: $tinf"
-echo "e2e ok: #infer from table — drafts, injects, reads in one session; the as-name guard holds"
+echo "e2e ok: #infer it |> from table — drafts, injects, reads in one session; the as-name guard holds"
 
 # structural walks [D:structural-walk]: Graph.reach over a dep graph
 # (cycle-safe, breadth-first, each node once) and Tree.walk's
