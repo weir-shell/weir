@@ -9453,6 +9453,23 @@ let fieldSpliceTests =
             refuses "FOO=${HX} env" "`${NAME}` is bash"
             refuses "let v = $x" "in an expression the binding is just `x`"
             refuses "let v = $_X" "Env.need \"_X\""
+            refuses "let a = f$HX" "cannot be joined onto the name before it"
+            refuses "within env FOO=$HX/bin" "an environment value is one whole word"
+            refuses "within env A=1 FOO=${HX}" "`${NAME}` is bash"
+
+            for line in [ "print HOME"; "print $\"${MY_VAR}\"" ] do
+                let es = errs [ line ]
+                Expect.isTrue (es |> List.exists (fun m -> m.Contains "an environment variable is read as `$")) $"{es}"
+
+            let typo = errs [ "let v = Sone" ]
+
+            Expect.isFalse
+                (typo |> List.exists (fun m -> m.Contains "environment variable"))
+                "a mixed-case name is no variable's"
+
+            Expect.isEmpty
+                (errs [ "within env A=1 B=$HOME C=\"x y\""; "    sh -c \"true\"" ])
+                "whole-word pairs stay legal"
 
             let ms = errs [ "let a = $HX $X"; "print a" ]
             Expect.isTrue (ms |> List.exists (fun m -> m.Contains "`$HX` is a string, not a function")) $"{ms}"

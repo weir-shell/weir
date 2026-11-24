@@ -400,6 +400,62 @@ let private endsDollarWord (c: char) : bool =
 let private bashBracesTeach =
     "`${NAME}` is bash — use '$NAME' for an environment variable, one whole word; inside a word, interpolate: `$\"{$NAME}/bin\"`"
 
+// `within env NAME=$X/more`: the pairs are read under an `attempt`, which
+// would turn the value's own refusal into "expecting the scope's block" —
+// so the glued value is named here, ahead of them [D:argv-splat]
+let private envPairGlueTeach: Parser<unit, unit> =
+    fun stream ->
+        let mutable i = 0
+        let mutable verdict = Reply(())
+        let mutable go = true
+
+        while go do
+            let start = i
+
+            while isIdentCont (stream.Peek i) do
+                i <- i + 1
+
+            if i = start || not (isIdentStart (stream.Peek start)) || stream.Peek i <> '=' then
+                go <- false
+            else
+                i <- i + 1
+
+                if stream.Peek i = '$' && stream.Peek(i + 1) = '{' then
+                    stream.Skip i
+                    verdict <- Reply(ReplyStatus.FatalError, messageError bashBracesTeach)
+                    go <- false
+                elif stream.Peek i = '$' && isIdentStart (stream.Peek(i + 1)) then
+                    let dollar = i
+                    i <- i + 1
+
+                    while isIdentCont (stream.Peek i) do
+                        i <- i + 1
+
+                    if not (endsDollarWord (stream.Peek i)) then
+                        stream.Skip dollar
+
+                        verdict <-
+                            Reply(
+                                ReplyStatus.FatalError,
+                                messageError
+                                    "an environment value is one whole word — text cannot be joined onto a `$` name here. Build it with an interpolated string: `NAME=$\"{$HOME}/bin\"`"
+                            )
+
+                        go <- false
+
+                if go then
+                    while (let c = stream.Peek i in
+
+                           c <> FParsec.CharStream.EndOfStreamChar
+                           && not (System.Char.IsWhiteSpace c)
+                           && c <> sibSep) do
+                        i <- i + 1
+
+                    while stream.Peek i = ' ' || stream.Peek i = '\t' do
+                        i <- i + 1
+
+        verdict
+
 // a `$` in expression position [D:env-sigil]: `$NAME` whole is the
 // environment read; every other `$` word here gets its repair named,
 // where the atom's token list would be all it had. `$name(` is the
@@ -1019,6 +1075,16 @@ let private wordAtom =
             | s when keywords.Contains s -> fail $"'{s}' is a keyword"
             | s -> preturn { Kind = EVar s; Span = span }
     )
+    // a `$` word glued onto a name (`f$HOME`) joins nothing [D:argv-splat]
+    .>> (fun stream ->
+        if stream.Peek() = '$' && (isIdentStart (stream.Peek 1) || stream.Peek 1 = '{') then
+            Reply(
+                ReplyStatus.FatalError,
+                messageError
+                    "a `$` word cannot be joined onto the name before it — put a space between them, or build one word with an interpolated string: `$\"…{$NAME}\"`"
+            )
+        else
+            Reply(()))
     .>> ws
 
 let private unitLit =
@@ -3078,7 +3144,7 @@ let private withinExprBody =
                         // the retry key=value spelling [D:within-lock]
                         // env takes `NAME=value` words too [D:within-env-pairs]
                         ((if wk.Id = Ast.WithinEnv then
-                              envAssignsFwd <|> postfixAtom
+                              envPairGlueTeach >>. (envAssignsFwd <|> postfixAtom)
                           else
                               postfixAtom)
                          <?> $"the {kind} scope's argument (parenthesize a compound)")

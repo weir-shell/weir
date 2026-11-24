@@ -14700,7 +14700,7 @@ iout=$(printf '#help hi
 #quit
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "File.read: no such file:" || fail "a raising #session value must report its own error: $iout"
-echo "$iout" | grep -qE "init\.weir:3:" || fail "the raising #session value must be LOCATED at its line: $iout"
+echo "$iout" | grep -qE "init\.weir:3:11:" || fail "the raising #session value must be LOCATED at its own word: $iout"
 echo "$iout" | grep -qF "init: not loaded" || fail "a raising #session value must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising #session value"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising #session value dumped a .NET trace: $iout" || true
@@ -14714,7 +14714,7 @@ iout=$(printf '#help hi
 #quit
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "File.read: no such file:" || fail "a raising init let must report its own error: $iout"
-echo "$iout" | grep -qE "init\.weir:2:" || fail "the raising let must be LOCATED at its line: $iout"
+echo "$iout" | grep -qE "init\.weir:2:11:" || fail "the raising let must be LOCATED at its own word: $iout"
 echo "$iout" | grep -qF "init: not loaded" || fail "a raising init let must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising init let"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising init let dumped a .NET trace: $iout" || true

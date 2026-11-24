@@ -4767,6 +4767,21 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                     name
                                     (Map.keys env.Values |> Seq.filter Types.isUserName |> Seq.filter sameCase)
 
+                            // a name spelled as environment variables are
+                            // (`HOME`, `MY_VAR`) with nothing near it was meant
+                            // as one [D:env-sigil]: a hole `{HOME}`, a text
+                            // block's `$HOME`, a bare `HOME`
+                            let envShaped =
+                                name.Length > 1
+                                && name
+                                   |> Seq.forall (fun c -> System.Char.IsUpper c || System.Char.IsDigit c || c = '_')
+
+                            let hint =
+                                if envShaped && (hint = "" || hint.Contains "'Ok'") then
+                                    $" — an environment variable is read as `${name}` (in a `{{…}}` hole and in a text block's `${{…}}` too: `{{${name}}}`, `${{${name}}}`)"
+                                else
+                                    hint
+
                             err expr.Span $"unbound variable '{name}'{hint}"
     | ELet(name, nameSpan, value, body) ->
         result {

@@ -4941,6 +4941,20 @@ let private prepareSessionField
                     | _ -> ())
         | k, _ -> err $"#session {k}: unexpected value"
 
+// where in its statement a raise came from [D:init-eval-guard]: the
+// blamed node's own line and column, as a script's runtime error has
+// them, when the raise named one
+let private raisedAt (ll: Assemble.LogicalLine) (ex: exn) : (int * int) option =
+    let node =
+        match Eval.blameOf ex with
+        | Some b when not (isNull b.Node) -> b.Node
+        | _ -> Eval.RunPos.Current
+
+    match node with
+    | :? Check.TypedExpr as te when te.Span.Start.Col >= 1 && te.Span.Start.Col <= ll.Text.Length ->
+        Some(Assemble.translate ll te.Span.Start.Col)
+    | _ -> None
+
 /// load the init file into the session; all-or-nothing. Returns the
 /// state to start with and prints the one report line (stderr — a piped
 /// session's stdout stays data).
@@ -4997,7 +5011,8 @@ let private loadInit (baseState: State) : State =
                         // a raising value (File.read on a missing path…) fails
                         // the load like any other located error, never a raw
                         // trace [D:init-eval-guard]
-                        initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
+                        let l, c = raisedAt ll ex |> Option.defaultValue (ll.Head, 5)
+                        initDiag path l c (srcLine l) ex.Message
                         None)
 
             if prepared |> List.exists Option.isNone then
@@ -5103,7 +5118,8 @@ let private loadInit (baseState: State) : State =
                                 // let already ran is the file's own
                                 // doing — the load reports, it cannot
                                 // unwrite
-                                initDiag path ll.Head 1 (srcLine ll.Head) ex.Message
+                                let l, c = raisedAt ll ex |> Option.defaultValue (ll.Head, 1)
+                                initDiag path l c (srcLine l) ex.Message
                                 evalFailed <- true
 
                     if evalFailed then
