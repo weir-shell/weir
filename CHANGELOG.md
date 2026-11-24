@@ -9,6 +9,12 @@
   a shell and `apk`, so a script can run other commands and you can
   build your own image on it. The default image is unchanged.
 
+### Fixed
+
+- **Tab completes a file name inside a quote you opened.** In
+  `File.read "sig`, Tab did nothing unless the text contained a `/`;
+  it now completes and lists files as it does outside quotes.
+
 ## v0.0.96
 
 ### Added
