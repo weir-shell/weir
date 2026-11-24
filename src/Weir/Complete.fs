@@ -870,6 +870,12 @@ let commandArgvAt (env: TypeEnv) (before: string) : (string * string) option =
             else
                 Some(head, s.Substring headEnd)
 
+// the literal naming one variable for the string reads of the
+// environment [D:env-name-complete] — `Env.get "`, `Env.need "`,
+// `Env.getOr "`; getOr's second literal is its default, not a name
+let private envNameSlot =
+    System.Text.RegularExpressions.Regex @"(?:^|[^A-Za-z0-9_.])Env\.(?:get|need|getOr)\s+""$"
+
 // a word at a path parameter position [D:path-param-completion]:
 // cd is a builtin, so the argv gate correctly does not apply — the
 // question that generalises is "does this parameter want a path?".
@@ -1599,6 +1605,20 @@ let rec suggestScopedWith
                             stringBindings |> List.filter (fun c -> c.StartsWith word && c <> word)))
                     |> List.distinct
                     |> List.sort
+                elif insideOpenQuote then
+                    // inside a literal the word is text [D:open-literal-word]:
+                    // no binding, member or keyword can be named there. The
+                    // one name a literal does hold is an environment
+                    // variable's, as `Env.get`'s argument [D:env-name-complete]
+                    if envNameSlot.IsMatch before then
+                        System.Environment.GetEnvironmentVariables().Keys
+                        |> Seq.cast<obj>
+                        |> Seq.map string
+                        |> Seq.filter (fun n -> n.StartsWith word && n <> word)
+                        |> Seq.sort
+                        |> Seq.toList
+                    else
+                        []
                 elif word.Contains '.' then
                     let segments = word.Split '.'
                     let head = segments[0]

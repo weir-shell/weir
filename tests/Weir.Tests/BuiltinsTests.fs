@@ -83,6 +83,38 @@ let pathParamCompletionTests =
             finally
                 System.IO.Directory.Delete(d, true)
         }
+        test "a literal offers no names, except an environment variable's to Env.get [D:env-name-complete]" {
+            System.Environment.SetEnvironmentVariable("WEIR_ENVC_ALPHA_ZZ", "1")
+            System.Environment.SetEnvironmentVariable("weir_envc_lower_zz", "1")
+
+            let envS = {
+                Weir.Builtins.typeEnvStrict with
+                    Values = Map.add "weirBinding" (mono TStr) Weir.Builtins.typeEnvStrict.Values
+            }
+
+            let ask (line: string) =
+                Weir.Complete.suggest envS line (Weir.Complete.wordStartAt line line.Length)
+
+            for head in [ "Env.get"; "Env.need"; "Env.getOr"; "let v = Env.need"; "print (Env.getOr" ] do
+                Expect.contains (ask (head + " \"WEIR_ENVC_AL")) "WEIR_ENVC_ALPHA_ZZ" head
+
+            Expect.contains (ask "Env.get \"weir_envc_l") "weir_envc_lower_zz" "a lowercase-named variable too"
+            Expect.isEmpty (ask "Env.getOr \"X\" \"WEIR_ENVC_AL") "getOr's second literal is the default"
+            Expect.isEmpty (ask "MyEnv.get \"WEIR_ENVC_AL") "another module's get is no slot"
+
+            for line in
+                [
+                    "print \"weirB"
+                    "let s = \"weirB"
+                    "print \"pri"
+                    "print \"Str.tr"
+                    "print \"a weirB"
+                ] do
+                Expect.isEmpty (ask line) $"a literal names nothing: {line}"
+
+            Expect.contains (ask "print weirB") "weirBinding" "outside a literal the binding offers"
+            Expect.contains (ask "print $\"{weirB") "weirBinding" "and inside a hole"
+        }
         test "the registry positions offer paths, bindings, and nothing else" {
             let d = tempPath "weir-ppc"
 
