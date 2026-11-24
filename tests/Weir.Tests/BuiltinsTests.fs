@@ -49,6 +49,40 @@ let pathParamCompletionTests =
     // not. Sequenced: the fixture moves the ambient session cwd
     testSequenced
     <| testList "path-parameter completion [D:path-param-completion]" [
+        test "a bare stem inside an open quote completes paths, and names no binding" {
+            let d = tempPath "weir-qp"
+            System.IO.Directory.CreateDirectory d |> ignore
+            System.IO.File.WriteAllText(System.IO.Path.Combine(d, "signup1020.jsonl"), "")
+            System.IO.File.WriteAllText(System.IO.Path.Combine(d, "signup1030.jsonl"), "")
+
+            try
+                let envS = {
+                    Weir.Builtins.typeEnvStrict with
+                        Values = Map.add "signupDir" (mono TStr) Weir.Builtins.typeEnvStrict.Values
+                }
+
+                let ask (line: string) =
+                    Weir.Complete.suggest envS line (Weir.Complete.wordStartAt line line.Length)
+
+                inCwd d (fun () ->
+                    let both = [ "signup1020.jsonl"; "signup1030.jsonl" ]
+                    Expect.equal (ask "File.read \"") both "an empty word lists the directory"
+                    Expect.equal (ask "File.read \"sig") both "a stem completes, unquoted: the quote is open"
+
+                    Expect.equal
+                        (ask "let signup1030 = File.read \"signup10")
+                        both
+                        "after a let, past the common prefix"
+
+                    Expect.equal (ask "File.read \"signup102") [ "signup1020.jsonl" ] "one match"
+                    Expect.contains (ask "File.read sig") "signupDir" "outside a quote the string binding still offers"
+
+                    Expect.isFalse
+                        (ask "print \"sig" |> List.exists (fun c -> c.EndsWith ".jsonl"))
+                        "a string that is no path parameter offers no files")
+            finally
+                System.IO.Directory.Delete(d, true)
+        }
         test "the registry positions offer paths, bindings, and nothing else" {
             let d = tempPath "weir-ppc"
 

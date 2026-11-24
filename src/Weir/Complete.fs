@@ -896,6 +896,15 @@ let private pathParamAt (before: string) : bool =
         |> cutAfter "|>"
         |> _.TrimStart()
 
+    // the word may sit inside a quote the user already opened
+    // (`File.read "sig`): that quote is the argument's own, not one more
+    // argument before it
+    let seg =
+        if seg.EndsWith "\"" then
+            seg.Substring(0, seg.Length - 1)
+        else
+            seg
+
     match
         seg.Split([| ' '; '\t' |], System.StringSplitOptions.RemoveEmptyEntries)
         |> Array.toList
@@ -1581,8 +1590,13 @@ let rec suggestScopedWith
                         |> List.filter (fun c -> c.StartsWith word && c <> word)
                         |> quoteFor before
 
+                    // inside an open quote the word is text: no binding can
+                    // be named there
                     (paths
-                     @ (stringBindings |> List.filter (fun c -> c.StartsWith word && c <> word)))
+                     @ (if insideOpenQuote then
+                            []
+                        else
+                            stringBindings |> List.filter (fun c -> c.StartsWith word && c <> word)))
                     |> List.distinct
                     |> List.sort
                 elif word.Contains '.' then
