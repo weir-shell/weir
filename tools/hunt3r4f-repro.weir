@@ -424,8 +424,12 @@ let ptyRun d secs args steps =
 
 let typedLine s = $"HEX {hx s}0d"
 
-// Alt-Enter: a REPL line that continues the entry
-let contLine s = $"HEX {hx s}1b0d"
+// Alt+Enter: on a first line it opens a composed entry, on a later one
+// it runs the entry [D:repl-compose]
+let altLine s = $"HEX {hx s}1b0d"
+
+// Enter in a composed entry: a line that continues it
+let contLine s = $"HEX {hx s}0d"
 
 let ctrlC = "HEX 03"
 
@@ -784,19 +788,19 @@ let h3r4c16 d =
 
 let c23Steps = [
     promptReady
-    contLine "print (Str.toUpper \"entry-armed\")"
+    altLine "print (Str.toUpper \"entry-armed\")"
     contReady
     contLine "Duration.sleep 2s"
     contReady
     contLine "print (Str.toUpper \"late-two\")"
     contReady
-    typedLine "sh -c \"sleep 2; echo late-three | tr a-z A-Z\""
+    altLine "sh -c \"sleep 2; echo late-three | tr a-z A-Z\""
     "WAIT ENTRY-ARMED"
     ctrlC
     "SLEEP 3500"
-    contLine "fail \"boom\""
+    altLine "fail \"boom\""
     contReady
-    typedLine "print (Str.toUpper \"after-fail\")"
+    altLine "print (Str.toUpper \"after-fail\")"
     promptReady
     typedLine "print (Str.toUpper \"still-here\")"
     "SLEEP 800"
