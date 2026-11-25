@@ -2,6 +2,17 @@
 
 ## v0.0.99
 
+### Changed
+
+- **Alt+Enter starts a multi-line entry, and runs it.** After
+  Alt+Enter (or Ctrl+J, or pasting several lines) Enter adds a line
+  instead of running the entry, so you can keep writing stages or
+  statements. Press Alt+Enter again, or Enter on an empty last line,
+  to run it. Before, Enter ran the entry as soon as it was complete,
+  and Alt+Enter was only ever a newline. A single line, an unfinished
+  statement that Enter grew, and an entry recalled from history run on
+  Enter as before.
+
 ### Fixed
 
 - **A `match` can be typed arm by arm in the REPL.** Enter after the
@@ -16,7 +27,7 @@
   lines ran each line as it arrived, so a block starting with a line
   that is a statement on its own (`books` above its `|>` lines) ran
   that line alone and broke the rest. A paste is now inserted whole
-  and runs when you press Enter. This needs a terminal with bracketed
+  and runs when you say so (Enter for one line, Alt+Enter for several). This needs a terminal with bracketed
   paste, which current ones have; not on Windows.
 
 ## v0.0.98

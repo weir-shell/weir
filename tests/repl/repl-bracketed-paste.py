@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # A bracketed paste is text [D:repl-bracketed-paste]: a block whose first
 # line is a statement on its own lands as one entry and runs when Enter
-# is pressed, the mode is on only while the editor reads, and a paste
+# is pressed (Alt+Enter after a multi-line one, which composes
+# [D:repl-compose]), the mode is on only while the editor reads, and a paste
 # with no end marker ends where its input does.
 import os
 import pty
@@ -76,11 +77,17 @@ out = session(["let xs = [1; 2; 3]\r", "\x1b[200~" + BLOCK + "\x1b[201~"])
 check("\n[1; 2; 3]\n" not in plain(out), "a pasted block's first line must not run on its own")
 check("\n3\n" not in plain(out), "a paste must not submit itself")
 
-out = session(["let xs = [1; 2; 3]\r", "\x1b[200~" + BLOCK + "\x1b[201~", "\r"])
-check("\n3\n" in plain(out), "Enter after a pasted block runs the whole block")
+out = session(["let xs = [1; 2; 3]\r", "\x1b[200~" + BLOCK + "\x1b[201~", "\x1b\r"])
+check("\n3\n" in plain(out), "Alt+Enter after a pasted block runs the whole block")
+
+out = session(["let xs = [1; 2; 3]\r", "\x1b[200~" + BLOCK + "\x1b[201~", "\r", "\r"])
+check("\n3\n" in plain(out), "so does Enter on the empty line Enter adds")
+
+out = session(["\x1b[200~1 + 2\r\x1b[201~", "\r"])
+check("\n3\n" in plain(out), "a one-line paste runs on Enter")
 
 # the end marker split across reads, a CRLF line end, a tab
-out = session(["\x1b[200~let a = 1\r\nlet b =\ta + 1\x1b[2", "01~", "\r"])
+out = session(["\x1b[200~let a = 1\r\nlet b =\ta + 1\x1b[2", "01~", "\x1b\r"])
 check("\na = 1\nb = 2\n" in plain(out), "a paste whose end marker arrives in pieces is one entry")
 
 # into the middle of a line

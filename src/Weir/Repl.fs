@@ -1214,7 +1214,8 @@ let private historyDirective (arg: string) : string =
 /// (a unit pin compares them). Each row: the keys, what they do
 let keyBindings: (string list * string) list = [
     [ "Enter" ], "submit if complete, else start a new line; on an empty last line, submit anyway"
-    [ "Alt+Enter"; "Ctrl+J" ], "insert a newline (the entry stays one statement)"
+    [ "Alt+Enter" ], "start a multi-line entry; then Enter adds lines, and Alt+Enter or Enter on an empty line runs it"
+    [ "Ctrl+J" ], "insert a newline"
     [ "Backspace" ], "delete back; in a line's leading spaces, back one indent level (4 columns)"
     [ "Left"; "Right" ], "move a character (across lines)"
     [ "Ctrl+Left"; "Ctrl+Right" ], "move a word"
@@ -1790,6 +1791,9 @@ let private readLineTty () : string option =
     // paint — the way back up through wraps
     let mutable lastCursorDisplay = 0
     let mutable unpainted = false
+    // composing [D:repl-compose]: an asked-for newline or a pasted block
+    // set it, a recalled entry clears it
+    let mutable asked = false
 
     let termWidth () =
         try
@@ -1950,6 +1954,7 @@ let private readLineTty () : string option =
 
     let setBuffer (entry: string) =
         lines.Clear()
+        asked <- false
 
         for l in entry.Split '\n' do
             lines.Add(Text.StringBuilder(l: string))
@@ -2050,6 +2055,15 @@ let private readLineTty () : string option =
     // the tool's own values are cached for one edit [D:sig-dynamic-complete]
     DynComplete.clearCache ()
 
+    let composing () = asked && lines.Count > 1
+
+    let submit () =
+        let text = bufText ()
+        toEnd ()
+        bracketedPaste false
+        Console.WriteLine()
+        result <- Some(Some text)
+
     bracketedPaste true
 
     try
@@ -2088,13 +2102,23 @@ let private readLineTty () : string option =
 
                 col <- cur().Length
                 cur().Append tail |> ignore
+                asked <- asked || not parts.Tail.IsEmpty
                 unpainted <- false
                 redraw ()
-            // Alt+Enter (and Ctrl+J below): force a newline even when the
-            // statement is complete — formatting, not a second statement
-            // (an entry stays one statement) [D:repl-multiline]
-            | ConsoleKey.Enter when alt -> insertNewline ()
-            | _ when k.KeyChar = '\n' -> insertNewline ()
+            // Alt+Enter opens a composed entry with a newline, whatever
+            // the statement's state, and pressed again submits it; Ctrl+J
+            // is always the newline [D:repl-compose]
+            | ConsoleKey.Enter when alt && composing () -> submit ()
+            | ConsoleKey.Enter when alt ->
+                asked <- true
+                insertNewline ()
+            | _ when k.KeyChar = '\n' ->
+                asked <- true
+                insertNewline ()
+            // composing, Enter is the newline; on an empty last line it
+            // submits [D:repl-compose]
+            | ConsoleKey.Enter when composing () && not (row = lines.Count - 1 && cur().ToString().Trim() = "") ->
+                insertNewline ()
             | ConsoleKey.Enter ->
                 // submit when the statement is complete; grow the buffer when
                 // it is not — the parser's own answer, not an approximation
@@ -2144,10 +2168,13 @@ let private readLineTty () : string option =
                 Console.WriteLine "^C"
                 result <- Some(Some "")
             | ConsoleKey.Escape when escThenEnter () ->
-                // Alt+Enter whose two bytes the terminal read apart (a fast
-                // paste, a loaded box): the newline, not an abandon
-                // [D:repl-esc-enter]
-                insertNewline ()
+                // Alt+Enter whose two bytes the terminal read apart (a
+                // loaded box): Alt+Enter, not an abandon [D:repl-esc-enter]
+                if composing () then
+                    submit ()
+                else
+                    asked <- true
+                    insertNewline ()
             | ConsoleKey.Escape when escF1Tail () -> showKeys ()
             | ConsoleKey.F1 -> showKeys ()
             | ConsoleKey.Escape ->

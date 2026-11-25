@@ -377,8 +377,12 @@ let ptyRun d secs args steps =
 
 let typedLine s = $"HEX {hx s}0d"
 
-// Alt-Enter: a REPL line that continues the entry
-let contLine s = $"HEX {hx s}1b0d"
+// Alt+Enter: on a first line it opens a composed entry, on a later one
+// it runs the entry [D:repl-compose]
+let altLine s = $"HEX {hx s}1b0d"
+
+// Enter in a composed entry: a line that continues it
+let contLine s = $"HEX {hx s}0d"
 
 let ctrlC = "HEX 03"
 
@@ -590,11 +594,11 @@ let h3r6c13 d =
 // ---- H3R6-C2-3: a tty REPL child exiting 130 on its own waits 250ms --------------
 
 let c23Entry code tag = [
-    contLine "let t0 = Instant.now ()"
+    altLine "let t0 = Instant.now ()"
     contReady
     contLine $"let xs = [1..20] |> Seq.map (fun _ -> sh -c \"exit {code}\" | exitCode) |> Seq.freeze"
     contReady
-    typedLine $"print $\"{tag}={{Duration.toMillis (Instant.now () - t0)}} n={{Seq.length xs}}\""
+    altLine $"print $\"{tag}={{Duration.toMillis (Instant.now () - t0)}} n={{Seq.length xs}}\""
 ]
 
 // a ^C during a REPL entry's command still ends the entry
@@ -1185,9 +1189,9 @@ let h3r6c25 d =
 
 let c26Typed s = $"HEX {hx s}"
 
-// ESC CR in one write (a real Alt+Enter, a paste) continues the entry
+// ESC CR in one write (a real Alt+Enter) opens a composed entry, and runs it
 let ctlPAltEnter d =
-    let steps = [promptReady; contLine "let w = Str.toUpper \"joined\""; contReady; typedLine "print w"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]
+    let steps = [promptReady; altLine "let w = Str.toUpper \"joined\""; contReady; altLine "print w"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]
     let run = ptyRun d "15" (replArgv d) steps
     run.text |> Str.contains "JOINED"
 

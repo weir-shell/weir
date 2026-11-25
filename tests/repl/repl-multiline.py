@@ -82,7 +82,8 @@ if "\n9\r\n" not in t:
     failures.append(f"Enter-incomplete must grow, then submit when complete: {t[-300:]!r}")
 
 # --- 2. Ctrl+J forces newlines even when complete; Up moves within the
-# buffer; a line above the cursor edits; Enter submits the whole statement
+# buffer; a line above the cursor edits; Alt+Enter submits the composed
+# entry from any line [D:repl-compose]
 keys = [("match 1 with", 0.3), ("\n", 0.2),
         ('| 2 -> "two"', 0.3), ("\n", 0.2),
         ('| _ -> "no"', 0.3),
@@ -90,7 +91,7 @@ keys = [("match 1 with", 0.3), ("\n", 0.2),
         ("\x1b[F", 0.2),                     # End
         ("\x1b[D" * 5, 0.3),                 # Left x5 -> after the scrutinee
         ("\x7f", 0.2), ("2", 0.2),           # 1 -> 2
-        ("\r", 0.6), ("#quit\r", 0.3)]
+        ("\x1b\r", 0.6), ("#quit\r", 0.3)]
 t, _ = run(keys)
 if '\n"two"\r\n' not in t:
     failures.append(f"Up-within-buffer edit of the scrutinee must change the result: {t[-300:]!r}")
@@ -275,7 +276,7 @@ if "match" not in t or "parse error" not in t:
     failures.append(f"the escaped buffer must submit and show its error: {t[-300:]!r}")
 
 # --- 9d. ...but Ctrl+J's deliberate blank line stays composing
-t, _ = run([("match 1 with", 0.3), ("\n", 0.2), ("\n", 0.2), ("| _ -> 6\r", 0.6), ("#quit\r", 0.3)])
+t, _ = run([("match 1 with", 0.3), ("\n", 0.2), ("\n", 0.2), ("| _ -> 6", 0.2), ("\x1b\r", 0.6), ("#quit\r", 0.3)])
 if "\n6\r\n" not in t:
     failures.append(f"a Ctrl+J blank inside composition must not submit: {t[-300:]!r}")
 
@@ -298,7 +299,7 @@ nested = [("within", 0.2), ("\r", 0.3),                       # Enter-incomplete
           ("\x7f", 0.2), ("print (Str.toUpper \"out-d\")", 0.2), ("\n", 0.3),
           ("\x7f", 0.2), ("always", 0.2), ("\n", 0.3),         # 4 -> 0; opener: 4
           ("print (Str.toUpper \"fin-e\")", 0.2),
-          ("\r", 0.8), ("#quit\r", 0.3)]
+          ("\x1b\r", 0.8), ("#quit\r", 0.3)]
 want = ('within\\n    within\\n        print (Str.toUpper "in-a")\\n        print (Str.toUpper "in-b")'
         '\\n    always\\n        print (Str.toUpper "cl-c")\\n    print (Str.toUpper "out-d")'
         '\\nalways\\n    print (Str.toUpper "fin-e")')
@@ -313,7 +314,7 @@ if -1 in order or order != sorted(order):
 
 # a `let x =` continuation, no manual spaces: the `=` opens a level, the
 # pipeline line keeps it
-t, d = run([("let total =", 0.2), ("\r", 0.3), ("[1; 2; 3]", 0.2), ("\x1b\r", 0.3), ("|> Seq.sum", 0.2), ("\r", 0.6),
+t, d = run([("let total =", 0.2), ("\r", 0.3), ("[1; 2; 3]", 0.2), ("\x1b\r", 0.3), ("|> Seq.sum", 0.2), ("\x1b\r", 0.6),
             ("total * 7\r", 0.6), ("#quit\r", 0.3)])
 if "let total =\\n    [1; 2; 3]\\n    |> Seq.sum" not in hist(d) or "\n42\r\n" not in t:
     failures.append(f"a typed let continuation must indent itself and run: {hist(d)!r} {t[-300:]!r}")
@@ -340,7 +341,7 @@ if "let a =\\n    1" not in hist(d) or "let b =\\n    2" not in hist(d):
 
 # a paste (one write) keeps its own indentation: the newline has input
 # queued behind it, so it carries nothing
-t, d = run([("within tmp d\x1b\r    print (Str.toUpper \"p-a\")\x1b\r    print (Str.toUpper \"p-b\")\r\r", 0.8), ("#quit\r", 0.3)])
+t, d = run([("within tmp d\n    print (Str.toUpper \"p-a\")\n    print (Str.toUpper \"p-b\")\x1b\r", 0.8), ("#quit\r", 0.3)])
 pasted = 'within tmp d\\n    print (Str.toUpper "p-a")\\n    print (Str.toUpper "p-b")'
 if pasted not in hist(d) or "\nP-B" not in t:
     failures.append(f"a pasted indented block must keep exactly its own indentation: {hist(d)!r} {t[-300:]!r}")
@@ -370,6 +371,25 @@ t, _ = run([("let y = Some 10\r", 0.5), ("match y with", 0.2), ("\r", 0.3), ("| 
             ("\r", 0.6), ("#quit\r", 0.3)])
 if "not exhaustive; missing: Some" not in t:
     failures.append(f"an empty line must submit a match short of arms: {t[-300:]!r}")
+
+# --- composing [D:repl-compose]: Alt+Enter opens a multi-line entry on a
+# complete statement; Enter then adds lines, statements included, and
+# Alt+Enter runs the lot
+t, d = run([("let ca = 1", 0.2), ("\x1b\r", 0.3), ("let cb = ca + 1", 0.2), ("\r", 0.3), ("cb * 10", 0.2),
+            ("\x1b\r", 0.6), ("#quit\r", 0.3)])
+if "let ca = 1\\nlet cb = ca + 1\\ncb * 10" not in hist(d) or "\n20\r\n" not in t:
+    failures.append(f"Alt+Enter must open a composed entry, Enter add its lines, Alt+Enter run it: {hist(d)!r} {t[-300:]!r}")
+
+# Enter on an empty last line runs a composed entry too
+t, _ = run([("let cc = 2", 0.2), ("\x1b\r", 0.3), ("cc + 40", 0.2), ("\r", 0.3), ("\r", 0.6), ("#quit\r", 0.3)])
+if "\n42\r\n" not in t:
+    failures.append(f"Enter on an empty last line must run a composed entry: {t[-300:]!r}")
+
+# a recalled multi-line entry is not composing: one Enter runs it again
+t, _ = run([("let cx = 5", 0.2), ("\x1b\r", 0.3), ("print (Str.toUpper $\"r-{cx}\")", 0.2), ("\x1b\r", 0.6),
+            ("\x1b[A", 0.3), ("\r", 0.6), ("#quit\r", 0.3)])
+if t.count("\nR-5") != 2:
+    failures.append(f"a recalled multi-line entry must run on one Enter: {t[-300:]!r}")
 
 # --- dup-type in the REPL: redeclaration replaces with the note; earlier
 # values keep the old shape [D:dup-type-decl]

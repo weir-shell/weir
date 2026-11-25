@@ -364,10 +364,12 @@ let ptyRun d secs args steps =
 
 let typedLine s = $"HEX {hx s}0d"
 
-// a whole entry in one write, Alt-Enter between its lines: queued input
+// a whole entry in one write: Alt+Enter after its first line opens a
+// composed entry, Enter adds each later line, Alt+Enter runs it
+// [D:repl-compose]. Queued input
 // keeps its own indentation, a typed newline would carry the previous
 // line's [D:repl-autoindent]
-let pastedEntry ls = $"""HEX {ls |> Seq.map hx |> Str.join "1b0d"}0d"""
+let pastedEntry ls = $"""HEX {hx (Seq.head ls)}1b0d{ls |> Seq.skip 1 |> Seq.map hx |> Str.join "0d"}1b0d"""
 
 let ctrlC = "HEX 03"
 

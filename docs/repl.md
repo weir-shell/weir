@@ -960,6 +960,15 @@ lines, and a recalled history entry comes back whole: a three-line
 match comes back as three editable lines. Lines you type before the
 first prompt appears are kept, and their Enter submits them as usual.
 
+To write several lines when the first is already complete, press
+<kbd>Alt+Enter</kbd> (or <kbd>Ctrl+J</kbd>): it starts a new line and
+the entry becomes one you compose. From then on <kbd>Enter</kbd> adds
+a line, whatever the statement's state, and the entry runs when you
+press <kbd>Alt+Enter</kbd> again or <kbd>Enter</kbd> on an empty last
+line. Pasting several lines starts composing the same way. An entry
+that Enter grew by itself (an unfinished `let f x =`), and one recalled
+from history, are not composed: Enter runs them once they are complete.
+
 A new line starts at the indentation of the line above. It goes one
 level (4 spaces) deeper when that line opens a body: it ends in `=`,
 `->`, `then`, `else`, `do` or `with`, or is a block head such as
@@ -972,14 +981,16 @@ indentation.
 - <kbd>Backspace</kbd> in the leading spaces goes back one level (4
   columns); that's how you end a block.
 - A paste is inserted whole, with exactly its own indentation, and
-  nothing runs until you press <kbd>Enter</kbd> — even when its first
-  line is a complete statement. (In a terminal without bracketed
+  nothing runs until you say so — even when its first line is a
+  complete statement: <kbd>Enter</kbd> for one pasted line,
+  <kbd>Alt+Enter</kbd> or an empty line's <kbd>Enter</kbd> for
+  several. (In a terminal without bracketed
   paste, and on Windows, pasted lines arrive as typed ones: each
   complete line runs as it comes.)
 - An empty last line still submits when it holds only indentation.
 
 For example, type `let total =` and Enter, then `[1; 2; 3]` and
-Alt+Enter, then `|> Seq.sum` and Enter, without typing any spaces:
+Alt+Enter, then `|> Seq.sum` and Alt+Enter, without typing any spaces:
 
 ```
 weir> let total =
@@ -996,8 +1007,9 @@ submitted or added to history).
 
 | key | in the buffer |
 |---|---|
-| <kbd>Enter</kbd> | submit if complete, otherwise start a new line; on an empty last line, submit anyway (a way out of an unfinished statement: the error is shown and your input is kept) |
-| <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | insert a newline (for formatting; the entry is still one statement). Like <kbd>Enter</kbd>'s new line, it starts at the line's indentation. <kbd>Shift+Enter</kbd> can't be used, because terminals don't distinguish it from <kbd>Enter</kbd>. Windows Terminal uses left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
+| <kbd>Enter</kbd> | submit if complete, otherwise start a new line; on an empty last line, submit anyway (a way out of an unfinished statement: the error is shown and your input is kept). In an entry you are composing, add a line |
+| <kbd>Alt+Enter</kbd> | start composing a multi-line entry: a newline even when the statement is complete. Pressed again, run the entry. <kbd>Shift+Enter</kbd> can't be used, because terminals don't distinguish it from <kbd>Enter</kbd>. Windows Terminal uses left-<kbd>Alt+Enter</kbd> for fullscreen: use right-Alt there, or <kbd>Ctrl+J</kbd> and an empty line's <kbd>Enter</kbd> |
+| <kbd>Ctrl+J</kbd> | insert a newline, always; it starts composing as <kbd>Alt+Enter</kbd> does. Like <kbd>Enter</kbd>'s new line, it starts at the line's indentation |
 | <kbd>Backspace</kbd> | delete the character before the cursor; in a line's leading spaces, go back one indent level (to the previous multiple of 4) |
 | <kbd>Left</kbd> / <kbd>Right</kbd> | move a character; at the start or end of a line, onto the line above or below |
 | <kbd>Ctrl+Left</kbd> / <kbd>Ctrl+Right</kbd> | move a word |
