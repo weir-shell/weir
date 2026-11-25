@@ -32,8 +32,9 @@
   lines ran each line as it arrived, so a block starting with a line
   that is a statement on its own (`books` above its `|>` lines) ran
   that line alone and broke the rest. A paste is now inserted whole
-  and runs when you say so (Enter for one line, Alt+Enter for several). This needs a terminal with bracketed
-  paste, which current ones have; not on Windows.
+  and runs when you say so (Enter for one line, Alt+Enter for
+  several). This needs a terminal with bracketed paste, which current
+  ones have; not on Windows.
 
 ## v0.0.98
 
