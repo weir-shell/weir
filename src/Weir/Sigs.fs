@@ -2023,10 +2023,18 @@ let suggestEntryWith
         | Some s when s.EndsWith word -> Complete.typePositionAt (s.Substring(0, s.Length - word.Length))
         | _ -> false
 
+    // an arm's pattern slot [D:match-case-complete]
+    let matchCases =
+        match stmt with
+        | Some s when s.EndsWith word -> Complete.matchCaseOffers ctxEnv (s.Substring(0, s.Length - word.Length)) word
+        | _ -> None
+
     if untilStopped then
         [ "stopped" ] |> List.filter (fun w -> w.StartsWith word && w <> word)
     elif typePosition then
         Complete.typeNameOffers ctxEnv word
+    elif matchCases.IsSome then
+        matchCases.Value
     else
 
         match stmt |> Option.bind (fun s -> repairedFields ctxEnv s "") with

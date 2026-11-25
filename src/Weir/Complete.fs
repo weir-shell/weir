@@ -665,6 +665,42 @@ let typePositionAt (stmtBefore: string) : bool =
         || t.EndsWith "("
         || System.Text.RegularExpressions.Regex.IsMatch(t, @"\sof$"))
 
+// the last `match <scrutinee> with` before the cursor; time-bounded, as
+// completion runs on the user's text
+let private matchHead =
+    System.Text.RegularExpressions.Regex(
+        @"\bmatch\s+(\S(?:.*?\S)?)\s+with\b",
+        System.Text.RegularExpressions.RegexOptions.Singleline,
+        System.TimeSpan.FromMilliseconds 100.0
+    )
+
+/// the pattern slot of a match arm [D:match-case-complete]: where an arm
+/// opens — after `with` or an arm's `|` — the cases of the scrutinee's
+/// type and nothing else. None where that is not the slot, or the type
+/// is no union
+let matchCaseOffers (env: TypeEnv) (stmtBefore: string) (word: string) : string list option =
+    let last =
+        try
+            matchHead.Matches stmtBefore |> Seq.tryLast
+        with :? System.Text.RegularExpressions.RegexMatchTimeoutException ->
+            None
+
+    last
+    |> Option.filter (fun m ->
+        let arms = stmtBefore.Substring(m.Index + m.Length).TrimEnd()
+        arms = "" || (arms.EndsWith "|" && not (arms.EndsWith "||")))
+    |> Option.bind (fun m -> Weir.Parser.parseExpr m.Groups[1].Value |> Result.toOption)
+    |> Option.bind (fun e -> Weir.Check.typecheck (withHoles env e) e |> Result.toOption)
+    |> Option.bind (fun te ->
+        match te.Ty with
+        | TBool -> Some [ "false"; "true" ]
+        | TNamed(n, _) ->
+            match Types.typeDefFor env n with
+            | Some(Union u) -> Some(u.Cases |> List.map fst |> List.sort)
+            | _ -> None
+        | _ -> None)
+    |> Option.map (List.filter (fun c -> c.StartsWith word && c <> word))
+
 /// type names for a type position, prefix-filtered
 let typeNameOffers (env: TypeEnv) (word: string) : string list =
     Types.builtinTypeNames @ declaredTypeNames env
