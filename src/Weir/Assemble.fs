@@ -1099,12 +1099,15 @@ let singleLine (text: string) : LogicalLine = {
 // holes reopen code land mid-string, which a flag-based scanner cannot
 // model — the four string-kind close rules are re-implemented here by
 // necessity (and stringScan reads `$"…"` as a plain string).
-let closers (text: string) : string =
+let private closerStack (text: string) : char list * int list =
     // one stack of expected closers models the full nesting: brackets
     // in code, strings ('"' plain, '$' interp — closes with '"' but
     // '{' opens a hole back into code land), single quotes, holes.
     // Mid-edit dangling text closes correctly at any depth.
     let mutable stack: char list = []
+    // where each still-open record brace sits ('}' on the stack; a
+    // hole's is 'H')
+    let mutable braces: int list = []
     let mutable i = 0
 
     while i < text.Length do
@@ -1120,7 +1123,7 @@ let closers (text: string) : string =
                 if i + 1 < text.Length && text[i + 1] = '{' then
                     i <- i + 1
                 else
-                    stack <- '}' :: stack
+                    stack <- 'H' :: stack
         // raw kinds [D:raw-strings]: 'V' verbatim ("" stays inside),
         // 'T' triple (closes only at """)
         | 'V' :: rest ->
@@ -1150,23 +1153,58 @@ let closers (text: string) : string =
                 stack <- '\'' :: stack
             elif c = '(' then
                 stack <- ')' :: stack
+            // an anonymous record closes with `|}` [D:anon-records]
+            elif c = '{' && i + 1 < text.Length && text[i + 1] = '|' then
+                stack <- 'A' :: stack
+                i <- i + 1
+            elif
+                c = '|'
+                && i + 1 < text.Length
+                && text[i + 1] = '}'
+                && List.tryHead stack = Some 'A'
+            then
+                stack <- List.tail stack
+                i <- i + 1
             elif c = '{' then
                 stack <- '}' :: stack
-            elif (c = ')' || c = '}') then
+                braces <- i :: braces
+            elif c = '}' then
                 match stack with
-                | top :: rest when top = c -> stack <- rest
+                | 'H' :: rest -> stack <- rest
+                | '}' :: rest ->
+                    stack <- rest
+                    braces <- List.tail braces
+                | _ -> ()
+            elif c = ')' then
+                match stack with
+                | ')' :: rest -> stack <- rest
                 | _ -> ()
 
         i <- i + 1
 
-    stack
+    stack, braces
+
+let closers (text: string) : string =
+    closerStack text
+    |> fst
     |> List.map (fun c ->
         match c with
         | '$'
         | 'V' -> "\""
         | 'T' -> "\"\"\""
+        | 'A' -> " |}"
+        | 'H' -> "}"
         | c -> string c)
     |> String.concat ""
+
+/// `text` with each still-open record brace opened as an anonymous
+/// record's — the completion repair's last resort: a declared record's
+/// literal checks only with every field present, an anonymous one as
+/// far as it is written [D:repair-anon-literal]. None when no brace is open
+let anonOpened (text: string) : string option =
+    match closerStack text |> snd with
+    | [] -> None
+    | braces -> Some(braces |> List.fold (fun (t: string) i -> t.Insert(i + 1, "|")) text)
 
 // Still-open brackets (kind, column) after folding a line into the
 // running stack — fmt's only caller; parens ride it too, since inside

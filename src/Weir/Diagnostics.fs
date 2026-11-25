@@ -58,7 +58,9 @@ let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list opt
             // cannot stand (a predicate's bool)
             let fillers =
                 if shorthand then
-                    [ $"(fun {completeParam} -> {holeExpr})" ]
+                    // the hole first; a string where the result must be
+                    // concrete (an anonymous record's field [D:anon-records])
+                    [ $"(fun {completeParam} -> {holeExpr})"; $"(fun {completeParam} -> \"\")" ]
                 else
                     [ "\"\"" + String(' ', max 0 (word.Length - 2)); holeExpr ]
 
@@ -84,6 +86,9 @@ let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list opt
                     if openMatch then
                         let armed = prefixDone + " | _ -> " + holeExpr
                         armed + closers armed + post
+                    match anonOpened prefixDone with
+                    | Some anon -> anon + closers anon
+                    | None -> ()
                 ])
             |> List.tryPick (fun cand ->
                 Complete.tyAtRepaired parse env cand target

@@ -461,6 +461,17 @@ let warningTests =
             Expect.equal (Weir.Assemble.closers "let s = @\"dangling") "\"" "verbatim closer"
             Expect.equal (Weir.Assemble.closers "let s = \"\"\"dangling") "\"\"\"" "triple closer"
             Expect.equal (Weir.Assemble.closers "let s = @\"a\"\"b") "\"" "doubled quote stays inside"
+            Expect.equal (Weir.Assemble.closers "xs |> map (fun b -> {| a = b") " |})" "an anonymous record's closer"
+            Expect.equal (Weir.Assemble.closers "f {| a = 1 |} (g") ")" "a closed one leaves nothing"
+            Expect.equal (Weir.Assemble.closers "{| a = { b = (1") ")} |}" "nested in order"
+            Expect.equal (Weir.Assemble.closers "$\"a {f (1") ")}\"" "a hole closes as a brace"
+
+            Expect.equal
+                (Weir.Assemble.anonOpened "f { a = { b = 1 }; c = { d = g (")
+                (Some "f {| a = { b = 1 }; c = {| d = g (")
+                "open record braces only"
+
+            Expect.equal (Weir.Assemble.anonOpened "$\"{x") None "a hole is no record"
         }
         test "accepted matches are total: the runtime match-failure class is gone" {
             // non-exhaustive shapes are check errors, never runtime failures
