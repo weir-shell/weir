@@ -351,6 +351,26 @@ t, _ = run([("  match 1 with", 0.2), ("\r", 0.3), ("\r", 0.5), ("5 + 6\r", 0.5),
 if "\n11\r\n" not in t or "parse error" not in t:
     failures.append(f"Enter on an indent-only final line must close the pending buffer: {t[-300:]!r}")
 
+# a match typed arm by arm, no manual spaces [D:repl-match-arms]: the arms
+# start at the match's own column, and Enter after an arm that leaves
+# cases unhandled takes the next arm instead of submitting
+t, d = run([("let y = Some 10\r", 0.5), ("match y with", 0.2), ("\r", 0.3), ("| None -> 0", 0.2), ("\r", 0.4),
+            ("| Some n -> n + 1", 0.2), ("\r", 0.6), ("#quit\r", 0.3)])
+if "match y with\\n| None -> 0\\n| Some n -> n + 1" not in hist(d) or "\n11\r\n" not in t or "not exhaustive" in t:
+    failures.append(f"a match must take its arms one Enter each, at its own column: {hist(d)!r} {t[-300:]!r}")
+
+# nested under a binder the arms carry the match's indent
+t, d = run([("let y = Some 10\r", 0.5), ("let r =", 0.2), ("\r", 0.3), ("match y with", 0.2), ("\r", 0.3),
+            ("| None -> 0", 0.2), ("\r", 0.4), ("| Some n -> n", 0.2), ("\r", 0.6), ("#quit\r", 0.3)])
+if "let r =\\n    match y with\\n    | None -> 0\\n    | Some n -> n" not in hist(d):
+    failures.append(f"a nested match's arms must sit at its column: {hist(d)!r}")
+
+# the empty last line still submits a match short of arms: the error shows
+t, _ = run([("let y = Some 10\r", 0.5), ("match y with", 0.2), ("\r", 0.3), ("| None -> 0", 0.2), ("\r", 0.4),
+            ("\r", 0.6), ("#quit\r", 0.3)])
+if "not exhaustive; missing: Some" not in t:
+    failures.append(f"an empty line must submit a match short of arms: {t[-300:]!r}")
+
 # --- dup-type in the REPL: redeclaration replaces with the note; earlier
 # values keep the old shape [D:dup-type-decl]
 # marker-driven, no #quit: macOS discards an exited child's unread pty

@@ -1428,6 +1428,38 @@ let private bufferComplete (bufLines: string list) : bool =
                 | Ok _ -> true
                 | Error f -> f.Col |> Option.forall (fun c -> c <= ll.Text.TrimEnd().Length))
 
+/// a complete entry that still wants lines [D:repl-match-arms]: its last
+/// statement is a match with cases unhandled, each arm of which parses
+/// as the whole statement. Checked, never run
+let private wantsArms (bufLines: string list) : bool =
+    match Assemble.assemble (numberedCode (dedentEntry bufLines)) with
+    | Error _ -> false
+    | Ok lls ->
+        let r = {
+            Statements.resolver currentEnv.Value with
+                AliasHead = currentAliasHead.Value
+        }
+
+        let check te ll =
+            Statements.checkStatement false None (fun _ -> r) ModuleLoader.scriptOnlyImport te ll
+
+        match List.rev lls with
+        | [] -> false
+        | last :: earlier ->
+            let env =
+                earlier
+                |> List.rev
+                |> List.fold
+                    (fun te ll ->
+                        match check te ll with
+                        | Ok chk -> Check.withPendingAnonDefs chk.Env
+                        | Error _ -> te)
+                    currentEnv.Value
+
+            match check env last with
+            | Error d -> d.Message.Contains "match is not exhaustive; missing:"
+            | Ok _ -> false
+
 // the continuation prompt — the same DISPLAY width as the prompt in
 // effect so column math is uniform across rows [D:repl-multiline]. One
 // dim ellipsis [D:cont-marker], right-aligned, always present: a short
@@ -2080,7 +2112,17 @@ let private readLineTty () : string option =
                     && cur().ToString().Trim() = ""
                     && bufList |> List.exists (fun l -> l.Trim() <> "")
 
-                if bufferComplete bufList || blankEscape then
+                // a match short of arms takes the next one
+                // [D:repl-match-arms]; the empty last line still submits
+                // it, error and all
+                let moreArms =
+                    not blankEscape
+                    && row = lines.Count - 1
+                    && col = cur().Length
+                    && bufferComplete bufList
+                    && wantsArms bufList
+
+                if (bufferComplete bufList || blankEscape) && not moreArms then
                     toEnd ()
                     bracketedPaste false
                     Console.WriteLine()

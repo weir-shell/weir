@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **A `match` can be typed arm by arm in the REPL.** Enter after the
+  first arm ran the match and failed it as not exhaustive; it now
+  starts the next arm while cases are missing, and an empty line still
+  submits. The arms also start at the `match`'s own column instead of
+  one level deeper.
+- **Tab in a match arm offers the cases of the value being matched.**
+  `| N` after `match y with` listed every name starting with N
+  (`Net`, `NoAuth`, …); for an `Option` it now completes to `None`.
 - **A pasted block lands in the REPL as one entry.** Pasting several
   lines ran each line as it arrived, so a block starting with a line
   that is a statement on its own (`books` above its `|>` lines) ran

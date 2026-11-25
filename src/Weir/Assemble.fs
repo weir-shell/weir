@@ -835,7 +835,8 @@ let dangleOpensBlock (piece: string) : bool =
 /// (dangleOpensBlock) on the comment-stripped text, minus what only
 /// looks like an opener at EOL: a line ending inside a string, a
 /// comparison (`==` `<=` `>=` `!=`), an `=` inside an unclosed `{`
-/// (a record field), and a word ender glued to an identifier
+/// (a record field), a word ender glued to an identifier, and the
+/// `with` of a match that starts its line
 let opensIndentedBody (before: string) : bool =
     if Scan.endsInsideString before then
         false
@@ -859,12 +860,16 @@ let opensIndentedBody (before: string) : bool =
         // [D:held-scope]
         let held = t.TrimStart() = "until stopped"
 
+        // a match's arms sit at its own column when it starts the line
+        let matchHead = t.TrimStart().StartsWith "match " && t.EndsWith " with"
+
         t <> ""
         && dangleOpensBlock (t.TrimStart())
         && not gluedWord
         && not comparison
         && not fieldEq
         && not held
+        && not matchHead
 
 /// A line-end district marker of any kind — the mask below and the
 /// REPL share classifyPiece's marker rules through these predicates.

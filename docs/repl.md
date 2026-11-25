@@ -965,7 +965,9 @@ level (4 spaces) deeper when that line opens a body: it ends in `=`,
 `->`, `then`, `else`, `do` or `with`, or is a block head such as
 `within …`, `always`, `for … do` or `retry …`. A comparison (`==`,
 `<=`, `>=`, `!=`), a record field's `=` inside an open `{`, and text
-inside a string or comment don't count.
+inside a string or comment don't count, and neither does the `with`
+of a `match` that starts its line: its arms go at the `match`'s own
+indentation.
 
 - <kbd>Backspace</kbd> in the leading spaces goes back one level (4
   columns); that's how you end a block.

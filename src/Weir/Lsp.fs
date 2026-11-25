@@ -5624,9 +5624,20 @@ let run (debug: bool) : int =
                                         Complete.typePositionAt (pre.Substring(0, pre.Length - word.Length))
                                     | _ -> false
 
+                                // an arm's pattern slot [D:match-case-complete]
+                                let matchCases =
+                                    match statementUpTo env allLls lines line col with
+                                    | Some(ctxEnv, pre, _) when pre.EndsWith word ->
+                                        Complete.matchCaseOffers
+                                            ctxEnv
+                                            (pre.Substring(0, pre.Length - word.Length))
+                                            word
+                                    | _ -> None
+
                                 let items =
                                     match repaired with
                                     | _ when typePosition -> Complete.typeNameOffers env word
+                                    | _ when matchCases.IsSome -> matchCases.Value
                                     | _ when untilStopped ->
                                         [ "stopped" ] |> List.filter (fun w -> w.StartsWith word && w <> word)
                                     | _ when yamlSplice.IsSome -> yamlSplice.Value
