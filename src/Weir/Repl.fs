@@ -1511,6 +1511,65 @@ let csiKey (queued: string) : (int * ConsoleKeyInfo option) option =
 
         Some(m.Length, key)
 
+// a bracketed paste [D:repl-bracketed-paste]: the text between the
+// terminal's `ESC [ 200 ~` and `ESC [ 201 ~`, handed to the editor whole
+// behind one key that no keyboard sends
+let mutable private pasted: string option = None
+
+let private pasteKey =
+    ConsoleKeyInfo('\000', ConsoleKey.NoName, false, false, false)
+
+/// the bracketed-paste switch: on while the editor reads, off before
+/// anything else owns the terminal — and before the newline that ends
+/// the entry, so what the entry prints follows that newline directly
+let mutable private pasteMode = false
+
+let private bracketedPaste (on: bool) =
+    if not (OperatingSystem.IsWindows()) && pasteMode <> on then
+        pasteMode <- on
+        Console.Write(if on then "\027[?2004h" else "\027[?2004l")
+
+/// the paste's text, read up to its end marker; a paste whose marker
+/// never comes ends where the input does
+let private readPaste () : string =
+    let text = Text.StringBuilder()
+    let fin = "\027[201~"
+    let mutable idle = 0
+    let mutable fin' = false
+
+    while not fin' && idle < 200 do
+        if typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable) then
+            idle <- 0
+
+            let k =
+                if typeAhead.Count > 0 then
+                    typeAhead.Dequeue()
+                else
+                    ttyIo (fun () -> Console.ReadKey(intercept = true))
+
+            text.Append(if k.Key = ConsoleKey.Enter then '\n' else k.KeyChar) |> ignore
+
+            if
+                k.KeyChar = '~'
+                && text.Length >= fin.Length
+                && text.ToString(text.Length - fin.Length, fin.Length) = fin
+            then
+                text.Length <- text.Length - fin.Length
+                fin' <- true
+        else
+            idle <- idle + 1
+            Threading.Thread.Sleep 5
+
+    text.ToString()
+
+/// a paste as buffer lines: line ends of any kind are newlines, a tab is
+/// four columns, no other control character survives, and the newlines
+/// that end it are dropped
+let pasteLines (text: string) : string list =
+    text.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\t", "    ").TrimEnd('\n').Split '\n'
+    |> Array.map (String.filter (Char.IsControl >> not))
+    |> List.ofArray
+
 let rec private readKey () =
     let k =
         if typeAhead.Count > 0 then
@@ -1543,6 +1602,20 @@ let rec private readKey () =
             match key with
             | Some decoded -> decoded
             | None -> readKey ()
+        | None when
+            typeAhead
+            |> Seq.truncate 5
+            |> Seq.map (fun q -> q.KeyChar)
+            |> Array.ofSeq
+            |> String
+                =
+                "[200~"
+            ->
+            for _ in 1..5 do
+                typeAhead.Dequeue() |> ignore
+
+            pasted <- Some(readPaste ())
+            pasteKey
         | None -> k
 
 /// what a statement binds, through the step every front end shares
@@ -1920,6 +1993,7 @@ let private readLineTty () : string option =
 
     let deleteOrEof () =
         if lines.Count = 1 && lines[0].Length = 0 then
+            bracketedPaste false
             Console.WriteLine()
             result <- Some None // EOF
         elif col < cur().Length then
@@ -1944,386 +2018,417 @@ let private readLineTty () : string option =
     // the tool's own values are cached for one edit [D:sig-dynamic-complete]
     DynComplete.clearCache ()
 
-    while result.IsNone do
-        let k = readKey ()
-        Term.snapshot ()
-        let ctrl = k.Modifiers.HasFlag ConsoleModifiers.Control
-        let alt = k.Modifiers.HasFlag ConsoleModifiers.Alt
+    bracketedPaste true
 
-        // characters a paste left unpainted show before anything acts on
-        // the line [D:repl-paste-repaint]
-        if
-            unpainted
-            && (ctrl
-                || alt
-                || k.KeyChar < ' '
-                || k.KeyChar = '\x7f'
-                || k.Key = ConsoleKey.Backspace
-                || k.Key = ConsoleKey.Delete)
-        then
-            unpainted <- false
-            redraw ()
+    try
+        while result.IsNone do
+            let k = readKey ()
+            Term.snapshot ()
+            let ctrl = k.Modifiers.HasFlag ConsoleModifiers.Control
+            let alt = k.Modifiers.HasFlag ConsoleModifiers.Alt
 
-        match k.Key with
-        // Alt+Enter (and Ctrl+J below): force a newline even when the
-        // statement is complete — formatting, not a second statement
-        // (an entry stays one statement) [D:repl-multiline]
-        | ConsoleKey.Enter when alt -> insertNewline ()
-        | _ when k.KeyChar = '\n' -> insertNewline ()
-        | ConsoleKey.Enter ->
-            // submit when the statement is complete; grow the buffer when
-            // it is not — the parser's own answer, not an approximation
-            let text = bufText ()
-            let bufList = lines |> Seq.map (fun sb -> sb.ToString()) |> List.ofSeq
+            // characters a paste left unpainted show before anything acts on
+            // the line [D:repl-paste-repaint]
+            if
+                unpainted
+                && (ctrl
+                    || alt
+                    || k.KeyChar < ' '
+                    || k.KeyChar = '\x7f'
+                    || k.Key = ConsoleKey.Backspace
+                    || k.Key = ConsoleKey.Delete)
+            then
+                unpainted <- false
+                redraw ()
 
-            // blank-line escape [D:windows-s2]: Enter on an empty final
-            // line closes a pending buffer even when incomplete — the
-            // parse error shows and the input is kept, instead of Ctrl+C
-            // being the only (input-losing) way out of an uncompletable
-            // state. Scripts unchanged: blanks are transparent there.
-            // Alt+Enter/Ctrl+J never trigger it (deliberate newlines).
-            let blankEscape =
-                row = lines.Count - 1
-                && cur().ToString().Trim() = ""
-                && bufList |> List.exists (fun l -> l.Trim() <> "")
+            match k.Key with
+            | ConsoleKey.NoName when pasted.IsSome ->
+                // a paste is text, never keys [D:repl-bracketed-paste]: its
+                // newlines break lines and submit nothing
+                let parts = pasteLines pasted.Value
+                pasted <- None
+                let tail = cur().ToString().Substring col
+                cur().Remove(col, cur().Length - col).Append(parts.Head) |> ignore
 
-            if bufferComplete bufList || blankEscape then
+                for l in parts.Tail do
+                    row <- row + 1
+                    lines.Insert(row, Text.StringBuilder(l: string))
+
+                col <- cur().Length
+                cur().Append tail |> ignore
+                unpainted <- false
+                redraw ()
+            // Alt+Enter (and Ctrl+J below): force a newline even when the
+            // statement is complete — formatting, not a second statement
+            // (an entry stays one statement) [D:repl-multiline]
+            | ConsoleKey.Enter when alt -> insertNewline ()
+            | _ when k.KeyChar = '\n' -> insertNewline ()
+            | ConsoleKey.Enter ->
+                // submit when the statement is complete; grow the buffer when
+                // it is not — the parser's own answer, not an approximation
+                let text = bufText ()
+                let bufList = lines |> Seq.map (fun sb -> sb.ToString()) |> List.ofSeq
+
+                // blank-line escape [D:windows-s2]: Enter on an empty final
+                // line closes a pending buffer even when incomplete — the
+                // parse error shows and the input is kept, instead of Ctrl+C
+                // being the only (input-losing) way out of an uncompletable
+                // state. Scripts unchanged: blanks are transparent there.
+                // Alt+Enter/Ctrl+J never trigger it (deliberate newlines).
+                let blankEscape =
+                    row = lines.Count - 1
+                    && cur().ToString().Trim() = ""
+                    && bufList |> List.exists (fun l -> l.Trim() <> "")
+
+                if bufferComplete bufList || blankEscape then
+                    toEnd ()
+                    bracketedPaste false
+                    Console.WriteLine()
+                    result <- Some(Some text)
+                else
+                    insertNewline ()
+            // some terminals deliver control chords as bare KeyChars —
+            // match the codes as well as the (Key, Modifier) pairs
+            | _ when k.KeyChar = '' -> deleteOrEof ()
+            | _ when k.KeyChar = '' ->
+                bracketedPaste false
+                Console.WriteLine "^C"
+                result <- Some(Some "")
+            | ConsoleKey.D when ctrl -> deleteOrEof ()
+            | ConsoleKey.C when ctrl ->
+                // abandon the whole buffer, keep the session
                 toEnd ()
-                Console.WriteLine()
-                result <- Some(Some text)
-            else
+                bracketedPaste false
+                Console.WriteLine "^C"
+                result <- Some(Some "")
+            | ConsoleKey.Escape when escThenEnter () ->
+                // Alt+Enter whose two bytes the terminal read apart (a fast
+                // paste, a loaded box): the newline, not an abandon
+                // [D:repl-esc-enter]
                 insertNewline ()
-        // some terminals deliver control chords as bare KeyChars —
-        // match the codes as well as the (Key, Modifier) pairs
-        | _ when k.KeyChar = '' -> deleteOrEof ()
-        | _ when k.KeyChar = '' ->
-            Console.WriteLine "^C"
-            result <- Some(Some "")
-        | ConsoleKey.D when ctrl -> deleteOrEof ()
-        | ConsoleKey.C when ctrl ->
-            // abandon the whole buffer, keep the session
-            toEnd ()
-            Console.WriteLine "^C"
-            result <- Some(Some "")
-        | ConsoleKey.Escape when escThenEnter () ->
-            // Alt+Enter whose two bytes the terminal read apart (a fast
-            // paste, a loaded box): the newline, not an abandon
-            // [D:repl-esc-enter]
-            insertNewline ()
-        | ConsoleKey.Escape when escF1Tail () -> showKeys ()
-        | ConsoleKey.F1 -> showKeys ()
-        | ConsoleKey.Escape ->
-            // Esc mid-buffer: abandon the whole buffer [D:repl-multiline]
-            toEnd ()
-            Console.WriteLine()
-            result <- Some(Some "")
-        | ConsoleKey.R when ctrl ->
-            // history search [D:repl-quality]: the selection replaces the
-            // whole buffer (an entry is a statement, not an insertion); a
-            // cancel leaves the buffer untouched
-            (match historySearch (displayEntry (bufText ())) with
-             | Some entry -> setBuffer entry
-             | None -> redraw ())
-        | ConsoleKey.Backspace ->
-            if col > 0 && cur().ToString(0, col) |> Seq.forall ((=) ' ') then
-                // an all-space prefix dedents one level, to the previous
-                // multiple of 4 [D:repl-autoindent]
-                let n = col - (col - 1) / 4 * 4
-                cur().Remove(col - n, n) |> ignore
-                col <- col - n
-                redraw ()
-            elif col > 0 then
-                let n = stepBack ()
-                cur().Remove(col - n, n) |> ignore
-                col <- col - n
-                redraw ()
-            elif row > 0 then
-                // backspace at line start joins the previous line
-                let prevLen = lines[row - 1].Length
-                lines[row - 1].Append(cur().ToString()) |> ignore
-                lines.RemoveAt row
-                row <- row - 1
-                col <- prevLen
-                redraw ()
-        | ConsoleKey.LeftArrow when ctrl ->
-            // readline word-wise: skip separators, then the word
-            col <- wordLeft (cur().ToString())
-            redraw ()
-        | ConsoleKey.RightArrow when ctrl ->
-            let t = cur().ToString()
-            let mutable p = col
+            | ConsoleKey.Escape when escF1Tail () -> showKeys ()
+            | ConsoleKey.F1 -> showKeys ()
+            | ConsoleKey.Escape ->
+                // Esc mid-buffer: abandon the whole buffer [D:repl-multiline]
+                toEnd ()
+                bracketedPaste false
+                Console.WriteLine()
+                result <- Some(Some "")
+            | ConsoleKey.R when ctrl ->
+                // history search [D:repl-quality]: the selection replaces the
+                // whole buffer (an entry is a statement, not an insertion); a
+                // cancel leaves the buffer untouched. The search is a second
+                // reader of the tty, so the paste mode goes off for it
+                // [D:repl-bracketed-paste]
+                bracketedPaste false
 
-            while p < t.Length && not (isWordChar t[p]) do
-                p <- p + 1
+                (match historySearch (displayEntry (bufText ())) with
+                 | Some entry -> setBuffer entry
+                 | None -> redraw ())
 
-            while p < t.Length && isWordChar t[p] do
-                p <- p + 1
+                bracketedPaste true
+            | ConsoleKey.Backspace ->
+                if col > 0 && cur().ToString(0, col) |> Seq.forall ((=) ' ') then
+                    // an all-space prefix dedents one level, to the previous
+                    // multiple of 4 [D:repl-autoindent]
+                    let n = col - (col - 1) / 4 * 4
+                    cur().Remove(col - n, n) |> ignore
+                    col <- col - n
+                    redraw ()
+                elif col > 0 then
+                    let n = stepBack ()
+                    cur().Remove(col - n, n) |> ignore
+                    col <- col - n
+                    redraw ()
+                elif row > 0 then
+                    // backspace at line start joins the previous line
+                    let prevLen = lines[row - 1].Length
+                    lines[row - 1].Append(cur().ToString()) |> ignore
+                    lines.RemoveAt row
+                    row <- row - 1
+                    col <- prevLen
+                    redraw ()
+            | ConsoleKey.LeftArrow when ctrl ->
+                // readline word-wise: skip separators, then the word
+                col <- wordLeft (cur().ToString())
+                redraw ()
+            | ConsoleKey.RightArrow when ctrl ->
+                let t = cur().ToString()
+                let mutable p = col
 
-            col <- p
-            redraw ()
-        | ConsoleKey.LeftArrow ->
-            if col > 0 then
-                col <- col - stepBack ()
-                redraw ()
-            elif row > 0 then
-                row <- row - 1
-                col <- lines[row].Length
-                redraw ()
-        | ConsoleKey.RightArrow ->
-            if col < cur().Length then
-                col <- col + stepFwd ()
-                redraw ()
-            elif row < lines.Count - 1 then
-                row <- row + 1
-                col <- 0
-                redraw ()
-        | ConsoleKey.Home ->
-            col <- 0
-            redraw ()
-        | ConsoleKey.End ->
-            col <- cur().Length
-            redraw ()
-        | ConsoleKey.A when ctrl ->
-            col <- 0
-            redraw ()
-        | ConsoleKey.E when ctrl ->
-            col <- cur().Length
-            redraw ()
-        | ConsoleKey.U when ctrl ->
-            // kill to line start → the ring [D:repl-killring]
-            if col > 0 then
-                killRing <- cur().ToString().Substring(0, col)
-                cur().Remove(0, col) |> ignore
-                col <- 0
-                redraw ()
-        | ConsoleKey.K when ctrl ->
-            // kill to line end → the ring [D:repl-killring]
-            if col < cur().Length then
-                killRing <- cur().ToString().Substring(col)
-                cur().Remove(col, cur().Length - col) |> ignore
-                redraw ()
-        | ConsoleKey.W when ctrl ->
-            // kill the previous word → the ring [D:repl-killring] — the
-            // Ctrl+Left range (skip separators, then the word)
-            let t = cur().ToString()
-            let p = wordLeft t
+                while p < t.Length && not (isWordChar t[p]) do
+                    p <- p + 1
 
-            if p < col then
-                killRing <- t.Substring(p, col - p)
-                cur().Remove(p, col - p) |> ignore
+                while p < t.Length && isWordChar t[p] do
+                    p <- p + 1
+
                 col <- p
                 redraw ()
-        | ConsoleKey.Y when ctrl ->
-            // yank the ring at the cursor [D:repl-killring]
-            if killRing <> "" then
-                cur().Insert(col, killRing) |> ignore
-                col <- col + killRing.Length
+            | ConsoleKey.LeftArrow ->
+                if col > 0 then
+                    col <- col - stepBack ()
+                    redraw ()
+                elif row > 0 then
+                    row <- row - 1
+                    col <- lines[row].Length
+                    redraw ()
+            | ConsoleKey.RightArrow ->
+                if col < cur().Length then
+                    col <- col + stepFwd ()
+                    redraw ()
+                elif row < lines.Count - 1 then
+                    row <- row + 1
+                    col <- 0
+                    redraw ()
+            | ConsoleKey.Home ->
+                col <- 0
                 redraw ()
-        | ConsoleKey.UpArrow ->
-            // Up moves within the buffer; history only from the first
-            // line (the fish/ipython convention; Ctrl+R is the explicit
-            // path)
-            if row > 0 then
-                row <- row - 1
-                col <- snapCol col
+            | ConsoleKey.End ->
+                col <- cur().Length
                 redraw ()
-            elif histIdx > 0 then
-                edited[histIdx] <- bufText ()
-                histIdx <- histIdx - 1
-                setBuffer (shownAt histIdx)
-        | ConsoleKey.DownArrow ->
-            // Down within the buffer; at the last line, forward through
-            // history only while already browsing it — a fresh buffer's
-            // last line is a no-op (Up's asymmetry) [D:repl-multiline]
-            if row < lines.Count - 1 then
-                row <- row + 1
-                col <- snapCol col
+            | ConsoleKey.A when ctrl ->
+                col <- 0
                 redraw ()
-            elif histIdx < history.Count then
-                edited[histIdx] <- bufText ()
-                histIdx <- histIdx + 1
-                setBuffer (shownAt histIdx)
-        | ConsoleKey.Tab ->
-            // completion operates on the current line (per-line machinery)
-            let text = cur().ToString()
-            let ws = wordStartAt text col
-            // suggest's contract: text ends at the cursor — the tail
-            // past it must not leak into the word (a typed closer like
-            // ` })` would join the prefix and kill every match);
-            // insertion below re-attaches the tail
-            let sigil =
-                if ws >= 2 && text.Substring(ws - 2, 2) = "$@" then
-                    2
-                elif ws >= 1 && ws <= text.Length && text[ws - 1] = '$' then
-                    1
-                else
-                    0
+            | ConsoleKey.E when ctrl ->
+                col <- cur().Length
+                redraw ()
+            | ConsoleKey.U when ctrl ->
+                // kill to line start → the ring [D:repl-killring]
+                if col > 0 then
+                    killRing <- cur().ToString().Substring(0, col)
+                    cur().Remove(0, col) |> ignore
+                    col <- 0
+                    redraw ()
+            | ConsoleKey.K when ctrl ->
+                // kill to line end → the ring [D:repl-killring]
+                if col < cur().Length then
+                    killRing <- cur().ToString().Substring(col)
+                    cur().Remove(col, cur().Length - col) |> ignore
+                    redraw ()
+            | ConsoleKey.W when ctrl ->
+                // kill the previous word → the ring [D:repl-killring] — the
+                // Ctrl+Left range (skip separators, then the word)
+                let t = cur().ToString()
+                let p = wordLeft t
 
-            let notes = ResizeArray<string>()
+                if p < col then
+                    killRing <- t.Substring(p, col - p)
+                    cur().Remove(p, col - p) |> ignore
+                    col <- p
+                    redraw ()
+            | ConsoleKey.Y when ctrl ->
+                // yank the ring at the cursor [D:repl-killring]
+                if killRing <> "" then
+                    cur().Insert(col, killRing) |> ignore
+                    col <- col + killRing.Length
+                    redraw ()
+            | ConsoleKey.UpArrow ->
+                // Up moves within the buffer; history only from the first
+                // line (the fish/ipython convention; Ctrl+R is the explicit
+                // path)
+                if row > 0 then
+                    row <- row - 1
+                    col <- snapCol col
+                    redraw ()
+                elif histIdx > 0 then
+                    edited[histIdx] <- bufText ()
+                    histIdx <- histIdx - 1
+                    setBuffer (shownAt histIdx)
+            | ConsoleKey.DownArrow ->
+                // Down within the buffer; at the last line, forward through
+                // history only while already browsing it — a fresh buffer's
+                // last line is a no-op (Up's asymmetry) [D:repl-multiline]
+                if row < lines.Count - 1 then
+                    row <- row + 1
+                    col <- snapCol col
+                    redraw ()
+                elif histIdx < history.Count then
+                    edited[histIdx] <- bufText ()
+                    histIdx <- histIdx + 1
+                    setBuffer (shownAt histIdx)
+            | ConsoleKey.Tab ->
+                // completion operates on the current line (per-line machinery)
+                let text = cur().ToString()
+                let ws = wordStartAt text col
+                // suggest's contract: text ends at the cursor — the tail
+                // past it must not leak into the word (a typed closer like
+                // ` })` would join the prefix and kill every match);
+                // insertion below re-attaches the tail
+                let sigil =
+                    if ws >= 2 && text.Substring(ws - 2, 2) = "$@" then
+                        2
+                    elif ws >= 1 && ws <= text.Length && text[ws - 1] = '$' then
+                        1
+                    else
+                        0
 
-            let suggestions =
-                // a `$` that is literal text — the buffer's lines above
-                // decide the district [D:argv-splice-complete]
-                if
-                    sigil > 0
-                    && Complete.dollarLiteral
-                        [| for i in 0 .. row - 1 -> lines[i].ToString() |]
-                        (text.Substring(0, ws - sigil))
-                then
-                    []
-                else
-                    // the session entry: alias heads join the head-slot pool
-                    // [D:command-head-alias]; the session values feed the
-                    // map-key slot [D:value-key-complete]; the whole entry up
-                    // to the cursor is the context [D:entry-complete] —
-                    // earlier statements' bindings join the env, and a
-                    // `head.`/`_.` word repairs over its whole statement
-                    // the tool's own values [D:sig-dynamic-complete]: a child
-                    // bounded by the timeout and the next key, which stays
-                    // queued for the editor
-                    let all =
-                        Sigs.suggestEntryWith
-                            (Some {
-                                Run =
-                                    DynComplete.ask (fun () ->
-                                        typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable))
-                                Note = notes.Add
-                            })
-                            currentAliases.Value
-                            currentVals.Value
-                            currentEnv.Value
-                            (dedentEntry (List.init row (fun i -> lines[i].ToString()) @ [ text.Substring(0, col) ]))
-                            (text.Substring(0, col))
-                            ws
+                let notes = ResizeArray<string>()
 
-                    // a directive is only a whole entry's first line
-                    // [D:repl-directives]: a continuation line offers none
-                    // an offer is inserted verbatim: one carrying a control
-                    // character (a newline submits a statement, an escape
-                    // repaints) is never offered, whatever produced it
-                    let offered = all |> List.filter (fun c -> not (c |> Seq.exists Char.IsControl))
-
-                    // in a `$$<<<` body or a yaml block a `$` names a binding
-                    // only [D:env-sigil]: no variable is offered where the
-                    // checker would refuse it
-                    let offered =
-                        if
-                            sigil = 1
-                            && Complete.dollarBindingOnly
-                                [| for i in 0 .. row - 1 -> lines[i].ToString() |]
-                                (text.Substring(0, ws - sigil))
-                        then
-                            offered |> List.filter (fun c -> not (Ast.isEnvName c))
-                        else
-                            offered
-
-                    if row = 0 then
-                        offered
-                    elif text.Substring(0, ws).Trim() = "#" then
+                let suggestions =
+                    // a `$` that is literal text — the buffer's lines above
+                    // decide the district [D:argv-splice-complete]
+                    if
+                        sigil > 0
+                        && Complete.dollarLiteral
+                            [| for i in 0 .. row - 1 -> lines[i].ToString() |]
+                            (text.Substring(0, ws - sigil))
+                    then
                         []
                     else
-                        offered |> List.filter (fun c -> not (c.StartsWith "#"))
+                        // the session entry: alias heads join the head-slot pool
+                        // [D:command-head-alias]; the session values feed the
+                        // map-key slot [D:value-key-complete]; the whole entry up
+                        // to the cursor is the context [D:entry-complete] —
+                        // earlier statements' bindings join the env, and a
+                        // `head.`/`_.` word repairs over its whole statement
+                        // the tool's own values [D:sig-dynamic-complete]: a child
+                        // bounded by the timeout and the next key, which stays
+                        // queued for the editor
+                        let all =
+                            Sigs.suggestEntryWith
+                                (Some {
+                                    Run =
+                                        DynComplete.ask (fun () ->
+                                            typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable))
+                                    Note = notes.Add
+                                })
+                                currentAliases.Value
+                                currentVals.Value
+                                currentEnv.Value
+                                (dedentEntry (List.init row (fun i -> lines[i].ToString()) @ [ text.Substring(0, col) ]))
+                                (text.Substring(0, col))
+                                ws
 
-            // a note under the buffer, the Tab listing's park-and-restore
-            if notes.Count > 0 then
-                below (fun () ->
-                    for n in notes do
-                        Console.WriteLine(Types.Color.dim Types.Color.onStdout.Value n))
+                        // a directive is only a whole entry's first line
+                        // [D:repl-directives]: a continuation line offers none
+                        // an offer is inserted verbatim: one carrying a control
+                        // character (a newline submits a statement, an escape
+                        // repaints) is never offered, whatever produced it
+                        let offered = all |> List.filter (fun c -> not (c |> Seq.exists Char.IsControl))
 
-            (match suggestions with
-             | [] -> ()
-             | [ one ] ->
-                 let replaced = text.Substring(0, ws) + one + text.Substring col
-                 cur().Clear().Append(replaced) |> ignore
-                 // a quoted directory completion lands the cursor INSIDE the
-                 // synthesized closing quote [D:repl-path-quote]: the next
-                 // segment then continues the same string literal and a
-                 // re-Tab nests. Past the quote it would start a fresh word
-                 // the quoting branch never re-enters (the trailing `/` marks
-                 // the directory; a quoted file is final, cursor stays after)
-                 col <-
-                     if one.StartsWith "\"" && one.EndsWith "/\"" then
-                         ws + one.Length - 1
-                     else
-                         ws + one.Length
+                        // in a `$$<<<` body or a yaml block a `$` names a binding
+                        // only [D:env-sigil]: no variable is offered where the
+                        // checker would refuse it
+                        let offered =
+                            if
+                                sigil = 1
+                                && Complete.dollarBindingOnly
+                                    [| for i in 0 .. row - 1 -> lines[i].ToString() |]
+                                    (text.Substring(0, ws - sigil))
+                            then
+                                offered |> List.filter (fun c -> not (Ast.isEnvName c))
+                            else
+                                offered
 
-                 redraw ()
-             | many ->
-                 // extend to the common prefix; list on a second Tab-worth
-                 let common (xs: string list) =
-                     xs
-                     |> List.reduce (fun a b ->
-                         let n = Seq.zip a b |> Seq.takeWhile (fun (x, y) -> x = y) |> Seq.length
-                         a.Substring(0, n))
+                        if row = 0 then
+                            offered
+                        elif text.Substring(0, ws).Trim() = "#" then
+                            []
+                        else
+                            offered |> List.filter (fun c -> not (c.StartsWith "#"))
 
-                 // every candidate a synthesized string literal
-                 // [D:repl-path-quote]: their raw common prefix is only the
-                 // opening quote plus the shared path (`"/`), an unclosed
-                 // literal — extend the CONTENT instead and close it, the
-                 // caret inside the closer as for one quoted directory
-                 let quoted =
-                     many
-                     |> List.forall (fun c -> c.Length >= 2 && c.StartsWith "\"" && c.EndsWith "\"")
+                // a note under the buffer, the Tab listing's park-and-restore
+                if notes.Count > 0 then
+                    below (fun () ->
+                        for n in notes do
+                            Console.WriteLine(Types.Color.dim Types.Color.onStdout.Value n))
 
-                 // (replacement, caret offset within it), or None to list
-                 let extension =
-                     if quoted then
-                         let inner =
-                             let p = many |> List.map (fun c -> c.Substring(1, c.Length - 2)) |> common
-                             // never cut an escape in half (`\"` → a dangling `\`)
-                             let trailing = p.Length - p.TrimEnd('\\').Length
-                             if trailing % 2 = 1 then p.Substring(0, p.Length - 1) else p
-
-                         let literal = "\"" + inner + "\""
-                         let typed = text.Substring(ws, col - ws)
-
-                         if literal <> typed && inner.Length >= typed.Length then
-                             Some(literal, literal.Length - 1)
-                         else
-                             None
-                     else
-                         let prefix = common many
-
-                         if prefix.Length > col - ws then
-                             Some(prefix, prefix.Length)
-                         else
-                             None
-
-                 match extension with
-                 | Some(insert, caret) ->
-                     let replaced = text.Substring(0, ws) + insert + text.Substring col
+                (match suggestions with
+                 | [] -> ()
+                 | [ one ] ->
+                     let replaced = text.Substring(0, ws) + one + text.Substring col
                      cur().Clear().Append(replaced) |> ignore
-                     col <- ws + caret
+                     // a quoted directory completion lands the cursor INSIDE the
+                     // synthesized closing quote [D:repl-path-quote]: the next
+                     // segment then continues the same string literal and a
+                     // re-Tab nests. Past the quote it would start a fresh word
+                     // the quoting branch never re-enters (the trailing `/` marks
+                     // the directory; a quoted file is final, cursor stays after)
+                     col <-
+                         if one.StartsWith "\"" && one.EndsWith "/\"" then
+                             ws + one.Length - 1
+                         else
+                             ws + one.Length
+
                      redraw ()
-                 | None ->
-                     below (fun () ->
-                         // head candidates take the tint they would have
-                         // typed — the input colorizer's own verdict
-                         // [D:repl-color-words]
-                         let paint =
-                             if
-                                 Types.Color.onStdout.Value
-                                 && sigil = 0
-                                 && Complete.headSlotAt (text.Substring(0, ws)) <> Complete.HeadSlot.No
-                             then
-                                 colorizeSession (knownIn currentEnv.Value)
+                 | many ->
+                     // extend to the common prefix; list on a second Tab-worth
+                     let common (xs: string list) =
+                         xs
+                         |> List.reduce (fun a b ->
+                             let n = Seq.zip a b |> Seq.takeWhile (fun (x, y) -> x = y) |> Seq.length
+                             a.Substring(0, n))
+
+                     // every candidate a synthesized string literal
+                     // [D:repl-path-quote]: their raw common prefix is only the
+                     // opening quote plus the shared path (`"/`), an unclosed
+                     // literal — extend the CONTENT instead and close it, the
+                     // caret inside the closer as for one quoted directory
+                     let quoted =
+                         many
+                         |> List.forall (fun c -> c.Length >= 2 && c.StartsWith "\"" && c.EndsWith "\"")
+
+                     // (replacement, caret offset within it), or None to list
+                     let extension =
+                         if quoted then
+                             let inner =
+                                 let p = many |> List.map (fun c -> c.Substring(1, c.Length - 2)) |> common
+                                 // never cut an escape in half (`\"` → a dangling `\`)
+                                 let trailing = p.Length - p.TrimEnd('\\').Length
+                                 if trailing % 2 = 1 then p.Substring(0, p.Length - 1) else p
+
+                             let literal = "\"" + inner + "\""
+                             let typed = text.Substring(ws, col - ws)
+
+                             if literal <> typed && inner.Length >= typed.Length then
+                                 Some(literal, literal.Length - 1)
                              else
-                                 id
+                                 None
+                         else
+                             let prefix = common many
 
-                         for l in completionListingWith paint (termWidth ()) many do
-                             Console.WriteLine l))
-        | _ when k.KeyChar >= ' ' ->
-            cur().Insert(col, k.KeyChar) |> ignore
-            col <- col + 1
+                             if prefix.Length > col - ws then
+                                 Some(prefix, prefix.Length)
+                             else
+                                 None
 
-            // a paste paints once, at its end [D:repl-paste-repaint]: with
-            // more input already queued the line is left unpainted, and the
-            // loop paints it before any key that is not another character
-            unpainted <- typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable)
+                     match extension with
+                     | Some(insert, caret) ->
+                         let replaced = text.Substring(0, ws) + insert + text.Substring col
+                         cur().Clear().Append(replaced) |> ignore
+                         col <- ws + caret
+                         redraw ()
+                     | None ->
+                         below (fun () ->
+                             // head candidates take the tint they would have
+                             // typed — the input colorizer's own verdict
+                             // [D:repl-color-words]
+                             let paint =
+                                 if
+                                     Types.Color.onStdout.Value
+                                     && sigil = 0
+                                     && Complete.headSlotAt (text.Substring(0, ws)) <> Complete.HeadSlot.No
+                                 then
+                                     colorizeSession (knownIn currentEnv.Value)
+                                 else
+                                     id
 
-            if not unpainted then
-                redraw ()
-        | _ -> ()
+                             for l in completionListingWith paint (termWidth ()) many do
+                                 Console.WriteLine l))
+            | _ when k.KeyChar >= ' ' ->
+                cur().Insert(col, k.KeyChar) |> ignore
+                col <- col + 1
+
+                // a paste paints once, at its end [D:repl-paste-repaint]: with
+                // more input already queued the line is left unpainted, and the
+                // loop paints it before any key that is not another character
+                unpainted <- typeAhead.Count > 0 || ttyIo (fun () -> Console.KeyAvailable)
+
+                if not unpainted then
+                    redraw ()
+            | _ -> ()
+    finally
+        bracketedPaste false
 
     activeRedraw.Value <- None
     DynComplete.clearCache ()

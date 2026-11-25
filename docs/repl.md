@@ -969,8 +969,11 @@ inside a string or comment don't count.
 
 - <kbd>Backspace</kbd> in the leading spaces goes back one level (4
   columns); that's how you end a block.
-- Pasted text keeps exactly its own indentation (a newline with more
-  input already behind it isn't indented).
+- A paste is inserted whole, with exactly its own indentation, and
+  nothing runs until you press <kbd>Enter</kbd> — even when its first
+  line is a complete statement. (In a terminal without bracketed
+  paste, and on Windows, pasted lines arrive as typed ones: each
+  complete line runs as it comes.)
 - An empty last line still submits when it holds only indentation.
 
 For example, type `let total =` and Enter, then `[1; 2; 3]` and

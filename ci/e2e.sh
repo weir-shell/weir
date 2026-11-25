@@ -174,6 +174,7 @@ replPtyProbes() {
         replProbe repl-b repl-f1.py "repl F1 key bindings" "e2e ok: repl F1 prints the bindings mid-buffer and keeps it, raw F1 sequences, one-time hint [D:repl-f1-keys]"
         replProbe repl-b debug-break.py "Debug.break prompt" "e2e ok: Debug.break stops at a prompt over its scope; an empty line goes on, #quit ends the script [D:debug-aids]"
         replProbe repl-b repl-paste.py "repl paste repaint" "e2e ok: repl a pasted line paints once — output grows with its length, not its square [D:repl-paste-repaint]"
+        replProbe repl-b repl-bracketed-paste.py "repl bracketed paste" "e2e ok: repl a pasted block is one entry — its first line does not run alone, Enter runs it, the mode is off outside the editor [D:repl-bracketed-paste]"
         replProbe repl-b repl-directives.py "repl directives" "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
         replProbe repl-b repl-pathquote.py "repl path-quote completion" "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
         replProbe repl-b repl-mapkeys.py "repl map-key completion" "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"

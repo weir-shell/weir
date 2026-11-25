@@ -3954,6 +3954,16 @@ let contPromptTests =
             for other in [ "[11~"; "[[A"; "OP"; "[A"; "[Z"; "abc"; ""; "[9;2"; "[u" ] do
                 Expect.isNone (Weir.Repl.csiKey other) other
         }
+        test "a paste becomes buffer lines [D:repl-bracketed-paste]" {
+            let lines = Weir.Repl.pasteLines
+
+            Expect.equal (lines "a\r    |> b\r") [ "a"; "    |> b" ] "terminal line ends, the last dropped"
+            Expect.equal (lines "a\r\nb\n\n") [ "a"; "b" ] "CRLF and LF alike"
+            Expect.equal (lines "a\n\nb") [ "a"; ""; "b" ] "an inner blank line stays"
+            Expect.equal (lines "a\tb") [ "a    b" ] "a tab is four columns"
+            Expect.equal (lines "a\027[31mb\007") [ "a[31mb" ] "no control character survives"
+            Expect.equal (lines "") [ "" ] "an empty paste inserts nothing"
+        }
         test "a session's continuationPrompt is the prompt's width whatever it says [D:continuation-prompt]" {
             let vis (s: string) = Weir.Repl.visibleWidthForTest s
             let fits = Weir.Repl.deriveContPromptOfForTest (Some "\x1b[90m>> \x1b[0m") 8

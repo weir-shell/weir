@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.99
+
+### Fixed
+
+- **A pasted block lands in the REPL as one entry.** Pasting several
+  lines ran each line as it arrived, so a block starting with a line
+  that is a statement on its own (`books` above its `|>` lines) ran
+  that line alone and broke the rest. A paste is now inserted whole
+  and runs when you press Enter. This needs a terminal with bracketed
+  paste, which current ones have; not on Windows.
+
 ## v0.0.98
 
 ### Changed
