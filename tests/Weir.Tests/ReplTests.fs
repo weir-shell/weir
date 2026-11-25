@@ -2433,6 +2433,48 @@ let completionTypeNameTests =
                 (at [ "match 3 with"; "| " ] @ at [ "match 3 with"; "| 1 -> p" ])
                 "no union: the pool stands"
         }
+        test "a field completes inside an open record literal [D:repair-anon-literal]" {
+            let run, env = Weir.Repl.sessionForTest ()
+            run "type Author = { name: string; born: int }" |> ignore
+            run "type Book = { title: string; authors: seq<Author> }" |> ignore
+
+            run "let books = [{ title = \"t\"; authors = [{ name = \"n\"; born = 1 }] }]"
+            |> ignore
+
+            let at (lines: string list) =
+                let cur = List.last lines
+
+                Weir.Sigs.suggestEntry Map.empty Map.empty (env ()) lines cur (Weir.Complete.wordStartAt cur cur.Length)
+
+            Expect.equal
+                (at [ "books"; "|> map (fun b -> {|Author = b.authors |> map _." ])
+                [ "_.born"; "_.name" ]
+                "the shorthand over the field's elements"
+
+            Expect.equal
+                (at [ "books |> map (fun b -> {| Title = b.title; Authors = b." ])
+                [ "b.authors"; "b.title" ]
+                "the lambda's own param, its record's fields alone"
+
+            Expect.equal
+                (at [ "books |> map (fun b -> {| A = b.authors |> map (fun a -> a.n" ])
+                [ "a.name" ]
+                "a nested lambda's param"
+
+            // a declared record's literal checks only whole: mid-literal the
+            // repair reads it as an anonymous one
+            Expect.equal
+                (at [ "books |> map (fun b -> { name = b.authors |> map _." ])
+                [ "_.born"; "_.name" ]
+                "inside a declared record's unfinished literal"
+
+            Expect.equal
+                (at [ "books |> map (fun b -> { name = b.title; born = b." ])
+                [ "b.authors"; "b.title" ]
+                "its lambda's param too"
+
+            Expect.equal (at [ "let s = $\"{books |> map _." ]) [ "_.authors"; "_.title" ] "a hole's brace is no record"
+        }
         test "a type position in a declaration offers type names" {
             let run, env = Weir.Repl.sessionForTest ()
             run "type Pod = { name: string }" |> ignore

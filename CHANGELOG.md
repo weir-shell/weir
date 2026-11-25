@@ -23,6 +23,11 @@
 - **Tab in a match arm offers the cases of the value being matched.**
   `| N` after `match y with` listed every name starting with N
   (`Net`, `NoAuth`, …); for an `Option` it now completes to `None`.
+- **Tab completes fields inside an unfinished record literal.** In
+  `xs |> map (fun b -> {| Authors = b.authors |> map _.` Tab offered
+  nothing, and `b.` there listed every declared record's fields
+  instead of `b`'s own. Fixed for `{| … |}` and for a declared
+  record's `{ … }`, in the REPL and in the editor.
 - **A pasted block lands in the REPL as one entry.** Pasting several
   lines ran each line as it arrived, so a block starting with a line
   that is a statement on its own (`books` above its `|>` lines) ran
