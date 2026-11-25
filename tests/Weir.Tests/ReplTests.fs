@@ -377,7 +377,7 @@ let completionTests =
                     "let x ="
                     "if a then"
                     "else"
-                    "match x with"
+                    "let r = match x with"
                     "for f in fs do"
                     "| A ->"
                     "let f = fun x ->"
@@ -403,6 +403,8 @@ let completionTests =
                     "print athen"
                     "sudo"
                     "print 1"
+                    "match x with"
+                    "    match x with"
                     ""
                 ] do
                 Expect.isFalse (Weir.Assemble.opensIndentedBody t) t
@@ -2407,6 +2409,30 @@ let completionTypeNameTests =
             Expect.equal (sug "let f q = { q with ") [ "name"; "restarts"; "took" ] "the with slot draws on it too"
             System.IO.Directory.Delete(dir, true)
         }
+        test "an arm's pattern slot offers the scrutinee's cases [D:match-case-complete]" {
+            let run, env = Weir.Repl.sessionForTest ()
+            run "type Shape = Circle of int | Square of int | Dot" |> ignore
+            run "let y = Some 10" |> ignore
+            run "let s = Dot" |> ignore
+
+            let at (lines: string list) =
+                let cur = List.last lines
+
+                Weir.Sigs.suggestEntry Map.empty Map.empty (env ()) lines cur (Weir.Complete.wordStartAt cur cur.Length)
+
+            Expect.equal (at [ "match y with"; "| N" ]) [ "None" ] "Option's, not every N in scope"
+            Expect.equal (at [ "match y with"; "| " ]) [ "None"; "Some" ] "all of them at an empty word"
+            Expect.equal (at [ "match y with | None -> 0 | S" ]) [ "Some" ] "on one line"
+            Expect.equal (at [ "match s with"; "| Dot -> 0"; "| " ]) [ "Circle"; "Dot"; "Square" ] "a declared union"
+            Expect.equal (at [ "match s with"; "| Circle _ | S" ]) [ "Square" ] "an or-pattern's alternative"
+            Expect.equal (at [ "match 1 > 0 with"; "| t" ]) [ "true" ] "bool"
+            Expect.equal (at [ "match y with"; "| n" ]) [] "a binder is nobody's case"
+            Expect.contains (at [ "match y with"; "| None -> N" ]) "None" "an arm's body is an expression"
+
+            Expect.isNonEmpty
+                (at [ "match 3 with"; "| " ] @ at [ "match 3 with"; "| 1 -> p" ])
+                "no union: the pool stands"
+        }
         test "a type position in a declaration offers type names" {
             let run, env = Weir.Repl.sessionForTest ()
             run "type Pod = { name: string }" |> ignore
@@ -3953,6 +3979,16 @@ let contPromptTests =
             // everything else is not this: F1's tails, an arrow, plain text
             for other in [ "[11~"; "[[A"; "OP"; "[A"; "[Z"; "abc"; ""; "[9;2"; "[u" ] do
                 Expect.isNone (Weir.Repl.csiKey other) other
+        }
+        test "a paste becomes buffer lines [D:repl-bracketed-paste]" {
+            let lines = Weir.Repl.pasteLines
+
+            Expect.equal (lines "a\r    |> b\r") [ "a"; "    |> b" ] "terminal line ends, the last dropped"
+            Expect.equal (lines "a\r\nb\n\n") [ "a"; "b" ] "CRLF and LF alike"
+            Expect.equal (lines "a\n\nb") [ "a"; ""; "b" ] "an inner blank line stays"
+            Expect.equal (lines "a\tb") [ "a    b" ] "a tab is four columns"
+            Expect.equal (lines "a\027[31mb\007") [ "a[31mb" ] "no control character survives"
+            Expect.equal (lines "") [ "" ] "an empty paste inserts nothing"
         }
         test "a session's continuationPrompt is the prompt's width whatever it says [D:continuation-prompt]" {
             let vis (s: string) = Weir.Repl.visibleWidthForTest s

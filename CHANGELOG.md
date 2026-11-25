@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.0.99
+
+### Changed
+
+- **Alt+Enter starts a multi-line entry, and runs it.** After
+  Alt+Enter (or Ctrl+J, or pasting several lines) Enter adds a line
+  instead of running the entry, so you can keep writing stages or
+  statements. Press Alt+Enter again, or Enter on an empty last line,
+  to run it. Before, Enter ran the entry as soon as it was complete,
+  and Alt+Enter was only ever a newline. A single line, an unfinished
+  statement that Enter grew, and an entry recalled from history run on
+  Enter as before.
+
+### Fixed
+
+- **A `match` can be typed arm by arm in the REPL.** Enter after the
+  first arm ran the match and failed it as not exhaustive; it now
+  starts the next arm while cases are missing, and an empty line still
+  submits. The arms also start at the `match`'s own column instead of
+  one level deeper.
+- **Tab in a match arm offers the cases of the value being matched.**
+  `| N` after `match y with` listed every name starting with N
+  (`Net`, `NoAuth`, …); for an `Option` it now completes to `None`.
+- **A pasted block lands in the REPL as one entry.** Pasting several
+  lines ran each line as it arrived, so a block starting with a line
+  that is a statement on its own (`books` above its `|>` lines) ran
+  that line alone and broke the rest. A paste is now inserted whole
+  and runs when you say so (Enter for one line, Alt+Enter for several). This needs a terminal with bracketed
+  paste, which current ones have; not on Windows.
+
 ## v0.0.98
 
 ### Changed

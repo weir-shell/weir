@@ -174,6 +174,7 @@ replPtyProbes() {
         replProbe repl-b repl-f1.py "repl F1 key bindings" "e2e ok: repl F1 prints the bindings mid-buffer and keeps it, raw F1 sequences, one-time hint [D:repl-f1-keys]"
         replProbe repl-b debug-break.py "Debug.break prompt" "e2e ok: Debug.break stops at a prompt over its scope; an empty line goes on, #quit ends the script [D:debug-aids]"
         replProbe repl-b repl-paste.py "repl paste repaint" "e2e ok: repl a pasted line paints once — output grows with its length, not its square [D:repl-paste-repaint]"
+        replProbe repl-b repl-bracketed-paste.py "repl bracketed paste" "e2e ok: repl a pasted block is one entry — its first line does not run alone, Enter runs it, the mode is off outside the editor [D:repl-bracketed-paste]"
         replProbe repl-b repl-directives.py "repl directives" "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
         replProbe repl-b repl-pathquote.py "repl path-quote completion" "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
         replProbe repl-b repl-mapkeys.py "repl map-key completion" "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
@@ -4328,7 +4329,7 @@ PYEOF
 
     # R6 (C21): a REPL ^C that cut no wait still ends a multi-statement
     # entry — a `| exitCode` child, pure compute [D:repl-entry-check]
-    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND let c = sh -c "sleep 5" | exitCode\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-c")\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 1000' 'SEND let n = [1..600000000] |> Seq.map (fun i -> i % 7) |> Seq.length\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-n")\r' 'SLEEP 500' 'SEND \x03' 'SLEEP 6000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 20 "$BIN")
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND let c = sh -c "sleep 5" | exitCode\n' 'SLEEP 150' 'SEND print (Str.toUpper "late-c")\x1b\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 1000' 'SEND let n = [1..600000000] |> Seq.map (fun i -> i % 7) |> Seq.length\n' 'SLEEP 150' 'SEND print (Str.toUpper "late-n")\x1b\r' 'SLEEP 500' 'SEND \x03' 'SLEEP 6000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 20 "$BIN")
     echo "$tout" | grep -qF "STILL-HERE" || fail "the REPL survives the entries' ^C: $tout"
     echo "$tout" | grep -qE "LATE-C|LATE-N" && fail "a REPL ^C that cut no wait ends the entry: $tout"
     [ "$(echo "$tout" | grep -o "exit 130" | wc -l)" -ge 2 ] || fail "each ^C'd entry shows exit 130: $tout"
@@ -4338,7 +4339,7 @@ PYEOF
     # with exit 130, never "command failed … 130" [D:repl-interrupt]. The
     # entry goes in one write: queued input keeps its own indentation
     # [D:repl-autoindent]
-    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND within\x1b\r    sleep 3.41\x1b\ralways\x1b\r    print (Str.toUpper "cl-ran")\r' 'SLEEP 800' 'SEND \x03' 'SLEEP 1500' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND within\n    sleep 3.41\nalways\n    print (Str.toUpper "cl-ran")\x1b\r' 'SLEEP 800' 'SEND \x03' 'SLEEP 1500' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
     for want in "CL-RAN" "exit 130" "STILL-HERE"; do
         echo "$tout" | grep -qF "$want" || fail "a REPL ^C in a within body: '$want' expected: $tout"
     done
@@ -4425,11 +4426,12 @@ PYEOF
     [ -z "$left" ] || { kill -9 $left 2>/dev/null; fail "the hard exit kills the raw-mode cleanup command"; }
     echo "e2e ok: a second signal while a cleanup's command holds the terminal raw restores it at the hard exit"
 
-    # an Alt+Enter (ESC CR in one write — a paste, the real key) is the
-    # newline even when .NET reads the ESC alone; a lone Esc abandons the
+    # an Alt+Enter (ESC CR in one write, the real key) opens a composed
+    # entry, and pressed again runs it [D:repl-compose], even when .NET
+    # reads the ESC alone; a lone Esc abandons the
     # buffer, and so does a human's Esc then Enter: no waiting for the
     # Enter [D:repl-esc-enter]
-    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND print (Str.toUpper "esc-a")' 'SEND \x1b\r' 'SLEEP 100' 'SEND print (Str.toUpper "esc-b")\r' 'SLEEP 600' 'SEND print (Str.toUpper "esc-c")' 'SEND \x1b' 'SLEEP 300' 'SEND print (Str.toUpper "esc-d")\r' 'SLEEP 600' 'SEND print (Str.toUpper "esc-e")' 'SEND \x1b' 'SLEEP 60' 'SEND \r' 'SLEEP 300' 'SEND print (Str.toUpper "esc-f")\r' 'SLEEP 600' 'SEND \x04' 'SLEEP 400' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 12 "$BIN")
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND print (Str.toUpper "esc-a")' 'SEND \x1b\r' 'SLEEP 100' 'SEND print (Str.toUpper "esc-b")\x1b\r' 'SLEEP 600' 'SEND print (Str.toUpper "esc-c")' 'SEND \x1b' 'SLEEP 300' 'SEND print (Str.toUpper "esc-d")\r' 'SLEEP 600' 'SEND print (Str.toUpper "esc-e")' 'SEND \x1b' 'SLEEP 60' 'SEND \r' 'SLEEP 300' 'SEND print (Str.toUpper "esc-f")\r' 'SLEEP 600' 'SEND \x04' 'SLEEP 400' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 12 "$BIN")
     for want in ESC-A ESC-B ESC-D ESC-F; do
         echo "$tout" | grep -qF "$want" || fail "an Alt+Enter is a newline, a lone Esc abandons: '$want' expected: $tout"
     done
@@ -4462,7 +4464,7 @@ while b'weir> ' not in out and time.monotonic() - t < 10: drain(); time.sleep(0.
 time.sleep(0.5); drain()
 lines = ['let c%d = sh -c "exit 0" | exitCode' % i for i in range(30)] + ['print (Str.toUpper "isig-done")']
 for j, l in enumerate(lines):
-    os.write(fd, l.encode() + (b'\r' if j == len(lines) - 1 else b'\x1b\r')); time.sleep(0.005); drain()
+    os.write(fd, l.encode() + (b'\x1b\r' if j == len(lines) - 1 else b'\n')); time.sleep(0.005); drain()
 m = len(out); off = 0; began = False; t = time.monotonic()
 k = 0
 while time.monotonic() - t < 15:
@@ -4491,7 +4493,7 @@ PYEOF
 
     # C23: a tty REPL entry of several statements is one evaluation — a ^C
     # or a failure ends the whole entry, the session goes on
-    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND Duration.sleep 2s\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "late-two")\x1b\r' 'SLEEP 150' 'SEND sh -c "sleep 2; echo late-three | tr a-z A-Z"\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 3500' 'SEND fail "boom"\x1b\r' 'SLEEP 150' 'SEND print (Str.toUpper "after-fail")\r' 'SLEEP 1000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" python3 "$ptyrun" 15 "$BIN")
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND Duration.sleep 2s\n' 'SLEEP 150' 'SEND print (Str.toUpper "late-two")\n' 'SLEEP 150' 'SEND sh -c "sleep 2; echo late-three | tr a-z A-Z"\x1b\r' 'SLEEP 700' 'SEND \x03' 'SLEEP 3500' 'SEND fail "boom"\n' 'SLEEP 150' 'SEND print (Str.toUpper "after-fail")\x1b\r' 'SLEEP 1000' 'SEND print (Str.toUpper "still-here")\r' 'SLEEP 800' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" python3 "$ptyrun" 15 "$BIN")
     echo "$tout" | grep -qF "STILL-HERE" || fail "the REPL survives an entry's ^C and failure: $tout"
     echo "$tout" | grep -qE "LATE-TWO|LATE-THREE|AFTER-FAIL" && fail "a ^C or a failure ends the whole REPL entry: $tout"
     echo "e2e ok: a REPL entry is one evaluation — a ^C or a failure ends all of it, the session goes on"
@@ -4592,7 +4594,7 @@ WEOF
     [ "$out" = "FAST" ] || fail "a 129/130/131/143 exit with no signal never waits the 250ms (script): $out"
     tout=$(printf 'SLEEP 1500\n' | python3 "$ptyrun" 10 "$BIN" "$stdir/settle.weir")
     echo "$tout" | grep -qF "FAST" || fail "a 129/130/131/143 exit with no signal never waits the 250ms (script at a tty): $tout"
-    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND let t0 = Instant.now ()\x1b\r' 'SEND let ds = [1..12] |> Seq.map (fun _ -> sh -c "exit 130" | exitCode) |> Seq.freeze\x1b\r' 'SEND if Instant.now () - t0 < 1500ms then print (Str.toUpper "fast") else print (Str.toUpper "slow")\r' 'SLEEP 5000' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
+    tout=$(printf '%s\n' 'SLEEP 2500' 'SEND let t0 = Instant.now ()\n' 'SEND let ds = [1..12] |> Seq.map (fun _ -> sh -c "exit 130" | exitCode) |> Seq.freeze\n' 'SEND if Instant.now () - t0 < 1500ms then print (Str.toUpper "fast") else print (Str.toUpper "slow")\x1b\r' 'SLEEP 5000' 'SEND \x04' 'SLEEP 500' | env HOME="$stdir" XDG_CONFIG_HOME="$stdir/c" XDG_DATA_HOME="$stdir/d" XDG_STATE_HOME="$stdir/s" XDG_CACHE_HOME="$stdir/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
     echo "$tout" | grep -qF "FAST" || fail "a REPL child exiting 130 with no ^C never waits the 250ms: $tout"
     echo "e2e ok: a 129/130/131/143 exit with no signal in flight never waits the 250ms — script, tty script, tty REPL"
 
@@ -5333,14 +5335,15 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     # call, so the scope's `always` — run as written, inside the scope —
     # is what checks the dir. Linux is the
     # mechanism's platform; the cell runs wherever the pty pins do.
-    # multi-line body via Alt-Enter (\x1b\r): plain Enter submits the
+    # multi-line body via Ctrl+J (\n), run by Alt+Enter (\x1b\r)
+    # [D:repl-compose]: a first line's plain Enter would submit the
     # moment the block parses complete — one body line suffices. Indented
     # entries go in one write, so they keep their own indentation
     # [D:repl-autoindent]
     gatedir=$(mkweirtmp)
     cat > "$gatedir/gate.scn" <<'SCN'
 SLEEP 700
-SEND within tmp d\x1b\r    ["x"] |> File.write $"{d}/probe.txt"\x1b\r    print d\x1b\r    let n = Seq.replicate 600000000 1 |> Seq.sum\x1b\r    print $"{n}"\x1b\ralways\x1b\r    print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\r
+SEND within tmp d\n    ["x"] |> File.write $"{d}/probe.txt"\n    print d\n    let n = Seq.replicate 600000000 1 |> Seq.sum\n    print $"{n}"\nalways\n    print (if File.exists $"{d}/probe.txt" then Str.toUpper "kept" else Str.toUpper "gone")\x1b\r
 SLEEP 1200
 SEND \x03
 SLEEP 5000
@@ -5378,15 +5381,15 @@ SEND Duration.sleep 30s\r
 SLEEP 800
 SEND \x03
 SLEEP 500
-SEND poll timeout=60s interval=30s\x1b\r    false\r
+SEND poll timeout=60s interval=30s\n    false\x1b\r
 SLEEP 800
 SEND \x03
 SLEEP 500
-SEND within lock "$wdir/held.lock"\x1b\r    print (Str.toUpper "acquired")\r
+SEND within lock "$wdir/held.lock"\n    print (Str.toUpper "acquired")\x1b\r
 SLEEP 800
 SEND \x03
 SLEEP 500
-SEND within\x1b\r    Duration.sleep 30s\x1b\ralways\x1b\r    print (Str.toUpper "cleanup-ran")\r
+SEND within\n    Duration.sleep 30s\nalways\n    print (Str.toUpper "cleanup-ran")\x1b\r
 SLEEP 800
 SEND \x03
 SLEEP 500
@@ -5452,7 +5455,7 @@ SCN
         hiport=8494
         cat > "$hidir/hi.scn" <<SCN
 SLEEP 700
-SEND within serve srv = { port = Some $hiport; maxConcurrent = 2; handler = (fun req -> Duration.sleep 10s; HttpServerResponse { status = 200; headers = []; body = Text "late" }) }\x1b\r    print (Str.toUpper "serving")\x1b\r    Duration.sleep 30s\x1b\ralways\x1b\r    Duration.sleep 700ms\x1b\r    print (Str.toUpper \$"errs={Server.streamErrors srv |> Seq.length}")\r
+SEND within serve srv = { port = Some $hiport; maxConcurrent = 2; handler = (fun req -> Duration.sleep 10s; HttpServerResponse { status = 200; headers = []; body = Text "late" }) }\n    print (Str.toUpper "serving")\n    Duration.sleep 30s\nalways\n    Duration.sleep 700ms\n    print (Str.toUpper \$"errs={Server.streamErrors srv |> Seq.length}")\x1b\r
 SLEEP 2500
 SEND \x03
 SLEEP 3000
@@ -18035,7 +18038,7 @@ WEOF
     # its blocked and ignored signals: where a platform's ^C misses it, the
     # transcript names why
     printf 'import signal\nprint("sigint", signal.getsignal(2))\n' > "$rpdir/sigdisp.py"
-    tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\n    sh -c "ps -o pid=,pgid=,tpgid=,sigmask= -p $$; stty -a | grep -o -e -isig -e isig | head -1; python3 '"$rpdir/sigdisp.py"'; echo tick-a | tr a-z A-Z; sleep 3; echo tick-z | tr a-z A-Z"\r' 'WAIT TICK-A' 'SEND \x03' 'WAIT weir>' 'SEND repeat interval=50ms\n    print (Str.toUpper "again")\n    true\r' 'WAIT AGAIN' 'SEND repeat interval=100ms\n    print (Str.toUpper "tock")\n    Duration.sleep 5s\n    print (Str.toUpper "tock-end")\r' 'WAIT TOCK' 'SEND \x03' 'SLEEP 300' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "still-here")\r' 'WAIT STILL-HERE' 'SEND within\n    print (Str.toUpper "held-a")\nuntil stopped\r' 'WAIT HELD-A' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "post-held")\r' 'WAIT POST-HELD' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 30 "$BIN")
+    tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\x1b\r    sh -c "ps -o pid=,pgid=,tpgid=,sigmask= -p $$; stty -a | grep -o -e -isig -e isig | head -1; python3 '"$rpdir/sigdisp.py"'; echo tick-a | tr a-z A-Z; sleep 3; echo tick-z | tr a-z A-Z"\x1b\r' 'WAIT TICK-A' 'SEND \x03' 'WAIT weir>' 'SEND repeat interval=50ms\x1b\r    print (Str.toUpper "again")\r    true\x1b\r' 'WAIT AGAIN' 'SEND repeat interval=100ms\x1b\r    print (Str.toUpper "tock")\r    Duration.sleep 5s\r    print (Str.toUpper "tock-end")\x1b\r' 'WAIT TOCK' 'SEND \x03' 'SLEEP 300' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "still-here")\r' 'WAIT STILL-HERE' 'SEND within\x1b\r    print (Str.toUpper "held-a")\runtil stopped\x1b\r' 'WAIT HELD-A' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "post-held")\r' 'WAIT POST-HELD' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 30 "$BIN")
     echo "diag (repl repeat child): $(echo "$tout" | grep -aoE "b'([0-9]+ [0-9]+ [0-9]+ +[0-9a-f]+|-?isig|sigint [A-Za-z_.<> -]*)" | sed "s/^b'//" | tr '\n' ' ')"
     for want in "AGAIN" "STILL-HERE" "HELD-A" "POST-HELD" "EXIT 0"; do
         echo "$tout" | grep -qF "$want" || fail "repeat at the REPL: '$want' expected: $tout"
@@ -18048,7 +18051,7 @@ WEOF
     # the REPL's stop request sends it the SIGINT itself, and its death is the
     # stop [D:repl-stop-request]
     if command -v setsid >/dev/null 2>&1; then
-        tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\n    setsid sh -c "echo sid-a | tr a-z A-Z; sleep 3; echo sid-z | tr a-z A-Z"\r' 'WAIT SID-A' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "sid-after")\r' 'WAIT SID-AFTER' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
+        tout=$(printf '%s\n' 'WAIT weir>' 'SEND repeat interval=100ms\x1b\r    setsid sh -c "echo sid-a | tr a-z A-Z; sleep 3; echo sid-z | tr a-z A-Z"\x1b\r' 'WAIT SID-A' 'SEND \x03' 'WAIT weir>' 'SEND print (Str.toUpper "sid-after")\r' 'WAIT SID-AFTER' 'SEND \x04' 'SLEEP 500' | env HOME="$rph" XDG_CONFIG_HOME="$rph/c" XDG_DATA_HOME="$rph/d" XDG_STATE_HOME="$rph/s" XDG_CACHE_HOME="$rph/k" NO_COLOR=1 python3 "$ptyrun" 15 "$BIN")
         for want in "SID-AFTER" "EXIT 0"; do
             echo "$tout" | grep -qF "$want" || fail "repeat at the REPL, a child outside the terminal's group: '$want' expected: $tout"
         done
