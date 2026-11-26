@@ -5181,10 +5181,11 @@ let private fileMembers: (string * Ty * Value) list = [
         | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
     // the polling reader of an append-only file [D:file-readfrom]: eager
     // like File.read, so `next` is exact when the call returns
+    // the path last, so it pipes in [D:file-reader-order]
     "readFrom",
-    TFun(TStr, TFun(TSize, TNamed("FileChunk", []))),
-    VBuiltin(fun pathV ->
-        VBuiltin(fun offV ->
+    TFun(TSize, TFun(TStr, TNamed("FileChunk", []))),
+    VBuiltin(fun offV ->
+        VBuiltin(fun pathV ->
             match pathV, offV with
             | VStr path, VSize off ->
                 let r = Session.resolveFs path
@@ -5545,11 +5546,12 @@ let private fsMoreFileMembers: (string * Ty * Value) list = [
             VBytes(ioGuarded "File.readBytes" r (fun () -> readBytesShared r))
         | v -> unreachable $"the checker rejects 'File.readBytes' on {formatValue v}")
     // a byte range, without the rest of the file [D:file-readbytesat]
+    // the path last, so it pipes in [D:file-reader-order]
     "readBytesAt",
-    TFun(TStr, TFun(TSize, TFun(TSize, TBytes))),
-    VBuiltin(fun pathV ->
-        VBuiltin(fun offV ->
-            VBuiltin(fun lenV ->
+    TFun(TSize, TFun(TSize, TFun(TStr, TBytes))),
+    VBuiltin(fun offV ->
+        VBuiltin(fun lenV ->
+            VBuiltin(fun pathV ->
                 match pathV, offV, lenV with
                 | VStr p, VSize off, VSize len ->
                     let r = Session.resolveFs p
@@ -9066,9 +9068,9 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
             (bd
                 "Read the complete lines of a file from a byte offset, for polling a file that is being appended to. Returns a FileChunk: lines, and next, the offset to pass on the next call. Only the bytes from the offset to the file's size when the read starts are read, and a last line without its newline yet is left for the next call, so every line is returned once and whole. Lines decode as File.read's do (a BOM is skipped only at offset 0, and a \\r\\n line ending counts as two bytes). Raises when the offset is past the end (the file was truncated or replaced) or is not at the start of a line; pass 0 or a next this function returned."
                 (Some
-                    "let d = Path.newTempDir ()\nlet f = $\"{d}/log.txt\"\n[\"a\"; \"b\"] |> File.append f\nlet c = File.readFrom f 0B\nc.lines |> Seq.iter print\n[\"c\"] |> File.append f\n(File.readFrom f c.next).lines |> Seq.iter print\nDir.deleteAll d")
+                    "let d = Path.newTempDir ()\nlet f = $\"{d}/log.txt\"\n[\"a\"; \"b\"] |> File.append f\nlet c = File.readFrom 0B f\nc.lines |> Seq.iter print\n[\"c\"] |> File.append f\n(File.readFrom c.next f).lines |> Seq.iter print\nDir.deleteAll d")
                 None
-             |> named [ "path"; "offset" ])
+             |> named [ "offset"; "path" ])
             "File.readBytes",
             (bd
                 "Read a file's raw bytes, exactly as stored, without decoding or splitting into lines (File.read does both and replaces invalid characters). The whole file is loaded into memory, so it is not meant for very large files; File.readBytesAt reads a part of one."
@@ -9079,9 +9081,9 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
             (bd
                 "Read at most length bytes of a file, starting at a byte offset. Only that range is read, so a header or a slice of a very large file costs what it holds. A range that reaches past the end gives the bytes that are there, and an offset at or past the end gives none."
                 (Some
-                    "let d = Path.newTempDir ()\nlet f = $\"{d}/data.bin\"\n[\"hello world\"] |> File.write f\nFile.readBytesAt f 0B 5B |> Str.fromUtf8 |> print\nFile.readBytesAt f 6B 100B |> Bytes.length |> show |> print\nDir.deleteAll d")
+                    "let d = Path.newTempDir ()\nlet f = $\"{d}/data.bin\"\n[\"hello world\"] |> File.write f\nf |> File.readBytesAt 0B 5B |> Str.fromUtf8 |> print\nFile.readBytesAt 6B 100B f |> Bytes.length |> show |> print\nDir.deleteAll d")
                 None
-             |> named [ "path"; "offset"; "length" ])
+             |> named [ "offset"; "length"; "path" ])
             "File.writeBytes",
             (bd
                 "Write raw bytes to a file exactly as given (File.write instead encodes lines and ends each with LF)."

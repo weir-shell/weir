@@ -539,8 +539,9 @@ print v
   OPT-IN at both ends: nothing becomes byte-typed by default (commands
   still produce `seq<string>`, `File.read` still decodes). Sources:
   `File.readBytes` (no decode, no line split — the byte-faithful
-  read; `File.readBytesAt path offset length` reads only that range —
-  `File.readBytesAt p 0B 16B` is a header, short or empty where the
+  read; `File.readBytesAt offset length path` reads only that range —
+  the PATH LAST, so it pipes (`p |> File.readBytesAt 0B 16B`)
+  [D:file-reader-order] — `File.readBytesAt 0B 16B p` is a header, short or empty where the
   file ends first, never a raise [D:file-readbytesat]), `Bytes.fromBase64`/`tryFromBase64` (malformed raises/None; NO
   text gate — that is the point), `Str.toUtf8`. Sinks:
   `File.writeBytes`, `Bytes.toBase64`, `Str.fromUtf8`/`tryFromUtf8`
@@ -683,7 +684,7 @@ print $"{[1; 2] |> Seq.skip 5 |> Seq.freeze |> try result}"
   json/yaml REJECT on their own — declare `[<ByteCount>] sz: Size`
   [D:wire-codecs], or convert via `Size.toBytes`. No `print` (holes
   render: `$"{sz}"`).
-- Polling an append-only file is `File.readFrom path offset :
+- Polling an append-only file is `File.readFrom offset path :
   FileChunk` [D:file-readfrom] — `{ lines: seq<string>; next: Size }`:
   the COMPLETE lines from byte `offset` up to the file's size when the
   read starts (a snapshot — bytes appended during the read wait), and
@@ -704,10 +705,10 @@ print $"{[1; 2] |> Seq.skip 5 |> Seq.freeze |> try result}"
 within tmp d
     let log = $"{d}/events.jsonl"
     ["a"; "b"] |> File.append log
-    let c = File.readFrom log 0B
+    let c = File.readFrom 0B log
     c.lines |> Seq.iter print
     ["c"] |> File.append log
-    let c2 = File.readFrom log c.next
+    let c2 = File.readFrom c.next log
     print $"{c2.lines |> Seq.head} next={c2.next}"
 ```
 - Time is `Duration` (integer ms inside): literals `500ms`/`30s`/`2m`/`1h`

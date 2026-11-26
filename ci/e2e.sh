@@ -10754,7 +10754,7 @@ File.write cli.out []
 
 let step () =
     let (offText, countText) = File.read cli.state |> Seq.exactlyOne |> Str.splitOnce " "
-    let chunk = File.readFrom cli.log (Size.bytes (Str.toInt offText))
+    let chunk = File.readFrom (Size.bytes (Str.toInt offText)) cli.log
     for l in chunk.lines do
         let r = [ l ] |> from json Line
         if Str.sha256 r.d <> r.h then fail $"torn line: w{r.w} q{r.q} k{r.k}"

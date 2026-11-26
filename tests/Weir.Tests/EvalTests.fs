@@ -2656,7 +2656,7 @@ let fileTests =
             File.WriteAllBytes(path, [| for i in 0..199 -> byte i |])
 
             let at (off: int) (len: int) =
-                match run $"File.readBytesAt \"{path}\" (Size.bytes {off}) (Size.bytes {len})" with
+                match run $"File.readBytesAt (Size.bytes {off}) (Size.bytes {len}) \"{path}\"" with
                 | VBytes b -> List.ofArray b
                 | v -> failtest $"expected Bytes, got {formatValue v}"
 
@@ -2669,19 +2669,26 @@ let fileTests =
             Expect.equal (at 0 100000 |> List.length) 200 "a length past the end is the whole file"
 
             Expect.equal
-                (run $"File.readBytesAt \"{path}\" 10B 2B |> Bytes.toHex")
+                (run $"\"{path}\" |> File.readBytesAt 10B 2B |> Bytes.toHex")
                 (VStr "0a0b")
                 "Size literals; the result is Bytes"
 
             Expect.stringContains
-                (Expect.throwsC (fun () -> run $"File.readBytesAt \"{path}\" (0B - 1B) 2B" |> ignore) id).Message
+                (Expect.throwsC (fun () -> run $"File.readBytesAt (0B - 1B) 2B \"{path}\"" |> ignore) id).Message
                 "neither can be negative"
                 "a negative offset"
 
             Expect.stringContains
-                (Expect.throwsC (fun () -> run $"File.readBytesAt \"{dir}/absent\" 0B 2B" |> ignore) id).Message
+                (Expect.throwsC (fun () -> run $"File.readBytesAt 0B 2B \"{dir}/absent\"" |> ignore) id).Message
                 "File.readBytesAt"
                 "a missing file is this member's error"
+
+            // the order these readers had: named, with the new shape
+            let old = (checkErr $"File.readBytesAt \"{path}\" 0B 2B").Message
+            Expect.stringContains old "takes the path last" "the old order is taught"
+            Expect.stringContains old "File.readBytesAt offset length path" "with the shape to write"
+            let oldFrom = (checkErr $"let p = \"{path}\" in File.readFrom p 0B").Message
+            Expect.stringContains oldFrom "File.readFrom offset path" "a bound path too"
 
             Directory.Delete(dir, true)
         }
@@ -2691,7 +2698,7 @@ let fileTests =
             let path = weirPath (tempPath "weir-readfrom" + ".txt")
 
             let chunk (off: int) =
-                match run $"File.readFrom \"{path}\" (Size.bytes {off})" with
+                match run $"File.readFrom (Size.bytes {off}) \"{path}\"" with
                 | VRecord("FileChunk", [ "lines", VSeq ls; "next", VSize n ]) ->
                     (ls
                      |> Seq.map (fun v ->
@@ -2704,7 +2711,7 @@ let fileTests =
 
             let raises (off: int) (frag: string) =
                 let ex =
-                    Expect.throwsC (fun () -> run $"File.readFrom \"{path}\" (Size.bytes {off})" |> ignore) id
+                    Expect.throwsC (fun () -> run $"File.readFrom (Size.bytes {off}) \"{path}\"" |> ignore) id
 
                 Expect.stringContains ex.Message frag $"offset {off}"
 
@@ -2759,7 +2766,7 @@ let fileTests =
 
             try
                 File.WriteAllText(path, "a\nb\n")
-                let v = run $"File.readFrom \"{path}\" 0B"
+                let v = run $"File.readFrom 0B \"{path}\""
                 File.AppendAllText(path, "c\nd\n")
 
                 match v with
@@ -2768,14 +2775,14 @@ let fileTests =
                     Expect.equal n 4L "next matches the snapshot"
                 | v -> failtest $"unexpected {v}"
 
-                Expect.equal (run $"(File.readFrom \"{path}\" (Size.bytes 4)).lines |> Seq.length") (VInt 2L) "the rest"
+                Expect.equal (run $"(File.readFrom (Size.bytes 4) \"{path}\").lines |> Seq.length") (VInt 2L) "the rest"
             finally
                 if File.Exists path then
                     File.Delete path
         }
         test "File.readFrom: a missing file raises as File.read does; readonly admits it, pure refuses it" {
             let ex =
-                Expect.throwsC (fun () -> run "File.readFrom \"/weir-definitely-not\" 0B" |> ignore) id
+                Expect.throwsC (fun () -> run "File.readFrom 0B \"/weir-definitely-not\"" |> ignore) id
 
             Expect.stringContains ex.Message "File.readFrom: no such file:" "File.read's shape"
 
@@ -2783,12 +2790,12 @@ let fileTests =
                 (errorsIn "ro.weir" [
                     "let x ="
                     "    readonly"
-                    "        (File.readFrom \"f\" 0B).next"
+                    "        (File.readFrom 0B \"f\").next"
                     "print $\"{x}\""
                 ])
                 "a read"
 
-            let e = firstErrorIn "pure.weir" [ "let pure f p = File.readFrom p 0B" ]
+            let e = firstErrorIn "pure.weir" [ "let pure f p = File.readFrom 0B p" ]
             Expect.stringContains e.Message "'File.readFrom' reads the filesystem" "pure refuses a read"
         }
     ]
