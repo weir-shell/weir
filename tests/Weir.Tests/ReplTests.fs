@@ -2475,6 +2475,34 @@ let completionTypeNameTests =
 
             Expect.equal (at [ "let s = $\"{books |> map _." ]) [ "_.authors"; "_.title" ] "a hole's brace is no record"
         }
+        test "a lambda's parameter shadows an outer binding in completion [D:complete-shadow]" {
+            let run, env = Weir.Repl.sessionForTest ()
+            run "type Book = { title: string; year: int }" |> ignore
+            run "let items = [{ title = \"t\"; year = 1 }]" |> ignore
+            run "let b = 5" |> ignore
+            run "type Outer = { outer: int }" |> ignore
+            run "let r = { outer = 1 }" |> ignore
+
+            let at (line: string) =
+                Weir.Sigs.suggestEntry
+                    Map.empty
+                    Map.empty
+                    (env ())
+                    [ line ]
+                    line
+                    (Weir.Complete.wordStartAt line line.Length)
+
+            Expect.equal (at "items |> where (fun b -> b.") [ "b.title"; "b.year" ] "a non-record outer b"
+            Expect.equal (at "items |> where (fun r -> r.") [ "r.title"; "r.year" ] "a record outer r"
+
+            Expect.equal
+                (at "items |> map (fun r -> r.year) |> map (fun n -> r.")
+                [ "r.outer" ]
+                "a closed lambda no longer binds"
+
+            Expect.equal (at "r.") [ "r.outer" ] "no lambda: the binding's own fields"
+            Expect.equal (at "items |> where (fun x -> r.") [ "r.outer" ] "another parameter leaves it alone"
+        }
         test "a type position in a declaration offers type names" {
             let run, env = Weir.Repl.sessionForTest ()
             run "type Pod = { name: string }" |> ignore
