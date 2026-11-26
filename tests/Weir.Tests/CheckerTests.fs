@@ -3395,6 +3395,27 @@ let operatorValueTests =
 
             Expect.stringContains (checkErr "let f = 1 |> (+) in f 2").Message "cannot be partially applied" "bound"
         }
+        test "(==) and (<>) apply to one operand: no direction to get wrong [D:symmetric-sections]" {
+            let n src =
+                match run src with
+                | VInt n -> n
+                | v -> failtest $"{src}: {v}"
+
+            Expect.equal (n "[\"a\"; \"b\"; \"a\"] |> Seq.where ((==) \"a\") |> Seq.length") 2 "(==) v"
+            Expect.equal (n "[1; 2; 1] |> Seq.where ((<>) 1) |> Seq.length") 1 "(<>) v"
+            Expect.equal (n "[1; 2; 1] |> Seq.where (1 |> (==)) |> Seq.length") 2 "piped in"
+            Expect.equal (run "let isA = (==) \"a\" in isA \"a\"") (VBool true) "bound"
+
+            Expect.stringContains
+                (checkErr "[Seq.head] |> Seq.where ((==) Seq.head)").Message
+                "'=='"
+                "the Eq refusal still reaches through"
+
+            Expect.stringContains
+                (checkErr "[1] |> Seq.map ((*) 2)").Message
+                "cannot be partially applied"
+                "(*) stays refused"
+        }
         test "a run's hooks are its own, and gone when it ends [D:run-hooks]" {
             let seen = System.Collections.Concurrent.ConcurrentBag<string>()
 
@@ -3633,8 +3654,8 @@ let operatorValueTests =
                 "a raise takes the walk"
         }
         test "partial-application teach: a commutative op offers the directions as alternatives" {
-            let m = (checkErr "[1; 2] |> Seq.map ((==) 1)").Message
-            Expect.stringContains m "fun x -> x == v (or fun x -> v == x)" "== is symmetric — the or-form holds"
+            let m = (checkErr "[1; 2] |> Seq.map ((*) 2)").Message
+            Expect.stringContains m "fun x -> x * v (or fun x -> v * x)" "* is commutative — the or-form holds"
         }
         test "partial-application teach: a non-commutative op says the directions differ" {
             let m = (checkErr "[1; 2] |> Seq.map ((-) 1)").Message

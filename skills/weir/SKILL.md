@@ -1652,8 +1652,9 @@ within tmp d
   Sizes where the elements say so). Admitted: `+ - * / % > < >= <= ==
   <>`. Partial application REFUSES, piped too (`(>) 10` and `10 |> (>)` read backwards — the
   message shows both lambda directions, as interchangeable only for
-  a commutative op (`==`, `<>`, `*`); for the rest it says the
-  directions differ); `(&&)`/`(||)` refuse (a value
+  `*`; for the rest it says the directions differ) — EXCEPT `(==)` and
+  `(<>)`, which read the same either way [D:symmetric-sections]:
+  `Seq.where ((==) "a")`, `Seq.where ((<>) 0)`; `(&&)`/`(||)` refuse (a value
   cannot short-circuit); the pipes and `>>` refuse (grammar /
   already the composed function).
 - Match-or-skip over a stream is `Seq.choose` (lazy):

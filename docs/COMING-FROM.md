@@ -221,7 +221,7 @@ widening.
 | `$@"…"` / `$$"""…"""` | only `$"""…{hole}…"""`; a literal brace in `$"…"` is `{{` |
 | `[\| 1; 2 \|]` arrays, `list` | one sequence type, `seq<'a>`; `[1; 2]` literals are eager |
 | `{\| ip = "x" \|}` anonymous records | the same syntax and types, with a few limits (below) |
-| `(+)` and `(>) 10` | `(+)` works (`Seq.reduce (+)`), but partially applied operators don't; write the lambda |
+| `(+)` and `(>) 10` | `(+)` works (`Seq.reduce (+)`), but partially applied operators don't; write the lambda. `(==) v` and `(<>) v` are the exception |
 
 The longer story behind some of those rows:
 
@@ -248,6 +248,7 @@ The longer story behind some of those rows:
   anonymous value too.
 - `(>) 10` means `fun x -> 10 > x`, which almost everyone reads the
   wrong way round, so weir doesn't allow partially applied operators.
+  `(==) v` and `(<>) v` read the same either way and are allowed.
 
 ```weir
 let same x y = x == y

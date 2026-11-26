@@ -2,6 +2,14 @@
 
 ## v0.0.100
 
+### Changed
+
+- **`(==) v` and `(<>) v` are allowed.** `Seq.where ((==) "a")` was
+  refused like every partially applied operator, although equality
+  reads the same in both directions, and the hint for `(=)` told you
+  to write exactly that. Other operators still need the lambda:
+  `(>) 10` reads backwards.
+
 ### Fixed
 
 - **Tab on a lambda's parameter ignores an outer binding of the same
