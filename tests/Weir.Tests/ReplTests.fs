@@ -2523,6 +2523,39 @@ let completionTypeNameTests =
             Expect.equal (at "r.") [ "r.outer" ] "no lambda: the binding's own fields"
             Expect.equal (at "items |> where (fun x -> r.") [ "r.outer" ] "another parameter leaves it alone"
         }
+        test "a stage inside a lambda's parentheses completes as a stage [D:stage-in-group]" {
+            let stage = Weir.Complete.lastStage
+            Expect.equal (stage "echo a | tr a b | com") (Some("com", true)) "the statement's own level"
+
+            Expect.equal
+                (stage "xs |> iter (fun k -> echo $k | tr a b | com")
+                (Some("com", true))
+                "inside the open group"
+
+            Expect.equal
+                (stage "xs |> iter (fun (k, h) -> echo $k | ^head -c 1 | ")
+                (Some("", true))
+                "an empty stage there"
+
+            Expect.equal (stage "echo a | f (x") None "the open group has no bar of its own"
+            Expect.equal (stage "f (a | b) c") None "a closed group's bar is not the text's"
+            Expect.equal (stage "xs |> map (fun x -> match x with | A") None "an arm's bar inside the group"
+            Expect.equal (stage "xs |> iter (fun k -> echo \"a | b\" $k") None "a bar in a string"
+
+            Expect.equal
+                (Weir.Complete.headSlotAt "xs |> iter (fun k -> echo $k | tail -c 9 |")
+                Weir.Complete.HeadSlot.Stage
+                "the slot is a stage head"
+
+            let run, env = Weir.Repl.sessionForTest ()
+            run "let xs = [\"a\"]" |> ignore
+            let line = "xs |> iter (fun k -> echo $k | tr a b | comp"
+
+            Expect.contains
+                (Weir.Complete.suggest (env ()) line (Weir.Complete.wordStartAt line line.Length))
+                "complete"
+                "the reifier is offered"
+        }
         test "a type position in a declaration offers type names" {
             let run, env = Weir.Repl.sessionForTest ()
             run "type Pod = { name: string }" |> ignore

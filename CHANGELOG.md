@@ -35,6 +35,11 @@
   name.** With a `b` already bound in the session,
   `items |> where (fun b -> b.` offered nothing, or the outer `b`'s
   fields. It now offers the fields of the lambda's `b`.
+- **Tab completes a pipe stage inside a lambda.** In
+  `xs |> iter (fun k -> cmd $k | tail -c 9 | com` Tab offered nothing,
+  because a `|` inside parentheses was not seen as a pipe. Reifiers
+  (`complete`, `line`, …) and program names now complete there as they
+  do at the top level.
 - **The REPL says why `cmd | head -c 2` fails.** In the REPL `head`,
   `sort`, `last` and the other bare names are weir functions, so a
   `|` stage naming one is not the program, and the error only talked
