@@ -515,7 +515,13 @@ module SigGen =
     // fish `complete` lines, both spellings: `-c tool -s x -l long -o old
     // -d desc -r` and `--command tool --short-option x --long-option long
     // --old-option old --description desc --require-parameter`; `-r`/`-x`
-    // (and their long forms) mark a value
+    // (and their long forms) mark a value. A line whose condition asks for
+    // a subcommand (`-n "__fish_tool_using_subcommand rec"`, `-n
+    // "__fish_seen_subcommand_from rec"`) is that subcommand's flag, not
+    // the tool's [D:sig-fish-scoped]
+    let private fishUnderSub =
+        System.Text.RegularExpressions.Regex @"(?<!\bnot\s+)\b__fish_\w*(?:using_subcommand|seen_subcommand_from)\s+\S"
+
     let private parseFish (text: string) (tool: string) : Flag list =
         let flags = ResizeArray<Flag>()
 
@@ -525,8 +531,18 @@ module SigGen =
             if t.StartsWith "complete " then
                 let tokens =
                     System.Text.RegularExpressions.Regex.Matches(t, "'(?:[^'\\\\]|\\\\.)*'|\"[^\"]*\"|\\S+")
-                    |> Seq.map (fun m -> m.Value.Trim([| '\''; '"' |]))
+                    |> Seq.map (fun m ->
+                        // fish's single quotes escape only `'` and `\`
+                        if m.Value.StartsWith "'" then
+                            m.Value.Substring(1, m.Value.Length - 2).Replace("\\'", "'").Replace("\\\\", "\\")
+                        else
+                            m.Value.Trim('"'))
                     |> List.ofSeq
+
+                let underSub =
+                    tokens
+                    |> List.pairwise
+                    |> List.exists (fun (k, v) -> (k = "-n" || k = "--condition") && fishUnderSub.IsMatch v)
 
                 let rec walk (cmd: string option) (f: Flag) toks =
                     match toks with
@@ -557,7 +573,7 @@ module SigGen =
                     | [] -> cmd, f
 
                 match walk None noFlag tokens with
-                | Some c, f when c = tool ->
+                | Some c, f when c = tool && not underSub ->
                     let f = {
                         f with
                             Shorts = f.Shorts |> List.filter legalShort

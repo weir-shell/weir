@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.100
+
+### Fixed
+
+- **`weir add sig` keeps a subcommand's flags with the subcommand when
+  it reads a fish completion file.** For a tool whose completions say
+  where each flag applies (asciinema, and other clap-built tools),
+  every flag landed in `Globals` and the subcommand cases came out
+  empty, so `asciinema play --overwrite` passed the check. Flags now
+  go to their subcommand; regenerate the signature to pick this up.
+  An apostrophe in a flag's description also no longer shows as `\\'`.
+
 ## v0.0.99
 
 ### Changed

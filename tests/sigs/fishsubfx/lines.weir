@@ -1,0 +1,9 @@
+#sig fishsubfx
+fishsubfx record --append --overwrite -f v2 out.cast // clean
+fishsubfx -q record --headless out.cast // clean
+fishsubfx play --speed 2 -l demo.cast // clean
+fishsubfx play --overwrite demo.cast // typo: --overwrite
+fishsubfx record --loop out.cast // typo: --loop
+fishsubfx --speed 2 record out.cast // typo: --speed
+fishsubfx record --apend out.cast // typo: --apend
+// expect-version: fishsubfx 3.2.1
