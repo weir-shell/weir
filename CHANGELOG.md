@@ -35,6 +35,15 @@
   name.** With a `b` already bound in the session,
   `items |> where (fun b -> b.` offered nothing, or the outer `b`'s
   fields. It now offers the fields of the lambda's `b`.
+- **The REPL says why `cmd | head -c 2` fails.** In the REPL `head`,
+  `sort`, `last` and the other bare names are weir functions, so a
+  `|` stage naming one is not the program, and the error only talked
+  about `|` and `|>`. A hint now names the binding and both fixes:
+  `| ^head` for the program, `|> head` for the function.
+- **A stray `|` before `|>` gets its own error.** `cmd | |> f` inside a
+  lambda or a `let` was reported as `'--' is not an operator`,
+  pointing at the command's first flag; it now says a pipe stage is
+  missing and to drop the `|`.
 - **`weir add` works when `.weir/lock.json` is bind-mounted into a
   container.** It failed with `internal error: IOException: Device or
   resource busy`, because a mounted file cannot be replaced by rename;

@@ -5307,9 +5307,18 @@ let private reifierStageGuard: Parser<Seg, unit> =
 // first '|' reads as the pipe, so the second lands at a stage position
 // — teach the branch idiom instead of the stage expecting-list
 let private doublePipeGuard: Parser<Seg, unit> =
-    teachAt
-        (pchar '|')
-        "'||' does not chain commands in weir — write `cmd | or fallback`, or branch on the exit: if cmd | succeeds then ... else ... (a literal '||' argument needs quotes)"
+    // `cmd | |> f`: a stage that is not there [D:empty-stage]. No other
+    // reading of `| |>` exists, so the refusal is remembered as a chain
+    // one is — in a lambda body or a let's value the command route is one
+    // attempt among several, and a later route's error would hide it
+    (getPosition .>> followedBy (pstring "|>")
+     >>= fun at ->
+         failChain
+             "a pipe stage is missing — nothing sits between '|' and '|>'; to hand the command's output on, drop the '|': cmd |> f"
+             (spanAt at))
+    <|> teachAt
+            (pchar '|')
+            "'||' does not chain commands in weir — write `cmd | or fallback`, or branch on the exit: if cmd | succeeds then ... else ... (a literal '||' argument needs quotes)"
 
 // the match-arm boundary [D:match-arm-commands]: inside an arm body a
 // `|` that opens the next arm (`| <pattern> ->` or `| <pattern> when`)

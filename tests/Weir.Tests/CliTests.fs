@@ -40,6 +40,29 @@ let diagnoseTests =
         test "plain unbound tail without PATH presence stays quiet" {
             Expect.isNone (Weir.Diagnose.hint (fun n -> n = "where") (fun _ -> false) (fun _ -> false) "where p") ""
         }
+        test "a '| <binding>' stage is hinted: the tool is '^name', the binding wants '|>' [D:stage-binding-hint]" {
+            let bound = Set [ "head"; "sort"; "xs" ]
+
+            let h (line: string) =
+                Weir.Diagnose.hint bound.Contains (fun _ -> false) (fun n -> n = "head" || n = "sort") line
+
+            let says (line: string) (word: string) =
+                match h line with
+                | Some m ->
+                    Expect.stringContains m $"'| ^{word}'" line
+                    Expect.stringContains m $"'|> {word}'" line
+                | None -> failtest $"no hint: {line}"
+
+            says "echo abc | head -c 2" "head"
+            says "cat f | grep x | sort" "sort"
+            says "xs |> iter (fun k -> redis-cli GET $k | head -c -1 | tail -c +9 |> File.write p)" "head"
+            Expect.isNone (h "echo abc | wc -c") "an unbound stage is a program already"
+            Expect.isNone (h "echo abc |> head") "the function pipe is right"
+            Expect.isNone (h "match v with | head -> 1") "an arm's binder"
+            Expect.isNone (h "print \"a | head -c 2\"") "inside a string"
+            Expect.isNone (h "let b = a || head") "the boolean or"
+            Expect.isNone (h "echo abc | xs") "bound, but neither flagged nor a program"
+        }
         test "operator tails stay quiet" {
             let isKnown n = Map.containsKey n env.Values
             Expect.isNone (Weir.Diagnose.hint isKnown (fun _ -> false) (fun _ -> true) "ls |> take 5") ""
