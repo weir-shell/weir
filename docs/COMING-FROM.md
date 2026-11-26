@@ -243,9 +243,9 @@ The longer story behind some of those rows:
   literal is single-line (multi-line text uses a `<<<` block).
 - An anonymous record literal needs concrete field types:
   `fun x -> {| a = x |}` is rejected, though F# accepts it. There's
-  also no empty `{||}` (F# allows it), no punning, and no
-  `{| r with … |}` spelling — write `{ r with … }`, which works on an
-  anonymous value too.
+  also no empty `{||}` (F# allows it) and no punning.
+  `{| r with extra = v |}` works as in F#: a new anonymous record of
+  `r`'s fields plus the named ones, where `r`'s type is known.
 - `(>) 10` means `fun x -> 10 > x`, which almost everyone reads the
   wrong way round, so weir doesn't allow partially applied operators.
   `(==) v` and `(<>) v` read the same either way and are allowed.

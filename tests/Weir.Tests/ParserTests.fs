@@ -8202,13 +8202,64 @@ let anonLiteralTests =
             Expect.equal (run "{| a = 1 |} == {| a = 2 |}") (VBool false) ""
             Expect.equal (run "let { a = n } = {| a = 7 |} in n") (VInt 7L) "a record pattern destructures it"
         }
-        test "the fences: punning, empty, copy-update, type-spelling, keyword" {
+        test "{| r with f = v |} extends: the source's fields and the named ones [D:anon-with]" {
+            let tenv = env |> declare "type B = { title: string; year: int }"
+            let b = "let b = { title = \"t\"; year = 1 } in "
+            let runB (body: string) = runUnder tenv (b + body)
+
+            Expect.equal
+                (runB "let r = {| b with age = 9 |} in $\"{r.title} {r.year} {r.age}\"")
+                (VStr "t 1 9")
+                "a declared source: its fields ride along"
+
+            Expect.equal
+                (runB "let r = {| b with year = \"y\" |} in r.year")
+                (VStr "y")
+                "a named field replaces, type and all"
+
+            Expect.equal
+                (run "let r = {| {| a = 1 |} with b = 2; c = 3 |} in r.a + r.b + r.c")
+                (VInt 6L)
+                "an anonymous source; several fields"
+
+            Expect.equal
+                (runB "let r = {| b with age = 9 |} in r == {| age = 9; title = \"t\"; year = 1 |}")
+                (VBool true)
+                "the result is the anonymous record of that shape"
+
+            Expect.equal
+                (runB "[b; b] |> Seq.map (fun x -> {| x with n = x.year + 1 |}) |> Seq.map _.n |> Seq.sum")
+                (VInt 4L)
+                "a lambda's parameter, typed by the pipe"
+
+            Expect.equal
+                (runB "let r = {| b with title = 1; year = 2 |} in r.title + r.year")
+                (VInt 3L)
+                "every field replaced"
+
+            Expect.stringContains
+                (checkErr "let f r = {| r with n = 1 |} in f 1").Message
+                "r's type must be known here"
+                "an untyped source"
+
+            Expect.stringContains (checkErr "let r = {| 5 with n = 1 |} in r.n").Message "which has none" "no record"
+
+            Expect.stringContains
+                (checkErrUnder tenv (b + "let r = {| b with age = 1; age = 2 |} in r.age")).Message
+                "age"
+                "a field named twice"
+
+            Expect.stringContains
+                (parseErr "let x = {| r with a |}")
+                "fields take field = value"
+                "the literal's fences hold"
+        }
+        test "the fences: punning, empty, type-spelling, keyword" {
             Expect.stringContains (parseErr "let x = {| a; b = 2 |}") "fields take field = value" "punning teaches"
 
             Expect.stringContains (parseErr "let x = {| b = 2; a |}") "fields take field = value" "at every position"
             Expect.stringContains (parseErr "let x = {| |}") "at least one field" "empty refuses (F# admits it)"
             Expect.stringContains (parseErr "let x = {||}") "at least one field" ""
-            Expect.stringContains (parseErr "let x = {| r with a = 2 |}") "no copy-and-update" "toward the park"
             Expect.stringContains (parseErr "let x = {| a: int |}") "spells the anonymous TYPE" "':' confusion named"
             Expect.stringContains (parseErr "let x = {| let = 1 |}") "'let' is a keyword" "the shared guard fires"
         }

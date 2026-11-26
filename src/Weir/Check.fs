@@ -4935,6 +4935,65 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     // a pipe into an operator value is the same half application
     // [D:operator-values]: `v |> (>)` refuses as `(>) v` does
     | EPipe(arg, ({ Kind = EOpValue _ } as opHead)) -> infer ctx env { expr with Kind = EApp(opHead, arg) }
+    // `{| source with f = v |}` [D:anon-with]: an anonymous record of
+    // the source's fields and the named ones — spelled out here, where
+    // the source's type says what they are, and checked as that literal
+    | EApp({ Kind = EVar "|anonWith" }, { Kind = EUpdate(source, updates) }) ->
+        result {
+            let! tsource = infer ctx env source
+
+            let refuse (what: string) =
+                err source.Span $"{{| r with … |}} copies r's fields into a new anonymous record, {what}"
+
+            match finalTy ctx tsource.Ty with
+            | TNamed(n, _) as ty ->
+                match typeDefFor env n with
+                | Some(Record def) ->
+                    // '_' keeps the binder out of the unused law when every
+                    // field is replaced; '|' keeps it un-typeable
+                    let tmp = "_|anonWith"
+
+                    let read (f: string) = {
+                        Kind = EField({ Kind = EVar tmp; Span = source.Span }, f, source.Span)
+                        Span = source.Span
+                    }
+
+                    let named =
+                        updates
+                        |> List.map (fun (path, v) ->
+                            let n, s = List.head path
+                            n, s, v)
+
+                    let replaced = named |> List.map (fun (n, _, _) -> n) |> Set.ofList
+
+                    let kept =
+                        def.Fields
+                        |> List.map fst
+                        |> List.filter (replaced.Contains >> not)
+                        |> List.map (fun f -> f, source.Span, read f)
+
+                    return!
+                        infer ctx env {
+                            expr with
+                                Kind =
+                                    ELet(
+                                        tmp,
+                                        source.Span,
+                                        source,
+                                        {
+                                            expr with
+                                                Kind = EAnonRecord(kept @ named)
+                                        }
+                                    )
+                        }
+                | _ -> return! refuse $"and this is {formatTy ty}, which has none"
+            | TVar _
+            | TRowVar _ ->
+                return!
+                    refuse
+                        "so r's type must be known here — it is not yet; use it where a typed value flows in (xs |> Seq.map (fun r -> {| r with … |})), or declare a record"
+            | ty -> return! refuse $"and this is {formatTy ty}, which has none"
+        }
     | EApp _ ->
         let head, args = spine expr
 
