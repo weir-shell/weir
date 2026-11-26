@@ -2228,14 +2228,34 @@ echo built | and echo linked
   heterogeneous fields, unlike a `Map` — and it unifies with the
   adapter shape of the same fields. Every field needs a CONCRETE type
   at the literal (a name cannot hold a type variable — declare a
-  record for the generic case). No punning (`{| key |}`), no
-  `{| r with … |}` SPELLING (the plain-brace update works on an
-  anonymous value and keeps its shape: `{ r with n = 4 }`), no empty
-  `{||}` — each refusal teaches.
+  record for the generic case). No punning (`{| key |}`), no empty
+  `{||}` — each refusal teaches. EXTENSION is `{| r with f = v; … |}`
+  [D:anon-with], F#'s form: a NEW anonymous record holding every
+  field of `r` (a declared or an anonymous record) plus the named
+  ones; naming a field `r` has replaces it, and may change its type.
+  `r` is any expression, evaluated once, and its type must be KNOWN
+  there — a lambda's parameter is, where a typed seq flows in
+  (`xs |> Seq.map (fun r -> {| r with n = 1 |})`); an untyped
+  parameter (`let f r = {| r with n = 1 |}`) is refused. The result is
+  anonymous even when `r` was declared. The plain-brace update keeps
+  the shape and the type instead: `{ r with n = 4 }` never adds a field.
 
 ```weir
 let x = ["{\"a\": {\"b\": 1}}"] |> from json {| a: {| b: int |} |}
 print x.a.b
+```
+
+```weir
+type Book = { title: string; year: int }
+let books = [{ title = "Emma"; year = 1815 }; { title = "Ulysses"; year = 1922 }]
+let rows = books |> Seq.map (fun b -> {| b with age = 2026 - b.year; title = Str.toUpper b.title |})
+rows |> Seq.iter (fun r -> print $"{r.title} {r.year} {r.age}")
+```
+
+```weir-error
+// the source's type is not known at the literal: nothing says what r holds
+let widen r = {| r with n = 1 |}
+print "unreached"
 ```
 
 ```weir

@@ -1841,8 +1841,9 @@ and private anonRecordLit (st: St) : Expr =
             if isNull' w then
                 refuse st
             else
-                // the fences: a keyword field, punning, a type spelling,
-                // `with` — every one the grammar's fatal
+                // the fences: a keyword field, punning, a type spelling —
+                // each the grammar's fatal — and the `with` form, the
+                // grammar's to parse [D:anon-with]
                 let mutable j = st.I + w.Length
 
                 while j < st.Text.Length && (st.Text[j] = ' ' || st.Text[j] = '\t') do

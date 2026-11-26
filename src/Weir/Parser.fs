@@ -1217,12 +1217,33 @@ let private anonRecordLit =
         attempt (getPosition .>> identSpanned .>> ws .>> followedBy (pchar ':'))
         >>= fun at -> failFatallyAt at "':' spells the anonymous TYPE — a literal takes field = value: {| key = expr |}"
 
-    let withFence: Parser<ExprKind, unit> =
-        attempt (getPosition .>> identSpanned .>> ws .>> followedBy (keyword "with"))
-        >>= fun at ->
-            failFatallyAt
-                at
-                "anonymous records have no copy-and-update — update a declared record: { r with field = v }"
+    // `{| source with field = value; … |}` [D:anon-with]: the source's
+    // fields and the named ones, as a new anonymous record. The checker
+    // needs the source's type to spell them out, so the parse hands it
+    // an update under an un-typeable head
+    // decided on a bounded look: a field cannot open with anything but a
+    // name, so any other opener is a source; a name is one when its
+    // field path meets `with`. A computed source goes in parentheses —
+    // trying a whole expression first would parse every nested literal
+    // twice [D:parse-fast-path]
+    let withAhead: Parser<unit, unit> =
+        followedBy (sepBy1 (identSpanned .>> ws) (pchar '.' >>. ws) >>. keyword "with")
+        <|> notFollowedBy (satisfy (fun c -> System.Char.IsLetter c || c = '_'))
+
+    let withForm: Parser<ExprKind, unit> =
+        (withAhead >>. updateSource .>> keyword "with")
+        .>>. (sepBy1 (punFence <|> typeFence <|> fieldAssign) fieldSepP .>> pstring "|}")
+        |>> fun (src, fields) ->
+            EApp(
+                {
+                    Kind = EVar "|anonWith"
+                    Span = src.Span
+                },
+                {
+                    Kind = EUpdate(src, fields |> List.map (fun (n, s, v) -> [ n, s ], v))
+                    Span = src.Span
+                }
+            )
 
     let emptyFence: Parser<ExprKind, unit> =
         getPosition .>> followedBy (ws >>. pstring "|}")
@@ -1234,7 +1255,7 @@ let private anonRecordLit =
         >>. (emptyFence
              <|> (ws
                   >>. (keywordFieldGuard
-                       <|> withFence
+                       <|> withForm
                        <|> (sepBy1 (punFence <|> typeFence <|> fieldAssign) fieldSepP .>> pstring "|}"
                             |>> EAnonRecord))))
     )

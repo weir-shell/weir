@@ -2,6 +2,17 @@
 
 ## v0.0.100
 
+### Added
+
+- **`{| r with field = value |}` adds fields to a record.** It builds
+  a new anonymous record with every field of `r` plus the ones you
+  name, as in F#:
+  `books |> map (fun b -> {| b with age = 2026 - b.year |})`. Naming a
+  field `r` already has replaces it. `r` can be a declared or an
+  anonymous record whose type is known at that point; a computed
+  source goes in parentheses. `{ r with … }` is unchanged and still
+  never adds a field.
+
 ### Changed
 
 - **A sequence of tuples echoes as a table in the REPL.** Like a
