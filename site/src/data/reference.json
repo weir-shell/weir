@@ -461,8 +461,15 @@
         {
           "name": "readBytes",
           "signature": "File.readBytes (path: string) : Bytes",
-          "summary": "Read a file\u0027s raw bytes, exactly as stored, without decoding or splitting into lines (File.read does both and replaces invalid characters). The whole file is loaded into memory, so it is not meant for very large files.",
+          "summary": "Read a file\u0027s raw bytes, exactly as stored, without decoding or splitting into lines (File.read does both and replaces invalid characters). The whole file is loaded into memory, so it is not meant for very large files; File.readBytesAt reads a part of one.",
           "example": null,
+          "pointer": null
+        },
+        {
+          "name": "readBytesAt",
+          "signature": "File.readBytesAt (path: string) (offset: Size) (length: Size) : Bytes",
+          "summary": "Read at most length bytes of a file, starting at a byte offset. Only that range is read, so a header or a slice of a very large file costs what it holds. A range that reaches past the end gives the bytes that are there, and an offset at or past the end gives none.",
+          "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/data.bin\u0022\n[\u0022hello world\u0022] |\u003E File.write f\nFile.readBytesAt f 0B 5B |\u003E Str.fromUtf8 |\u003E print\nFile.readBytesAt f 6B 100B |\u003E Bytes.length |\u003E show |\u003E print\nDir.deleteAll d",
           "pointer": null
         },
         {

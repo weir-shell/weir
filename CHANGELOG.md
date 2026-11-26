@@ -4,6 +4,10 @@
 
 ### Added
 
+- **`File.readBytesAt path offset length` reads part of a file.**
+  `File.readBytesAt "disk.img" 0B 512B` returns the first 512 bytes
+  without loading the rest, where `File.readBytes` reads the whole
+  file. A range past the end returns the bytes that are there.
 - **`{| r with field = value |}` adds fields to a record.** It builds
   a new anonymous record with every field of `r` plus the ones you
   name, as in F#:

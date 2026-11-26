@@ -1563,6 +1563,10 @@ To get `Bytes`:
 
 - `File.readBytes` reads a file as-is, without decoding or splitting
   lines.
+- `File.readBytesAt path offset length` reads part of a file: at most
+  `length` bytes from `offset` (`File.readBytesAt "disk.img" 0B 512B`).
+  Only that range is read, so it suits large files. Where the file
+  ends first you get the bytes that are there.
 - `Bytes.fromBase64` decodes base64 and raises on bad input;
   `tryFromBase64` returns `None` instead.
 - `Str.toUtf8` encodes a string.

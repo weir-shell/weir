@@ -2650,6 +2650,41 @@ let fileTests =
         test "read of a missing file raises" {
             Expect.throws (fun () -> run "File.read \"/weir-definitely-not\"" |> forceSeq |> ignore) ""
         }
+        test "File.readBytesAt: a range, clamped at the end, never the whole file [D:file-readbytesat]" {
+            let dir = weirPath (Directory.CreateTempSubdirectory("weir-rba").FullName)
+            let path = weirPath (Path.Combine(dir, "d.bin"))
+            File.WriteAllBytes(path, [| for i in 0..199 -> byte i |])
+
+            let at (off: int) (len: int) =
+                match run $"File.readBytesAt \"{path}\" (Size.bytes {off}) (Size.bytes {len})" with
+                | VBytes b -> List.ofArray b
+                | v -> failtest $"expected Bytes, got {formatValue v}"
+
+            Expect.equal (at 0 4) [ 0uy; 1uy; 2uy; 3uy ] "a header"
+            Expect.equal (at 100 3) [ 100uy; 101uy; 102uy ] "mid-file"
+            Expect.equal (at 198 10) [ 198uy; 199uy ] "short where the file ends"
+            Expect.equal (at 200 5) [] "at the end: none"
+            Expect.equal (at 5000 5) [] "past the end: none, no raise"
+            Expect.equal (at 7 0) [] "a zero length"
+            Expect.equal (at 0 100000 |> List.length) 200 "a length past the end is the whole file"
+
+            Expect.equal
+                (run $"File.readBytesAt \"{path}\" 10B 2B |> Bytes.toHex")
+                (VStr "0a0b")
+                "Size literals; the result is Bytes"
+
+            Expect.stringContains
+                (Expect.throwsC (fun () -> run $"File.readBytesAt \"{path}\" (0B - 1B) 2B" |> ignore) id).Message
+                "neither can be negative"
+                "a negative offset"
+
+            Expect.stringContains
+                (Expect.throwsC (fun () -> run $"File.readBytesAt \"{dir}/absent\" 0B 2B" |> ignore) id).Message
+                "File.readBytesAt"
+                "a missing file is this member's error"
+
+            Directory.Delete(dir, true)
+        }
         // File.readFrom [D:file-readfrom]: complete lines from a byte
         // offset up to the size at the read's start, plus the next offset
         test "File.readFrom: offsets 0 and mid-file, next, partial tail, CRLF, UTF-8, BOM, edges" {

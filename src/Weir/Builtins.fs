@@ -3790,6 +3790,42 @@ let private readBytesShared (r: string) : byte[] =
         s.CopyTo ms
         ms.ToArray())
 
+// File.readBytesAt's body [D:file-readbytesat]: at most `length` bytes
+// from byte `offset` — only that range is read, and a range reaching
+// past the end gives the bytes that are there (none, from an offset at
+// or past it). A stream that cannot seek is read up to the offset
+let private readBytesAt (op: string) (r: string) (offset: int64) (length: int64) : byte[] =
+    if offset < 0L || length < 0L then
+        failwith $"{op}: the offset and the length count bytes from the file's start — neither can be negative"
+
+    withReadStream r (fun s ->
+        let chunk: byte[] = Array.zeroCreate 81920
+
+        if s.CanSeek then
+            s.Seek(min offset s.Length, SeekOrigin.Begin) |> ignore
+        else
+            let mutable left = offset
+            let mutable live = true
+
+            while live && left > 0L do
+                let n = s.Read(chunk, 0, int (min left (int64 chunk.Length)))
+                if n = 0 then live <- false else left <- left - int64 n
+
+        use ms = new MemoryStream()
+        let mutable left = length
+        let mutable live = true
+
+        while live && left > 0L do
+            let n = s.Read(chunk, 0, int (min left (int64 chunk.Length)))
+
+            if n = 0 then
+                live <- false
+            else
+                ms.Write(chunk, 0, n)
+                left <- left - int64 n
+
+        ms.ToArray())
+
 // the whole-file swap behind File.writeAtomic: the payload lands in a
 // same-directory exclusive temp, is fsynced, and renames over the
 // resolved target — a reader sees the complete old file or the complete
@@ -5486,6 +5522,19 @@ let private fsMoreFileMembers: (string * Ty * Value) list = [
             readGuard "File.readBytes" r
             VBytes(ioGuarded "File.readBytes" r (fun () -> readBytesShared r))
         | v -> unreachable $"the checker rejects 'File.readBytes' on {formatValue v}")
+    // a byte range, without the rest of the file [D:file-readbytesat]
+    "readBytesAt",
+    TFun(TStr, TFun(TSize, TFun(TSize, TBytes))),
+    VBuiltin(fun pathV ->
+        VBuiltin(fun offV ->
+            VBuiltin(fun lenV ->
+                match pathV, offV, lenV with
+                | VStr p, VSize off, VSize len ->
+                    let r = Session.resolveFs p
+                    PlanMode.checkRead "File.readBytesAt" r
+                    readGuard "File.readBytesAt" r
+                    VBytes(ioGuarded "File.readBytesAt" r (fun () -> readBytesAt "File.readBytesAt" r off len))
+                | _ -> unreachable "the checker rejects 'File.readBytesAt' on these arguments")))
     "writeBytes",
     TFun(TStr, TFun(TBytes, TUnit)),
     VBuiltin(fun pathV ->
@@ -9000,10 +9049,17 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
              |> named [ "path"; "offset" ])
             "File.readBytes",
             (bd
-                "Read a file's raw bytes, exactly as stored, without decoding or splitting into lines (File.read does both and replaces invalid characters). The whole file is loaded into memory, so it is not meant for very large files."
+                "Read a file's raw bytes, exactly as stored, without decoding or splitting into lines (File.read does both and replaces invalid characters). The whole file is loaded into memory, so it is not meant for very large files; File.readBytesAt reads a part of one."
                 None
                 None
              |> named [ "path" ])
+            "File.readBytesAt",
+            (bd
+                "Read at most length bytes of a file, starting at a byte offset. Only that range is read, so a header or a slice of a very large file costs what it holds. A range that reaches past the end gives the bytes that are there, and an offset at or past the end gives none."
+                (Some
+                    "let d = Path.newTempDir ()\nlet f = $\"{d}/data.bin\"\n[\"hello world\"] |> File.write f\nFile.readBytesAt f 0B 5B |> Str.fromUtf8 |> print\nFile.readBytesAt f 6B 100B |> Bytes.length |> show |> print\nDir.deleteAll d")
+                None
+             |> named [ "path"; "offset"; "length" ])
             "File.writeBytes",
             (bd
                 "Write raw bytes to a file exactly as given (File.write instead encodes lines and ends each with LF)."
