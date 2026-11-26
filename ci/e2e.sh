@@ -11798,6 +11798,43 @@ else
     echo "e2e skip: h3r7 stage B (python3 absent)"
 fi
 
+# a lock.json that is a mount point (a file bind-mounted into a
+# container) cannot be replaced by rename: it is rewritten in place
+# [D:mountpoint-write]. Needs a user namespace to mount in
+if [ "$IS_WINDOWS" != "1" ] && unshare -rm true 2>/dev/null; then
+    mpdir=$(mkweirtmp)
+    mkdir -p "$mpdir/seed" "$mpdir/proj/.weir/sigs" "$mpdir/host"
+    ( cd "$mpdir/seed" && PATH="$ROOT/tests/sigs/clapfx/exe:/usr/bin:/bin" "$BIN" add sig clapfx > /dev/null 2>&1 ) || fail "mountpoint-write: the seed add must succeed"
+    cp "$mpdir/seed/.weir/lock.json" "$mpdir/host/lock.json"
+    cp "$mpdir/seed/.weir/sigs/clapfx.weir" "$mpdir/proj/.weir/sigs/"
+    : > "$mpdir/proj/.weir/lock.json"
+    out=$(unshare -rm sh -c "mount --bind '$mpdir/host/lock.json' '$mpdir/proj/.weir/lock.json' && cd '$mpdir/proj' && PATH='$ROOT/tests/sigs/fishfx/exe:/usr/bin:/bin' '$BIN' add sig fishfx" 2>&1) || fail "mountpoint-write: an add over a bind-mounted lock.json must succeed: $out"
+    echo "$out" | grep -qF 'added sig fishfx' || fail "mountpoint-write: the add must report: $out"
+    grep -qF '"fishfx"' "$mpdir/host/lock.json" || fail "mountpoint-write: the new entry must land in the mounted file: $(cat "$mpdir/host/lock.json")"
+    grep -qF '"clapfx"' "$mpdir/host/lock.json" || fail "mountpoint-write: the entry already there must survive: $(cat "$mpdir/host/lock.json")"
+    ls -a "$mpdir/proj/.weir" | grep -qF 'weir-tmp' && fail "mountpoint-write: a temp was left behind: $(ls -a "$mpdir/proj/.weir")" || true
+    # reached through a symlink, a mount point stays out of reach: the
+    # rename's refusal stands and the linked file keeps its bytes
+    mkdir -p "$mpdir/link/.weir/sigs" "$mpdir/mnt" "$mpdir/host2"
+    cp "$mpdir/seed/.weir/lock.json" "$mpdir/host2/victim"
+    cp "$mpdir/seed/.weir/sigs/clapfx.weir" "$mpdir/link/.weir/sigs/"
+    : > "$mpdir/mnt/victim"
+    ln -s "$mpdir/mnt/victim" "$mpdir/link/.weir/lock.json"
+    before=$(cksum < "$mpdir/host2/victim")
+    out=$(unshare -rm sh -c "mount --bind '$mpdir/host2/victim' '$mpdir/mnt/victim' && cd '$mpdir/link' && PATH='$ROOT/tests/sigs/fishfx/exe:/usr/bin:/bin' '$BIN' add sig fishfx" 2>&1) && fail "mountpoint-write: an add through a symlink onto a mount point must refuse: $out"
+    [ "$(cksum < "$mpdir/host2/victim")" = "$before" ] || fail "mountpoint-write: a mount point behind a symlink must keep its bytes: $(cat "$mpdir/host2/victim")"
+    # the fallback is the vendor writer's alone: File.writeAtomic onto a
+    # mount point keeps the rename's refusal
+    echo precious > "$mpdir/host2/data"
+    : > "$mpdir/mnt/data"
+    out=$(unshare -rm sh -c "mount --bind '$mpdir/host2/data' '$mpdir/mnt/data' && '$BIN' -e '[\"new\"] |> File.writeAtomic \"$mpdir/mnt/data\"'" 2>&1) && fail "mountpoint-write: File.writeAtomic onto a mount point must refuse: $out"
+    echo "$out" | grep -qF 'File.writeAtomic: cannot access' || fail "mountpoint-write: the refusal must be File.writeAtomic's own: $out"
+    [ "$(cat "$mpdir/host2/data")" = "precious" ] || fail "mountpoint-write: File.writeAtomic must leave a mount point's bytes: $(cat "$mpdir/host2/data")"
+    echo "e2e ok: weir add over a bind-mounted lock.json rewrites it in place, entries kept, no temp left; behind a symlink it is refused and untouched, as it is for File.writeAtomic [D:mountpoint-write]"
+else
+    echo "e2e SKIP: the bind-mounted lock.json cell — no user namespace to mount in"
+fi
+
 # ---- Fix 2: parse/decode errors excerpt a huge invalid input [D:excerpt] ---
 # a multi-MB invalid input used to be echoed whole (a ~2MB stderr flood);
 # it is now bounded to a 64-char head + the true length. A short invalid

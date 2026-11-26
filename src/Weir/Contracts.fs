@@ -204,7 +204,7 @@ module AtomicFile =
 
     /// replace `target` (already resolved) with `payload`; the temp is
     /// born with `mode` [D:private-temp]
-    let replaceBytes (target: string) (payload: byte[]) (mode: UnixFileMode option) : unit =
+    let replaceBytes (target: string) (payload: byte[]) (mode: UnixFileMode option) (allowInPlace: bool) : unit =
         let dir =
             match Path.GetDirectoryName target with
             | "" -> "."
@@ -250,8 +250,21 @@ module AtomicFile =
 
                 move 0
             else
-                File.Move(tmp, target, true)
-                fsyncDir dir
+                try
+                    File.Move(tmp, target, true)
+                    fsyncDir dir
+                // EBUSY: the target is a mount point (a file bind-mounted
+                // into a container), which no rename can replace — its
+                // bytes are rewritten in place instead, the one write that
+                // is not atomic [D:mountpoint-write]. Only for a target the
+                // caller named itself: one reached through a link may be
+                // another's mount point, which the rename could never touch
+                with :? IOException as e when e.HResult = 16 && File.Exists target && allowInPlace ->
+                    (use fs = new FileStream(target, FileMode.Truncate, FileAccess.Write, FileShare.None)
+                     fs.Write(payload, 0, payload.Length)
+                     fs.Flush true)
+
+                    File.Delete tmp
         with e ->
             (try
                 File.Delete tmp
@@ -262,6 +275,14 @@ module AtomicFile =
 
     /// replace a file (through a symlink to its target), keeping its mode
     let replaceFile (path: string) (payload: byte[]) : unit =
+        // the rename writes through a link; the in-place fallback never
+        // does [D:mountpoint-write]
+        let allowInPlace =
+            try
+                isNull (FileInfo(path).LinkTarget)
+            with _ ->
+                false
+
         let target = resolveTarget path
 
         let mode =
@@ -270,7 +291,7 @@ module AtomicFile =
             else
                 None
 
-        replaceBytes target payload mode
+        replaceBytes target payload mode allowInPlace
 
     let private lockWaitMs = 60000L
 
