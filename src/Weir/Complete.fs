@@ -519,13 +519,16 @@ let stripEnvPrefixes (s: string) : string =
     if m.Success then s.Substring m.Length else s
 
 /// the text after the last bare `|` of a statement — not `|>`, not
-/// `||`, not inside quotes or parens — with a leading `and`/`or` chain
-/// word stripped. The flag is true when the stage follows the `|`
+/// `||`, not inside quotes — with a leading `and`/`or` chain word
+/// stripped. The bar is looked for in the group the text ENDS in: at the
+/// statement's own level, or inside the parentheses still open there (a
+/// lambda's body, `(fun k -> cmd | `), never in a group already closed
+/// [D:stage-in-group]. The flag is true when the stage follows the `|`
 /// directly, where a reifier or `and`/`or` may stand [D:cmd-chaining].
 let lastStage (stmt: string) : (string * bool) option =
-    let mutable last = -1
+    // per open group: its last bare bar, and where the group starts
+    let mutable groups: (int * int) list = [ -1, 0 ]
     let mutable quote = ' '
-    let mutable depth = 0
     let mutable i = 0
 
     while i < stmt.Length do
@@ -539,23 +542,31 @@ let lastStage (stmt: string) : (string * bool) option =
         elif c = '"' || c = '\'' then
             quote <- c
         elif c = '(' then
-            depth <- depth + 1
+            groups <- (-1, i + 1) :: groups
         elif c = ')' then
-            depth <- max 0 (depth - 1)
-        elif c = '|' && depth = 0 then
+            match groups with
+            | _ :: (_ :: _ as outer) -> groups <- outer
+            | _ -> ()
+        elif c = '|' then
             if i + 1 < stmt.Length && (stmt[i + 1] = '>' || stmt[i + 1] = '|') then
                 i <- i + 1
             elif i > 0 && stmt[i - 1] = '|' then
                 ()
             else
-                last <- i
+                match groups with
+                | (_, start) :: outer -> groups <- (i, start) :: outer
+                | [] -> ()
 
         i <- i + 1
 
+    let last, start = List.head groups
+
     // a `|` with nothing before it, or in a match/function, is an arm
     let isArm () =
-        stmt.Substring(0, last).Trim() = ""
-        || System.Text.RegularExpressions.Regex.IsMatch(stmt.Substring(0, last), "\\b(match|function)\\b")
+        let before = stmt.Substring(start, last - start)
+
+        before.Trim() = ""
+        || System.Text.RegularExpressions.Regex.IsMatch(before, "\\b(match|function)\\b")
 
     if last < 0 || isArm () then
         None
