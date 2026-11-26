@@ -8486,6 +8486,20 @@ let dxMessageTests =
             mustSay [ "echo a && echo b" ] "'&&' does not chain commands" "and"
             mustSay [ "echo a || echo b" ] "'||' does not chain commands" "or"
         }
+        test "an empty stage before '|>' says so, wherever the command sits [D:empty-stage]" {
+            let missing = "a pipe stage is missing"
+            mustSay [ "echo a | |> Seq.iter print" ] missing "a statement"
+            mustSay [ "let n = echo --raw a | |> Seq.length"; "print (show n)" ] missing "a let's value: not the flag"
+
+            mustSay
+                [
+                    "[\"a\"] |> Seq.iter (fun k -> echo --raw $k | head -c 3 | |> Seq.iter print)"
+                ]
+                missing
+                "a lambda body"
+            // the bash prior keeps its own teaching
+            mustSay [ "echo a | | head" ] "'||' does not chain commands" "two bars"
+        }
         test "D3: '=' in expression position teaches '=='" {
             mustSay [ "let n = if 1 = 1 then 1 else 2"; "print (show n)" ] "use '==' for equality" "if-cond"
             mustSay [ "let b = 1 = 2"; "print (show b)" ] "use '==' for equality" "let-rhs"
