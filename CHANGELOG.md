@@ -4,6 +4,10 @@
 
 ### Changed
 
+- **A sequence of tuples echoes as a table in the REPL.** Like a
+  sequence of records, with the columns headed `0`, `1`, … —
+  `xs |> Seq.indexed` no longer prints one bracketed literal.
+  `Table.render` accepts tuples too.
 - **`(==) v` and `(<>) v` are allowed.** `Seq.where ((==) "a")` was
   refused like every partially applied operator, although equality
   reads the same in both directions, and the hint for `(=)` told you

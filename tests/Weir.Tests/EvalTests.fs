@@ -5343,6 +5343,12 @@ let ttySanitizeTests =
             Expect.throwsC (fun () -> run "[1; 2; 3] |> Table.render |> Seq.freeze" |> ignore) id
             |> _.Message
             |> fun m -> Expect.stringContains m "Table.render needs a seq of" "the repair is named"
+
+            // a seq of tuples renders under its positions [D:tuple-table]
+            Expect.equal
+                (run "[(1, \"a\"); (2, \"b\")] |> Table.render |> Str.join \"|\"")
+                (VStr "0  1|─  ─|1  a|2  b")
+                "tuples"
         }
         test "Term.width falls back to 80 with no terminal [D:tty-color]" {
             // the test process's stdout is captured — no terminal — so the
