@@ -14,6 +14,11 @@
 
 ### Fixed
 
+- **Ctrl+C stops a long echo in the REPL.** Naming a large frozen
+  sequence (or binding one with `let`) printed every element before
+  the prompt came back, and Ctrl+C did nothing until it finished. It
+  now stops the printing at the next line and says so; the value stays
+  bound.
 - **`| into append` works on Windows.** It failed there in 0.0.100;
   the file is now opened the way `cmd`'s `>>` opens it.
 
