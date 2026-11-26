@@ -1,0 +1,43 @@
+=== --version
+fishsubfx 3.2.1
+=== --help
+Terminal session recorder, streamer, and player
+
+Usage: fishsubfx [OPTIONS] <COMMAND>
+
+Commands:
+  record  Record a terminal session
+  play    Replay a terminal session
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --server-url <URL>  Server URL
+  -q, --quiet             Quiet mode - suppress diagnostic messages
+  -h, --help              Print help
+  -V, --version           Print version
+=== record --help
+Record a terminal session
+
+Usage: fishsubfx record [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  Output file path
+
+Options:
+  -f, --output-format <FORMAT>  Output file format [default: v3]
+  -a, --append                  Append to an existing recording file
+      --overwrite               Overwrite the output file if it already exists
+      --headless                Headless mode - don't use the terminal for I/O
+  -h, --help                    Print help
+=== play --help
+Replay a terminal session
+
+Usage: fishsubfx play [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  The path or URL of the recording
+
+Options:
+  -s, --speed <SPEED>    Set playback speed
+  -l, --loop             Loop playback continuously
+  -h, --help             Print help
