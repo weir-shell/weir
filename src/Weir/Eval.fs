@@ -2171,7 +2171,8 @@ let echoValue (cap: int option) (v: Value) : string * string option =
 // the REPL's table rendering [D:repl-table] — presentation only: show
 // stays canonical and every other consumer is untouched; the REPL's
 // echo (tty-gated by the caller) renders a seq of same-shaped records
-// with scalar fields as aligned columns. Cells reuse show's spellings
+// with scalar fields as aligned columns, and a seq of tuples of scalars
+// the same way under its positions `0 1 …` [D:tuple-table]. Cells reuse show's spellings
 // except strings, which drop their quotes (a display, not a literal);
 // columns are alphabetical (show's own field order); numeric-ish
 // columns right-align. Widths are char counts (the wrap math assumes
@@ -2286,6 +2287,19 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
             | Some all -> all, false
             | None -> cappedPull cap items
 
+        // a tuple is a row whose columns are its positions
+        // [D:tuple-table]
+        let positional =
+            match shown with
+            | VTuple _ :: _ -> true
+            | _ -> false
+
+        let shown =
+            shown
+            |> List.map (function
+                | VTuple parts when positional -> VRecord("", parts |> List.mapi (fun i p -> string i, p))
+                | v -> v)
+
         match shown with
         | VRecord(n0, f0) :: _ ->
             let keys0 = f0 |> List.map fst
@@ -2305,7 +2319,12 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                     | VRecord(_, f) -> recTryGet k f = Some(VUnion("None", None))
                     | _ -> false)
 
-            let showKeys = keys0 |> List.filter (allNone >> not)
+            // a position never hides: the header numbers would skip
+            let showKeys =
+                if positional then
+                    keys0
+                else
+                    keys0 |> List.filter (allNone >> not)
 
             let cellsOf (r: Value) =
                 match r with

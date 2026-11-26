@@ -1407,6 +1407,26 @@ let replEchoTests =
             Weir.Eval.echoBinary (Some 10) (VSeq counted) |> ignore
             Expect.isTrue (pulls.Value <= 11) $"probed {pulls.Value} pulls (bound is 11)"
         }
+        test "a seq of tuples tabulates under its positions [D:tuple-table]" {
+            let rows =
+                VSeq [
+                    VTuple [ VInt 1; VStr "web"; VUnion("None", None) ]
+                    VTuple [ VInt 20; VStr "db-x"; VUnion("None", None) ]
+                ]
+
+            match Weir.Eval.echoTable Weir.Eval.echoPipedCap None rows with
+            | Some(lines, None) ->
+                Expect.equal
+                    lines
+                    [ " 0  1     2"; "──  ────  ─"; " 1  web"; "20  db-x" ]
+                    "positions head the columns; none hides"
+            | other -> failtest $"expected a table, got {other}"
+
+            // a component that is no cell: the literal echo stands
+            Expect.isNone
+                (Weir.Eval.echoTable Weir.Eval.echoPipedCap None (VSeq [ VTuple [ VInt 1; VSeq [ VInt 2 ] ] ]))
+                "a seq component"
+        }
         test "the width clamp: the widest column absorbs the clip, floors hold, None means untouched [D:table-polish]" {
             let rows =
                 VSeq [

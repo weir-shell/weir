@@ -7666,7 +7666,7 @@ let private tableModuleMembers: (string * Ty * Value) list = [
                 | Some(lines, _) -> VSeq(lines |> List.map VStr :> seq<Value>)
                 | None ->
                     failwith
-                        "Table.render needs a seq of same-shaped records with scalar fields; for other sequences use Seq.map show"
+                        "Table.render needs a seq of same-shaped records, or of tuples, with scalar fields; for other sequences use Seq.map show"
         | _ -> unreachable $"the checker rejects 'Table.render' on {formatValue v}")
 ]
 

@@ -2890,7 +2890,8 @@ can rewrite itself.
 
 `Table.render` lays out a sequence of records of the same type as
 aligned columns, the same table the REPL shows, and returns lines
-for `print`:
+for `print` (a sequence of tuples works too; its columns are headed
+`0`, `1`, …):
 
 ```weir
 ls |> Seq.take 5 |> Table.render |> Seq.iter print

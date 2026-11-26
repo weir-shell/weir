@@ -157,6 +157,8 @@ At a terminal, how a value is echoed depends on its type:
 
 - a seq of records: a table with a bold header and a dim rule, fitted
   to the terminal width (the widest column is cut to fit)
+- a seq of tuples: the same table, its columns headed by position
+  (`0`, `1`, …)
 - a seq of strings: its lines
 - a named function: a short help entry (below)
 - anything else: a literal
