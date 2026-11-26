@@ -2153,13 +2153,46 @@ let private binderSiteTy (env: TypeEnv) (head: string) (te: Weir.Check.TypedExpr
 
     find None te
 
+/// a lambda still open at the end of `before` binds `name`: its
+/// parameter shadows an outer binding of the same name there
+/// [D:complete-shadow]. Time-bounded: completion runs on the user's text
+let openLambdaBinds (name: string) (before: string) : bool =
+    let lambdas =
+        try
+            System.Text.RegularExpressions.Regex.Matches(
+                before,
+                @"\bfun\s+((?:[A-Za-z_]\w*\s+)*[A-Za-z_]\w*)\s*->",
+                System.Text.RegularExpressions.RegexOptions.None,
+                System.TimeSpan.FromMilliseconds 100.0
+            )
+            |> List.ofSeq
+        with :? System.Text.RegularExpressions.RegexMatchTimeoutException -> []
+
+    lambdas
+    |> List.exists (fun m ->
+        (m.Groups[1].Value.Split([| ' '; '\t'; '\n' |], System.StringSplitOptions.RemoveEmptyEntries)
+         |> Array.contains name)
+        // open while no `)` past it closes a paren that was open before it
+        && (before.Substring(m.Index + m.Length)
+            |> Seq.scan
+                (fun depth c ->
+                    match c with
+                    | '(' -> depth + 1
+                    | ')' -> depth - 1
+                    | _ -> depth)
+                0
+            |> Seq.forall (fun depth -> depth >= 0)))
+
 /// the repaired statement's type for `head` [D:repair-completion]: any
 /// occurrence (a param's uses share one type, and the cursor's own
 /// occurrence was blanked away), else its binder site
-/// [D:entry-complete]
+/// [D:entry-complete]. `shadowing`: the head also names an outer binding,
+/// whose occurrences are not the lambda's — the binder site alone
+/// [D:complete-shadow]
 let tyAtRepaired
     (parse: string -> Result<Weir.Ast.Stmt, string>)
     (env: TypeEnv)
+    (shadowing: bool)
     (repaired: string)
     (head: string)
     : Ty option =
@@ -2181,7 +2214,8 @@ let tyAtRepaired
 
                 Weir.Check.childExprs node |> List.fold find best
 
-            find None te |> Option.orElseWith (fun () -> binderSiteTy envH head te))
+            (if shadowing then None else find None te)
+            |> Option.orElseWith (fun () -> binderSiteTy envH head te))
     | _ -> None
 
 // the statement's own binders in scope at the hole [D:splice-locals]
@@ -2280,4 +2314,4 @@ let fieldsAtRepaired
     (repaired: string)
     (head: string)
     : string list option =
-    tyAtRepaired parse env repaired head |> Option.bind (fieldsOfTy env)
+    tyAtRepaired parse env false repaired head |> Option.bind (fieldsOfTy env)

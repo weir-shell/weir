@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- **Tab on a lambda's parameter ignores an outer binding of the same
+  name.** With a `b` already bound in the session,
+  `items |> where (fun b -> b.` offered nothing, or the outer `b`'s
+  fields. It now offers the fields of the lambda's `b`.
 - **`weir add sig` keeps a subcommand's flags with the subcommand when
   it reads a fish completion file.** For a tool whose completions say
   where each flag applies (asciinema, and other clap-built tools),

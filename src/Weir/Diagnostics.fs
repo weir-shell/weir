@@ -43,13 +43,21 @@ let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list opt
         let prefix = word.Substring(dot + 1)
         let shorthand = head = "_"
 
+        let before = pre.Substring(0, ws)
+
+        // a bound head resolves by its own type — unless a lambda open
+        // here rebinds the name [D:complete-shadow]
+        let shadowing =
+            not shorthand
+            && Map.containsKey head env.Values
+            && Complete.openLambdaBinds head before
+
         if
             not shorthand
-            && not (Char.IsLower head[0] && not (Map.containsKey head env.Values))
+            && not (Char.IsLower head[0] && (shadowing || not (Map.containsKey head env.Values)))
         then
             None
         else
-            let before = pre.Substring(0, ws)
             let parse t = Parser.parseLine (assumeResolver env) t
 
             // the neutral `""` first (a bare row-typed head left behind
@@ -91,7 +99,7 @@ let repairedFields (env: TypeEnv) (pre: string) (post: string) : string list opt
                     | None -> ()
                 ])
             |> List.tryPick (fun cand ->
-                Complete.tyAtRepaired parse env cand target
+                Complete.tyAtRepaired parse env shadowing cand target
                 |> Option.map (fun ty ->
                     match ty with
                     | TSeq elem when unwrap -> elem
