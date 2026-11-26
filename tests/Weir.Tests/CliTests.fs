@@ -1484,6 +1484,7 @@ let hunt4Tests =
                     "File.mode"
                     "File.read"
                     "File.readBytes"
+                    "File.readBytesAt"
                     "File.readFrom"
                     "File.readSecret"
                     "File.sha1"
