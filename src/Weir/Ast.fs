@@ -509,6 +509,8 @@ let reifiers = [
     "exec", "execed"
     "line", "lined"
     "text", "texted"
+    "into", "intoed"
+    "bytes", "bytesed"
 ]
 
 let reifierNames = reifiers |> List.map fst
@@ -538,7 +540,7 @@ let reifierOfVar (v: string) : string option =
 
 /// where a single reified command's program rides among its desugar
 /// variable's arguments [D:exit-reifiers]: `|<stem> prog argv`, the env
-/// twin's env first, orFail's message ahead of the program, the stdin
+/// twin's env first, orFail's message (into's file) ahead of the program, the stdin
 /// twin's value last — (program index, full arity), or None for a
 /// non-reifier or a chain
 let reifiedProgSlot (v: string) : (int * int) option =
@@ -547,7 +549,10 @@ let reifiedProgSlot (v: string) : (int * int) option =
     else
         let idx =
             (if v.EndsWith "Env" then 1 else 0)
-            + (if v.StartsWith "|orFailed" then 1 else 0)
+            + (if v.StartsWith "|orFailed" || v.StartsWith "|intoed" then
+                   1
+               else
+                   0)
 
         Some(idx, idx + (if v.EndsWith "In" then 3 else 2))
 

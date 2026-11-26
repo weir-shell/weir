@@ -364,7 +364,10 @@ let rec private walkExpr
          // (prog, argv, env) is its own spawn — the same facts a single
          // command reports (orFail's msg rides ahead of the stage list)
          | TEVar h when h.StartsWith "|chain" ->
-             match argsOf te |> List.tryItem (if h = "|chainOrFailed" then 1 else 0) with
+             match
+                 argsOf te
+                 |> List.tryItem (if h = "|chainOrFailed" || h = "|chainIntoed" then 1 else 0)
+             with
              | Some { Kind = TEList stages } ->
                  // each stage at its program's own span — the tuple spans
                  // the whole chain
@@ -393,10 +396,14 @@ let rec private walkExpr
              // first would mis-slot whenever the msg is interpolated,
              // reporting the message as a command
              let progSlot =
-                 if h.StartsWith "|orFailedEnv" then 2
-                 elif h.StartsWith "|orFailed" then 1
-                 elif h.EndsWith "Env" then 1
-                 else 0
+                 if h.StartsWith "|orFailedEnv" || h.StartsWith "|intoedEnv" then
+                     2
+                 elif h.StartsWith "|orFailed" || h.StartsWith "|intoed" then
+                     1
+                 elif h.EndsWith "Env" then
+                     1
+                 else
+                     0
 
              // the program slot carries the command's own span;
              // the application's starts at the reifier marker

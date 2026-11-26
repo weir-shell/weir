@@ -5210,10 +5210,38 @@ let private orFailMarker =
     )
     |>> fun ((_, span), msg) -> Desugar.OrFailMarker(msg, span)
 
+// `cmd | into path` / `| into append path` [D:into-file]: the word, an
+// optional `append`, then the path as one atom (orFail's message shape).
+// A lone `append` after `into` is the path's own name
+let private intoMarker =
+    let dest (append: bool) (path: Expr) : Expr = {
+        Kind =
+            ETuple [
+                {
+                    Kind = EBool append
+                    Span = path.Span
+                }
+                path
+            ]
+        Span = path.Span
+    }
+
+    attempt (
+        spanned (pstring "into" .>> notFollowedBy (satisfy cmdWordChar)) .>> ws
+        .>>. (attempt (
+                  pstring "append" >>. notFollowedBy (satisfy cmdWordChar) >>. ws >>. postfixAtom
+                  |>> dest true
+              )
+              <|> (postfixAtom |>> dest false))
+        .>> reifierEnd
+    )
+    |>> fun ((_, span), d) -> Desugar.IntoMarker(d, span)
+
 let private exitCodeMarker = reifierMarker "exitCode" Desugar.ExitCodeMarker
 let private execMarker = reifierMarker "exec" Desugar.ExecMarker
 let private lineMarker = reifierMarker "line" Desugar.LineMarker
 let private textMarker = reifierMarker "text" Desugar.TextMarker
+let private bytesMarker = reifierMarker "bytes" Desugar.BytesMarker
 
 // `cmd | and <rest>` / `cmd | or <rest>` [D:cmd-chaining]: bash &&/||.
 // The RHS is a full command line, parsed right-associatively (so `a | or
@@ -5372,9 +5400,11 @@ let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEn
              <|> succeedsMarker
              <|> exitCodeMarker
              <|> orFailMarker
+             <|> intoMarker
              <|> execMarker
              <|> lineMarker
              <|> textMarker
+             <|> bytesMarker
              <|> andMarker builtinHeads argP sigilEnv r
              <|> orMarker builtinHeads argP sigilEnv r
              <|> reifierStageGuard

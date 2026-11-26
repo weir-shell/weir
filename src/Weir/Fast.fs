@@ -3378,7 +3378,11 @@ and private cmdStage (st: St) (builtinHeads: bool) (stops: int) (sigilEnv: Expr 
 
         let w = if j > s then t.Substring(s, j - s) else null
 
-        if not (isNull w) && List.contains w reifierNames then
+        // `into` takes a path and an optional `append`: the grammar's
+        // [D:into-file]
+        if w = "into" then
+            refuse st
+        elif not (isNull w) && List.contains w reifierNames then
             st.I <- j
             let span = { Start = at s; End = at j }
             ws st
@@ -3401,6 +3405,7 @@ and private cmdStage (st: St) (builtinHeads: bool) (stops: int) (sigilEnv: Expr 
                 | "orFail" -> OrFailMarker(msg, span)
                 | "exec" -> ExecMarker span
                 | "line" -> LineMarker span
+                | "bytes" -> BytesMarker span
                 | _ -> TextMarker span
         elif w = "and" || w = "or" || keywordAhead st "try" || envPrefixAhead st then
             refuse st

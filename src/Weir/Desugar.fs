@@ -330,6 +330,12 @@ type Seg =
     // the whole-output capture [D:reify-text] — `cmd | text` reifies to
     // stdout as one string
     | TextMarker of Span
+    // the file sink [D:into-file] — `cmd | into path`: the tail's stdout
+    // is the file. The expr is the pair (append, path)
+    | IntoMarker of Expr * Span
+    // the raw capture [D:reify-bytes] — `cmd | bytes` reifies to stdout
+    // as Bytes, undecoded
+    | BytesMarker of Span
     // command chaining [D:cmd-chaining] — bash &&/||: the RHS is a full
     // command line (right-associative), captured whole
     | AndMarker of Expr * Span
@@ -556,7 +562,7 @@ let rec foldChain
                             Kind = EIf(cond, { Kind = EUnit; Span = sp }, Some(streamOf rhs))
                             Span = Span.union acc.Span rhs.Span
                         })
-                | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ | LineMarker _ | TextMarker _ as marker) ->
+                | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ | LineMarker _ | TextMarker _ | IntoMarker _ | BytesMarker _ as marker) ->
                     let stageName, mspan, extraArgs =
                         match marker with
                         | CompleteMarker sp -> "complete", sp, []
@@ -566,7 +572,9 @@ let rec foldChain
                         | ExecMarker sp -> "exec", sp, []
                         | LineMarker sp -> "line", sp, []
                         | TextMarker sp -> "text", sp, []
-                        // unreachable — the outer arm matched only the seven above
+                        | IntoMarker(dest, sp) -> "into", sp, [ dest ]
+                        | BytesMarker sp -> "bytes", sp, []
+                        // unreachable — the outer arm matched only the nine above
                         | Stage _
                         | AndMarker _
                         | OrMarker _ -> "complete", acc.Span, []

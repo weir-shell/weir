@@ -70,17 +70,24 @@ let private firstRunEffect (isLetRhs: bool) (te: Check.TypedExpr) : (string * Sp
 
             let progArg =
                 if h.StartsWith "|chain" then
-                    match argsOf e |> List.tryItem (if h = "|chainOrFailed" then 1 else 0) with
+                    match
+                        argsOf e
+                        |> List.tryItem (if h = "|chainOrFailed" || h = "|chainIntoed" then 1 else 0)
+                    with
                     | Some {
                                Kind = Check.TEList({ Kind = Check.TETuple(p :: _) } :: _)
                            } -> Some p
                     | _ -> None
                 else
                     let slot =
-                        if h.StartsWith "|orFailedEnv" then 2
-                        elif h.StartsWith "|orFailed" then 1
-                        elif h.EndsWith "Env" then 1
-                        else 0
+                        if h.StartsWith "|orFailedEnv" || h.StartsWith "|intoedEnv" then
+                            2
+                        elif h.StartsWith "|orFailed" || h.StartsWith "|intoed" then
+                            1
+                        elif h.EndsWith "Env" then
+                            1
+                        else
+                            0
 
                     argsOf e |> List.tryItem slot
 
