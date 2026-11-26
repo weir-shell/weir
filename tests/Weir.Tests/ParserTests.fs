@@ -5251,6 +5251,46 @@ let agentFindingsTests =
             clean [ "let e = [Env.pair \"X\" \"1\"]"; "let v = $e(printenv X | text)"; "print v" ] "env twin"
             clean [ "let m = [\"a\"; \"b\"] | grep a | text"; "print m" ] "value-headed"
         }
+        test "bytes desugars to the bytesed application and types as Bytes [D:reify-bytes]" {
+            match Weir.Parser.parseLine cmdResolver "echo hi | bytes" with
+            | Ok(SCmd e)
+            | Ok(SExpr e) -> Expect.stringContains (Weir.Ast.sexpr e) "|bytesed" ""
+            | other -> failtest (sprintf "expected the bytesed desugar, got %A" other)
+
+            let clean = errorsCleanIn "bytes.weir"
+            clean [ "let b = echo a | bytes"; "print (Bytes.toHex b)" ] "binds Bytes"
+            clean [ "let b = echo a | cat | bytes"; "print (show (Bytes.length b))" ] "after a chain"
+            clean [ "let b = [\"a\"; \"b\"] | grep a | bytes"; "print (Bytes.toHex b)" ] "value-headed"
+            clean [ "let b = X=1 echo hi | bytes"; "print (Bytes.toHex b)" ] "an env prefix"
+            clean [ "let b = echo a | bytes"; "b |> File.writeBytes \"o.bin\"" ] "on to a Bytes sink"
+
+            mustSayDiagIn "bytes.weir" [ "let b = echo hi | bytes"; "print (Str.trim b)" ] "Bytes" "not a string"
+        }
+        test "into desugars to the intoed application, unit-typed, with its (append, path) pair [D:into-file]" {
+            let shape (src: string) =
+                match Weir.Parser.parseLine cmdResolver src with
+                | Ok(SCmd e)
+                | Ok(SExpr e) -> Weir.Ast.sexpr e
+                | other -> failtest (sprintf "%s: expected a command statement, got %A" src other)
+
+            Expect.stringContains (shape "echo hi | into \"o.txt\"") "|intoed" "the plain twin"
+            Expect.stringContains (shape "echo hi | into \"o.txt\"") "false" "replace"
+            Expect.stringContains (shape "echo hi | into append \"o.txt\"") "true" "append"
+            Expect.stringContains (shape "echo hi | cat | into \"o.txt\"") "|chainIntoed" "after a chain"
+            Expect.stringContains (shape "[\"a\"] | grep a | into \"o.txt\"") "|intoedIn" "a value head"
+            Expect.stringContains (shape "X=1 echo hi | into \"o.txt\"") "|intoedEnv" "an env prefix"
+
+            let clean = errorsCleanIn "into.weir"
+            clean [ "echo hi | into \"o.txt\"" ] "a statement"
+            clean [ "let p = \"o.txt\""; "echo hi | into p" ] "a name is a path"
+            clean [ "let append = \"o.txt\""; "echo hi | into append" ] "a lone 'append' is the path's name"
+            clean [ "let d = \"out\""; "echo hi | cat | into append $\"{d}/o.txt\"" ] "an interpolated path"
+            clean [ "if true then"; "    echo hi | into \"o.txt\"" ] "in a block"
+
+            let says = mustSayDiagIn "into.weir"
+            says [ "echo hi | into 5" ] "string" "the path is a string"
+            says [ "let n = echo hi | into \"o.txt\""; "print (show (n + 1))" ] "unit" "unit, not a value"
+        }
         test "the fifth refusal cell: refused-context reifiers TEACH, never PATH-resolve [D:reifier-family-complete]" {
             // [D:statement-lets] moved the boundary: if-body and
             // within-body block lets now take the reifier (statement
@@ -9254,8 +9294,9 @@ let cmdChainTests =
             Expect.isEmpty diags "the splat reaches argv, no internal error"
         }
         test "every reifier name after a command teaches, never resolves on PATH [D:reifier-term]" {
-            // orFail takes its message as the next word, so `extra` is legal there
-            for name in Weir.Ast.reifierNames |> List.filter ((<>) "orFail") do
+            // orFail takes its message as the next word, and into its path, so
+            // `extra` is legal there
+            for name in Weir.Ast.reifierNames |> List.filter (fun n -> n <> "orFail" && n <> "into") do
                 match Weir.Parser.parseLine realResolver $"git status | {name} extra" with
                 | Error e -> Expect.stringContains e $"'{name}' is a reifier" name
                 | Ok other -> failtest $"{name}: expected the teaching, got {other}"

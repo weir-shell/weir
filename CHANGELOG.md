@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`cmd | into path` sends a command's output to a file.** It does
+  what a shell's `>` does: the file is the last program's own output,
+  so the bytes are written exactly as produced, at any size, with
+  nothing decoded or split into lines.
+  `curl -s $url | gunzip | into "data.bin"`. `| into append path` adds
+  to the file, like `>>`. Before, a command's output could only reach
+  a file as text lines, or through `sh -c "cat > file"`.
+- **`cmd | bytes` captures a command's output as `Bytes`.** Like
+  `| text`, but undecoded: `let key = openssl rand 32 | bytes`. It is
+  held in memory, so it suits small results; send large ones to a file
+  with `| into`.
 - **`File.readBytesAt path offset length` reads part of a file.**
   `File.readBytesAt "disk.img" 0B 512B` returns the first 512 bytes
   without loading the rest, where `File.readBytes` reads the whole

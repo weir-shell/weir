@@ -900,6 +900,57 @@ print x' 2>&1) && fail "| text must raise on nonzero" || true
 echo "$terr" | grep -qF "exit code 5" || fail "| text lost the nonzero raise: $terr"
 echo "e2e ok: | text — whole stdout to a string, trailing blanks dropped, nonzero raises [D:reify-text]"
 
+# ---- the raw capture reifier [D:reify-bytes] ---------------------------
+# `cmd | bytes`: stdout as Bytes — a NUL, invalid UTF-8 and a missing
+# final newline survive, where `| text` decodes; nonzero raises
+bout=$($BIN -e 'let b = printf "a\\0\\377b" | bytes
+print $"{Bytes.toHex b} {Bytes.length b}"')
+[ "$bout" = "6100ff62 4 B" ] || fail "| bytes must hold the bytes as written: $bout"
+bout=$($BIN -e 'let b = sh -c "printf \"x\ny\n\"" | tr a-z A-Z | bytes
+print (Bytes.toHex b)')
+[ "$bout" = "580a590a" ] || fail "| bytes after a chain keeps every newline: $bout"
+berr=$($BIN -e 'let b = sh -c "printf o; exit 7" | bytes
+print (Bytes.toHex b)' 2>&1) && fail "| bytes must raise on nonzero" || true
+echo "$berr" | grep -qF "exit code 7" || fail "| bytes lost the nonzero raise: $berr"
+echo "e2e ok: | bytes — stdout as Bytes, undecoded (NUL, invalid UTF-8, newlines kept), nonzero raises [D:reify-bytes]"
+
+# ---- the file sink reifier [D:into-file] ------------------------------
+# `cmd | into path`: the file is the tail's own stdout — byte-exact (NUL,
+# no trailing newline, invalid UTF-8), replaced whole; `into append` adds;
+# after a chain, with a value head and an env prefix; nonzero raises with
+# what was written kept; refused in a plan
+intodir=$(mkweirtmp)
+( cd "$intodir" && $BIN -e 'printf "a\\0b\\377" | into "raw.bin"
+print "done"' > into.out 2>&1 ) || fail "| into must run: $(cat "$intodir/into.out")"
+[ "$(od -An -tx1 "$intodir/raw.bin" | tr -d ' \n')" = "610062ff" ] || fail "| into must write the bytes as produced: $(od -An -tx1 "$intodir/raw.bin")"
+[ "$(cat "$intodir/into.out")" = "done" ] || fail "| into prints nothing of its own: $(cat "$intodir/into.out")"
+( cd "$intodir" && $BIN -e 'printf "xy" | into "raw.bin"
+printf "z" | into append "raw.bin"
+print "ok"' > /dev/null 2>&1 ) || fail "| into append must run"
+[ "$(cat "$intodir/raw.bin")" = "xyz" ] || fail "| into replaces, | into append adds: $(od -An -c "$intodir/raw.bin")"
+( cd "$intodir" && $BIN -e 'sh -c "printf \"b\na\n\"" | sort | tr a-z A-Z | into "chain.txt"
+["q"; "r"] | grep r | into "head.txt"
+let p = "env.txt"
+INTO_E2E=seen printenv INTO_E2E | into p
+print "ok"' > /dev/null 2>&1 ) || fail "| into after a chain, a value head and an env prefix must run"
+[ "$(cat "$intodir/chain.txt")" = "A
+B" ] || fail "| into after a chain: $(cat "$intodir/chain.txt")"
+[ "$(cat "$intodir/head.txt")" = "r" ] || fail "| into with a value head: $(cat "$intodir/head.txt")"
+[ "$(cat "$intodir/env.txt")" = "seen" ] || fail "| into with an env prefix: $(cat "$intodir/env.txt")"
+ierr=$( cd "$intodir" && $BIN -e 'sh -c "echo partial; exit 6" | into "fail.txt"
+print "unreached"' 2>&1 ) && fail "| into must raise on nonzero" || true
+echo "$ierr" | grep -qF "exit code 6" || fail "| into lost the nonzero raise: $ierr"
+echo "$ierr" | grep -qF "unreached" && fail "| into's raise must stop the script: $ierr" || true
+[ "$(cat "$intodir/fail.txt")" = "partial" ] || fail "| into keeps what was written before the failure: $(cat "$intodir/fail.txt")"
+ierr=$( cd "$intodir" && $BIN -e 'echo hi | into "no/such/dir/o.txt"' 2>&1 ) && fail "| into must refuse a missing directory" || true
+echo "$ierr" | grep -qF "| into" || fail "| into's file error must be its own: $ierr"
+ierr=$( cd "$intodir" && $BIN -e 'let ops = plan
+    echo hi | into "planned.txt"
+print (show (Plan.isEmpty ops))' 2>&1 ) && fail "| into must be refused inside a plan" || true
+echo "$ierr" | grep -qF "refused inside 'plan'" || fail "| into in a plan must say why: $ierr"
+[ -e "$intodir/planned.txt" ] && fail "| into inside a plan must not write" || true
+echo "e2e ok: | into — the tail's stdout is the file: byte-exact, replace and append, chain / value head / env prefix, nonzero raises, refused in a plan [D:into-file]"
+
 # ---- pipe chains [D:pipe-early-exit] [D:chain-reifiers] --------------------
 # a consumer that exits early ends the chain (statement, capture, let) with
 # no "write error" noise; reifiers follow a chain; the leftmost failing

@@ -677,9 +677,11 @@ let completionTests =
                 (at "git status | ")
                 [
                     "and"
+                    "bytes"
                     "complete"
                     "exec"
                     "exitCode"
+                    "into"
                     "line"
                     "or"
                     "orFail"

@@ -2402,6 +2402,13 @@
   ],
   "forms": [
     {
+      "name": "bytes",
+      "signature": null,
+      "summary": "Run the command and return its output as Bytes, exactly as the program wrote it \u2014 nothing is decoded as text or split into lines. For a binary or encoding-sensitive result small enough to hold in memory: a digest, a key, an image. Raises on a nonzero exit.",
+      "example": "let b = echo hi | bytes\nprint (Bytes.toHex b)",
+      "pointer": "A large output belongs in a file: \u0060\u003Ccommand\u003E | into path\u0060. For text use \u0060| text\u0060 or \u0060| line\u0060."
+    },
+    {
       "name": "cd",
       "signature": "cd (path: string) : string",
       "summary": "Change the session\u0027s directory and return the absolute directory it moved to (\u0060let here = cd \u0022/tmp\u0022\u0060). A bare name uses the value of that binding (\u0060cd target\u0060). \u0060cd\u0060 with no argument, or a typed \u0060cd ~\u0060, goes to the home directory; a string argument is used literally. To change directory for a block only, use \u0060within cd\u0060.",
@@ -2505,6 +2512,13 @@
       "summary": "The identity function: returns its argument unchanged. Useful where a function is expected, as in \u0060Seq.choose id\u0060 over a seq of Options. Unlike \u0060not\u0060 or \u0060fst\u0060, \u0060id\u0060 can still be used as a variable name; a binding named \u0060id\u0060 simply shadows it.",
       "example": "[Some 1; None; Some 3] |\u003E Seq.choose id",
       "pointer": null
+    },
+    {
+      "name": "into",
+      "signature": null,
+      "summary": "Send a command\u0027s output to a file, as a shell\u0027s \u0060\u003E\u0060 does: \u0060\u003Ccommand\u003E | into path\u0060 creates or replaces the file, \u0060\u003Ccommand\u003E | into append path\u0060 adds to it. The file is the last program\u0027s own standard output, so the bytes are written exactly as produced, whatever their size, and nothing is decoded or split into lines. Raises on a nonzero exit; the file then holds what was written up to there.",
+      "example": null,
+      "pointer": "It ends a command chain and returns nothing, so it is a statement: \u0060tar c src | gzip | into \u0022src.tgz\u0022\u0060. To write a weir value to a file use File.write. Not allowed inside \u0060plan\u0060."
     },
     {
       "name": "let pure",

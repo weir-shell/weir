@@ -2102,6 +2102,21 @@ within tmp d
     File.read $"{d}/out.txt" |> Seq.iter print
 ```
 ```weir
+// the byte-exact redirect [D:into-file]: the file is the last program's
+// stdout — no decode, no line law, no added newline
+within tmp d
+    printf "a\\0b" | into $"{d}/raw.bin"
+    printf "c" | into append $"{d}/raw.bin"
+    print (File.readBytes $"{d}/raw.bin" |> Bytes.toHex)
+    sh -c "printf 'x\ny\n'" | tr a-z A-Z | into $"{d}/up.txt"
+    File.read $"{d}/up.txt" |> Seq.iter print
+```
+```weir-error
+// the sink needs its file
+echo hi | into
+print "unreached"
+```
+```weir
 // the exit discipline alone, and a held lock — both release on every
 // exit path (the lock even on kill -9: the kernel lets go)
 within tmp d
@@ -2145,7 +2160,24 @@ within tmp d
   the multi-line sibling [D:reify-text]: the whole stdout as one
   `string` (joined with newlines, trailing blank lines dropped, raises
   on nonzero) — for `Str.*` on command output, instead of
-  `r.stdout |> Str.join "\n"`. **`succeeds` is
+  `r.stdout |> Str.join "\n"`. `cmd | into path` is the FILE SINK
+  [D:into-file], a shell's `>`: the file (created, or replaced) is the
+  last program's own stdout, so the bytes land exactly as produced,
+  any size, never decoded or line-split — `curl -s $url | into "a.bin"`,
+  `tar c src | gzip | into "src.tgz"`. `| into append path` is `>>`.
+  The path is ONE atom (a string, a `$"…"`, a name, a parenthesized
+  expression). It is unit — a statement, nothing to bind — raises on a
+  nonzero exit (the file holds what was written), takes a value head's
+  stdin and an env prefix like the others, and is refused inside
+  `plan`. A weir VALUE goes to a file with `|> File.write` (lines) or
+  `File.writeBytes`; `| into` is for a command's bytes. `cmd | bytes`
+  is the RAW CAPTURE [D:reify-bytes]: stdout as `Bytes`, exactly as
+  written — no decode, no line split, no dropped newline — for a small
+  binary or encoding-sensitive result (`openssl rand 32 | bytes`,
+  `curl -s $url | bytes |> Bytes.sha256`). In memory, under the capture
+  cap, so a large output belongs in a file (`| into`); raises on a
+  nonzero exit; chain, value head and env prefix like the rest.
+  **`succeeds` is
   exitCode == 0, exactly** —
   for tools whose nonzero codes AND output are both data (grep,
   fzf), use `| complete` and read the record. An `if`/`elif`

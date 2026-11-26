@@ -1426,7 +1426,12 @@ let private pumpBytes
 
 // start every stage and wire the hops: the head owns the (optional) text
 // stdin feed, every downstream stage's stdin is the raw pipe from its left
-let private startChainPumped (tailOut: bool) (allErr: bool) (specs: Spec list) =
+let private startChainPumped
+    (tailH: Microsoft.Win32.SafeHandles.SafeFileHandle)
+    (tailOut: bool)
+    (allErr: bool)
+    (specs: Spec list)
+    =
     let lastIdx = specs.Length - 1
 
     let headFault = ref ignore
@@ -1439,7 +1444,18 @@ let private startChainPumped (tailOut: bool) (allErr: bool) (specs: Spec list) =
                 headFault.Value <- fault
                 sp, p
             else
-                sp, spawn (i < lastIdx || tailOut) allErr true sp.Cwd sp.Ambient sp.Prog sp.Args sp.Env)
+                sp,
+                spawnWith
+                    null
+                    (if i = lastIdx then tailH else null)
+                    (i < lastIdx || tailOut)
+                    allErr
+                    true
+                    sp.Cwd
+                    sp.Ambient
+                    sp.Prog
+                    sp.Args
+                    sp.Env)
 
     let pumps =
         try
@@ -1461,7 +1477,12 @@ let private startChainPumped (tailOut: bool) (allErr: bool) (specs: Spec list) =
 
 // POSIX [D:pipe-direct]: stage N's stdout IS stage N+1's stdin — a kernel
 // pipe weir holds neither end of once both are started
-let private startChainDirect (tailOut: bool) (allErr: bool) (specs: Spec list) =
+let private startChainDirect
+    (tailH: Microsoft.Win32.SafeHandles.SafeFileHandle)
+    (tailOut: bool)
+    (allErr: bool)
+    (specs: Spec list)
+    =
     let lastIdx = specs.Length - 1
     let headFault = ref ignore
     let started = ResizeArray<Spec * Process>()
@@ -1485,7 +1506,7 @@ let private startChainDirect (tailOut: bool) (allErr: bool) (specs: Spec list) =
                     else
                         spawnWith
                             fromLeft
-                            w
+                            (if i = lastIdx then tailH else w)
                             (i < lastIdx || tailOut)
                             allErr
                             true
@@ -1515,11 +1536,19 @@ let private startChainDirect (tailOut: bool) (allErr: bool) (specs: Spec list) =
 
     List.ofSeq started, ([]: System.Threading.Tasks.Task<bool> list), headFault.Value
 
-let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
+// `tailH`: the last stage's stdout, when it is a file's [D:into-file]
+let private startChainTo
+    (tailH: Microsoft.Win32.SafeHandles.SafeFileHandle)
+    (tailOut: bool)
+    (allErr: bool)
+    (specs: Spec list)
+    =
     if Session.pipesSuspend then
-        startChainDirect tailOut allErr specs
+        startChainDirect tailH tailOut allErr specs
     else
-        startChainPumped tailOut allErr specs
+        startChainPumped tailH tailOut allErr specs
+
+let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) = startChainTo null tailOut allErr specs
 
 // the chain's failure, after every stage exited: the LEFTMOST failing
 // stage — where the fault began — except a stage told to stop: its
@@ -1868,6 +1897,107 @@ let runChainInherited (specs: Spec list) : unit =
     | [ one ] -> runInherited one
     | _ ->
         let procs, pumps, producerFault = startChain false false specs
+
+        try
+            for _, p in procs do
+                p.WaitForExit()
+
+            producerFault ()
+
+            match chainFailure procs pumps with
+            | Some(sp, p, code) -> raiseNonzero true p sp code
+            | None -> ()
+        finally
+            for _, p in procs do
+                reap p
+
+// `chain | bytes` [D:reify-bytes]: the tail's stdout exactly as written —
+// no decode, no line law — held in memory under the capture cap
+// [D:capture-buffer]. Stderr stays the terminal's; the leftmost failing
+// stage raises, as in chainLinesOf
+let chainBytesOf (specs: Spec list) : byte[] =
+    let flat (b: Segments) : byte[] =
+        let all = Array.concat b.Segs
+
+        if all.Length > b.Total then
+            Array.sub all 0 b.Total
+        else
+            all
+
+    capRefusal captureCap (shownChain specs) (fun () ->
+        match specs with
+        | [] -> [||]
+        | [ one ] ->
+            let p, producerFault = start true false one
+            use _ = p
+
+            try
+                let bytes =
+                    try
+                        readAllBytes captureCap true (Session.cutStream p p.StandardOutput.BaseStream)
+                    with _ ->
+                        Session.killTree p
+                        reraise ()
+
+                p.WaitForExit()
+                producerFault ()
+
+                if p.ExitCode <> 0 then
+                    raiseNonzero false p one p.ExitCode
+
+                flat bytes
+            finally
+                reap p
+        | _ ->
+            let procs, pumps, producerFault = startChain true false specs
+
+            try
+                let _, last = List.last procs
+
+                let bytes =
+                    try
+                        readAllBytes captureCap true (Session.cutStream last last.StandardOutput.BaseStream)
+                    with _ ->
+                        for _, p in procs do
+                            Session.killTree p
+
+                        reraise ()
+
+                for _, p in procs do
+                    p.WaitForExit()
+
+                producerFault ()
+
+                match chainFailure procs pumps with
+                | Some(sp, p, code) -> raiseNonzero false p sp code
+                | None -> ()
+
+                flat bytes
+            finally
+                for _, p in procs do
+                    reap p)
+
+// `chain | into path` [D:into-file]: the tail's stdout IS the open file,
+// as a shell's `>` makes it — weir holds no byte of the output, so it is
+// exact and unbounded. Hops stay raw pipes; the leftmost failing stage
+// raises, as in runChainInherited. The caller owns the handle
+let runChainTo (out: Microsoft.Win32.SafeHandles.SafeFileHandle) (specs: Spec list) : unit =
+    match specs with
+    | [] -> ()
+    | [ one ] ->
+        let p, producerFault = startWith out false false one
+        use _ = p
+
+        try
+            p.WaitForExit()
+            producerFault ()
+
+            if p.ExitCode <> 0 then
+                raiseNonzero true p one p.ExitCode
+        finally
+            reap p
+    | _ ->
+        let procs, pumps, producerFault = startChainTo out false false specs
 
         try
             for _, p in procs do

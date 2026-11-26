@@ -3491,7 +3491,7 @@ module private AppendNative =
         else
             O_WRONLY ||| O_APPEND_LINUX ||| O_CLOEXEC_LINUX
 
-    let private openAppend (path: string) : Microsoft.Win32.SafeHandles.SafeFileHandle =
+    let openAppend (path: string) : Microsoft.Win32.SafeHandles.SafeFileHandle =
         let rec go attempt =
             let fd = ``open`` (path, appendFlags (), 0)
 
@@ -3568,7 +3568,9 @@ module private AppendNative =
         nativeint lpOverlapped
     )
 
-    let private appendWindows (path: string) (payload: byte[]) =
+    // append-only access: every write through the handle lands at the end,
+    // whoever holds it
+    let openAppendWindows (path: string) : Microsoft.Win32.SafeHandles.SafeFileHandle =
         let h =
             CreateFileW(
                 path,
@@ -3583,7 +3585,10 @@ module private AppendNative =
         if h = -1n then
             raise (IOException $"open failed (win32 {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()})")
 
-        use sfh = new Microsoft.Win32.SafeHandles.SafeFileHandle(h, true)
+        new Microsoft.Win32.SafeHandles.SafeFileHandle(h, true)
+
+    let private appendWindows (path: string) (payload: byte[]) =
+        use sfh = openAppendWindows path
 
         let rec go (rest: byte[]) =
             if rest.Length > 0 then
@@ -9714,6 +9719,17 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 "Run the command and return its whole output as one string: lines joined with newlines, trailing blank lines dropped (like bash's `$(…)`). Raises on a nonzero exit."
                 None
                 (Some "To keep the exit code instead of raising, use `| complete`.")
+            "bytes",
+            bd
+                "Run the command and return its output as Bytes, exactly as the program wrote it — nothing is decoded as text or split into lines. For a binary or encoding-sensitive result small enough to hold in memory: a digest, a key, an image. Raises on a nonzero exit."
+                (Some "let b = echo hi | bytes\nprint (Bytes.toHex b)")
+                (Some "A large output belongs in a file: `<command> | into path`. For text use `| text` or `| line`.")
+            "into",
+            bd
+                "Send a command's output to a file, as a shell's `>` does: `<command> | into path` creates or replaces the file, `<command> | into append path` adds to it. The file is the last program's own standard output, so the bytes are written exactly as produced, whatever their size, and nothing is decoded or split into lines. Raises on a nonzero exit; the file then holds what was written up to there."
+                None
+                (Some
+                    "It ends a command chain and returns nothing, so it is a statement: `tar c src | gzip | into \"src.tgz\"`. To write a weir value to a file use File.write. Not allowed inside `plan`.")
 
             // ---- types: a hover renders the structure; the value here is
             // when you get one ----
@@ -10082,6 +10098,85 @@ let private chainLinedImpl =
 let private chainTextedImpl =
     chainBuiltin (fun specs -> wholeText (Proc.chainLinesOf specs))
 
+// the file sink [D:into-file]: `cmd | into path` hands the open file to
+// the last program as its stdout — a shell's `>` (`into append`: `>>`,
+// O_APPEND where the platform has it [D:append-oappend]). No byte of the
+// output passes through weir. A file write, so the write's own guards
+// stand; a plan cannot hold it (the bytes exist only once the command
+// has run)
+let private intoRun (destV: Value) (specs: Proc.Spec list) : Value =
+    match destV with
+    | VTuple [ VBool append; VStr path ] ->
+        let op = if append then "| into append" else "| into"
+        let r = Session.resolveFs path
+
+        if PlanMode.active () then
+            failwith
+                $"'{op}' is refused inside 'plan' — the file's content is the command's output, which exists only once the command has run; run it outside the plan"
+
+        writeGuard op r
+
+        ioGuarded op r (fun () ->
+            use out =
+                if not append then
+                    File.OpenHandle(r, FileMode.Create, FileAccess.Write, FileShare.Read)
+                elif System.OperatingSystem.IsWindows() then
+                    // an Append-mode handle's pointer starts at 0 for a child
+                    AppendNative.openAppendWindows r
+                else
+                    AppendNative.openAppend r
+
+            Proc.runChainTo out specs)
+
+        VUnit
+    | v -> unreachable $"the parser builds into's destination as (append, path), got {formatValue v}"
+
+let private intoedWith (overlay: (string * string) list) : Value =
+    VBuiltin(fun destV ->
+        VBuiltin(fun progV ->
+            VBuiltin(fun argsV ->
+                match progV, argsV with
+                | VStr prog, VSeq args ->
+                    intoRun destV [ Proc.specOf overlay (Proc.specProg prog) (argStrings args) ]
+                | _ -> unreachable "the checker rejects 'intoed' on these arguments")))
+
+let private intoedWithIn (overlay: (string * string) list) : Value =
+    VBuiltin(fun destV ->
+        reifiedIn "intoedIn" (fun prog argv input ->
+            intoRun destV [
+                {
+                    Proc.specOf overlay (Proc.specProg prog) argv with
+                        Input = Some input
+                }
+            ]))
+
+let private chainIntoedImpl = VBuiltin(fun destV -> chainBuiltin (intoRun destV))
+
+// the raw capture [D:reify-bytes]: `cmd | bytes` — stdout as Bytes, as
+// the program wrote it. In memory, so for payloads that fit there; a
+// large output goes to a file (`| into`)
+let private bytesedWith (overlay: (string * string) list) : Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            match progV, argsV with
+            | VStr prog, VSeq args ->
+                VBytes(Proc.chainBytesOf [ Proc.specOf overlay (Proc.specProg prog) (argStrings args) ])
+            | _ -> unreachable "the checker rejects 'bytesed' on these arguments"))
+
+let private bytesedWithIn (overlay: (string * string) list) : Value =
+    reifiedIn "bytesedIn" (fun prog argv input ->
+        VBytes(
+            Proc.chainBytesOf [
+                {
+                    Proc.specOf overlay (Proc.specProg prog) argv with
+                        Input = Some input
+                }
+            ]
+        ))
+
+let private chainBytesedImpl =
+    chainBuiltin (fun specs -> VBytes(Proc.chainBytesOf specs))
+
 // fst/snd — F#'s pair projections; the pair-only typing (TTuple [a; b])
 // makes wider tuples a unification error, same as F#
 // the identity, F#'s `id` [D:id-builtin]
@@ -10100,6 +10195,8 @@ let private sndImpl: Value =
         | v -> unreachable $"the checker rejects 'snd' on {formatValue v}")
 
 // stage list -> optional stdin -> result [D:chain-reifiers]
+let private intoDest = TTuple [ TBool; TStr ]
+
 let private chainTy (result: Ty) : Ty =
     let stage = TTuple [ TStr; TSeq TStr; TSeq(TNamed("EnvVar", [])) ]
     TFun(TSeq stage, TFun(TNamed("Option", [ TSeq TStr ]), result))
@@ -10128,6 +10225,11 @@ let private entries: (string * Ty * Value) list =
         // the whole-output capture [D:reify-text] — `cmd | text` : stdout as
         // one string
         "|texted", TFun(TStr, TFun(TSeq TStr, TStr)), textedWith []
+        // the file sink [D:into-file] — `cmd | into path`; the leading
+        // pair is (append, path)
+        "|intoed", TFun(intoDest, TFun(TStr, TFun(TSeq TStr, TUnit))), intoedWith []
+        // the raw capture [D:reify-bytes] — `cmd | bytes` : stdout as Bytes
+        "|bytesed", TFun(TStr, TFun(TSeq TStr, TBytes)), bytesedWith []
         // process replacement [D:exec] — diverging (tA), like fail/exit; the
         // stdin twin is refused at parse (no parent to feed a replacement)
         "|execed", TFun(TStr, TFun(TSeq TStr, tA)), execedWith []
@@ -10139,6 +10241,8 @@ let private entries: (string * Ty * Value) list =
         "|exitCodedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TInt))), exitCodedWithIn []
         "|linedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TStr))), linedWithIn []
         "|textedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TStr))), textedWithIn []
+        "|intoedIn", TFun(intoDest, TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TUnit)))), intoedWithIn []
+        "|bytesedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TBytes))), bytesedWithIn []
         // diverging [D:fail-bottom]: the result var generalizes, so an arm
         // or branch that fails/exits unifies with the value the others make
         "fail", TFun(TStr, tA), failImpl
@@ -10166,6 +10270,12 @@ let private entries: (string * Ty * Value) list =
         "|textedEnv",
         TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TStr))),
         VBuiltin(fun envV -> textedWith (envVarPairs envV))
+        "|intoedEnv",
+        TFun(TSeq(TNamed("EnvVar", [])), TFun(intoDest, TFun(TStr, TFun(TSeq TStr, TUnit)))),
+        VBuiltin(fun envV -> intoedWith (envVarPairs envV))
+        "|bytesedEnv",
+        TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TBytes))),
+        VBuiltin(fun envV -> bytesedWith (envVarPairs envV))
         // reifiers after a command chain [D:chain-reifiers]: a stage list of
         // (prog, argv, env) and the value head's stdin
         "|chainCompleted", chainTy (TNamed(completedDef.Name, [])), chainCompletedImpl
@@ -10174,6 +10284,8 @@ let private entries: (string * Ty * Value) list =
         "|chainOrFailed", TFun(TStr, chainTy TUnit), chainOrFailedImpl
         "|chainLined", chainTy TStr, chainLinedImpl
         "|chainTexted", chainTy TStr, chainTextedImpl
+        "|chainIntoed", TFun(intoDest, chainTy TUnit), chainIntoedImpl
+        "|chainBytesed", chainTy TBytes, chainBytesedImpl
     ]
     @ bareEntries
 
