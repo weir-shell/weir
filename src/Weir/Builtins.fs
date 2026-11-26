@@ -3818,7 +3818,7 @@ let private atomicReplace (r: string) (lines: Value seq) : unit =
         else
             None
 
-    Contracts.AtomicFile.replaceBytes target payload mode
+    Contracts.AtomicFile.replaceBytes target payload mode false
 
 // liberal-in: unpadded standard-alphabet base64 pads before decoding;
 // encoding emits padded (the one stated default). URL-safe (-_) is

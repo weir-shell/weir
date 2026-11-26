@@ -31,6 +31,10 @@
   name.** With a `b` already bound in the session,
   `items |> where (fun b -> b.` offered nothing, or the outer `b`'s
   fields. It now offers the fields of the lambda's `b`.
+- **`weir add` works when `.weir/lock.json` is bind-mounted into a
+  container.** It failed with `internal error: IOException: Device or
+  resource busy`, because a mounted file cannot be replaced by rename;
+  weir now rewrites such a file in place.
 - **`weir add sig` keeps a subcommand's flags with the subcommand when
   it reads a fish completion file.** For a tool whose completions say
   where each flag applies (asciinema, and other clap-built tools),
