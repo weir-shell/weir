@@ -4943,18 +4943,19 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // which is exactly the direction authors get wrong. The
         // teaching shows both spellings so the direction is chosen,
         // not guessed — and offers them as interchangeable only for a
-        // commutative op.
+        // commutative op. (==) and (<>) have no direction to get wrong
+        // and apply as any function does [D:symmetric-sections]
         match head.Kind with
-        | EOpValue op ->
+        | EOpValue op when op <> "==" && op <> "<>" ->
             // the commutative set: ops where fun x -> x op v and
             // fun x -> v op x are the same function at every type the
-            // checker could see here (== and <> are symmetric; * is
-            // scalar multiplication at all its overloads, both operand
-            // orders admitted). + is excluded: it concatenates strings
-            // by context and the operand type is unknown at this
-            // refusal site. When in doubt, out — a wrong "differ" is
-            // merely verbose, a wrong "or" teaches the wrong function.
-            let commutative = [ "=="; "<>"; "*" ]
+            // checker could see here (* is scalar multiplication at all
+            // its overloads, both operand orders admitted). + is
+            // excluded: it concatenates strings by context and the
+            // operand type is unknown at this refusal site. When in
+            // doubt, out — a wrong "differ" is merely verbose, a wrong
+            // "or" teaches the wrong function.
+            let commutative = [ "*" ]
 
             let directions =
                 if List.contains op commutative then
