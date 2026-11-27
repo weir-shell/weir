@@ -2588,7 +2588,7 @@ m |> to json |> Seq.iter print // JSON object keys are strings — show the key 
   key sets across sibling elements, or an empty `{}` — drafts the
   `seq<string * _>` mapping; a table drafts the flat ROW record per
   column [D:from-table]; empty-array/null/type-conflict cases ride as
-  `//` notes). The REPL's `#infer <source> |> from <json|jsonl|yaml|table> as <Name>`
+  `//` notes). The REPL's `#infer <source> |> from <json|jsonl|yaml|table|csv> as <Name>`
   directive also INJECTS the drafted types into the session (so
   `from json <Name>` and field completion light up); the one-shot
   `#infer let <x> = <src> |> from <fmt> as <Name|_>` [D:infer-one-shot]
@@ -2701,6 +2701,39 @@ let refs =
     |> from xml Proj
     |> _.refs
 refs |> Seq.iter (fun r -> print r.Include)
+```
+- CSV is a typed boundary both ways [D:csv-adapter]: `from csv T`
+  reads RFC 4180 comma-separated records into row records, yielding
+  `seq<T>` (`File.read "orders.csv" |> from csv Order`); `to csv`
+  writes a seq of records back (`rows |> to csv |> File.write p`),
+  lazily. COMMA ONLY, and the first record is the HEADER, required. A
+  field reads the column named for it — a table's rule: the normalized
+  names match (`orderId` reads `Order ID`), `[<Wire "HEADER">]` matches
+  verbatim. A cell may be QUOTED: inside, a comma is data, `""` is one
+  quote, and a line break belongs to the cell (a record can span
+  lines). Cells are `string`/`int`/`float`/`bool`/`Uuid`, or `Option`
+  of one; an `Instant`/`Duration`/`Size` field needs the wire attribute
+  it needs for json (`[<Iso8601>]`, `[<Millis>]`, `[<ByteCount>]`…);
+  records, seqs and unions are refused at CHECK. An EMPTY cell is None
+  for an Option, `""` for a string, an error elsewhere. A column no
+  field names is ignored; a field with no column must be an Option.
+  Nothing is guessed: a wrong cell count, an unparseable cell, a stray
+  or unclosed quote raises naming line and column. `to csv` writes the
+  header then a record per element, columns in the type's DECLARED
+  field order (an anonymous record's: alphabetical), quoting a cell
+  that needs it; None is an empty cell. No `seq`/`stream`/`Map` around
+  the type. `#infer <src> |> from csv as Row` drafts the record.
+
+```weir
+type Order = { orderId: int; customer: string; qty: int; note: Option<string> }
+let orders = ["Order ID,customer,qty,note"; "1,\"Smith, J.\",3,rush"; "2,Lee,10,"] |> from csv Order
+orders |> Seq.iter (fun o -> print $"{o.orderId} {o.customer} {o.qty} {o.note}")
+orders |> Seq.where (fun o -> o.qty > 5) |> to csv |> Seq.iter print
+```
+```weir-error
+// a row with the wrong number of cells is an error, never a guess
+type P = { a: int; b: int }
+["a,b"; "1,2,3"] |> from csv P |> Seq.iter (fun p -> print $"{p.a}")
 ```
 - ALIGNED TABLES are a read-only typed boundary [D:from-table]:
   `from table T` reads kubectl/docker-style output — one header row,

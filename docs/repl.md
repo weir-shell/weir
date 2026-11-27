@@ -398,7 +398,7 @@ defined: Pods, Metadata, Status (3 types)
 weir> raw |> from json Pods |> _.items |> Seq.map _.⟨TAB⟩
 ```
 
-`#infer <source> |> from <json|jsonl|yaml|table> as <Name>` reads as
+`#infer <source> |> from <json|jsonl|yaml|table|csv> as <Name>` reads as
 the language does, with `as <Name>` where the type would stand. It
 evaluates the source once, parses it in that format, derives named
 `type` declarations from it, and adds them to the session as if you

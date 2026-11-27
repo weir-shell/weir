@@ -5672,7 +5672,7 @@ echo "e2e ok: commit-area check — correct passes, wrong/subset/missing fail, t
     git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "docs: an unmapped root file"
     echo f >> docs/GUIDE.md
     git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "fix: a retired type prefix"
-    echo n > src/Weir/Csv.fs
+    echo n > src/Weir/Unmapped.fs
     git add -A && git -c user.email=ci@ci -c user.name=ci commit -q -m "adapters: an unmapped src file"
 ) >/dev/null 2>&1
 h_unsrc=$(git -C "$cadir" log --format=%h --grep "unmapped src" -1)
@@ -5680,7 +5680,7 @@ h_unroot=$(git -C "$cadir" log --format=%h --grep "unmapped root" -1)
 h_type=$(git -C "$cadir" log --format=%h --grep "retired type" -1)
 rc=0; unout=$( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_unsrc" 2>&1 ) || rc=$?
 [ "$rc" != "0" ] || fail "an unmapped src file must FAIL"
-echo "$unout" | grep -qF "src/Weir/Csv.fs" || fail "the unmapped-src failure names the file: $unout"
+echo "$unout" | grep -qF "src/Weir/Unmapped.fs" || fail "the unmapped-src failure names the file: $unout"
 rc=0; rootout=$( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_unroot" 2>&1 ) || rc=$?
 [ "$rc" = "0" ] || fail "an unmapped root file must PASS on the fallback: $rootout"
 echo "$rootout" | grep -qF "fallback: docs" || fail "the fallback says its name: $rootout"
@@ -7639,6 +7639,36 @@ echo "$tinf" | grep -qF "read the value as 'seq<Pod>'" || fail "#infer it |> fro
 echo "$tinf" | grep -qF '"1" : string' || fail "the injected type must read typed rows: $tinf"
 echo "$tinf" | grep -qF "'Yaml' is a built-in type" || fail "the as-name guard must refuse a builtin landing: $tinf"
 echo "e2e ok: #infer it |> from table — drafts, injects, reads in one session; the as-name guard holds"
+
+# --- the CSV boundary [D:csv-adapter]: a file read into typed rows —
+# quoted cells with a comma, a doubled quote and a line break, CRLF line
+# ends and a byte-order mark, an Option column — filtered, written back
+# and read again; a malformed record refuses naming its line; #infer
+# drafts the row record in the REPL
+csvdir=$(mkweirtmp)
+printf '\357\273\277Order ID,customer,qty,note\r\n1,"Smith, J.",3,"said ""rush"""\r\n2,Lee,10,\r\n3,"two\nlines",7,x\r\n' > "$csvdir/orders.csv"
+cout=$( cd "$csvdir" && $BIN -e 'type Order = { orderId: int; customer: string; qty: int; note: Option<string> }
+let orders = File.read "orders.csv" |> from csv Order |> Seq.freeze
+print $"{Seq.length orders} rows; first: {(Seq.head orders).customer} / {(Seq.head orders).note}"
+orders |> Seq.where (fun o -> o.qty > 5) |> to csv |> File.write "big.csv"
+let back = File.read "big.csv" |> from csv Order |> Seq.freeze
+print $"back: {Seq.length back}; {(Seq.last back).customer |> Str.replace "\n" "/"}; {(Seq.head back).note}"' 2>&1 ) || fail "csv: the round trip must run: $cout"
+echo "$cout" | grep -qF '3 rows; first: Smith, J. / Some "said \"rush\""' || fail "csv: quoted cells must read whole: $cout"
+echo "$cout" | grep -qF 'back: 2; two/lines; None' || fail "csv: written rows must read back, a line break kept: $cout"
+[ "$(head -1 "$csvdir/big.csv")" = "orderId,customer,qty,note" ] || fail "csv: to csv must head the file with the declared fields: $(head -1 "$csvdir/big.csv")"
+[ "$(sed -n 2p "$csvdir/big.csv")" = "2,Lee,10," ] || fail "csv: an unquoted row must be written bare, None empty: $(sed -n 2p "$csvdir/big.csv")"
+cerr=$( cd "$csvdir" && $BIN -e 'type P = { a: int; b: int }
+["a,b"; "1,2"; "3,4,5"] |> from csv P |> Seq.iter (fun p -> print (show p.a))' 2>&1 ) && fail "csv: a wrong cell count must raise" || true
+echo "$cerr" | grep -qF "from csv: line 3: 3 cell(s), the header has 2" || fail "csv: the refusal must name the line: $cerr"
+cinf=$(printf '%s\n%s\n%s\n%s\n' \
+  'let csample = ["id,Full Name,score,joined"; "1,Ann,9.5,"; "2,Bob,7,2026"]' \
+  '#infer csample |> from csv as Person' \
+  'csample |> from csv Person |> Seq.where (fun p -> p.score > 8.0) |> Seq.map (fun p -> p.fullName) |> Seq.length |> show' \
+  '#quit' | $BIN)
+echo "$cinf" | grep -qF "defined: Person (1 type)" || fail "#infer |> from csv did not define the row type: $cinf"
+echo "$cinf" | grep -qF "column 'joined' has empty cells — drafted Option<int>" || fail "#infer |> from csv lost the Option note: $cinf"
+echo "$cinf" | grep -qF '"1" : string' || fail "the drafted type must read typed rows: $cinf"
+echo "e2e ok: csv — from csv reads quoted, multi-line, CRLF and BOM input into typed rows; to csv writes them back; a bad record names its line; #infer drafts the row [D:csv-adapter]"
 
 # structural walks [D:structural-walk]: Graph.reach over a dep graph
 # (cycle-safe, breadth-first, each node once) and Tree.walk's

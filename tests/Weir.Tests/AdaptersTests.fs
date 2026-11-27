@@ -8439,6 +8439,266 @@ let qualifiedTypeNameTests =
         }
     ]
 
+let csvTests =
+    // the CSV boundary [D:csv-adapter]
+    let tenv =
+        env
+        |> declare "type COrder = { orderId: int; customer: string; qty: int; price: float; note: Option<string> }"
+        |> declare "type CWire = { [<Wire \"Order ID\">] id: int; ok: bool; extra: Option<int> }"
+        |> declare
+            "type CWhen = { id: Uuid; [<Iso8601>] at: Instant; [<Millis>] took: Duration; [<ByteCount>] size: Option<Size> }"
+        |> declare "type CText = { a: string; b: string }"
+        |> declare "type CBadSeq = { a: seq<string> }"
+        |> declare "type CBadDur = { took: Duration }"
+        |> declare "type CBadRec = { inner: CText }"
+        |> declare "type CUni = A of int | B"
+        |> declare "type CGen<'a> = { v: 'a }"
+
+    let checkOkC input =
+        match typecheck tenv (parse input) with
+        | Ok te -> te
+        | Error terr -> failtest $"expected Ok, got: {formatError terr}"
+
+    let checkErrC input =
+        match typecheck tenv (parse input) with
+        | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
+        | Error terr -> terr
+
+    let lines (ls: string list) = VSeq(ls |> List.map VStr)
+
+    let runC (src: string list) input =
+        eval (Map.add "src" (lines src) valueEnv) (checkOkC input)
+
+    let raises (src: string list) input =
+        (Expect.throwsC (fun () -> runC src input |> forceSeq |> ignore) id).Message
+
+    let texts (v: Value) =
+        forceSeq v
+        |> List.map (function
+            | VStr s -> s
+            | v -> failtest $"expected a line, got {formatValue v}")
+
+    testList "csv [D:csv-adapter]" [
+        test "the text model: quoting, doubled quotes, a cell across lines, BOM and CRLF, blank lines" {
+            let recs (ls: string list) =
+                Weir.Csv.records (ls |> List.mapi (fun i l -> i + 1, l))
+
+            Expect.equal (recs [ "a,b"; "1,2" ]) (Ok [ 1, [ "a"; "b" ]; 2, [ "1"; "2" ] ]) "plain"
+
+            Expect.equal
+                (recs [ "\"x, y\",\"say \"\"hi\"\"\"" ])
+                (Ok [ 1, [ "x, y"; "say \"hi\"" ] ])
+                "comma and quote in quotes"
+
+            Expect.equal (recs [ "1,\"two"; "lines\",3" ]) (Ok [ 1, [ "1"; "two\nlines"; "3" ] ]) "a cell spans lines"
+
+            Expect.equal
+                (recs [ "\uFEFFa,b\r"; ""; "1,\r" ])
+                (Ok [ 1, [ "a"; "b" ]; 3, [ "1"; "" ] ])
+                "BOM, CR, a blank line"
+
+            Expect.equal (recs [ ",," ]) (Ok [ 1, [ ""; ""; "" ] ]) "empty cells"
+            Expect.equal (recs [ "\"\"" ]) (Ok [ 1, [ "" ] ]) "a quoted empty cell"
+
+            let err (ls: string list) =
+                match recs ls with
+                | Error e -> e
+                | Ok r -> failtest $"expected an error, got {r}"
+
+            Expect.stringContains (err [ "a,b\"c" ]) "line 1, col 4: a quote inside an unquoted cell" "a stray quote"
+            Expect.stringContains (err [ "\"a\"b" ]) "line 1, col 4: text after a closing quote" "text after the quote"
+            Expect.stringContains (err [ "x"; "\"open"; "more" ]) "line 2: a quoted cell is never closed" "unclosed"
+        }
+        test "a cell is quoted exactly when it must be" {
+            Expect.equal (Weir.Csv.line [ "a"; "b c"; "" ]) "a,b c," "plain cells stay bare"
+
+            Expect.equal
+                (Weir.Csv.line [ "x,y"; "say \"hi\""; "two\nlines" ])
+                "\"x,y\",\"say \"\"hi\"\"\",\"two\nlines\""
+                "comma, quote, line break"
+
+            Expect.equal (Weir.Csv.line [ " pad"; "pad " ]) "\" pad\",\"pad \"" "outer space"
+        }
+        test "from csv reads rows by header: normalized names, Wire, extra columns, a missing Option column" {
+            Expect.equal (checkOkC "src |> from csv COrder").Ty (TSeq(TNamed("COrder", []))) "seq<T>"
+
+            Expect.equal
+                (runC
+                    [
+                        "Order ID,qty,customer,price,note,ignored"
+                        "7,3,\"Smith, J.\",9.5,rush,x"
+                        "8,0,Lee,1e2,,"
+                    ]
+                    "src |> from csv COrder")
+                (VSeq [
+                    VRecord(
+                        "COrder",
+                        [
+                            "orderId", VInt 7L
+                            "customer", VStr "Smith, J."
+                            "qty", VInt 3L
+                            "price", VFloat 9.5
+                            "note", VUnion("Some", Some(VStr "rush"))
+                        ]
+                    )
+                    VRecord(
+                        "COrder",
+                        [
+                            "orderId", VInt 8L
+                            "customer", VStr "Lee"
+                            "qty", VInt 0L
+                            "price", VFloat 100.0
+                            "note", VUnion("None", None)
+                        ]
+                    )
+                ])
+                "columns in any order; an extra one ignored; an empty Option cell is None"
+
+            Expect.equal
+                (runC [ "ok,Order ID"; "true,5" ] "src |> from csv CWire")
+                (VSeq [
+                    VRecord("CWire", [ "id", VInt 5L; "ok", VBool true; "extra", VUnion("None", None) ])
+                ])
+                "Wire verbatim; a column the file lacks is None for an Option"
+
+            Expect.equal
+                (runC [ "a,b"; ",x" ] "src |> from csv CText |> Seq.map (fun r -> r.a + \"|\" + r.b)"
+                 |> texts)
+                [ "|x" ]
+                "an empty string cell is \"\""
+
+            Expect.equal (runC [ "a,b" ] "src |> from csv CText |> Seq.length") (VInt 0L) "a header alone is no rows"
+        }
+        test "from csv refuses what it cannot read, naming line and column" {
+            let o = "src |> from csv COrder"
+            let h = "orderId,customer,qty,price,note"
+
+            Expect.stringContains
+                (raises [ h; "1,a,2,3.0,n,extra" ] o)
+                "line 2: 6 cell(s), the header has 5"
+                "a wrong cell count"
+
+            Expect.stringContains
+                (raises [ h; "x,a,2,3.0,n" ] o)
+                "line 2: column 'orderId': expected int, got 'x'"
+                "a bad int"
+
+            Expect.stringContains
+                (raises [ h; "1,a,,3.0,n" ] o)
+                "column 'qty': an empty cell — declare Option<int>"
+                "an empty required cell"
+
+            Expect.stringContains
+                (raises [ "orderId,customer,qty,note"; "1,a,2,n" ] o)
+                "missing column 'price' for field 'price'"
+                "a missing column"
+
+            Expect.stringContains
+                (raises [ "a,a"; "1,2" ] "src |> from csv CText")
+                "the header names 'a' twice"
+                "a repeated header"
+
+            Expect.stringContains (raises [] "src |> from csv CText") "empty input — expected a header row" "no input"
+
+            Expect.stringContains
+                (raises [ "ok,Order ID"; "yes,5" ] "src |> from csv CWire")
+                "expected bool (exactly true/false), got 'yes'"
+                "a bad bool"
+        }
+        test "a header's text is the file's: escaped wherever a message quotes it [D:tty-diag-sanitize]" {
+            let clean (what: string) (m: string) =
+                Expect.isFalse
+                    (m |> Seq.exists (fun c -> System.Char.IsControl c))
+                    $"{what}: no raw control character in {m.Replace('\027', '?')}"
+
+            // still matches field `orderId`: only letters and digits count
+            let hostile = "order\n\027\r\007Id"
+
+            let cell =
+                raises [ $"\"{hostile}\",customer,qty,price,note"; "x,a,2,3.0,n" ] "src |> from csv COrder"
+
+            clean "a cell error's column name" cell
+            Expect.stringContains cell "expected int, got 'x'" "the message is still the cell's"
+
+            let dup = raises [ $"\"{hostile}\",\"{hostile}\""; "1,2" ] "src |> from csv CText"
+            clean "a repeated header" dup
+            Expect.stringContains dup "twice" "the refusal is the duplicate's"
+
+            let long = String.replicate 5000 "h"
+            let dupLong = raises [ $"{long},{long}"; "1,2" ] "src |> from csv CText"
+            Expect.isLessThan dupLong.Length 400 "a huge header cell is excerpted, not reproduced"
+
+            match
+                Weir.Infer.infer Weir.Parser.keywords Set.empty Weir.Infer.Csv "Row" [ $"a,\"{hostile}\""; "1,"; "2,x" ]
+            with
+            | Ok(_, notes) ->
+                for n in notes do
+                    clean "an #infer note" n
+            | Error e -> failtest $"expected a draft, got {e}"
+        }
+        test "from csv and to csv are checked: cell types, the wrap, the write's input" {
+            let says (input: string) (want: string) =
+                Expect.stringContains (checkErrC input).Message want input
+
+            says "src |> from csv CBadSeq" "type seq<string> is not admitted; a CSV cell is"
+            says "src |> from csv CBadRec" "type CText is not admitted"
+
+            says
+                "src |> from csv CBadDur"
+                "a Duration has no one CSV spelling — say which with [<Millis>] or [<Seconds>]"
+
+            says "src |> from csv CUni" "'from csv' needs a row record; 'CUni' is a union"
+            says "src |> from csv seq<CText>" "'from csv CText' already yields seq<CText>"
+            says "src |> from csv" "'from csv' needs a row record name"
+            says "{ a = \"1\"; b = \"2\" } |> to csv" "'to csv' needs a seq of records (a row per element), got CText"
+            says "[1; 2] |> to csv" "'to csv' needs a seq of records (a row per element), got seq<int>"
+            says "[{ a = [\"x\"] }] |> to csv" "type seq<string> is not admitted"
+        }
+        test "to csv writes the header and rows in declared order, quoting what needs it; the round trip holds" {
+            let rows =
+                "[{ orderId = 1; customer = \"Smith, J.\"; qty = 3; price = 9.5; note = Some \"said \\\"hi\\\"\" }; { orderId = 2; customer = \"Lee\"; qty = 10; price = 100.0; note = None }]"
+
+            Expect.equal
+                (runC [] (rows + " |> to csv") |> texts)
+                [
+                    "orderId,customer,qty,price,note"
+                    "1,\"Smith, J.\",3,9.5,\"said \"\"hi\"\"\""
+                    "2,Lee,10,100.0,"
+                ]
+                "declared order, not the literal's or the alphabet's"
+
+            Expect.equal
+                (runC [] (rows + " |> to csv |> from csv COrder |> to csv") |> texts)
+                (runC [] (rows + " |> to csv") |> texts)
+                "what to csv writes, from csv reads back"
+
+            Expect.equal
+                (runC [] "[{| z = 1; a = \" pad \" |}] |> to csv" |> texts)
+                [ "a,z"; "\" pad \",1" ]
+                "an anonymous record: alphabetical"
+
+            Expect.equal
+                (runC [] "[{ a = \"1\"; b = \"2\" }] |> Seq.where (fun r -> r.a == \"zz\") |> to csv"
+                 |> texts)
+                []
+                "no rows, no header"
+        }
+        test "coded cells: Uuid, an Instant, a Duration and a Size cross by their attributes" {
+            let src = [
+                "id,at,took,size"
+                "017f22e2-79b0-7cc3-98c4-dc0c0c07398f,2026-01-02T03:04:05Z,1500,"
+            ]
+
+            Expect.equal
+                (runC src "src |> from csv CWhen |> Seq.map (fun r -> $\"{r.id} {r.at} {r.took} {r.size}\")"
+                 |> texts)
+                [ "017f22e2-79b0-7cc3-98c4-dc0c0c07398f 2026-01-02T03:04:05Z 1.5s None" ]
+                "read"
+
+            Expect.equal (runC src "src |> from csv CWhen |> to csv" |> texts) src "and written back the same"
+        }
+    ]
+
 let fromTableTests =
     // the aligned-table boundary [D:from-table]: fixtures build by
     // padded widths so header offsets and cell offsets agree by

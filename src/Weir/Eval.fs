@@ -4156,6 +4156,167 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
             |> List.toSeq
         )
 
+// ---- the CSV boundary [D:csv-adapter] --------------------------------------
+
+/// read comma-separated records under the declared row record
+/// [D:csv-adapter]: the first record is the header; each field reads the
+/// column named for it ([<Wire "…">] verbatim, otherwise the normalized
+/// names match, as a table's do). A column no field names is ignored; a
+/// field with no column is None when it is an Option and an error
+/// otherwise. An empty cell is None for an Option, "" for a string, and
+/// an error for any other type
+let private csvRows (who: string) (def: RecordDef) (lines: string list) : Value =
+    match Csv.parse (lines |> List.mapi (fun i l -> i + 1, l)) with
+    | Error e -> failwith $"{who}: {e}"
+    | Ok(header, rows) ->
+        let headers = List.toArray header
+        let seen = header |> String.concat ", "
+
+        let fieldCols =
+            def.Fields
+            |> List.map (fun (fname, fty) ->
+                let wire = Types.wireName def fname
+
+                let hasWire =
+                    Map.tryFind fname def.Attrs
+                    |> Option.exists (List.exists (fun (n, _) -> n = "Wire"))
+
+                let hit =
+                    if hasWire then
+                        headers |> Array.tryFindIndex (fun h -> h = wire)
+                    else
+                        headers
+                        |> Array.tryFindIndex (fun h -> h = fname)
+                        |> Option.orElseWith (fun () ->
+                            headers |> Array.tryFindIndex (fun h -> Table.matchKey h = Table.matchKey fname))
+
+                match hit, fty with
+                | None, TNamed("Option", _) -> fname, fty, -1
+                | None, _ ->
+                    let want = if hasWire then $"'{wire}'" else $"'{fname}'"
+
+                    failwith
+                        $"{who}: missing column {want} for field '{fname}' — the header has: {quoteData seen} (declare the field Option to read a file without it)"
+                | Some i, _ -> fname, fty, i)
+
+        let cellValue (line: int) (fname: string) (col: int) (ty: Ty) (raw: string) : Value =
+            // the header is the file's own text [D:tty-diag-sanitize]
+            let at = $"{who}: line {line}: column '{excerpt headers[col]}'"
+
+            let scalar (t: Ty) (s: string) =
+                match t, Types.fieldCodec def fname with
+                | _, Some c ->
+                    let num =
+                        match System.Int64.TryParse s with
+                        | true, n -> Some n
+                        | _ -> None
+
+                    decodeCoded at c (Some s) num
+                | TStr, _ -> VStr s
+                | TInt, _ ->
+                    match System.Int64.TryParse s with
+                    | true, n -> VInt n
+                    | _ -> failwith $"{at}: expected int, got '{quoteData s}'"
+                | TFloat, _ ->
+                    match parseFloat s with
+                    | Ok f -> VFloat f
+                    | Error _ -> failwith $"{at}: expected float, got '{quoteData s}'"
+                | TBool, _ ->
+                    match s with
+                    | "true" -> VBool true
+                    | "false" -> VBool false
+                    | _ -> failwith $"{at}: expected bool (exactly true/false), got '{quoteData s}'"
+                | TUuid, _ ->
+                    match parseUuid s with
+                    | Ok g -> VUuid g
+                    | Error e -> failwith $"{at}: {e}"
+                | t, _ -> unreachable $"the checker restricts CSV cells to scalars: {formatTy t}"
+
+            match ty with
+            | TNamed("Option", [ inner ]) ->
+                if raw = "" then
+                    VUnion("None", None)
+                else
+                    VUnion("Some", Some(scalar inner raw))
+            | TStr when (Types.fieldCodec def fname).IsNone -> VStr raw
+            | t when raw = "" -> failwith $"{at}: an empty cell — declare Option<{formatTy t}> to read it as None"
+            | t -> scalar t raw
+
+        VSeq(
+            rows
+            |> List.map (fun (n, cs) ->
+                let cellArr = List.toArray cs
+
+                VRecord(
+                    def.Name,
+                    fieldCols
+                    |> List.map (fun (fname, fty, i) ->
+                        if i < 0 then
+                            fname, VUnion("None", None)
+                        else
+                            fname, cellValue n fname i fty cellArr[i])
+                ))
+            |> List.toSeq
+        )
+
+/// write records as CSV [D:csv-adapter]: the header, then a record per
+/// element, columns in the declared field order the node carries. A
+/// header is the field's wire name; None is an empty cell
+let private csvLines
+    (renames: Map<string, Map<string, string>>)
+    (codecs: Map<string, Map<string, Codec>>)
+    (rows: seq<Value>)
+    : seq<Value> =
+    let order =
+        Map.tryFind "|csv-order" renames
+        |> Option.defaultValue Map.empty
+        |> Map.toList
+        |> List.map snd
+
+    let rec cell (where: string) (codec: Codec option) (v: Value) : string =
+        match codec, v with
+        | _, VUnion("None", None) -> ""
+        | _, VUnion("Some", Some inner) -> cell where codec inner
+        | Some c, v ->
+            match encodeCoded where c v with
+            | VStr s -> s
+            | VInt n -> string n
+            | other -> unreachable $"a wire codec yields text or an integer, got {formatValue other}"
+        | None, VStr s -> s
+        | None, VInt n -> string n
+        | None, VFloat f -> formatFloat f
+        | None, VBool b -> if b then "true" else "false"
+        | None, VUuid g -> formatUuid g
+        | None, other -> unreachable $"the checker restricts CSV cells to scalars: {formatValue other}"
+
+    seq {
+        let mutable headed = false
+
+        for row in rows do
+            match row with
+            | VRecord(rname, fields) ->
+                if not headed then
+                    headed <- true
+                    let wires = Map.tryFind rname renames |> Option.defaultValue Map.empty
+
+                    yield
+                        VStr(
+                            order
+                            |> List.map (fun f -> Map.tryFind f wires |> Option.defaultValue f)
+                            |> Csv.line
+                        )
+
+                let cods = Map.tryFind rname codecs |> Option.defaultValue Map.empty
+
+                yield
+                    VStr(
+                        order
+                        |> List.map (fun f -> cell $"to csv: field '{f}'" (Map.tryFind f cods) (recGet f fields))
+                        |> Csv.line
+                    )
+            | v -> unreachable $"the checker admits only records at the CSV boundary: {formatValue v}"
+    }
+
 let private lineText (who: string) (l: Value) : string =
     match l with
     | VStr s -> s
@@ -4236,6 +4397,19 @@ let private fromAdapter
                 | TopRec def -> tableRows "from table" def strs
                 | TopUnion _
                 | TopValue _ -> unreachable "the checker admits only records at the table boundary"
+            | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
+    // comma-separated records -> seq<T> [D:csv-adapter]: a quoted cell
+    // may span lines, so the input materializes here
+    | "csv" ->
+        VBuiltin(fun v ->
+            match v with
+            | VSeq lines ->
+                let strs = lines |> Seq.map (lineText "from") |> List.ofSeq
+
+                match top with
+                | TopRec def -> csvRows "from csv" def strs
+                | TopUnion _
+                | TopValue _ -> unreachable "the checker admits only records at the CSV boundary"
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     | f -> unreachable $"the checker rejects unknown format '{f}'"
 
@@ -7359,6 +7533,12 @@ and private evalNode (env: Scope) (te: TypedExpr) : Value =
             match v with
             | VSeq items -> VSeq(items |> Seq.map (encodeTree "jsonl" codecs >> jsonLine renames unions >> VStr))
             | v -> unreachable $"the checker rejects 'to jsonl' on {formatValue v}")
+    | TETo("csv", renames, codecs, _, _, _) ->
+        // a header and a record per element [D:csv-adapter], lazily
+        VBuiltin(fun v ->
+            match v with
+            | VSeq rows -> VSeq(csvLines renames codecs rows)
+            | v -> unreachable $"the checker rejects 'to csv' on {formatValue v}")
     | TETo(fmt, renames, codecs, unions, _, _) ->
         // one document [D:to-jsonl] — the whole value through the same
         // renderer, once; an array document forces its seq (one line

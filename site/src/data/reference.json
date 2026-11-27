@@ -2458,6 +2458,13 @@
       "pointer": null
     },
     {
+      "name": "from csv",
+      "signature": null,
+      "summary": "Parse comma-separated values (RFC 4180) into declared records, giving a seq\u003CT\u003E. The first record is the header, and each field reads the column named for it: a header with spaces or symbols matches a field by its letters and digits (\u0060Order ID\u0060 reads into orderId), or exactly through [\u003CWire \u0022\u2026\u0022\u003E]. A cell may be quoted, and a quoted cell can hold commas, quotes (written \u0022\u0022) and line breaks. Cells are string, int, float, bool or Uuid, an Instant, Duration or Size carrying its wire attribute, or Option of one of those: an empty cell is None for an Option and \u0022\u0022 for a string. A column no field names is ignored; a field with no column must be an Option. A record with the wrong number of cells, or a cell that does not parse, raises naming the line and the column.",
+      "example": null,
+      "pointer": "Use it as a pipe stage: \u0060File.read \u0022orders.csv\u0022 |\u003E from csv Order\u0060. \u0060#infer \u2026 |\u003E from csv as Order\u0060 drafts the record from a sample."
+    },
+    {
       "name": "from json",
       "signature": null,
       "summary": "Parse one JSON document, which may span several lines (so a pretty-printed HTTP body can be piped straight in), into a declared record. Fields can be int, string, bool, float, or an Option of one of those; a missing key or null becomes None.",
@@ -2631,6 +2638,13 @@
       "summary": "Run the command and return its whole output as one string: lines joined with newlines, trailing blank lines dropped (like bash\u0027s \u0060$(\u2026)\u0060). Raises on a nonzero exit.",
       "example": null,
       "pointer": "To keep the exit code instead of raising, use \u0060| complete\u0060."
+    },
+    {
+      "name": "to csv",
+      "signature": null,
+      "summary": "Write a sequence of records as comma-separated values (RFC 4180), lazily: a header row, then one record per element, with the columns in the order the type declares its fields. A cell holding a comma, a quote, a line break or outer spaces is quoted; None is an empty cell.",
+      "example": null,
+      "pointer": "Use it as a pipe stage: \u0060orders |\u003E to csv |\u003E File.write \u0022orders.csv\u0022\u0060."
     },
     {
       "name": "to json",

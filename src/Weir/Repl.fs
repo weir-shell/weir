@@ -3846,7 +3846,7 @@ let sessionForTest () : (string -> string) * (unit -> TypeEnv) =
 /// split "src from fmt as Name" on the literal markers; source may be
 /// empty (defaults to `it`). Returns (source, format, name) or an error.
 let private inferUsage =
-    "#infer <source> |> from <json|jsonl|yaml|table> as <Name> (the last result is 'it')"
+    "#infer <source> |> from <json|jsonl|yaml|table|csv> as <Name> (the last result is 'it')"
 
 // the directive reads as the language does [D:infer-piped]: a source
 // piped into the adapter, `as <Name>` where the type would stand. The
@@ -4009,7 +4009,7 @@ let private autoTypeName (taken: Set<string>) : string =
     $"Type{n}"
 
 let private inferLetUsage =
-    "#infer let <name> = <source> |> from <json|jsonl|yaml|table> as <Name|_>"
+    "#infer let <name> = <source> |> from <json|jsonl|yaml|table|csv> as <Name|_>"
 
 let private isBinderName (s: string) =
     s <> ""
@@ -4067,6 +4067,7 @@ let private bindParsed
         | Infer.Jsonl -> "jsonl"
         | Infer.Yaml -> "yaml"
         | Infer.Table -> "table"
+        | Infer.Csv -> "csv"
 
     let hidden =
         let free (n: string) =
@@ -4160,12 +4161,13 @@ let private reportDrafted (decls: string list) (defined: string list) (notes: In
 
     Console.WriteLine $"""defined: {String.concat ", " defined} ({count} type{if count = 1 then "" else "s"})"""
 
+    // a note may quote the sample's own text [D:tty-diag-sanitize]
     for n in notes do
-        Console.WriteLine $"  note: {n}"
+        diagLine $"  note: {n}"
 
 let private inferLetDirective (state: State) (rest: string) : State =
     let fail (msg: string) =
-        Console.WriteLine msg
+        diagLine msg
         state
 
     match parseInferLet rest with
@@ -4192,7 +4194,8 @@ let private inferLetDirective (state: State) (rest: string) : State =
                     // seq<T> with the bare name in the slot
                     let inferred =
                         match fmt with
-                        | Infer.Table ->
+                        | Infer.Table
+                        | Infer.Csv ->
                             Infer.infer Parser.keywords taken fmt name lines
                             |> Result.map (fun (decls, notes) -> decls, notes, name)
                         | _ ->
@@ -4233,7 +4236,7 @@ let private inferDirective (state: State) (rest: string) : State =
         inferLetDirective state rest
     else
         let fail (msg: string) =
-            Console.WriteLine msg
+            diagLine msg
             state
 
         match parseInfer rest with

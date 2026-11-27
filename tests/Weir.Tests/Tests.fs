@@ -108,6 +108,7 @@ let allTests =
         recordKeysTests
         yamlSeqTests
         fromTableTests
+        csvTests
         anonRecordTests
         anonLiteralTests
         mapStringTests

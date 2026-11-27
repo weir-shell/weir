@@ -332,7 +332,7 @@ send({"jsonrpc": "2.0", "id": 47, "method": "textDocument/completion",
       "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 20}}})
 comp = read_msg()
 labels = [c["label"] for c in comp["result"]]
-expect(labels == ["json", "jsonl", "yaml"], f"to-adapter slot must offer exactly the writers: {labels[:10]}")
+expect(labels == ["csv", "json", "jsonl", "yaml"], f"to-adapter slot must offer exactly the writers: {labels[:10]}")
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",
       "params": {"textDocument": {"uri": URI},
                  "contentChanges": [{"text": "let out = [1] |> to jsonl\nout |> Seq.iter print\n"}]}})

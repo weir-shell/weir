@@ -61,8 +61,8 @@ A keyword can't be used as a name — `let let = 1` is refused with
 | reserved for a helpful error | `return`, `while` |
 
 After `within` comes the kind of scope: `cd`, `env`, `lock`, `proc`, `serve`, `tmp`.
-Data is read with `from` (`json`, `jsonl`, `table`, `toml`, `xml`, `yaml`) and written with `to`
-(`json`, `jsonl`, `yaml`). A `within`'s block may end with `until stopped`.
+Data is read with `from` (`csv`, `json`, `jsonl`, `table`, `toml`, `xml`, `yaml`) and written with `to`
+(`csv`, `json`, `jsonl`, `yaml`). A `within`'s block may end with `until stopped`.
 These words are special only in those positions; anywhere else they are
 ordinary names.
 
