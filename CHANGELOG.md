@@ -26,6 +26,18 @@
   `==` on floats or sorting tuples got through. All three are now
   check errors, as their top-level forms already were.
 
+- **REPL: Ctrl+C with the cursor in the middle of the buffer** no
+  longer writes `^C` over the text or erases the lines below it.
+- **REPL: pasting text with Windows line ends** no longer puts a blank
+  line between every line.
+- **REPL: Tab inside an anonymous record** (`{| n = a.`) offers the
+  fields again, and no longer completes the first field name to a
+  word like `complete`; the name is no longer painted red.
+- **REPL: a multi-line draft stays multi-line** after pressing Up and
+  then Down; Enter adds a line as it did before.
+- **REPL: Ctrl+C during a long echo** is no longer reported as
+  `exit 130` when the entry has several statements.
+
 ## v0.0.101
 
 ### Added
