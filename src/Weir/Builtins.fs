@@ -3568,6 +3568,23 @@ module private AppendNative =
         nativeint lpOverlapped
     )
 
+    [<System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)>]
+    extern bool private SetFilePointerEx(nativeint hFile, int64 distance, nativeint newPointer, uint moveMethod)
+
+    // an ordinary write handle with its pointer moved to the end, for a
+    // child to inherit as stdout — cmd's `>>` [D:into-file]
+    let openAtEndWindows (path: string) : Microsoft.Win32.SafeHandles.SafeFileHandle =
+        let h =
+            File.OpenHandle(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite)
+
+        // FILE_END = 2
+        if not (SetFilePointerEx(h.DangerousGetHandle(), 0L, 0n, 2u)) then
+            let e = System.Runtime.InteropServices.Marshal.GetLastPInvokeError()
+            h.Dispose()
+            raise (IOException $"seek to the end failed (win32 {e})")
+
+        h
+
     // append-only access: every write through the handle lands at the end,
     // whoever holds it
     let openAppendWindows (path: string) : Microsoft.Win32.SafeHandles.SafeFileHandle =
@@ -9722,7 +9739,7 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
             "bytes",
             bd
                 "Run the command and return its output as Bytes, exactly as the program wrote it — nothing is decoded as text or split into lines. For a binary or encoding-sensitive result small enough to hold in memory: a digest, a key, an image. Raises on a nonzero exit."
-                (Some "let b = echo hi | bytes\nprint (Bytes.toHex b)")
+                None
                 (Some "A large output belongs in a file: `<command> | into path`. For text use `| text` or `| line`.")
             "into",
             bd
@@ -10122,7 +10139,7 @@ let private intoRun (destV: Value) (specs: Proc.Spec list) : Value =
                     File.OpenHandle(r, FileMode.Create, FileAccess.Write, FileShare.Read)
                 elif System.OperatingSystem.IsWindows() then
                     // an Append-mode handle's pointer starts at 0 for a child
-                    AppendNative.openAppendWindows r
+                    AppendNative.openAtEndWindows r
                 else
                     AppendNative.openAppend r
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.0.101
+
+### Fixed
+
+- **`| into append` works on Windows.** It failed there in 0.0.100;
+  the file is now opened the way `cmd`'s `>>` opens it.
+
 ## v0.0.100
 
 ### Added

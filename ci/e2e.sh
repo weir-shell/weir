@@ -926,13 +926,13 @@ print "done"' > into.out 2>&1 ) || fail "| into must run: $(cat "$intodir/into.o
 [ "$(cat "$intodir/into.out")" = "done" ] || fail "| into prints nothing of its own: $(cat "$intodir/into.out")"
 ( cd "$intodir" && $BIN -e 'printf "xy" | into "raw.bin"
 printf "z" | into append "raw.bin"
-print "ok"' > /dev/null 2>&1 ) || fail "| into append must run"
+print "ok"' > into.out 2>&1 ) || fail "| into append must run: $(cat "$intodir/into.out")"
 [ "$(cat "$intodir/raw.bin")" = "xyz" ] || fail "| into replaces, | into append adds: $(od -An -c "$intodir/raw.bin")"
 ( cd "$intodir" && $BIN -e 'sh -c "printf \"b\na\n\"" | sort | tr a-z A-Z | into "chain.txt"
 ["q"; "r"] | grep r | into "head.txt"
 let p = "env.txt"
 INTO_E2E=seen printenv INTO_E2E | into p
-print "ok"' > /dev/null 2>&1 ) || fail "| into after a chain, a value head and an env prefix must run"
+print "ok"' > into.out 2>&1 ) || fail "| into after a chain, a value head and an env prefix must run: $(cat "$intodir/into.out")"
 [ "$(cat "$intodir/chain.txt")" = "A
 B" ] || fail "| into after a chain: $(cat "$intodir/chain.txt")"
 [ "$(cat "$intodir/head.txt")" = "r" ] || fail "| into with a value head: $(cat "$intodir/head.txt")"

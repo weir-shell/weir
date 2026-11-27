@@ -2405,7 +2405,7 @@
       "name": "bytes",
       "signature": null,
       "summary": "Run the command and return its output as Bytes, exactly as the program wrote it \u2014 nothing is decoded as text or split into lines. For a binary or encoding-sensitive result small enough to hold in memory: a digest, a key, an image. Raises on a nonzero exit.",
-      "example": "let b = echo hi | bytes\nprint (Bytes.toHex b)",
+      "example": null,
       "pointer": "A large output belongs in a file: \u0060\u003Ccommand\u003E | into path\u0060. For text use \u0060| text\u0060 or \u0060| line\u0060."
     },
     {
