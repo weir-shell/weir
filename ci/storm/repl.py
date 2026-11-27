@@ -74,10 +74,15 @@ def start(binp, d, buf, stderr=None):
     return storm.TtyProc([binp], env, buf, d, stderr=stderr)
 
 def type_entry(p, lines):
-    # one write, Alt+Enter between lines: queued input keeps its own
-    # indentation, a typed newline would carry the previous line's
-    # [D:repl-autoindent]
-    p.key(b'\x1b\r'.join(l.encode() for l in lines) + b'\r')
+    # one write: Alt+Enter after the first line opens a composed entry,
+    # Enter adds each later line, Alt+Enter runs it [D:repl-compose].
+    # Queued input keeps its own indentation, a typed newline would carry
+    # the previous line's [D:repl-autoindent]
+    enc = [l.encode() for l in lines]
+    if len(enc) == 1:
+        p.key(enc[0] + b'\r')
+    else:
+        p.key(enc[0] + b'\x1b\r' + b'\r'.join(enc[1:]) + b'\x1b\r')
 
 def calibrate(a, name):
     d = os.path.join(a.out, 'calib-' + name)
