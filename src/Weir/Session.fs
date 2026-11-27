@@ -431,6 +431,51 @@ module private ProcTree =
             ]
         with _ -> []
 
+    // a task's state letter in /proc/PID/task/TID/stat, the field after
+    // the parenthesized name; ' ' when the task is gone
+    let private taskState (statPath: string) : char =
+        try
+            let stat = System.IO.File.ReadAllText statPath
+            let close = stat.LastIndexOf ')'
+
+            if close >= 0 && close + 2 < stat.Length then
+                stat[close + 2]
+            else
+                ' '
+        with _ ->
+            ' '
+
+    // SIGSTOP is delivered, not instantaneous [D:tree-kill-stop-settles]:
+    // a task on another CPU runs on until the signal reaches it, and a
+    // fork already under way completes. The children are listed only once
+    // every task of the process is stopped, dead or gone — bounded, so a
+    // process that will not stop delays the kill by milliseconds, no more
+    let private settleStop (pid: int) : unit =
+        let stopped () =
+            try
+                System.IO.Directory.EnumerateDirectories $"/proc/{pid}/task"
+                |> Seq.forall (fun task ->
+                    match taskState (System.IO.Path.Combine(task, "stat")) with
+                    | 'T'
+                    | 't'
+                    | 'Z'
+                    | 'X'
+                    | ' ' -> true
+                    | _ -> false)
+            with _ ->
+                true
+
+        let clock = System.Diagnostics.Stopwatch.StartNew()
+        let mutable spins = 0
+
+        while not (stopped ()) && clock.ElapsedMilliseconds < 50L do
+            spins <- spins + 1
+
+            if spins < 20 then
+                System.Threading.Thread.Yield() |> ignore
+            else
+                System.Threading.Thread.Sleep 1
+
     // stop each process before listing its children (a stopped parent
     // forks no more and reaps none, so no pid in the walk is reused),
     // then kill leaves first, as Kill(true) stops then kills
@@ -441,6 +486,7 @@ module private ProcTree =
         let rec walk (pid: int) =
             if seen.Add pid then
                 kill (pid, SIGSTOP) |> ignore
+                settleStop pid
                 order.Add pid
 
                 for c in childrenOf pid do

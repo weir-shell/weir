@@ -32,6 +32,11 @@
   the prompt came back, and Ctrl+C did nothing until it finished. It
   now stops the printing at the next line and says so; the value stays
   bound.
+- **Killing a command's process tree no longer has a window for a
+  just-forked child to escape (Linux).** Weir stops each process
+  before listing its children, but listed them before the stop had
+  taken effect, so a child forked in that instant could be missed and
+  left running. It now waits for the stop first.
 - **`| into append` works on Windows.** It failed there in 0.0.100;
   the file is now opened the way `cmd`'s `>>` opens it.
 
