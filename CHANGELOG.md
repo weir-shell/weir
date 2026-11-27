@@ -17,6 +17,15 @@
 - **`File.readBytesAt` honours its offset on `/proc` and `/sys`
   files**, which report a length of zero.
 
+- **Three cases where `weir check` passed a program that then failed
+  at run time.** A helper defined with `let` inside a function or a
+  `let … in` could take any argument where it spliced it into a
+  command or handed it to `print`; the predicate of `until r` could
+  use `r` at a type the body does not have; and in
+  `let (eq, ne) = …` the second name lost the first's restriction, so
+  `==` on floats or sorting tuples got through. All three are now
+  check errors, as their top-level forms already were.
+
 ## v0.0.101
 
 ### Added

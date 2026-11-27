@@ -274,6 +274,7 @@ let allTests =
         pipeChainTests
         armBlockTests
         holeGenericTests
+        pendingMonoTests
         tildeLiteralTests
         tildeTests
         aliasCompleteTests

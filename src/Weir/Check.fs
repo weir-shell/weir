@@ -1135,8 +1135,24 @@ let private envFreeVars (ctx: Ctx) (env: TypeEnv) : Set<string> =
         |> Map.fold (fun acc _ (sch: Scheme) -> acc + (tyVars (finalTy ctx sch.Ty) - sch.Forall)) Set.empty
     // an undecided `+` keeps its vars monomorphic [D:plus-defer]: a
     // later use in the statement may still decide it
-    ctx.AddsOpen
-    |> Map.fold (fun acc _ (_, tys) -> tys |> List.fold (fun a t -> a + tyVars (finalTy ctx t)) acc) fromEnv
+    let adds =
+        ctx.AddsOpen
+        |> Map.fold (fun acc _ (_, tys) -> tys |> List.fold (fun a t -> a + tyVars (finalTy ctx t)) acc) fromEnv
+
+    // so do an argv splice and a point-free print awaiting the boundary
+    // [D:pending-stays-mono]: a generalized copy would escape their law
+    let splices =
+        ctx.PendingSplices
+        |> List.fold
+            (fun acc (v, _, site) ->
+                if site = CmdArg then
+                    acc + tyVars (finalTy ctx (TVar v))
+                else
+                    acc)
+            adds
+
+    ctx.PendingPrints
+    |> List.fold (fun acc (v, _) -> acc + tyVars (finalTy ctx (TVar v))) splices
 
 // The class solver. Concrete types run the shape predicate; applied
 // constructors decompose structurally; bare vars (and row vars) carry
@@ -3689,7 +3705,7 @@ let private rowOriginsFor (ctx: Ctx) (vars: Set<string>) : Map<string, (string *
 // (removed from ctx). Shared by both ELet arms and the binding case
 // below, so a scooping fix cannot land in one copy and miss the
 // others (that would be a silent generalization bug).
-let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
+let private schemeBeyondEnv (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
     let fa = tyVars valueTy - envFreeVars ctx env
     let origins = rowOriginsFor ctx fa
 
@@ -3701,9 +3717,6 @@ let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
             |> Option.map (fun ps -> v, ps |> List.map _.Cls |> Set.ofList))
         |> Map.ofList
 
-    // scooped constraints move into the scheme
-    ctx.Cons <- cs |> Map.fold (fun m v _ -> mapDrop v m) ctx.Cons
-
     {
         Forall = fa
         Cs = cs
@@ -3712,11 +3725,39 @@ let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
         HoleDefaults = []
     }
 
+// a scheme's vars leave the statement's ctx [D:pending-stays-mono]: the
+// scooped constraints move into the scheme, and a hole on a generalized
+// var keeps its Render constraint there, so the boundary's string default
+// is no longer owed [D:hole-generic]
+let private releaseScooped (ctx: Ctx) (schemes: Scheme list) : unit =
+    let fa = schemes |> List.fold (fun acc sch -> acc + sch.Forall) Set.empty
+
+    if not fa.IsEmpty then
+        ctx.Cons <- fa |> Set.fold (fun m v -> mapDrop v m) ctx.Cons
+
+        if not ctx.PendingSplices.IsEmpty then
+            ctx.PendingSplices <-
+                ctx.PendingSplices
+                |> List.filter (fun (v, _, site) ->
+                    match site, resolve ctx (TVar v) with
+                    | Hole, TVar u -> not (fa.Contains u)
+                    | _ -> true)
+
+let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
+    let sch = schemeBeyondEnv ctx env valueTy
+    releaseScooped ctx [ sch ]
+    sch
+
 // per-name generalization for destructuring binders: each bound name's
-// type generalizes independently against the env (constraints scooped
-// per name from the shared ctx) — generalizeLet's per-name sibling
-let private generalizeBinding (ctx: Ctx) (env: TypeEnv) (name: string, ty: Ty) : string * Scheme =
-    name, generalizeLet ctx env (finalTy ctx ty)
+// type generalizes independently against the env; a constraint on a var
+// two names share rides both schemes [D:pending-stays-mono]
+let private generalizeBindings (ctx: Ctx) (env: TypeEnv) (binds: (string * Ty) list) : (string * Scheme) list =
+    let schemes =
+        binds
+        |> List.map (fun (name, ty) -> name, schemeBeyondEnv ctx env (finalTy ctx ty))
+
+    releaseScooped ctx (schemes |> List.map snd)
+    schemes
 
 // A column's constructor signature for the pattern-matrix walk: a closed
 // set (bool, a union, a tuple's one constructor, a seq's []/cons) or
@@ -4520,7 +4561,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             body.Span
                             $"this {head} body yields bool, so it IS the predicate — drop the until segment (a different condition belongs in the body itself)"
                 | bodyTy ->
-                    let env' = bindValue b (generalize bodyTy) env
+                    let env' = bindValue b (mono bodyTy) env
 
                     do! checkBinderName bs b
 
@@ -4856,7 +4897,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                     do! bind ctx env pat.PSpan shape tvalue.Ty
 
-                    return binds |> List.map (generalizeBinding ctx env), tvalue
+                    return generalizeBindings ctx env binds, tvalue
                 }
                 |> recoverLetPat ctx pat value.Span
 
@@ -8489,7 +8530,7 @@ let typecheckBinderCore
             - envFreeVars ctx env
 
         do! resolvePendingSplices ctx env generic
-        let schemes = binds |> List.map (generalizeBinding ctx env)
+        let schemes = generalizeBindings ctx env binds
         let te = finalizeExpr ctx te
 
         let stranded =
