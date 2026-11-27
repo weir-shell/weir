@@ -1726,6 +1726,35 @@ let typeDefFor (env: TypeEnv) (name: string) : TypeDef option =
         | true, d -> Some d
         | _ -> None
 
+#if WEIR_MONITOR
+// the declared types the conformance monitor reads [D:type-monitor]: every
+// def a check saw, by name — two modules' same-named types both stay
+module MonitorDefs =
+    let private defs =
+        System.Collections.Concurrent.ConcurrentDictionary<string, TypeDef list>()
+
+    let mutable private last: obj = null
+
+    let private add (name: string) (d: TypeDef) : unit =
+        defs.AddOrUpdate(name, [ d ], (fun _ ds -> if List.contains d ds then ds else d :: ds))
+        |> ignore
+
+    let note (env: TypeEnv) : unit =
+        if not (obj.ReferenceEquals(env.Types, last)) then
+            last <- env.Types
+
+            for KeyValue(n, d) in env.Types do
+                add n d
+
+        for KeyValue(n, d) in env.AnonLitDefs do
+            add n d
+
+    let find (name: string) : TypeDef list =
+        match defs.TryGetValue name with
+        | true, ds -> ds
+        | _ -> []
+#endif
+
 let editDistance (a: string) (b: string) : int =
     let d = Array2D.create (a.Length + 1) (b.Length + 1) 0
 

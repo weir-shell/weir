@@ -7159,6 +7159,241 @@ let private deleteTreeQuiet (dir: string) : unit =
     with _ ->
         ()
 
+#if WEIR_MONITOR
+// the type-conformance monitor [D:type-monitor]: this build checks every
+// node's value against the node's type, head only, never forcing; findings
+// go to a file under WEIR_MONITOR_OUT and eval carries on
+module Monitor =
+    open System.Collections.Generic
+    open System.Threading
+
+    let private dir = System.Environment.GetEnvironmentVariable "WEIR_MONITOR_OUT"
+    let private enabled = not (System.String.IsNullOrEmpty dir)
+
+    let private control =
+        System.Environment.GetEnvironmentVariable "WEIR_MONITOR_CONTROL" = "1"
+
+    let mutable private concrete = 0L
+    let mutable private row = 0L
+    let mutable private wildcard = 0L
+    let mutable private frozenLists = 0L
+    let mutable private frozenConcrete = 0L
+    let mutable private frozenWildcard = 0L
+    let mutable private hooked = 0
+    let mutable private flushed = 0
+    let private gate = obj ()
+    let private skipped = Dictionary<string, int64>()
+    let private alarms = Dictionary<string, struct (int64 * string)>()
+    let private frozenAlarms = Dictionary<string, struct (int64 * string)>()
+
+    let private seen =
+        System.Runtime.CompilerServices.ConditionalWeakTable<obj, HashSet<Ty>>()
+
+    [<Struct>]
+    type private Outcome =
+        | Fits
+        | RowFits
+        | Wild
+        | Skip of name: string
+        | Bad of detail: string
+
+    let private tag (v: Value) : string =
+        if obj.ReferenceEquals(v, null) then
+            "null"
+        else
+            match v with
+            | VInt _ -> "VInt"
+            | VFloat _ -> "VFloat"
+            | VDur _ -> "VDur"
+            | VInstant _ -> "VInstant"
+            | VUuid _ -> "VUuid"
+            | VSize _ -> "VSize"
+            | VBytes _ -> "VBytes"
+            | VStr _ -> "VStr"
+            | VSecret _ -> "VSecret"
+            | VBool _ -> "VBool"
+            | VUnit -> "VUnit"
+            | VRecord _ -> "VRecord"
+            | VUnion _ -> "VUnion"
+            | VSeq _ -> "VSeq"
+            | VMap _ -> "VMap"
+            | VTuple _ -> "VTuple"
+            | VClosure _ -> "VClosure"
+            | VClosurePat _ -> "VClosurePat"
+            | VBuiltin _ -> "VBuiltin"
+            | VProc _ -> "VProc"
+            | VServer _ -> "VServer"
+
+    let private head (ty: Ty) : string =
+        match ty with
+        | TFun _ -> "fun"
+        | TSeq _ -> "seq"
+        | TTuple es -> $"tuple{es.Length}"
+        | TNamed(n, _) -> n
+        | TVar _ -> "'var"
+        | TRowVar _ -> "{..}"
+        | t -> formatTy t
+
+    let private names (fs: (string * 'a) list) : string =
+        fs |> List.map fst |> List.sort |> String.concat ","
+
+    let private fitsDef (v: Value) (d: TypeDef) : bool =
+        match d, v with
+        | Record r, VRecord(n, fs) -> n = r.Name && names fs = names r.Fields
+        | Union u, VUnion(c, p) -> u.Cases |> List.exists (fun (cn, cp) -> cn = c && cp.IsSome = p.IsSome)
+        | _ -> false
+
+    let private describe (v: Value) : string =
+        match v with
+        | VRecord(n, fs) -> $"record '{n}' {{{names fs}}}"
+        | VUnion(c, p) -> if p.IsSome then $"case {c} with a payload" else $"case {c}"
+        | VTuple vs -> $"tuple of {vs.Length}"
+        | _ -> tag v
+
+    let private conforms (ty: Ty) (v: Value) : Outcome =
+        if obj.ReferenceEquals(v, null) then
+            Bad "null"
+        else
+            match ty, v with
+            | TVar _, _ -> Wild
+            | TInt, VInt _
+            | TFloat, VFloat _
+            | TStr, VStr _
+            | TBool, VBool _
+            | TUnit, VUnit
+            | TDur, VDur _
+            | TInstant, VInstant _
+            | TUuid, VUuid _
+            | TSize, VSize _
+            | TBytes, VBytes _
+            | TSecret, VSecret _
+            | TSeq _, VSeq _
+            | TFun _, (VClosure _ | VClosurePat _ | VBuiltin _)
+            | TNamed("Map", _), VMap _
+            | TNamed("Proc", _), VProc _
+            | TNamed("Server", _), VServer _
+            | TNamed("Option", _), (VUnion("Some", Some _) | VUnion("None", None))
+            | TNamed("Result", _), VUnion(("Ok" | "Error"), Some _) -> Fits
+            | TTuple es, VTuple vs when es.Length = vs.Length -> Fits
+            | TRowVar(_, fs), VRecord(_, vfs) ->
+                if fs |> List.forall (fun (f, _) -> vfs |> List.exists (fun (n, _) -> n = f)) then
+                    RowFits
+                else
+                    Bad $"{describe v} lacks a field of {{{names fs}}}"
+            | TNamed(n, _), _ when n <> "Map" && n <> "Option" && n <> "Result" && n <> "Proc" && n <> "Server" ->
+                match MonitorDefs.find n with
+                | [] -> Skip $"no-def:{n}:{tag v}"
+                | ds when ds |> List.exists (fitsDef v) -> Fits
+                | _ -> Bad(describe v)
+            | _ -> Bad(describe v)
+
+    let private trace =
+        System.Environment.GetEnvironmentVariable "WEIR_MONITOR_TRACE" = "1"
+
+    let private bump (d: Dictionary<string, struct (int64 * string)>) (key: string) (example: unit -> string) =
+        lock gate (fun () ->
+            match d.TryGetValue key with
+            | true, struct (n, ex) -> d[key] <- struct (n + 1L, ex)
+            | _ ->
+                let where =
+                    if trace then
+                        " @ "
+                        + System.Environment.StackTrace.Replace('\n', '|').Replace('\t', ' ').Replace('\r', ' ')
+                    else
+                        ""
+
+                d[key] <- struct (1L, example () + where))
+
+    let private flush () : unit =
+        if Interlocked.Exchange(&flushed, 1) = 0 then
+            try
+                let lines = ResizeArray<string>()
+                let argv = System.Environment.GetCommandLineArgs() |> String.concat " "
+                lines.Add $"argv\t{argv.Replace('\t', ' ').Replace('\n', ' ')}"
+                lines.Add $"count\tconcrete\t{concrete}"
+                lines.Add $"count\trow\t{row}"
+                lines.Add $"count\twildcard\t{wildcard}"
+                lines.Add $"count\tfrozen-lists\t{frozenLists}"
+                lines.Add $"count\tfrozen-concrete\t{frozenConcrete}"
+                lines.Add $"count\tfrozen-wildcard\t{frozenWildcard}"
+
+                lock gate (fun () ->
+                    for KeyValue(k, n) in skipped do
+                        lines.Add $"skip\t{k}\t{n}"
+
+                    for KeyValue(k, struct (n, ex)) in alarms do
+                        lines.Add $"alarm\t{k}\t{n}\t{ex}"
+
+                    for KeyValue(k, struct (n, ex)) in frozenAlarms do
+                        lines.Add $"frozen\t{k}\t{n}\t{ex}")
+
+                System.IO.Directory.CreateDirectory dir |> ignore
+
+                let name =
+                    $"{System.Environment.ProcessId}-{System.Diagnostics.Stopwatch.GetTimestamp()}.tsv"
+
+                System.IO.File.WriteAllLines(System.IO.Path.Combine(dir, name), lines)
+            with _ ->
+                ()
+
+    let private probeFrozen (te: TypedExpr) (elem: Ty) (items: Value list) : unit =
+        let fresh =
+            lock gate (fun () ->
+                let set = seen.GetValue(box items, fun _ -> HashSet<Ty>())
+                set.Add elem)
+
+        if fresh then
+            Interlocked.Increment(&frozenLists) |> ignore
+
+            for e in items do
+                match conforms elem e with
+                | Fits
+                | RowFits -> Interlocked.Increment(&frozenConcrete) |> ignore
+                | Wild
+                | Skip _ -> Interlocked.Increment(&frozenWildcard) |> ignore
+                | Bad detail ->
+                    bump frozenAlarms $"{te.Kind.GetType().Name} {head elem}\t{tag e}" (fun () ->
+                        $"{te.Span.Start.Line}:{te.Span.Start.Col} want {formatTy elem}, got {detail}")
+
+    let check (te: TypedExpr) (v: Value) : Value =
+        if not enabled then
+            v
+        else
+            let v =
+                match te.Kind with
+                | TEInt 424242L when control -> VStr "control"
+                | _ -> v
+
+            try
+                if Interlocked.Exchange(&hooked, 1) = 0 then
+                    System.AppDomain.CurrentDomain.ProcessExit.Add(fun _ -> flush ())
+                    Session.monitorFlush <- flush
+
+                match conforms te.Ty v with
+                | Fits -> Interlocked.Increment(&concrete) |> ignore
+                | RowFits -> Interlocked.Increment(&row) |> ignore
+                | Wild -> Interlocked.Increment(&wildcard) |> ignore
+                | Skip name ->
+                    lock gate (fun () ->
+                        match skipped.TryGetValue name with
+                        | true, n -> skipped[name] <- n + 1L
+                        | _ -> skipped[name] <- 1L)
+                | Bad detail ->
+                    bump alarms $"{te.Kind.GetType().Name}\t{head te.Ty}\t{tag v}" (fun () ->
+                        $"{te.Span.Start.Line}:{te.Span.Start.Col} want {formatTy te.Ty}, got {detail}")
+
+                match te.Ty, v with
+                | TSeq elem, VSeq items ->
+                    match box items with
+                    | :? (Value list) as l -> probeFrozen te elem l
+                    | _ -> ()
+                | _ -> ()
+            with _ ->
+                ()
+
+            v
+#endif
+
 let rec private overlayOf (env: Scope) (cenvO: TypedExpr option) : (string * string) list =
     match cenvO with
     | None -> []
@@ -7240,6 +7475,11 @@ and private progOf (env: Scope) (h: Check.TCmdHead) (pairs: (string * string) li
             s
 
 and evalIn (env: Scope) (te: TypedExpr) : Value =
+#if WEIR_MONITOR
+    Monitor.check te (evalInCore env te)
+
+and private evalInCore (env: Scope) (te: TypedExpr) : Value =
+#endif
     // a literal and a plain variable read neither raise nor wait: no
     // position to record, no boundary to cross
     match te.Kind with

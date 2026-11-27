@@ -1,0 +1,35 @@
+#!/usr/bin/env weir
+// sums the conformance monitor's per-process reports [D:type-monitor]
+//   ci/monitor-report.weir <dir>
+// a row is `class <tab> key… <tab> count [<tab> example]`; the key is
+// everything between the class and the count
+
+type Row = { cls: string; key: string; n: int; example: string }
+
+let rowOf line =
+    let cells = Str.split "\t" line |> Seq.freeze
+    let cls = Seq.item 0 cells
+    let width = if cls == "alarm" then 3 elif cls == "frozen" then 2 else 1
+    {
+        cls = cls
+        key = cells |> Seq.skip 1 |> Seq.take width |> Str.join " "
+        n = Str.toInt (Seq.item (width + 1) cells)
+        example = cells |> Seq.skip (width + 2) |> Str.join " "
+    }
+
+let dir = Seq.item 0 Self.args
+let files = Dir.list dir |> Seq.freeze
+
+let rows =
+    files
+    |> Seq.map (fun f -> File.read f |> Seq.where (fun l -> not (Str.startsWith "argv\t" l)) |> Seq.map rowOf |> Seq.freeze)
+    |> Seq.fold (fun acc xs -> Seq.append acc xs) []
+    |> Seq.freeze
+
+print $"reports: {Seq.length files}"
+
+rows
+    |> Seq.groupBy (fun r -> $"{r.cls}\t{r.key}")
+    |> Seq.map (fun (k, g) -> (k, g |> Seq.map (fun r -> r.n) |> Seq.sum, (Seq.item 0 g).example))
+    |> Seq.sortBy (fun (k, _, _) -> k)
+    |> Seq.iter (fun (k, n, ex) -> print $"{k}\t{n}\t{ex}")

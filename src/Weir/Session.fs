@@ -614,6 +614,12 @@ let private liveProcs =
 // alone
 let mutable private cutsPending = 0
 
+#if WEIR_MONITOR
+// the conformance monitor's report, written before the exit that runs no
+// managed code [D:type-monitor]
+let mutable monitorFlush: unit -> unit = ignore
+#endif
+
 // the hard exit froze every flow [D:hard-exit]: a flow reaching any runtime
 // point now parks there, never to run again
 let mutable private hardExiting = 0
@@ -1949,6 +1955,9 @@ let private dieByFlushing (flush: bool) (code: int) : unit =
             ProcTree.kill (System.Environment.ProcessId, signum) |> ignore
             System.Threading.Thread.Sleep 1000
 
+#if WEIR_MONITOR
+        monitorFlush ()
+#endif
         Libc.sysExit code
 
 let private dieBy (code: int) : unit = dieByFlushing false code
