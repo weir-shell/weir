@@ -50,10 +50,18 @@ let subDetail teaching r =
 let changelogRes = weir ci/changelog-check.weir --tag $cli.tag | complete
 let grammarRes = weir ci/grammar-currency.weir | complete
 let zedPinRes = weir ci/zed-rev-current.weir | complete
-// every platform's verdict on this commit [D:release-needs-ci]: the
-// release's own gate waits an hour for a run in progress; here a minute,
-// so an unfinished run says so now
-let ciRes = weir ci/ci-green.weir --sha $originSha --wait-minutes 1 | complete
+// every platform's verdict on this commit [D:release-needs-ci]: one look
+// at a time. While the run is unfinished (exit 3) the choice is the
+// operator's — look again, or stop here with it unmet
+let ciRes =
+    repeat interval=100ms
+        weir ci/ci-green.weir --sha $originSha --wait-minutes 0 | complete
+    until r
+        if r.exitCode <> 3 then
+            true
+        else
+            let answer = Self.prompt "main's ci has not finished for this commit — check again? (Y/n)"
+            Str.toLower (Str.trim answer) == "n"
 
 // -- the grammar repo must not already target the new tag --------------------
 // (its TARGET bump belongs after the release publishes; pushing it early

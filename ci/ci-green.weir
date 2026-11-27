@@ -7,6 +7,9 @@
 //
 //   ci/ci-green.weir --sha <commit> [--wait-minutes 60]
 //
+// `--wait-minutes 0` looks once and exits 3 while the run is unfinished
+// (1 is a refusal: red, cancelled or missing).
+//
 // Auth: GH_TOKEN/GITHUB_TOKEN when set (release.yml passes the job
 // token, which needs `actions: read`); anonymous otherwise.
 
@@ -54,7 +57,8 @@ let latest () =
         |> Seq.sortByDescending (fun r -> r.created_at)
         |> Seq.tryHead
 
-print $"waiting up to {cli.waitMinutes}m for the ci workflow's push run of {cli.sha}"
+if cli.waitMinutes > 0 then
+    print $"waiting up to {cli.waitMinutes}m for the ci workflow's push run of {cli.sha}"
 
 // no run yet counts as not finished: a tag pushed with its commit
 // arrives before the run is created
@@ -66,8 +70,17 @@ let await () =
         | Some run -> run.status == "completed"
         | None -> false
 
+// `--wait-minutes 0` looks once: the preflight's question is "is it green
+// now", and a silent wait there reads as a hang
+let settled =
+    if cli.waitMinutes <= 0 then Ok (latest ()) else await () |> try result
+
 let run =
-    match await () |> try result with
+    match settled with
+    | Ok (Some r) when cli.waitMinutes <= 0 && r.status <> "completed" ->
+        // exit 3: not red, not green — the caller may look again
+        printerr $"the ci run of {cli.sha} is still {r.status} — it has not given its verdict yet: {r.html_url}"
+        exit 3
     | Ok (Some r) -> r
     | _ ->
         match latest () with
