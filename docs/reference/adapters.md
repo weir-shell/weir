@@ -4,7 +4,7 @@
 
 | format | read | write |
 |---|---|---|
-| `json`, `jsonl`, `yaml` | yes | yes |
+| `json`, `jsonl`, `yaml`, `csv` | yes | yes |
 | `toml`, `xml`, `table` | yes | no |
 
 You always name the format. `from json T` reads one document, however
@@ -367,6 +367,61 @@ in first position, is dropped; kubectl and docker output is unaffected.
 drafts the row record from a real sample: each column's type, `Option`
 where a column has empty or `<none>` cells, and a note that the value
 reads as `seq<Pod>`.
+
+## CSV
+
+`from csv T` reads comma-separated values into row records, yielding
+`seq<T>`; `to csv` writes a sequence of records back. The format is
+RFC 4180 with a comma as the only separator.
+
+```weir
+type Order = { orderId: int; customer: string; qty: int; note: Option<string> }
+let orders =
+    [ "Order ID,customer,qty,note"
+      "1,\"Smith, J.\",3,\"said \"\"rush\"\"\""
+      "2,Lee,10," ]
+    |> from csv Order
+orders |> Seq.where (fun o -> o.qty > 5) |> to csv |> Seq.iter print
+```
+
+Reading:
+
+- The first record is the header, and it is required. A field reads
+  the column named for it. Like a table's, the match ignores case and
+  anything that is not a letter or digit, so `orderId` reads
+  `Order ID`; `[<Wire "HEADER">]` matches a header exactly.
+- A cell may be quoted. Inside the quotes a comma is data, a quote is
+  written `""`, and a line break is part of the cell, so one record
+  can span several lines.
+- Cells are `string`, `int`, `float`, `bool` or `Uuid`, or `Option` of
+  one. An `Instant`, `Duration` or `Size` field needs the same wire
+  attribute it needs for JSON (`[<Iso8601>]`, `[<Millis>]`,
+  `[<ByteCount>]`, …), which says how it is spelled. Records, seqs and
+  unions have no CSV form and are refused when the script is checked.
+- An empty cell is `None` for an `Option` field and `""` for a
+  `string`. In any other field it is an error suggesting `Option`.
+- A column no field names is ignored. A field with no column must be
+  an `Option` (it reads as `None`); otherwise the read fails, listing
+  the header.
+- Nothing is skipped or guessed: a record with the wrong number of
+  cells, a cell that does not parse, a quote inside an unquoted cell
+  or a quote that is never closed raises, naming the line and the
+  column. Blank lines between records are skipped, a byte-order mark
+  and CRLF line ends are accepted.
+
+Writing:
+
+- `to csv` takes a seq of records and yields lines lazily: the header,
+  then a record per element.
+- Columns follow the order the type declares its fields (an anonymous
+  record has none, so its columns are alphabetical). A header is the
+  field's name, or its `[<Wire>]` name.
+- A cell is quoted when it holds a comma, a quote, a line break or
+  space at either end. `None` is an empty cell.
+
+`#infer <src> |> from csv as Order` drafts the row record from a
+sample file: a field per column, typed from its cells, `Option` where
+a column has empty ones.
 
 ## Editing YAML: `Yaml.parse` and `yaml patch`
 

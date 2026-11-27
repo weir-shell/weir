@@ -9653,6 +9653,17 @@ let builtinDocs: Lazy<Map<string, BuiltinDoc>> =
                 "Parse column-aligned tool output (a header row followed by aligned rows) into declared records, giving a seq<T>. Columns are cut at the header positions, not at every space, so a value with spaces (`Up 2 hours`) stays whole; headers are separated by 2 or more spaces (`CONTAINER ID` is one column). Fields match headers by their letters and digits, ignoring case (`podTemplateHash` matches `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a header exactly. Cells are trimmed and converted to the field type (string, int, float, bool); for an Option field, an empty or `<none>` cell becomes None. Extra columns and blank lines are ignored, and errors report the line and column. Reading only; there is no `to table`."
                 None
                 (Some "Use it as a pipe stage on a tool's table output: `… |> from table Pod`.")
+            "from csv",
+            bd
+                "Parse comma-separated values (RFC 4180) into declared records, giving a seq<T>. The first record is the header, and each field reads the column named for it: a header with spaces or symbols matches a field by its letters and digits (`Order ID` reads into orderId), or exactly through [<Wire \"…\">]. A cell may be quoted, and a quoted cell can hold commas, quotes (written \"\") and line breaks. Cells are string, int, float, bool or Uuid, an Instant, Duration or Size carrying its wire attribute, or Option of one of those: an empty cell is None for an Option and \"\" for a string. A column no field names is ignored; a field with no column must be an Option. A record with the wrong number of cells, or a cell that does not parse, raises naming the line and the column."
+                None
+                (Some
+                    "Use it as a pipe stage: `File.read \"orders.csv\" |> from csv Order`. `#infer … |> from csv as Order` drafts the record from a sample.")
+            "to csv",
+            bd
+                "Write a sequence of records as comma-separated values (RFC 4180), lazily: a header row, then one record per element, with the columns in the order the type declares its fields. A cell holding a comma, a quote, a line break or outer spaces is quoted; None is an empty cell."
+                None
+                (Some "Use it as a pipe stage: `orders |> to csv |> File.write \"orders.csv\"`.")
             "Yaml.parse",
             (bd
                 "Parse one YAML document (the same strict subset) into Yaml nodes without a declared type. Every key is kept, including ones `from yaml T` would drop. Scalar types follow the same rules as in a `yaml` block: unquoted true/3/1.5 become YBool/YInt/YFloat, quoted or block scalars become YStr, and empty values become YNull."

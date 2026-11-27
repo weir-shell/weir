@@ -1055,23 +1055,23 @@ let adapterFormTests =
         test "completion after `from `/`to ` is direction-aware and offers NOTHING else" {
             Expect.equal
                 (sug "xs |> from ")
-                [ "json"; "jsonl"; "table"; "toml"; "xml"; "yaml" ]
+                [ "csv"; "json"; "jsonl"; "table"; "toml"; "xml"; "yaml" ]
                 "every from-adapter (xml and table read)"
 
             Expect.equal (sug "xs |> from j") [ "json"; "jsonl" ] "prefix-filtered"
-            Expect.equal (sug "xs |> to ") [ "json"; "jsonl"; "yaml" ] "every to-adapter (no to xml)"
+            Expect.equal (sug "xs |> to ") [ "csv"; "json"; "jsonl"; "yaml" ] "every to-adapter (no to xml)"
 
             Expect.isFalse
-                (sug "xs |> into " = [ "json"; "jsonl"; "table"; "toml"; "xml"; "yaml" ])
+                (sug "xs |> into " = [ "csv"; "json"; "jsonl"; "table"; "toml"; "xml"; "yaml" ])
                 "boundary: into is not from"
         }
         test "the adapter lists derive from the one source (builtinDocs keys), never a parallel table" {
             Expect.equal
                 (Weir.Builtins.adapterNames "from")
-                [ "json"; "jsonl"; "table"; "toml"; "xml"; "yaml" ]
+                [ "csv"; "json"; "jsonl"; "table"; "toml"; "xml"; "yaml" ]
                 "from (xml and table read)"
 
-            Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "jsonl"; "yaml" ] "to (no to xml)"
+            Expect.equal (Weir.Builtins.adapterNames "to") [ "csv"; "json"; "jsonl"; "yaml" ] "to (no to xml)"
         }
         test "`from`/`to` inside a string or comment are data — no discovery hover [D:form-word-hover]" {
             Expect.equal (Weir.Lsp.hoverType [ "let m = \"read from json\""; "print m" ] 1 15) None "from in a string"

@@ -109,7 +109,7 @@ let sessionDirectiveHelp: (string * string list) list = [
     ]
     "infer",
     [
-        "#infer <src> |> from <json|jsonl|yaml|table> as <Name|_>"
+        "#infer <src> |> from <json|jsonl|yaml|table|csv> as <Name|_>"
         "                      //   draft named types from a sample (the last result is 'it'; _ auto-names)"
         "#infer let <x> = <src> |> from <fmt> as <Name|_>"
         "                      //   one shot: draft the types and bind the parsed value (runs once)"

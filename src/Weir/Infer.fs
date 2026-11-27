@@ -870,18 +870,19 @@ let private tableFloatRx =
 /// top-level array). The `as` name is the caller's own — the
 /// taken-name guard is the caller's refusal, exactly as for
 /// inferDecls' top name.
-let private tableDecls
+let private columnDecls
     (reserved: Set<string>)
     (topName: string)
-    (lines: string seq)
+    (noun: string)
+    (absent: string)
+    (isAbsent: string -> bool)
+    (parsed: Result<Table.Column list * (int * string list) list, string>)
     : Result<string list * Note list, string> =
-    let numbered = lines |> Seq.mapi (fun i l -> i + 1, l) |> List.ofSeq
-
-    match Table.parse numbered with
+    match parsed with
     | Error e -> Error $"#infer: {e}"
     | Ok(cols, rows) ->
         let notes = ResizeArray<Note>()
-        notes.Add $"a table reads rows — '{topName}' names the row; read the value as 'seq<{topName}>'"
+        notes.Add $"{noun} reads rows — '{topName}' names the row; read the value as 'seq<{topName}>'"
 
         if rows.IsEmpty then
             notes.Add "no data rows under the header — every column drafted string; verify against a fuller sample"
@@ -894,14 +895,14 @@ let private tableDecls
                 let cells =
                     rows |> List.map (fun (_, cs) -> if i < List.length cs then cs[i] else "")
 
-                let vals = cells |> List.filter (fun s -> not (Table.isAbsent s))
+                let vals = cells |> List.filter (fun s -> not (isAbsent s))
 
                 let tyText =
                     if rows.IsEmpty then
                         "string"
                     elif vals.IsEmpty then
                         notes.Add
-                            $"column '{c.Header}' has no values — drafted Option<string> (edit if the real type is known)"
+                            $"column '{Weir.Types.excerpt c.Header}' has no values — drafted Option<string> (edit if the real type is known)"
 
                         "Option<string>"
                     else
@@ -916,7 +917,9 @@ let private tableDecls
                                 "string"
 
                         if List.length vals < List.length cells then
-                            notes.Add $"column '{c.Header}' has empty/<none> cells — drafted Option<{scanned}>"
+                            notes.Add
+                                $"column '{Weir.Types.excerpt c.Header}' has {absent} cells — drafted Option<{scanned}>"
+
                             $"Option<{scanned}>"
                         else
                             scanned
@@ -937,6 +940,32 @@ let private tableDecls
 
         Ok([ renderRecord topName fields ], List.ofSeq notes)
 
+let private tableDecls
+    (reserved: Set<string>)
+    (topName: string)
+    (lines: string seq)
+    : Result<string list * Note list, string> =
+    lines
+    |> Seq.mapi (fun i l -> i + 1, l)
+    |> List.ofSeq
+    |> Table.parse
+    |> columnDecls reserved topName "a table" "empty/<none>" Table.isAbsent
+
+/// draft the row record from a CSV sample [D:csv-adapter]: the header's
+/// names and the per-column scan a table gets; only an empty cell is
+/// absent
+let private csvDecls
+    (reserved: Set<string>)
+    (topName: string)
+    (lines: string seq)
+    : Result<string list * Note list, string> =
+    lines
+    |> Seq.mapi (fun i l -> i + 1, l)
+    |> List.ofSeq
+    |> Csv.parse
+    |> Result.map (fun (header, rows) -> header |> List.map (fun h -> { Table.Header = h; Table.Start = 0 }), rows)
+    |> columnDecls reserved topName "a CSV file" "empty" (fun s -> s = "")
+
 // ---- format dispatch --------------------------------------------------
 
 type Format =
@@ -944,6 +973,7 @@ type Format =
     | Jsonl
     | Yaml
     | Table
+    | Csv
 
 let parseFormat (s: string) : Result<Format, string> =
     match s.Trim() with
@@ -951,7 +981,8 @@ let parseFormat (s: string) : Result<Format, string> =
     | "jsonl" -> Ok Jsonl
     | "yaml" -> Ok Yaml
     | "table" -> Ok Table
-    | other -> Error $"#infer: unknown format '{other}' — use json, jsonl, yaml, or table"
+    | "csv" -> Ok Csv
+    | other -> Error $"#infer: unknown format '{other}' — use json, jsonl, yaml, table, or csv"
 
 let nodeOf (fmt: Format) (lines: string seq) : Result<INode, string> =
     match fmt with
@@ -960,7 +991,8 @@ let nodeOf (fmt: Format) (lines: string seq) : Result<INode, string> =
     | Yaml -> yamlNode lines
     // a table never lowers to a document node [D:from-table] — `infer`
     // dispatches it to the per-column scan before reaching here
-    | Table -> Error "#infer: a table drafts per column, not from a document node"
+    | Table
+    | Csv -> Error "#infer: a table or a CSV file drafts per column, not from a document node"
 
 /// the whole pipeline for a chosen format + name: lines -> decls + notes
 let infer
@@ -977,6 +1009,9 @@ let infer
         // has nothing left to guard here
         ignore taken
         tableDecls reserved topName lines
+    | Csv ->
+        ignore taken
+        csvDecls reserved topName lines
     | fmt ->
         nodeOf fmt lines
         |> Result.map (fun node -> inferDecls reserved taken topName node)
@@ -1001,6 +1036,7 @@ let inferShapeText
             | Jsonl -> "Json.inferShape"
             | Yaml -> "Yaml.inferShape"
             | Table -> "Table.inferShape"
+            | Csv -> "#infer"
 
         failwith (
             if msg.StartsWith "#infer: " then

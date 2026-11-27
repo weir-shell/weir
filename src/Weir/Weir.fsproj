@@ -124,6 +124,7 @@
          columns, cell slicing, match keys — before Infer (the drafting
          arm scans columns) and before Check/Eval (the typed read) -->
     <Compile Include="Table.fs" />
+    <Compile Include="Csv.fs" />
     <!-- after Yaml: #infer lowers a JSON/YAML sample to declaration text,
          reusing Yaml's parser [D:repl-infer]; before Builtins so the
          Json/Yaml.inferShape members call it. Never on a check path. -->

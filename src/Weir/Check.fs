@@ -2439,6 +2439,40 @@ let private tableableRecord (span: Span) (def: RecordDef) : Result<unit, TypeErr
                 $"field '{name}': a table cell reads Option of a scalar, not Option<{formatTy inner}> — {tableAdmittedSet}"
         | ty -> err span $"field '{name}': type {formatTy ty} is not admitted; {tableAdmittedSet}")
 
+// a CSV cell [D:csv-adapter]: a scalar or Option of one. An Instant, a
+// Duration or a Size has no one text form, so its field's wire codec
+// says which — the declaration law the other adapters already apply
+let private csvAdmittedSet =
+    "a CSV cell is string, int, float, bool or Uuid, an Instant, Duration or Size carrying its wire attribute, or Option of one of those"
+
+let private csvableRecord (span: Span) (def: RecordDef) : Result<unit, TypeError> =
+    allOk def.Fields (fun (name, ty) ->
+        let cell (t: Ty) =
+            match t with
+            | TStr
+            | TInt
+            | TFloat
+            | TBool
+            | TUuid -> Ok()
+            | TInstant
+            | TDur
+            | TSize when (fieldCodec def name).IsSome -> Ok()
+            | TInstant ->
+                err
+                    span
+                    $"field '{name}': an Instant has no one CSV spelling — say which with [<Iso8601>], [<EpochMs>] or [<EpochSec>]"
+            | TDur ->
+                err
+                    span
+                    $"field '{name}': a Duration has no one CSV spelling — say which with [<Millis>] or [<Seconds>]"
+            | TSize ->
+                err span $"field '{name}': a Size has no one CSV spelling — write its byte count with [<ByteCount>]"
+            | t -> err span $"field '{name}': type {formatTy t} is not admitted; {csvAdmittedSet}"
+
+        match ty with
+        | TNamed("Option", [ inner ]) -> cell inner
+        | t -> cell t)
+
 // the defs a shape reaches, for the reader [D:recursive-fields]: eval
 // converts nested objects without an env, so the closure rides the
 // typed node (the yamlShape pattern, by table instead of by tree).
@@ -5734,7 +5768,49 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     err
                         toExpr.Span
                         "'to table' does not exist — the table boundary is read-only ('from table T'); write JSON or YAML instead"
-            | fmt, _ -> return! err toExpr.Span $"unknown output format '{fmt}'; available: json, jsonl, yaml"
+            | "csv", TSeq(TNamed(n, []) as elem) ->
+                // to csv [D:csv-adapter]: a header row, then a record per
+                // element, the columns in the type's declared field order.
+                // The order rides the node beside the wire names: values
+                // carry their fields in any order [D:record-order]
+                match typeDefFor env n with
+                | Some(Record def) when def.Params.IsEmpty ->
+                    do! csvableRecord toExpr.Span def
+
+                    let order = def.Fields |> List.mapi (fun i (f, _) -> $"{i:D6}", f) |> Map.ofList
+
+                    return {
+                        Kind =
+                            TEPipe(
+                                targ,
+                                {
+                                    Kind =
+                                        TETo(
+                                            "csv",
+                                            wireRenamesOf env elem |> Map.add "|csv-order" order,
+                                            wireCodecsOf env elem,
+                                            Map.empty,
+                                            false,
+                                            None
+                                        )
+                                    Ty = TFun(targ.Ty, TSeq TStr)
+                                    Span = toExpr.Span
+                                }
+                            )
+                        Ty = TSeq TStr
+                        Span = expr.Span
+                    }
+                | _ ->
+                    return!
+                        err
+                            arg.Span
+                            $"'to csv' writes a seq of records, a row each — {n} is not a record with a fixed set of fields"
+            | "csv", ty ->
+                return!
+                    err
+                        arg.Span
+                        $"'to csv' needs a seq of records (a row per element), got {formatTy ty} — one record is [r] |> to csv"
+            | fmt, _ -> return! err toExpr.Span $"unknown output format '{fmt}'; available: json, jsonl, yaml, csv"
         }
     | EPipe(arg, ({ Kind = ECmd _ } as cmdExpr)) ->
         result {
@@ -6501,6 +6577,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 elif mapOf && fmt = "yaml" then
                     let n = defaultArg tyName "T"
                     err expr.Span $"'from yaml' does not take Map<string, {n}> yet — 'from json' does"
+                elif fmt = "csv" && (seqOf || mapOf || streamOf) then
+                    let n = defaultArg tyName "Row"
+                    err expr.Span $"'from csv {n}' already yields seq<{n}> — rows are its records; write from csv {n}"
                 elif fmt = "table" && seqOf then
                     // matching jsonl: rows are already plural
                     let n = defaultArg tyName "Row"
@@ -6771,7 +6850,31 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | None -> return! err expr.Span (unknownTypeMsg env name)
             | "table", None ->
                 return! err expr.Span "'from table' needs a row record name, e.g. from table Pod — it yields seq<Pod>"
-            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml, toml, xml, table"
+            // from csv T reads comma-separated records under a header row
+            // -> seq<T> [D:csv-adapter]: columns match fields by name
+            // ([<Wire>] verbatim), each cell a scalar. Rows are already
+            // plural, so no seq/stream/Map wrap
+            | "csv", Some name ->
+                match typeDefFor env name with
+                | Some(Record def) when def.Params.IsEmpty ->
+                    do! csvableRecord expr.Span def
+
+                    return {
+                        Kind = TEFrom("csv", TopRec def, Map.ofList [ def.Name, def ], Map.empty, false, false)
+                        Ty = TFun(TSeq TStr, TSeq(TNamed(name, [])))
+                        Span = expr.Span
+                    }
+                | Some(Record _) -> return! err expr.Span $"'from csv' needs a monomorphic record; '{name}' is generic"
+                | Some(Union _) ->
+                    return! err expr.Span $"'from csv' needs a row record; '{name}' is a union — a CSV row is its cells"
+                | None -> return! err expr.Span (unknownTypeMsg env name)
+            | "csv", None ->
+                return!
+                    err
+                        expr.Span
+                        "'from csv' needs a row record name, e.g. from csv Order — it yields seq<Order>; #infer drafts one from a sample"
+            | fmt, _ ->
+                return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml, toml, xml, table, csv"
         }
     | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"
     | EYaml(tpl, schema, patchBy) ->

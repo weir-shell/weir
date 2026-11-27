@@ -2,6 +2,19 @@
 
 ## v0.0.101
 
+### Added
+
+- **`from csv` and `to csv`.** `File.read "orders.csv" |> from csv Order`
+  reads comma-separated values into records, matching columns to
+  fields by the header row; `rows |> to csv` writes records back, with
+  a header and the columns in the type's field order. Quoted cells are
+  handled in full (commas, `""` and line breaks inside quotes). Cells
+  are strings, numbers, booleans and `Uuid`s (plus `Instant`,
+  `Duration` and `Size` with their wire attributes), or `Option` of
+  those; an empty cell is `None`. A malformed row is an error naming
+  its line. `#infer … |> from csv as Row` drafts the record from a
+  sample.
+
 ### Changed
 
 - **`File.readBytesAt` and `File.readFrom` take the path last.** They
