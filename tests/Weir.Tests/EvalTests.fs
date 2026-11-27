@@ -2666,6 +2666,13 @@ let fileTests =
             Expect.equal (at 200 5) [] "at the end: none"
             Expect.equal (at 5000 5) [] "past the end: none, no raise"
             Expect.equal (at 7 0) [] "a zero length"
+
+            if System.OperatingSystem.IsLinux() then
+                Expect.equal
+                    (run "File.readBytesAt 2B 3B \"/proc/sys/kernel/ostype\" |> Bytes.toHex")
+                    (VStr "6e7578")
+                    "a file that reports no length still honours the offset"
+
             Expect.equal (at 0 100000 |> List.length) 200 "a length past the end is the whole file"
 
             Expect.equal

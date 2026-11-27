@@ -32,13 +32,10 @@ let records (lines: (int * string) list) : Result<(int * string list) list, stri
     for n, raw in lines do
         if error.IsNone then
             let line =
-                let l =
-                    if raw.EndsWith "\r" then
-                        raw.Substring(0, raw.Length - 1)
-                    else
-                        raw
-
-                if first && l.StartsWith "\uFEFF" then l.Substring 1 else l
+                if first && raw.StartsWith "\uFEFF" then
+                    raw.Substring 1
+                else
+                    raw
 
             first <- false
 
@@ -66,6 +63,9 @@ let records (lines: (int * string) list) : Result<(int * string list) list, stri
                                 closed <- true
                         else
                             cell.Append c |> ignore
+                    // a line's own CR; inside a quoted cell it is the cell's
+                    elif c = '\r' && i = line.Length - 1 then
+                        ()
                     elif c = ',' then
                         endCell ()
                     elif closed then
@@ -135,4 +135,7 @@ let cellText (s: string) : string =
 
 /// one record as written
 let line (cells: string list) : string =
-    cells |> List.map cellText |> String.concat ","
+    match cells with
+    // a lone empty cell is quoted: a blank line is no record to a reader
+    | [ "" ] -> "\"\""
+    | _ -> cells |> List.map cellText |> String.concat ","

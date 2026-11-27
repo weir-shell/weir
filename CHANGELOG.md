@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.0.102
+
+### Fixed
+
+- **`to csv` then `from csv` could drop rows.** A record with one
+  field wrote an empty value as a blank line, which a reader skips.
+  It is now written as `""`.
+- **`from csv` on text that arrives as one string** (a header and
+  rows separated by line breaks inside one element) read everything as
+  the header and could return no rows without an error. It is split
+  into lines, as the other adapters do.
+- **`from csv` refuses two columns that both match one field** (`order
+  id` and `ORDERID` for `orderId`) where it used to take the first
+  silently. A column spelled exactly as the field still wins.
+- **`File.readBytesAt` honours its offset on `/proc` and `/sys`
+  files**, which report a length of zero.
+
 ## v0.0.101
 
 ### Added

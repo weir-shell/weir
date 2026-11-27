@@ -4166,6 +4166,10 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
 /// otherwise. An empty cell is None for an Option, "" for a string, and
 /// an error for any other type
 let private csvRows (who: string) (def: RecordDef) (lines: string list) : Value =
+    // an element holding line breaks is several lines, as the other
+    // adapters read it
+    let lines = lines |> List.collect (fun l -> l.Split '\n' |> List.ofArray)
+
     match Csv.parse (lines |> List.mapi (fun i l -> i + 1, l)) with
     | Error e -> failwith $"{who}: {e}"
     | Ok(header, rows) ->
@@ -4188,7 +4192,18 @@ let private csvRows (who: string) (def: RecordDef) (lines: string list) : Value 
                         headers
                         |> Array.tryFindIndex (fun h -> h = fname)
                         |> Option.orElseWith (fun () ->
-                            headers |> Array.tryFindIndex (fun h -> Table.matchKey h = Table.matchKey fname))
+                            match
+                                headers
+                                |> Array.indexed
+                                |> Array.filter (fun (_, h) -> Table.matchKey h = Table.matchKey fname)
+                            with
+                            | [||] -> None
+                            | [| (i, _) |] -> Some i
+                            | hits ->
+                                let a, b = snd hits[0], snd hits[1]
+
+                                failwith
+                                    $"{who}: columns '{excerpt a}' and '{excerpt b}' both match the field '{fname}' — spell one exactly as the field, or name the column with [<Wire \"…\">]")
 
                 match hit, fty with
                 | None, TNamed("Option", _) -> fname, fty, -1

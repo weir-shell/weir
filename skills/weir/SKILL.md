@@ -2709,7 +2709,9 @@ refs |> Seq.iter (fun r -> print r.Include)
   lazily. COMMA ONLY, and the first record is the HEADER, required. A
   field reads the column named for it — a table's rule: the normalized
   names match (`orderId` reads `Order ID`), `[<Wire "HEADER">]` matches
-  verbatim. A cell may be QUOTED: inside, a comma is data, `""` is one
+  verbatim; a column spelled exactly as the field wins, and two columns
+  that only match it loosely refuse. An element holding line breaks is
+  several lines. A cell may be QUOTED: inside, a comma is data, `""` is one
   quote, and a line break belongs to the cell (a record can span
   lines). Cells are `string`/`int`/`float`/`bool`/`Uuid`, or `Option`
   of one; an `Instant`/`Duration`/`Size` field needs the wire attribute
