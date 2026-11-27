@@ -1,0 +1,91 @@
+#!/usr/bin/env weir
+// The release's CI gate [D:release-needs-ci]: a release is built only
+// from a commit whose `ci` workflow run on main is GREEN — every
+// platform's unit and e2e jobs, which the release workflow itself runs
+// for Linux alone. A run still in progress is waited for; a red, a
+// cancelled or a missing one refuses, naming the jobs that failed.
+//
+//   ci/ci-green.weir --sha <commit> [--wait-minutes 60]
+//
+// Auth: GH_TOKEN/GITHUB_TOKEN when set (release.yml passes the job
+// token, which needs `actions: read`); anonymous otherwise.
+
+type Cli = {
+    /// the commit the tag points at
+    sha: string
+    /// how long to wait for a run that has not finished
+    [<Default 60>]
+    waitMinutes: int
+}
+
+let cli = Args.load Cli
+
+let repo = "weir-shell/weir"
+let api = $"https://api.github.com/repos/{repo}/actions"
+
+let token = Env.get "GH_TOKEN" |> Option.orElse (Env.get "GITHUB_TOKEN")
+
+// a transient 5xx retries (the preflight pattern); a 4xx is a fact
+let send url =
+    let req = Http.get url
+    let authed =
+        match token with
+        | Some t -> { req with auth = Bearer (Secret.of t) }
+        | None -> req
+    retry attempts=3 delay=5s
+        Http.send authed
+    until r
+        r.status < 500
+
+type Run = { id: int; status: string; conclusion: Option<string>; event: string; created_at: string; html_url: string }
+type Runs = { workflow_runs: seq<Run> }
+type Job = { name: string; conclusion: Option<string> }
+type Jobs = { jobs: seq<Job> }
+
+// the commit's newest `ci` run from a push — main's own; a pull
+// request's run of the same commit is not main's verdict
+let latest () =
+    let resp = send $"{api}/workflows/ci.yml/runs?head_sha={cli.sha}&per_page=50"
+    if resp.status <> 200 then
+        fail $"the ci runs of {cli.sha} answered {resp.status} — the API refused the query (rate limit? set GH_TOKEN/GITHUB_TOKEN; the job token needs 'actions: read')"
+    let runs = resp.body |> from json Runs
+    runs.workflow_runs
+        |> Seq.where (fun r -> r.event == "push")
+        |> Seq.sortByDescending (fun r -> r.created_at)
+        |> Seq.tryHead
+
+print $"waiting up to {cli.waitMinutes}m for the ci workflow's push run of {cli.sha}"
+
+// no run yet counts as not finished: a tag pushed with its commit
+// arrives before the run is created
+let await () =
+    poll { Poll.defaults with timeout = 1m * cli.waitMinutes; interval = 30s }
+        latest ()
+    until r
+        match r with
+        | Some run -> run.status == "completed"
+        | None -> false
+
+let run =
+    match await () |> try result with
+    | Ok (Some r) -> r
+    | _ ->
+        match latest () with
+        | Some r -> fail $"the ci run of {cli.sha} has not finished after {cli.waitMinutes}m (status: {r.status}) — re-run this job once it has: {r.html_url}"
+        | None -> fail $"no ci run from a push exists for {cli.sha} — the tag must sit on a commit main's CI has run (was the run superseded by a later push? re-run ci on main for this commit)"
+
+if run.conclusion == Some "success" then
+    print $"ci is green for {cli.sha}: {run.html_url}"
+else
+    let verdict = run.conclusion |> Option.defaultValue "no conclusion"
+    let jobsResp = send $"{api}/runs/{run.id}/jobs?per_page=100"
+    let failed =
+        if jobsResp.status == 200 then
+            let listed = jobsResp.body |> from json Jobs
+            listed.jobs
+                |> Seq.where (fun j -> j.conclusion <> Some "success" && j.conclusion <> Some "skipped")
+                |> Seq.map (fun j -> j.name)
+                |> Str.join ", "
+        else
+            $"(the job list answered {jobsResp.status})"
+    fail $"ci is NOT green for {cli.sha} ({verdict}) — not green: {failed}. Fix or re-run it on main, then re-run this job: {run.html_url}"

@@ -28,8 +28,9 @@ jobs:
   # THE GATE as CI's linux graph [D:e2e-shards]: `gate` publishes, runs
   # the strict freshness gate and the tag checks, and uploads the binary;
   # the unit suite runs beside it from t=0; the e2e shards and the other
-  # binary checks start when the binary lands. `build` waits on all four
-  # — a release still cannot publish from red.
+  # binary checks start when the binary lands. `build` waits on all four,
+  # and on main's CI for the commit (gate-ci) — a release cannot publish
+  # from red on any platform it ships for.
   gate:
     runs-on: ubuntu-latest
     steps:
@@ -153,8 +154,32 @@ jobs:
           ./ci/fsharp-oracle.sh
           ./ci/timing.sh
 
+  # EVERY PLATFORM'S VERDICT [D:release-needs-ci]: the gates above run
+  # Linux; macOS and Windows are tested by ci.yml on main. This job reads
+  # that run for the tagged commit — waiting while it is in progress —
+  # and refuses a red, cancelled or missing one. `build` waits on it too.
+  gate-ci:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: weir-gate
+          path: ${{ runner.temp }}/weir-bin
+      - name: install the gate's binary
+        run: mkdir -p ~/.local/bin && install -m 755 "$RUNNER_TEMP/weir-bin/weir" ~/.local/bin/weir
+      - name: main's ci is green for this commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ~/.local/bin/weir ci/ci-green.weir --sha "${{ github.sha }}"
+
   build:
-    needs: [gate, gate-unit, gate-e2e, gate-checks]
+    needs: [gate, gate-unit, gate-e2e, gate-checks, gate-ci]
     strategy:
       matrix:
         include:

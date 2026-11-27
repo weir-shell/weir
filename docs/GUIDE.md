@@ -1488,7 +1488,7 @@ since whoever wrote that text chose the unit.
 ### Following a growing file
 
 A file that other processes append to (a log, a JSONL queue) is read
-in steps with `File.readFrom path offset`. It returns a `FileChunk`:
+in steps with `File.readFrom offset path`. It returns a `FileChunk`:
 `lines`, the complete lines from that byte offset, and `next`, the
 offset to pass the next time.
 
@@ -1503,10 +1503,10 @@ is unchanged) or poll at a coarser interval:
 
 ```weir
 ["a"; "b"] |> File.append "guide-follow.log"
-let first = File.readFrom "guide-follow.log" 0B
+let first = File.readFrom 0B "guide-follow.log"
 first.lines |> Seq.iter print
 ["c"] |> File.append "guide-follow.log"
-let more = File.readFrom "guide-follow.log" first.next
+let more = File.readFrom first.next "guide-follow.log"
 more.lines |> Seq.iter print
 File.delete "guide-follow.log"
 ```
@@ -1563,8 +1563,9 @@ To get `Bytes`:
 
 - `File.readBytes` reads a file as-is, without decoding or splitting
   lines.
-- `File.readBytesAt path offset length` reads part of a file: at most
-  `length` bytes from `offset` (`File.readBytesAt "disk.img" 0B 512B`).
+- `File.readBytesAt offset length path` reads part of a file: at most
+  `length` bytes from `offset` (`File.readBytesAt 0B 512B "disk.img"`,
+  or `"disk.img" |> File.readBytesAt 0B 512B`).
   Only that range is read, so it suits large files. Where the file
   ends first you get the bytes that are there.
 - `Bytes.fromBase64` decodes base64 and raises on bad input;

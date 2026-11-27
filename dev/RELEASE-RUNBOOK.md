@@ -102,7 +102,11 @@ ones that stay manual:
    PREVIOUS release — its bump belongs after the publish; pushed
    early it moves grammar main and re-stales the pin.
 4. Tag and push (the driver, confirmed). release.yml: gate → build →
-   **draft**. In this window `release-published check` goes RED on
+   **draft**. The gate reads main's CI for the tagged commit
+   [D:release-needs-ci]: it waits for the `ci` run to finish and
+   refuses a red or cancelled one — Linux, macOS and Windows. Tag a
+   commit whose run is green (or still running); if `gate-ci` goes red,
+   fix or re-run ci on main, then re-run that job. In this window `release-published check` goes RED on
    main — a stable tag exists, nothing published. That is the gate's
    failing direction observed live; publishing clears it.
 5. Review the draft: notes correct. Asset COMPLETENESS is machine

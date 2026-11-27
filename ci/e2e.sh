@@ -174,6 +174,7 @@ replPtyProbes() {
         replProbe repl-b repl-f1.py "repl F1 key bindings" "e2e ok: repl F1 prints the bindings mid-buffer and keeps it, raw F1 sequences, one-time hint [D:repl-f1-keys]"
         replProbe repl-b debug-break.py "Debug.break prompt" "e2e ok: Debug.break stops at a prompt over its scope; an empty line goes on, #quit ends the script [D:debug-aids]"
         replProbe repl-b repl-paste.py "repl paste repaint" "e2e ok: repl a pasted line paints once — output grows with its length, not its square [D:repl-paste-repaint]"
+        replProbe repl-b repl-echo-interrupt.py "repl echo interrupt" "e2e ok: repl a ^C during a large echo stops it between lines — lines, table and literal — and keeps the binding [D:echo-interrupt]"
         replProbe repl-b repl-bracketed-paste.py "repl bracketed paste" "e2e ok: repl a pasted block is one entry — its first line does not run alone, Enter runs it, the mode is off outside the editor [D:repl-bracketed-paste]"
         replProbe repl-b repl-directives.py "repl directives" "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
         replProbe repl-b repl-pathquote.py "repl path-quote completion" "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
@@ -926,13 +927,13 @@ print "done"' > into.out 2>&1 ) || fail "| into must run: $(cat "$intodir/into.o
 [ "$(cat "$intodir/into.out")" = "done" ] || fail "| into prints nothing of its own: $(cat "$intodir/into.out")"
 ( cd "$intodir" && $BIN -e 'printf "xy" | into "raw.bin"
 printf "z" | into append "raw.bin"
-print "ok"' > /dev/null 2>&1 ) || fail "| into append must run"
+print "ok"' > into.out 2>&1 ) || fail "| into append must run: $(cat "$intodir/into.out")"
 [ "$(cat "$intodir/raw.bin")" = "xyz" ] || fail "| into replaces, | into append adds: $(od -An -c "$intodir/raw.bin")"
 ( cd "$intodir" && $BIN -e 'sh -c "printf \"b\na\n\"" | sort | tr a-z A-Z | into "chain.txt"
 ["q"; "r"] | grep r | into "head.txt"
 let p = "env.txt"
 INTO_E2E=seen printenv INTO_E2E | into p
-print "ok"' > /dev/null 2>&1 ) || fail "| into after a chain, a value head and an env prefix must run"
+print "ok"' > into.out 2>&1 ) || fail "| into after a chain, a value head and an env prefix must run: $(cat "$intodir/into.out")"
 [ "$(cat "$intodir/chain.txt")" = "A
 B" ] || fail "| into after a chain: $(cat "$intodir/chain.txt")"
 [ "$(cat "$intodir/head.txt")" = "r" ] || fail "| into with a value head: $(cat "$intodir/head.txt")"
@@ -10754,7 +10755,7 @@ File.write cli.out []
 
 let step () =
     let (offText, countText) = File.read cli.state |> Seq.exactlyOne |> Str.splitOnce " "
-    let chunk = File.readFrom cli.log (Size.bytes (Str.toInt offText))
+    let chunk = File.readFrom (Size.bytes (Str.toInt offText)) cli.log
     for l in chunk.lines do
         let r = [ l ] |> from json Line
         if Str.sha256 r.d <> r.h then fail $"torn line: w{r.w} q{r.q} k{r.k}"

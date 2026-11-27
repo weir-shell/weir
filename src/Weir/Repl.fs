@@ -770,16 +770,67 @@ let private historyFile () =
 // line 0 is the header, line 1 the rule, a trailing "…" the clip row.
 // Cells are data and stay untinted; NO_COLOR and piped ride Color's
 // own gate.
+// the echo yields to ^C [D:echo-interrupt]: a forced seq echoes whole
+// [D:echo-rule], and a large one would hold the prompt until its last
+// line. ^C is looked for between lines; the echo stops there and says so,
+// and the value — computed before the echo began — is kept
+let private echoLines (render: int -> string -> string) (lines: string list) : unit =
+    let mutable rest = lines
+    let mutable i = 0
+
+    while not rest.IsEmpty do
+        if Session.interruptRequested () then
+            rest <- []
+
+            Console.WriteLine(
+                Types.Color.dim Types.Color.onStdout.Value "… (the echo stopped at ^C; the value is kept)"
+            )
+        else
+            Console.WriteLine(render i rest.Head)
+            rest <- rest.Tail
+            i <- i + 1
+
+// one long line: written in pieces, ^C looked for between them
+let private echoLong (text: string) : unit =
+    let piece = 16384
+
+    if text.Length <= piece then
+        Console.WriteLine text
+    else
+        let mutable at = 0
+
+        while at < text.Length do
+            if Session.interruptRequested () then
+                at <- text.Length
+                Console.WriteLine()
+
+                Console.WriteLine(
+                    Types.Color.dim Types.Color.onStdout.Value "… (the echo stopped at ^C; the value is kept)"
+                )
+            else
+                // never between the halves of a surrogate pair
+                let n =
+                    let n = min piece (text.Length - at)
+
+                    if at + n < text.Length && Char.IsHighSurrogate text[at + n - 1] then
+                        n - 1
+                    else
+                        n
+
+                Console.Write(text.Substring(at, n))
+                at <- at + n
+
+                if at >= text.Length then
+                    Console.WriteLine()
+
 let private printTable (lines: string list) =
     let on = Types.Color.onStdout.Value
 
     lines
-    |> List.iteri (fun i l ->
-        Console.WriteLine(
-            if i = 0 then Types.Color.bold on l
-            elif i = 1 || l = "…" then Types.Color.dim on l
-            else l
-        ))
+    |> echoLines (fun i l ->
+        if i = 0 then Types.Color.bold on l
+        elif i = 1 || l = "…" then Types.Color.dim on l
+        else l)
 
 // the echo's metadata line (name : ty = / : ty (hint)) recedes — dim
 // at a tty, plain elsewhere [D:table-polish]
@@ -2983,7 +3034,7 @@ let private ttyPresentation (cap: int option) (ty: Ty) ev =
 
 let private printPresented (ty: Ty) (lines: string list) =
     if ty = TSeq TStr then
-        lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyEcho l))
+        lines |> echoLines (fun _ l -> Eval.sanitizeTtyEcho l)
     else
         printTable lines
 
@@ -3053,7 +3104,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
                         let struct (rendered, tail) =
                             Eval.echoShown Console.IsOutputRedirected cap (Eval.echoPrep bv)
 
-                        Console.WriteLine $"{letEchoHead n sch.Ty} = {rendered}{tail}"
+                        echoLong $"{letEchoHead n sch.Ty} = {rendered}{tail}"
                 | _ -> Console.WriteLine(letEchoHead n sch.Ty)
 
             {
@@ -3110,7 +3161,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
                 | None ->
                     let struct (rendered, tail) = Eval.echoShown Console.IsOutputRedirected cap ev
 
-                    Console.WriteLine $"{letEchoHead name te.Ty} = {rendered}{tail}"
+                    echoLong $"{letEchoHead name te.Ty} = {rendered}{tail}"
 
             // a `let` binds its name only — it does not rebind `it`
             // (FSI parity) [D:repl-it]
@@ -3207,7 +3258,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Statements.Che
                                 else
                                     tail
 
-                            Console.WriteLine(
+                            echoLong (
                                 rendered
                                 + (if meta = "" then
                                        ""
