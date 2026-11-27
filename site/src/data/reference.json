@@ -467,16 +467,16 @@
         },
         {
           "name": "readBytesAt",
-          "signature": "File.readBytesAt (path: string) (offset: Size) (length: Size) : Bytes",
+          "signature": "File.readBytesAt (offset: Size) (length: Size) (path: string) : Bytes",
           "summary": "Read at most length bytes of a file, starting at a byte offset. Only that range is read, so a header or a slice of a very large file costs what it holds. A range that reaches past the end gives the bytes that are there, and an offset at or past the end gives none.",
-          "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/data.bin\u0022\n[\u0022hello world\u0022] |\u003E File.write f\nFile.readBytesAt f 0B 5B |\u003E Str.fromUtf8 |\u003E print\nFile.readBytesAt f 6B 100B |\u003E Bytes.length |\u003E show |\u003E print\nDir.deleteAll d",
+          "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/data.bin\u0022\n[\u0022hello world\u0022] |\u003E File.write f\nf |\u003E File.readBytesAt 0B 5B |\u003E Str.fromUtf8 |\u003E print\nFile.readBytesAt 6B 100B f |\u003E Bytes.length |\u003E show |\u003E print\nDir.deleteAll d",
           "pointer": null
         },
         {
           "name": "readFrom",
-          "signature": "File.readFrom (path: string) (offset: Size) : FileChunk",
+          "signature": "File.readFrom (offset: Size) (path: string) : FileChunk",
           "summary": "Read the complete lines of a file from a byte offset, for polling a file that is being appended to. Returns a FileChunk: lines, and next, the offset to pass on the next call. Only the bytes from the offset to the file\u0027s size when the read starts are read, and a last line without its newline yet is left for the next call, so every line is returned once and whole. Lines decode as File.read\u0027s do (a BOM is skipped only at offset 0, and a \\r\\n line ending counts as two bytes). Raises when the offset is past the end (the file was truncated or replaced) or is not at the start of a line; pass 0 or a next this function returned.",
-          "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/log.txt\u0022\n[\u0022a\u0022; \u0022b\u0022] |\u003E File.append f\nlet c = File.readFrom f 0B\nc.lines |\u003E Seq.iter print\n[\u0022c\u0022] |\u003E File.append f\n(File.readFrom f c.next).lines |\u003E Seq.iter print\nDir.deleteAll d",
+          "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/log.txt\u0022\n[\u0022a\u0022; \u0022b\u0022] |\u003E File.append f\nlet c = File.readFrom 0B f\nc.lines |\u003E Seq.iter print\n[\u0022c\u0022] |\u003E File.append f\n(File.readFrom c.next f).lines |\u003E Seq.iter print\nDir.deleteAll d",
           "pointer": null
         },
         {
@@ -2405,7 +2405,7 @@
       "name": "bytes",
       "signature": null,
       "summary": "Run the command and return its output as Bytes, exactly as the program wrote it \u2014 nothing is decoded as text or split into lines. For a binary or encoding-sensitive result small enough to hold in memory: a digest, a key, an image. Raises on a nonzero exit.",
-      "example": "let b = echo hi | bytes\nprint (Bytes.toHex b)",
+      "example": null,
       "pointer": "A large output belongs in a file: \u0060\u003Ccommand\u003E | into path\u0060. For text use \u0060| text\u0060 or \u0060| line\u0060."
     },
     {

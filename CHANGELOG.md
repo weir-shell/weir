@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.0.101
+
+### Changed
+
+- **`File.readBytesAt` and `File.readFrom` take the path last.** They
+  are now `File.readBytesAt offset length path` and
+  `File.readFrom offset path`, so a path pipes in:
+  `path |> File.readBytesAt 0B 16B`,
+  `files |> Seq.map (File.readBytesAt 0B 512B)`. A call in the old
+  order (`File.readFrom log 0B`) is a check error that shows the new
+  one. Every other builtin already puts the piped value last.
+
+### Fixed
+
+- **`| into append` works on Windows.** It failed there in 0.0.100;
+  the file is now opened the way `cmd`'s `>>` opens it.
+
 ## v0.0.100
 
 ### Added
