@@ -1854,7 +1854,7 @@
         {
           "name": "defaults",
           "signature": "Server.defaults : ServerConfig",
-          "summary": "The default server settings: port = None (a free port), maxConcurrent = the number of processors, at least 8, maxQueued = 16 times that, bodyTimeout = 30s, maxBody = 16MiB, and a handler that answers \u0060GET /\u0060 with a page saying no handler is set. \u0060within serve srv port=8080 handler=route\u0060 is short for \u0060within serve srv = { Server.defaults with port = Some 8080; handler = route }\u0060.",
+          "summary": "The default server settings: bind = \u0022loopback\u0022, port = None (a free port), maxConcurrent = the number of processors, at least 8, maxQueued = 16 times that, bodyTimeout = 30s, maxBody = 16MiB, and a handler that answers \u0060GET /\u0060 with a page saying no handler is set. \u0060within serve srv port=8080 handler=route\u0060 is short for \u0060within serve srv = { Server.defaults with port = Some 8080; handler = route }\u0060.",
           "example": "Server.defaults.maxConcurrent \u003E= 8",
           "pointer": "The listener accepts connections from this machine only (loopback)."
         },
@@ -3202,11 +3202,15 @@
     },
     {
       "name": "ServerConfig",
-      "summary": "\u0060within serve\u0060\u0027s settings: port (Some n for that port, None for a free one the kernel picks), maxConcurrent (handlers at once; the rest queue), maxQueued (how many may queue; past it the answer is 503), bodyTimeout (how long a request body may take to arrive), maxBody (the largest request body accepted) and handler (the function from a request to its response). \u0060Server.defaults\u0060 holds the default for each.",
+      "summary": "\u0060within serve\u0060\u0027s settings: bind (where to listen: \u0060loopback\u0060 for 127.0.0.1 and ::1, where only the loopback names are accepted as Host; \u0060any\u0060 for every interface; or one IP address), port (Some n for that port, None for a free one the kernel picks), maxConcurrent (handlers at once; the rest queue), maxQueued (how many may queue; past it the answer is 503), bodyTimeout (how long a request body may take to arrive), maxBody (the largest request body accepted) and handler (the function from a request to its response). \u0060Server.defaults\u0060 holds the default for each.",
       "example": null,
       "pointer": null,
       "kind": "record",
       "fields": [
+        {
+          "name": "bind",
+          "type": "string"
+        },
         {
           "name": "port",
           "type": "Option\u003Cint\u003E"
