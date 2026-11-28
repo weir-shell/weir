@@ -16602,6 +16602,43 @@ out=$($BIN "$svdir/busy.weir" 2>&1) || fail "serve maxQueued run failed: $out"
 echo "$out" | grep -qi "retry-after: 1" || fail "H21: the 503 must say when to come back: $out"
 echo "e2e ok: within serve — H21 a full waiting line answers 503 with Retry-After"
 
+# (H21b) a body still arriving counts toward maxQueued [D:serve-queue]:
+# two peers that declare a body and never send it fill a line of two, the
+# next request is 503 at once, and their leaving frees it
+svport8b=8497
+cat > "$svdir/stall.py" <<'PYEOF'
+import socket, sys, time
+port = int(sys.argv[1])
+def code(req):
+    s = socket.socket(); s.settimeout(5); s.connect(('127.0.0.1', port)); s.sendall(req)
+    try:
+        return s.recv(4096).split(b'\r\n')[0].decode()
+    finally:
+        s.close()
+held = []
+for _ in range(2):
+    s = socket.socket(); s.connect(('127.0.0.1', port))
+    s.sendall(b'POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10\r\n\r\n')
+    held.append(s)
+time.sleep(0.5)
+print('stalled=' + code(b'GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'))
+for s in held:
+    s.close()
+time.sleep(0.5)
+print('freed=' + code(b'GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'))
+PYEOF
+cat > "$svdir/stall.weir" <<WEOF
+within serve srv port=$svport8b maxConcurrent=1 maxQueued=2 handler=(fun req -> Reply.text 200 "ok")
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport8b
+    let r = sh -c "python3 '$svdir/stall.py' $svport8b" | complete
+    r.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/stall.weir" 2>&1) || fail "serve stalled-body run failed: $out"
+echo "$out" | grep -qF "stalled=HTTP/1.1 503" || fail "H21b: bodies still arriving must count toward maxQueued: $out"
+echo "$out" | grep -qF "freed=HTTP/1.1 200" || fail "H21b: the line frees when the stalled peers leave: $out"
+echo "e2e ok: within serve — H21b a body still arriving holds a place in the waiting line"
+
 # a request body in a charset weir cannot decode is answered 415 before
 # the handler [D:serve-charset], never decoded as UTF-8 with U+FFFD; a
 # known charset still decodes per its declaration

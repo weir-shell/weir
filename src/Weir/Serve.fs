@@ -147,6 +147,9 @@ type Handle = {
     // the requests parked on Queue and not yet accepted [D:serve-queue]
     // — counted here, a single-reader channel cannot be asked
     mutable Waiting: int
+    // the bodies being read, not yet parked [D:serve-queue]: they count
+    // toward maxQueued, or a peer holds one buffer per connection it opens
+    mutable Reading: int
     // every parked request whose delegate still awaits — what stop
     // detaches when the drain runs out [D:serve-drain]
     Live: Collections.Concurrent.ConcurrentDictionary<SCtx, unit>
@@ -321,11 +324,18 @@ let private onRequest (h: Handle) (lim: Limits) (features: IFeatureCollection) :
             http.Response.ContentType <- "text/plain; charset=utf-8"
             http.Response.ContentLength <- Nullable 12L
             do! http.Response.WriteAsync "unknown host"
-        elif Volatile.Read(&h.Waiting) >= lim.MaxQueued then
+        elif Volatile.Read(&h.Waiting) + Interlocked.Increment(&h.Reading) > lim.MaxQueued then
             // full before the body is read: refuse without buffering it
+            Interlocked.Decrement(&h.Reading) |> ignore
             do! refuseBusy http true
         else
-            let! body = readBody http lim
+            let! body =
+                task {
+                    try
+                        return! readBody http lim
+                    finally
+                        Interlocked.Decrement(&h.Reading) |> ignore
+                }
 
             let s = {
                 Http = http
@@ -457,6 +467,7 @@ let start (bind: Bind) (port: int) (lim: Limits) : Handle =
         Closed = false
         Queue = Channel.CreateUnbounded<SCtx>(UnboundedChannelOptions(SingleReader = true))
         Waiting = 0
+        Reading = 0
         Live = Collections.Concurrent.ConcurrentDictionary<SCtx, unit>(HashIdentity.Reference)
         LiveLock = obj ()
         StreamErrors = System.Collections.Generic.List<string>()
