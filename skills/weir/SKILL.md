@@ -980,7 +980,12 @@ print $"exit {r.exitCode} timed={r.elapsed >= 0ms}"
 - A SCOPED HTTP LISTENER is `within serve srv port=8080 handler=route`
   + an indented block [D:http-serve]. The head is the server's name,
   then `key=value` OPTIONS — `retry`'s rule, each pair one field of
-  `Server.defaults` [D:serve-defaults]: `port` (an `Option<int>`,
+  `Server.defaults` [D:serve-defaults]: `bind` (a string: `"loopback"`
+  — the default, 127.0.0.1 and ::1, a Host not naming them gets 404;
+  `"any"` — every interface, `::` dual-stack or 0.0.0.0 without IPv6,
+  the in-cluster shape; or one IP address — the Host check follows the
+  ADDRESS: a loopback literal keeps it, past loopback EVERY Host
+  reaches the handler [D:serve-bind]), `port` (an `Option<int>`,
   default `None` = an ephemeral port the kernel picks
   [D:serve-port-option]), `maxConcurrent` (default: the processor
   count, at least 8), `maxQueued` (16 per default slot; past it the
@@ -3703,6 +3708,6 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `PromptStatus`: { `ok` `exit` `duration` }
 - type `Result`: `Ok` `Error`
 - type `Retry`: { `attempts` `delay` `timeout` }
-- type `ServerConfig`: { `port` `maxConcurrent` `maxQueued` `bodyTimeout` `maxBody` `handler` }
+- type `ServerConfig`: { `bind` `port` `maxConcurrent` `maxQueued` `bodyTimeout` `maxBody` `handler` }
 - type `UuidNamespaces`: { `dns` `url` `oid` `x500` }
 - type `Yaml`: `YStr` `YInt` `YFloat` `YBool` `YNull` `YSeq` `YMap`

@@ -7719,11 +7719,14 @@ and private withinContracts
                 | Some({ Kind = ERecord fields } as a) ->
                     let names = fields |> List.map (fun (n, _, _) -> n) |> Set.ofList
                     let core = Set.ofList [ "port"; "maxConcurrent" ]
-                    let optional = Set.ofList [ "maxQueued"; "bodyTimeout"; "maxBody"; "handler" ]
+
+                    let optional =
+                        Set.ofList [ "bind"; "maxQueued"; "bodyTimeout"; "maxBody"; "handler" ]
 
                     if Set.isSubset core names && Set.isSubset (Set.difference names core) optional then
                         let fieldTy name =
                             match name with
+                            | "bind" -> TStr
                             | "port" -> TNamed("Option", [ TInt ])
                             | "bodyTimeout" -> TDur
                             | "maxBody" -> TSize

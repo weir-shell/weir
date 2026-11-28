@@ -8965,6 +8965,16 @@ and private serveScope
     if maxConcurrent < 1 then
         failwith $"serve: maxConcurrent is at least 1, got {maxConcurrent}"
 
+    // where to listen [D:serve-bind]: the two words or an IP literal,
+    // checked here, before the socket, in the config's own words
+    let bind =
+        match recGet "bind" cfg with
+        | VStr s ->
+            match Serve.bindOf s with
+            | Some b -> b
+            | None -> failwith $"serve: bind is \"loopback\", \"any\" or an IP address, got \"{s}\""
+        | v -> unreachable $"serve bind {formatValue v}"
+
     // the waiting line's bound [D:serve-queue]: past it, 503
     let maxQueued =
         match recGet "maxQueued" cfg with
@@ -9097,7 +9107,7 @@ and private serveScope
         | bad -> unreachable $"the checker rejects a serve response of {formatValue bad}"
 
     let handle =
-        Serve.start (defaultArg port 0) {
+        Serve.start bind (defaultArg port 0) {
             BodyTimeoutMs = bodyTimeoutMs
             MaxBody = maxBody
             MaxQueued = maxQueued
@@ -9350,7 +9360,7 @@ and private serveScope
         | _ -> false
 
     if heldWithNoBlock body then
-        System.Console.Error.WriteLine $"serving on http://localhost:{handle.Port} — Ctrl+C to stop"
+        System.Console.Error.WriteLine $"serving on http://{Serve.bindText bind}:{handle.Port} — Ctrl+C to stop"
 
     struct (env.Add(binderName, (VServer handle)), serveNode, home, frame, release)
 

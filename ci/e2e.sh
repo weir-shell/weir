@@ -16144,6 +16144,46 @@ sleep 0.5
 $BIN -e "Net.portOpen $svport" | grep -qF "false" || fail "serve no-orphan: port $svport still up after the scope"
 echo "e2e ok: within serve — routing (health/echo) reachable over BOTH 127.0.0.1 and localhost + the port frees on exit"
 
+# (1b) bind [D:serve-bind]: the default refuses a foreign Host (404
+# `unknown host`, the loopback posture); `bind="any"` listens on every
+# interface and passes every Host to the handler — the in-cluster shape,
+# where probes say `Host: <podIP>:port` and peers say the Service name.
+# A bind that is neither word nor address is refused before the socket.
+svportb=8496
+cat > "$svdir/bind.weir" <<WEOF
+let handler = fun req ->
+    match req.path with
+    | "/health" -> Reply.text 200 "ok"
+    | _ -> Reply.text 404 "not found"
+
+within serve srv handler=handler port=$svportb
+    poll timeout=8s interval=100ms
+        Net.portOpen $svportb
+    let r = curl -s --max-time 4 -o /dev/null -w "%{http_code}" -H "Host: svc.cluster.local:$svportb" http://127.0.0.1:$svportb/health | line
+    print \$"loopback-foreign={r}"
+
+within serve srv handler=handler port=$svportb bind="any"
+    poll timeout=8s interval=100ms
+        Net.portOpen $svportb
+    let r = curl -s --max-time 4 -H "Host: svc.cluster.local:$svportb" http://127.0.0.1:$svportb/health | line
+    print \$"any-foreign={r}"
+    let p = curl -s --max-time 4 -H "Host: 10.42.3.7:$svportb" http://127.0.0.1:$svportb/health | line
+    print \$"any-podip={p}"
+print "closed"
+WEOF
+out=$($BIN "$svdir/bind.weir" 2>&1) || fail "serve bind failed: $out"
+echo "$out" | grep -qF "loopback-foreign=404" || fail "the loopback bind must refuse a foreign Host with 404: $out"
+echo "$out" | grep -qF "any-foreign=ok" || fail "bind=any must pass a Service-name Host to the handler: $out"
+echo "$out" | grep -qF "any-podip=ok" || fail "bind=any must pass a pod-address Host to the handler: $out"
+echo "$out" | grep -qF "closed" || fail "serve bind scopes must exit: $out"
+cat > "$svdir/badbind.weir" <<WEOF
+within serve s bind="my-svc"
+    print "no"
+WEOF
+out=$($BIN "$svdir/badbind.weir" 2>&1) && fail "a bind that is neither word nor address must be refused: $out"
+echo "$out" | grep -qF 'serve: bind is "loopback", "any" or an IP address, got "my-svc"' || fail "the bind refusal names the three shapes: $out"
+echo "e2e ok: within serve — bind: loopback refuses a foreign Host, any admits the cluster's names, a bad bind is refused in words"
+
 # (2) streaming: a 5-element Stream body with a delay between elements.
 # The client (curl -N, unbuffered) timestamps each arrival; we assert
 # the first chunk lands well before the last — incremental, not

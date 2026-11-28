@@ -2,6 +2,14 @@
 
 ## v0.0.102
 
+### Added
+
+- **`within serve` can listen past loopback.** A new `bind` option:
+  `"loopback"` (the default, as before), `"any"` for every interface
+  (one dual-stack socket, so a pod's probes and its Service reach it),
+  or an IP address. Past loopback the `Host` header is the handler's
+  to judge; the loopback allowlist stays as it was.
+
 ### Fixed
 
 - **`to csv` then `from csv` could drop rows.** A record with one

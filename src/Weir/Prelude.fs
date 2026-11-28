@@ -77,7 +77,9 @@ let source = [
     // head name it like any other option
     // maxQueued bounds the requests waiting for a handler slot
     // [D:serve-queue]: past it the server answers 503
-    "type ServerConfig = { port: Option<int>; maxConcurrent: int; maxQueued: int; bodyTimeout: Duration; maxBody: Size; handler: HttpServerRequest -> HttpServerResponse }"
+    // bind is where the listener binds [D:serve-bind]: "loopback" (the
+    // default, with its Host allowlist), "any", or an IP literal
+    "type ServerConfig = { bind: string; port: Option<int>; maxConcurrent: int; maxQueued: int; bodyTimeout: Duration; maxBody: Size; handler: HttpServerRequest -> HttpServerResponse }"
     // the plan/apply Op union [D:plan-apply] — the user-visible,
     // equatable+showable reification of an external mutation captured
     // inside a `plan` block. Each arm mirrors a mutation builtin's

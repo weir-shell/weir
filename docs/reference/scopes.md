@@ -267,6 +267,7 @@ Each pair replaces one field of `Server.defaults`:
 |---|---|---|
 | `port` | `Option<int>` | `None`: a free port, reported by `Server.port` |
 | `maxConcurrent` | `int` | the number of processors, at least 8 |
+| `bind` | `string` | `"loopback"` |
 | `maxQueued` | `int` | 16 times the default `maxConcurrent` |
 | `bodyTimeout` | `Duration` | `30s` |
 | `maxBody` | `Size` | `16MiB` |
@@ -305,7 +306,8 @@ defaults.
 
 With no block, `until stopped` comes directly under the head. weir
 then prints one line on stderr, `serving on http://localhost:<port> —
-Ctrl+C to stop`, because nothing else would say where the server is.
+Ctrl+C to stop` (the bind address in place of `localhost` when one is
+set), because nothing else would say where the server is.
 With a block it prints nothing: the block is where you announce it.
 
 ```weir-demo
@@ -326,6 +328,7 @@ and `Server.streamErrors`.
 
 | field | type | default | |
 |---|---|---|---|
+| `bind` | `string` | `"loopback"` | where to listen: `"loopback"`, `"any"` or an IP address |
 | `port` | `Option<int>` | required | `None` picks a free port |
 | `maxConcurrent` | `int` | required | handlers at once; the rest queue |
 | `maxQueued` | `int` | 16 × the default `maxConcurrent` | requests waiting for a handler; past it, 503 with `Retry-After: 1` |
@@ -335,13 +338,30 @@ and `Server.streamErrors`.
 The body is read before a handler slot is taken, so a slow upload
 doesn't hold one. Pipelined requests are answered in order.
 
-### Loopback only
+### Where it listens
 
-It listens on `127.0.0.1`, `localhost` and `[::1]` (skipped if the
-host has no IPv6), never on all interfaces. A request whose `Host` is
-not one of those gets 404. For a public address, put a reverse proxy
-in front that passes a loopback `Host`; nginx's default `proxy_pass
-http://127.0.0.1:8080` does.
+By default, `bind = "loopback"`: it listens on `127.0.0.1` and `[::1]`
+(skipped if the host has no IPv6), reachable from this machine only.
+A request whose `Host` is not `127.0.0.1`, `localhost` or `[::1]`
+gets 404, which stops a browser on the same machine being pointed at
+it through a name an attacker controls. For a public address behind a
+reverse proxy, keep the default and have the proxy pass a loopback
+`Host`; nginx's default `proxy_pass http://127.0.0.1:8080` does.
+
+`bind = "any"` listens on every interface: one dual-stack socket on
+`[::]`, or `0.0.0.0` if the host has no IPv6. An IP address listens on
+that address alone. The `Host` check follows the address, not the
+word: `"127.0.0.1"` or `"::1"` keep it, anything reachable from
+another machine drops it and every `Host` reaches the handler. A
+pod's probes and its Service name have no fixed spelling to list.
+
+```weir
+within serve srv bind="any" port=8080 handler=route
+until stopped
+```
+
+A `bind` that is neither word nor an IP address is an error before
+the socket opens.
 
 ### Request
 
