@@ -355,7 +355,7 @@ word: `"127.0.0.1"` or `"::1"` keep it, anything reachable from
 another machine drops it and every `Host` reaches the handler. A
 pod's probes and its Service name have no fixed spelling to list.
 
-```weir
+```weir-demo
 within serve srv bind="any" port=8080 handler=route
 until stopped
 ```
