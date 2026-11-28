@@ -1,8 +1,11 @@
 #!/usr/bin/env weir
-// sums the conformance monitor's per-process reports [D:type-monitor]
-//   ci/monitor-report.weir <dir>
+// sums the conformance monitor's per-process reports and judges them
+// [D:type-monitor]
+//   ci/monitor-report.weir <dir>             any alarm fails, and so does a run that checked nothing
+//   ci/monitor-report.weir <dir> --control   the control's alarms must be there
 // a row is `class <tab> key… <tab> count [<tab> example]`; the key is
-// everything between the class and the count
+// everything between the class and the count. `frozen` rows are a
+// measurement and never fail the run
 
 type Row = { cls: string; key: string; n: int; example: string }
 
@@ -18,6 +21,7 @@ let rowOf line =
     }
 
 let dir = Seq.item 0 Self.args
+let control = Self.args |> Seq.contains "--control"
 let files = Dir.list dir |> Seq.freeze
 
 let rows =
@@ -26,10 +30,28 @@ let rows =
     |> Seq.fold (fun acc xs -> Seq.append acc xs) []
     |> Seq.freeze
 
-print $"reports: {Seq.length files}"
-
-rows
+let totals =
+    rows
     |> Seq.groupBy (fun r -> $"{r.cls}\t{r.key}")
     |> Seq.map (fun (k, g) -> (k, g |> Seq.map (fun r -> r.n) |> Seq.sum, (Seq.item 0 g).example))
     |> Seq.sortBy (fun (k, _, _) -> k)
-    |> Seq.iter (fun (k, n, ex) -> print $"{k}\t{n}\t{ex}")
+    |> Seq.freeze
+
+print $"reports: {Seq.length files}"
+totals |> Seq.iter (fun (k, n, ex) -> print $"{k}\t{n}\t{ex}")
+
+let alarms = totals |> Seq.where (fun (k, _, _) -> Str.startsWith "alarm\t" k) |> Seq.map (fun (k, _, _) -> k) |> Seq.freeze
+let concrete = totals |> Seq.where (fun (k, _, _) -> k == "count\tconcrete") |> Seq.map (fun (_, n, _) -> n) |> Seq.sum
+
+if control then
+    let want = ["alarm\tTEInt int VStr"; "alarm\tclass Eq == control"; "alarm\tclass Show show control"]
+    let missing = want |> Seq.where (fun w -> not (Seq.contains w alarms)) |> Seq.freeze
+    if Seq.length missing > 0 then
+        fail $"monitor FAIL: the control did not fire: {missing |> Str.join ", "}"
+    print "monitor ok: the control fired by name"
+elif concrete == 0 then
+    fail "monitor FAIL: no node was checked — the run was not monitored"
+elif Seq.length alarms > 0 then
+    fail $"monitor FAIL: {Seq.length alarms} kind(s) of alarm — a value did not fit its node's type"
+else
+    print $"monitor ok: {concrete} concrete checks, no alarm"

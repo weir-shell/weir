@@ -134,9 +134,72 @@ let checkErr input =
     | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
     | Error terr -> terr
 
+// the type a fixture value is bound at: its own where the value says, a
+// type variable where it cannot (a live seq, a mixed list, a function)
+let private tyOfValue (v: Value) : Ty =
+    let mutable n = 0
+
+    let fresh () =
+        n <- n + 1
+        TVar $"fx{n}"
+
+    let rec go (v: Value) : Ty =
+        match v with
+        | VInt _ -> TInt
+        | VFloat _ -> TFloat
+        | VStr _ -> TStr
+        | VBool _ -> TBool
+        | VUnit -> TUnit
+        | VDur _ -> TDur
+        | VInstant _ -> TInstant
+        | VUuid _ -> TUuid
+        | VSize _ -> TSize
+        | VBytes _ -> TBytes
+        | VSecret _ -> TSecret
+        | VTuple vs -> TTuple(vs |> List.map go)
+        | VUnion("Some", Some p) -> TNamed("Option", [ go p ])
+        | VUnion("None", None) -> TNamed("Option", [ fresh () ])
+        | VRecord(name, _) when
+            (Map.tryFind name env.Types
+             |> Option.exists (fun d ->
+                 match d with
+                 | Record r -> r.Params.IsEmpty
+                 | _ -> false))
+            ->
+            TNamed(name, [])
+        | VSeq items ->
+            match box items with
+            | :? (Value list) as l ->
+                match l |> List.map go |> List.distinct with
+                | [ t ] when Set.isEmpty (tyVarsOf t) -> TSeq t
+                | _ -> TSeq(fresh ())
+            | _ -> TSeq(fresh ())
+        | _ -> fresh ()
+
+    go v
+
 let runWith (overrides: (string * Value) list) input =
-    let env = overrides |> List.fold (fun vs (n, v) -> Map.add n v vs) valueEnv
-    eval env (checkOk input)
+    let venv = overrides |> List.fold (fun vs (n, v) -> Map.add n v vs) valueEnv
+
+    // a value whose type cannot be told keeps the env's own binding
+    let tenv =
+        overrides
+        |> List.fold
+            (fun (e: TypeEnv) (n, v) ->
+                let ty = tyOfValue v
+
+                if Set.isEmpty (tyVarsOf ty) then
+                    {
+                        e with
+                            Values = Map.add n (generalize ty) e.Values
+                    }
+                else
+                    e)
+            env
+
+    match typecheck tenv (parse input) with
+    | Ok te -> eval venv te
+    | Error terr -> failtest $"expected Ok, got: {formatError terr}"
 
 let run input = eval valueEnv (checkOk input)
 
