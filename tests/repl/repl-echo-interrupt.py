@@ -25,7 +25,7 @@ def plain(b):
     return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", b.decode(errors="replace")).replace("\r", "")
 
 
-def case(label, setup):
+def case(label, setup, lead=None):
     pid, fd = pty.fork()
     if pid == 0:
         os.environ["TERM"] = "xterm-256color"
@@ -50,7 +50,11 @@ def case(label, setup):
 
     pump(lambda o: b"weir> " in o, 20)
     # the let's own echo is the one interrupted: the binding must survive it
-    os.write(fd, (setup + "\r").encode())
+    if lead is None:
+        os.write(fd, (setup + "\r").encode())
+    else:
+        # a composed entry whose last statement is the echoed one
+        os.write(fd, (lead + "\x1b\r" + setup + "\x1b\r").encode())
     # the echo is under way: a slice of it has reached the terminal
     started = pump(lambda o: len(o) > 60000, 120)
     os.write(fd, b"\x03")
@@ -64,6 +68,8 @@ def case(label, setup):
         pass
     os.close(fd)
 
+    if "exit 130" in plain(rest):
+        failures.append(f"{label}: a stopped echo is no failure: {plain(rest)[-200:]!r}")
     if len(started) <= 60000:
         failures.append(f"{label}: the echo never got under way")
     if STOPPED not in plain(rest):
@@ -78,6 +84,7 @@ def case(label, setup):
 case("lines", f'let xs = [1..{N}] |> Seq.map (fun i -> $"line {{i}} of the long echo") |> Seq.freeze')
 case("table", f'let xs = [1..{N}] |> Seq.map (fun i -> (i, i * 2, $"row {{i}}")) |> Seq.freeze')
 case("literal", f'let xs = [1..{N}] |> Seq.map (fun i -> i * 1000003) |> Seq.freeze')
+case("last of two", f'let xs = [1..{N}] |> Seq.map (fun i -> $"line {{i}} of the long echo") |> Seq.freeze', lead="let y = 1")
 
 if failures:
     for f in failures:

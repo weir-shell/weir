@@ -2543,6 +2543,9 @@ let completionTypeNameTests =
             Expect.equal (stage "f (a | b) c") None "a closed group's bar is not the text's"
             Expect.equal (stage "xs |> map (fun x -> match x with | A") None "an arm's bar inside the group"
             Expect.equal (stage "xs |> iter (fun k -> echo \"a | b\" $k") None "a bar in a string"
+            Expect.equal (stage "{| n = a") None "an anonymous record's opening bar"
+            Expect.equal (stage "let r = {| a = 1 |} in r") None "and its closing one"
+            Expect.equal (stage "echo {| | com") (Some("com", true)) "a real bar after one"
 
             Expect.equal
                 (Weir.Complete.headSlotAt "xs |> iter (fun k -> echo $k | tail -c 9 |")

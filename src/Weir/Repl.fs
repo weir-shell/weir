@@ -770,6 +770,9 @@ let private historyFile () =
 // line 0 is the header, line 1 the rule, a trailing "…" the clip row.
 // Cells are data and stay untinted; NO_COLOR and piped ride Color's
 // own gate.
+// an echo ^C stopped: the entry ends there, and not as a failure [D:echo-interrupt]
+let mutable private echoCut = false
+
 // the echo yields to ^C [D:echo-interrupt]: a forced seq echoes whole
 // [D:echo-rule], and a large one would hold the prompt until its last
 // line. ^C is looked for between lines; the echo stops there and says so,
@@ -781,6 +784,7 @@ let private echoLines (render: int -> string -> string) (lines: string list) : u
     while not rest.IsEmpty do
         if Session.interruptRequested () then
             rest <- []
+            echoCut <- true
 
             Console.WriteLine(
                 Types.Color.dim Types.Color.onStdout.Value "… (the echo stopped at ^C; the value is kept)"
@@ -802,6 +806,7 @@ let private echoLong (text: string) : unit =
         while at < text.Length do
             if Session.interruptRequested () then
                 at <- text.Length
+                echoCut <- true
                 Console.WriteLine()
 
                 Console.WriteLine(
@@ -1529,18 +1534,22 @@ let mutable private contPrompt = "   … "
 // live keys (across entries: an early line's Enter submits it, the rest
 // feeds the next prompt).
 let private typeAhead = Collections.Generic.Queue<ConsoleKeyInfo>()
+let mutable private typeAheadCr = false
 
 let private drainTypeAhead () =
     try
         while Console.KeyAvailable do
             let k = Console.ReadKey(intercept = true)
 
-            typeAhead.Enqueue(
-                if k.KeyChar = '\n' then
-                    ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false)
-                else
-                    k
-            )
+            // the LF of a CRLF is its CR's own: one Enter, not two
+            if k.KeyChar = '\n' then
+                if not typeAheadCr then
+                    typeAhead.Enqueue(ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false))
+
+                typeAheadCr <- false
+            else
+                typeAheadCr <- k.Key = ConsoleKey.Enter && k.KeyChar = '\r'
+                typeAhead.Enqueue k
     with _ ->
         ()
 
@@ -1631,7 +1640,13 @@ let private readPaste () : string =
                 else
                     ttyIo (fun () -> Console.ReadKey(intercept = true))
 
-            text.Append(if k.Key = ConsoleKey.Enter then '\n' else k.KeyChar) |> ignore
+            // a CR stays a CR here: pasteLines reads CRLF as one line end
+            text.Append(
+                if k.Key <> ConsoleKey.Enter then k.KeyChar
+                elif k.KeyChar = '\n' then '\n'
+                else '\r'
+            )
+            |> ignore
 
             if
                 k.KeyChar = '~'
@@ -1845,6 +1860,7 @@ let private readLineTty () : string option =
     // composing [D:repl-compose]: an asked-for newline or a pasted block
     // set it, a recalled entry clears it
     let mutable asked = false
+    let mutable draftAsked = false
 
     let termWidth () =
         try
@@ -2208,6 +2224,7 @@ let private readLineTty () : string option =
             // match the codes as well as the (Key, Modifier) pairs
             | _ when k.KeyChar = '' -> deleteOrEof ()
             | _ when k.KeyChar = '' ->
+                toEnd ()
                 bracketedPaste false
                 Console.WriteLine "^C"
                 result <- Some(Some "")
@@ -2352,6 +2369,10 @@ let private readLineTty () : string option =
                     redraw ()
                 elif histIdx > 0 then
                     edited[histIdx] <- bufText ()
+
+                    if histIdx = history.Count then
+                        draftAsked <- asked
+
                     histIdx <- histIdx - 1
                     setBuffer (shownAt histIdx)
             | ConsoleKey.DownArrow ->
@@ -2366,6 +2387,10 @@ let private readLineTty () : string option =
                     edited[histIdx] <- bufText ()
                     histIdx <- histIdx + 1
                     setBuffer (shownAt histIdx)
+
+                    // the draft comes back composed if it left composed
+                    if histIdx = history.Count then
+                        asked <- draftAsked
             | ConsoleKey.Tab ->
                 // completion operates on the current line (per-line machinery)
                 let text = cur().ToString()
@@ -5071,6 +5096,7 @@ let rec private loop (state: State) =
                 // one evaluation for the whole entry, which its first failure
                 // or ^C ends, as a script's would [D:repl-interrupt]
                 let stopped = ref false
+                echoCut <- false
                 enterTtyEval ()
                 Session.beginReplEval ()
 
@@ -5087,12 +5113,15 @@ let rec private loop (state: State) =
                                 // a ^C that cut no wait (a cleanup, pure
                                 // compute, a `| exitCode` child) ends the entry
                                 // too [D:repl-entry-check]
-                                if not lastErrored && Session.interruptRequested () then
+                                let cut = echoCut
+                                echoCut <- false
+
+                                if not lastErrored && not cut && Session.interruptRequested () then
                                     lastErrored <- true
                                     lastExit <- Some 130
                                     echoMeta "↳ exit 130 (SIGINT — interrupted/cancelled)"
 
-                                stopped.Value <- lastErrored
+                                stopped.Value <- lastErrored || cut
                                 st')
                         state
                 finally

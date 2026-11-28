@@ -90,6 +90,24 @@ check("\n3\n" in plain(out), "a one-line paste runs on Enter")
 out = session(["\x1b[200~let a = 1\r\nlet b =\ta + 1\x1b[2", "01~", "\x1b\r"])
 check("\na = 1\nb = 2\n" in plain(out), "a paste whose end marker arrives in pieces is one entry")
 
+# CRLF is one line end: three lines are three rows, in the last frame painted
+out = session(["\x1b[200~let a = 1\r\nlet b = 2\r\nlet c = 3\r\n\x1b[201~"])
+frame = plain(out).rsplit("weir> ", 1)[1]
+check(frame.count("\u2219") == 2, f"a CRLF paste must not double its line breaks: {frame!r}")
+
+# ^C abandons from the buffer's end: the last frame before it leaves the
+# cursor on the last row, so nothing below is painted over or erased
+out = session(["let a = 1", "\x1b\r", "let b = 2", "\x1b[A", "\x03"])
+stop = out.find(OFF + "^C")
+last = out[out.rfind("\x1b[J", 0, stop) : stop]
+check(stop > 0 and "b" in plain(last) and not re.search(r"\x1b\[\d*A", last), f"a ^C from an upper row lands after the buffer: {last!r}")
+
+# a composed draft is still composed after a look at history and back
+out = session(["let h = 0\r", "let a = 1", "\x1b\r", "let b = 2", "\x1b[A", "\x1b[A", "\x1b[B", "\r", "let c = 3"])
+check("\na = 1\n" not in plain(out), "Enter in a composed draft adds a line after Up and Down, as before them")
+out = session(["let h = 0\r", "let a = 1", "\x1b\r", "let b = 2", "\x1b[A", "\x1b[A", "\x1b[B", "\x1b\r"])
+check("\na = 1\nb = 2\n" in plain(out), "and Alt+Enter still runs it")
+
 # into the middle of a line
 out = session(['print ""', "\x1b[D", "\x1b[200~hi\x1b[201~", "\r"])
 check("\nhi\n" in plain(out), "a paste lands at the cursor")

@@ -552,6 +552,9 @@ let lastStage (stmt: string) : (string * bool) option =
                 i <- i + 1
             elif i > 0 && stmt[i - 1] = '|' then
                 ()
+            // the bars of an anonymous record's `{|` and `|}` [D:repair-anon-literal]
+            elif (i > 0 && stmt[i - 1] = '{') || (i + 1 < stmt.Length && stmt[i + 1] = '}') then
+                ()
             else
                 match groups with
                 | (_, start) :: outer -> groups <- (i, start) :: outer
