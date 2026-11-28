@@ -1,0 +1,88 @@
+# The nightly type-conformance run [D:type-monitor] — scheduled, linux-only.
+#
+# Builds weir with -p:WeirMonitor=true: that build checks every evaluated
+# node's value against the node's type, and `==`/`show` check their operands
+# belong to the class the checker promised. The unit suite, the skill
+# document's blocks and the whole e2e battery then run under it; each
+# process writes its findings under WEIR_MONITOR_OUT and
+# ci/monitor-report.weir sums and judges them. This GATES: an alarm is a
+# program the checker accepted whose value did not fit its type. A run
+# that checked nothing fails too, and the control step proves the detector
+# still fires by name. `frozen` rows are a measurement, never a failure.
+name: monitor
+
+on:
+  schedule:
+    - cron: "53 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "11.0.x"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-linux-${{ hashFiles('**/*.fsproj') }}
+          restore-keys: nuget-linux-
+      - name: AOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: publish the monitored build (AOT) + freshness gate
+        id: publish
+        run: |
+          dotnet publish src/Weir -c Release -r linux-x64 -p:WeirMonitor=true
+          mkdir -p ~/.local/bin
+          install -m 755 src/Weir/bin/Release/net11.0/linux-x64/publish/Weir ~/.local/bin/weir
+          ./ci/check-fresh.sh
+      - name: the control fires by name
+        run: |
+          WEIR_MONITOR_OUT="$RUNNER_TEMP/monitor/control" WEIR_MONITOR_CONTROL=1 \
+            ~/.local/bin/weir -e 'let a = 424242
+          print (show (a == a))
+          print (show a)'
+          ~/.local/bin/weir ci/monitor-report.weir "$RUNNER_TEMP/monitor/control" --control
+      # every suite runs even after a red one, so one night reports them all
+      - name: unit suite, monitored
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        run: |
+          rc=0
+          WEIR_MONITOR_OUT="$RUNNER_TEMP/monitor/unit" dotnet test tests/Weir.Tests/Weir.Tests.fsproj -c Debug -p:WeirMonitor=true || rc=$?
+          ~/.local/bin/weir ci/monitor-report.weir "$RUNNER_TEMP/monitor/unit" || rc=1
+          exit "$rc"
+      - name: skill document, monitored
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        run: |
+          rc=0
+          WEIR_MONITOR_OUT="$RUNNER_TEMP/monitor/skill" ./ci/skill-doc.sh || rc=$?
+          ~/.local/bin/weir ci/monitor-report.weir "$RUNNER_TEMP/monitor/skill" || rc=1
+          exit "$rc"
+      - name: e2e battery, monitored
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        env:
+          WEIR_TOKEN_GITHUB_COM: ${{ github.token }}
+        run: |
+          rc=0
+          WEIR_MONITOR_OUT="$RUNNER_TEMP/monitor/e2e" ./ci/e2e.sh || rc=$?
+          ~/.local/bin/weir ci/monitor-report.weir "$RUNNER_TEMP/monitor/e2e" || rc=1
+          exit "$rc"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: monitor-reports
+          path: ${{ runner.temp }}/monitor
+          retention-days: 14
+          if-no-files-found: ignore

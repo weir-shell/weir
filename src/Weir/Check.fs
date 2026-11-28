@@ -8532,6 +8532,9 @@ let typecheckBinderCore
         do! resolvePendingSplices ctx env generic
         let schemes = generalizeBindings ctx env binds
         let te = finalizeExpr ctx te
+#if WEIR_MONITOR
+        MonitorDefs.note env
+#endif
 
         let stranded =
             ctx.Cons
@@ -8577,6 +8580,9 @@ let typecheckWithCore
         do! resolvePendingSplices ctx env generic
 
         let te = finalizeExpr ctx te
+#if WEIR_MONITOR
+        MonitorDefs.note env
+#endif
         let resultVars = tyVars te.Ty
 
         let openCons =
@@ -9331,6 +9337,9 @@ let typecheckRecovering (env: TypeEnv) (expr: Expr) : RecoveryResult =
             let generic = tyVars (finalTy ctx te.Ty) - envFreeVars ctx env
             resolvePendingSplices ctx env generic |> ignore
             let te = finalizeExpr ctx te
+#if WEIR_MONITOR
+            MonitorDefs.note env
+#endif
             RecoveredExpr(te, ctx.Recovered |> Option.defaultValue [] |> List.rev)
     with BudgetExceeded _ ->
         RecoveryBudgetExhausted
@@ -9404,6 +9413,9 @@ let typecheckValidator (env: TypeEnv) (typeName: string) (v: Validator) : Result
                         $"'validate' cannot call {typeName}.create — that is recursion, which weir does not have; validate the payload directly"
             | None ->
                 do! resolvePendingSplices ctx env Set.empty
+#if WEIR_MONITOR
+                MonitorDefs.note env
+#endif
 
                 return
                     finalizeExpr ctx {
@@ -9516,6 +9528,9 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
         | Error terr -> Error(SigBody terr)
         | Ok() ->
             let te = finalizeExpr ctx te
+#if WEIR_MONITOR
+            MonitorDefs.note env
+#endif
 
             // generality: each sig var must still resolve to an unbound
             // var, and no two to the same one

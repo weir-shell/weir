@@ -10320,7 +10320,14 @@ let private entries: (string * Ty * Value) list =
     ]
     @ bareEntries
 
-let private showImpl: Value = VBuiltin(formatValue >> VStr)
+let private showImpl: Value =
+#if WEIR_MONITOR
+    VBuiltin(fun v ->
+        Monitor.showCheck v
+        VStr(formatValue v))
+#else
+    VBuiltin(formatValue >> VStr)
+#endif
 
 let private printImpl: Value =
     VBuiltin(fun v ->

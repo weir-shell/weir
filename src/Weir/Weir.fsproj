@@ -107,6 +107,10 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <PropertyGroup Condition="'$(WeirMonitor)' == 'true'">
+    <DefineConstants>$(DefineConstants);WEIR_MONITOR</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <Compile Include="Version.fs" />
     <Compile Include="Types.fs" />
