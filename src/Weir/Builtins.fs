@@ -3823,7 +3823,8 @@ let private readBytesAt (op: string) (r: string) (offset: int64) (length: int64)
     withReadStream r (fun s ->
         let chunk: byte[] = Array.zeroCreate 81920
 
-        if s.CanSeek then
+        // a /proc file seeks but reports no length: it is read up to the offset too
+        if s.CanSeek && s.Length > 0L then
             s.Seek(min offset s.Length, SeekOrigin.Begin) |> ignore
         else
             let mutable left = offset

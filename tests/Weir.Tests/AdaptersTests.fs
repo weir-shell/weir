@@ -8453,6 +8453,8 @@ let csvTests =
         |> declare "type CBadRec = { inner: CText }"
         |> declare "type CUni = A of int | B"
         |> declare "type CGen<'a> = { v: 'a }"
+        |> declare "type COne = { n: Option<int> }"
+        |> declare "type COneS = { sole: string }"
 
     let checkOkC input =
         match typecheck tenv (parse input) with
@@ -8696,6 +8698,62 @@ let csvTests =
                 "read"
 
             Expect.equal (runC src "src |> from csv CWhen |> to csv" |> texts) src "and written back the same"
+        }
+        test "a one-column record keeps its empty cells: the lone empty cell is written quoted [D:csv-one-column]" {
+            Expect.equal
+                (runC [] "[{ n = Some 1 }; { n = None }; { n = Some 3 }] |> to csv" |> texts)
+                [ "n"; "1"; "\"\""; "3" ]
+                "the empty cell is no blank line"
+
+            Expect.equal
+                (runC
+                    []
+                    "[{ n = Some 1 }; { n = None }; { n = Some 3 }] |> to csv |> from csv COne |> Seq.map (fun r -> $\"{r.n}\")"
+                 |> texts)
+                [ "Some 1"; "None"; "Some 3" ]
+                "three rows back"
+
+            Expect.equal
+                (runC
+                    []
+                    "[{ sole = \"a\" }; { sole = \"\" }] |> to csv |> from csv COneS |> Seq.map (fun r -> $\"<{r.sole}>\")"
+                 |> texts)
+                [ "<a>"; "<>" ]
+                "an empty string too"
+        }
+        test "an element holding line breaks is several lines [D:csv-one-column]" {
+            Expect.equal
+                (runC [ "a,b\n1,2\r\n3,4\n" ] "src |> from csv CText |> Seq.map (fun r -> r.a + r.b)"
+                 |> texts)
+                [ "12"; "34" ]
+                "LF and CRLF inside one element"
+
+            Expect.equal
+                (runC
+                    []
+                    "[{ a = \"x\\u{d}\\ny\"; b = \"z\\u{d}\" }] |> to csv |> from csv CText |> Seq.map (fun r -> $\"{Str.length r.a}{Str.length r.b}\")"
+                 |> texts)
+                [ "42" ]
+                "a CR inside a quoted cell stays the cell's"
+
+            Expect.stringContains
+                (raises [ "a,b\n1,2\n3" ] "src |> from csv CText")
+                "line 3: 1 cell(s)"
+                "the error counts physical lines"
+        }
+        test "two columns matching one field by the loose rule refuse [D:csv-one-column]" {
+            let m =
+                raises [ "order id,ORDERID,customer,qty,price"; "5,6,c,1,2" ] "src |> from csv COrder"
+
+            Expect.stringContains m "columns 'order id' and 'ORDERID' both match the field 'orderId'" "names both"
+
+            Expect.equal
+                (runC
+                    [ "ORDERID,orderId,customer,qty,price"; "5,6,c,1,2" ]
+                    "src |> from csv COrder |> Seq.map (fun r -> $\"{r.orderId}\")"
+                 |> texts)
+                [ "6" ]
+                "the exact spelling decides"
         }
     ]
 
