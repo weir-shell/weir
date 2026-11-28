@@ -8972,7 +8972,7 @@ and private serveScope
         | VStr s ->
             match Serve.bindOf s with
             | Some b -> b
-            | None -> failwith $"serve: bind is \"loopback\", \"any\" or an IP address, got \"{s}\""
+            | None -> failwith $"serve: bind is \"loopback\", \"any\" or an IP address, got \"{quoteData s}\""
         | v -> unreachable $"serve bind {formatValue v}"
 
     // the waiting line's bound [D:serve-queue]: past it, 503

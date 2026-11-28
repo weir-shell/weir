@@ -87,8 +87,10 @@ let bindOf (s: string) : Bind option =
     | "loopback" -> Some Loopback
     | "any" -> Some Any
     | t ->
+        // an address as written: the parser also takes `8080` and `127.1`
+        // (an integer, a short form), which here are mistakes
         match IPAddress.TryParse t with
-        | true, a -> Some(Addr a)
+        | true, a when a.AddressFamily <> Sockets.AddressFamily.InterNetwork || t.Split('.').Length = 4 -> Some(Addr a)
         | _ -> None
 
 /// the bind as the announce and the bind error show it: host form, an
@@ -409,7 +411,22 @@ let start (bind: Bind) (port: int) (lim: Limits) : Handle =
         | Any -> IPAddress.Any
         | Addr a -> a
 
-    let port = if port = 0 then freePort probe else port
+    // the address as the bind error names it
+    let where =
+        match bind with
+        | Loopback -> "127.0.0.1"
+        | b -> bindText b
+
+    // the probe binds the address too: one that is not this machine's
+    // fails here, and says so in the same words as the listen
+    let port =
+        if port <> 0 then
+            port
+        else
+            try
+                freePort probe
+            with ex ->
+                failwith $"serve: cannot listen on {where} — the listener could not open: {ex.Message}"
 
     let build (addrs: IPAddress list) =
         let opts = KestrelServerOptions()
@@ -518,11 +535,6 @@ let start (bind: Bind) (port: int) (lim: Limits) : Handle =
                 "the port is already in use (another process holds it, or a server on it is still closing)"
             else
                 $"the listener could not open: {(unwrap ex).Message}"
-
-        let where =
-            match bind with
-            | Loopback -> "127.0.0.1"
-            | b -> bindText b
 
         failwith $"serve: cannot listen on {where}:{port} — {why}"
 

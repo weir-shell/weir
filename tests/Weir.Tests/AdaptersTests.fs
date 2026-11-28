@@ -6720,6 +6720,14 @@ let serveTests =
             Expect.isNone (Weir.Serve.bindOf "0.0.0.0:8080") "no port in the address"
             Expect.isNone (Weir.Serve.bindOf "my-svc") "no hostnames: an address is an address"
             Expect.isNone (Weir.Serve.bindOf "") "empty is not loopback"
+            Expect.isNone (Weir.Serve.bindOf "8080") "an integer is a port typed in the wrong slot, not 0.0.31.144"
+            Expect.isNone (Weir.Serve.bindOf "127.1") "a short-form v4 address is not an address as written"
+
+            Expect.equal
+                (Weir.Serve.bindOf "::1")
+                (Some(Weir.Serve.Addr System.Net.IPAddress.IPv6Loopback))
+                "v6 has no dots to count"
+
             Expect.equal (Weir.Serve.bindText Weir.Serve.Loopback) "localhost" "the announce names localhost"
             Expect.equal (Weir.Serve.bindText Weir.Serve.Any) "0.0.0.0" "any shows as 0.0.0.0"
 
