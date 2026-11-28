@@ -7301,9 +7301,11 @@ let hunt3r5Tests =
 
         System.Diagnostics.Process.Start psi
 
-    let sigint (pid: int) =
-        use k = System.Diagnostics.Process.Start("kill", $"-INT {pid}")
+    let signal (name: string) (pid: int) =
+        use k = System.Diagnostics.Process.Start("kill", $"-{name} {pid}")
         k.WaitForExit()
+
+    let sigint = signal "INT"
 
     testSequenced
     <| testList "hunt-3r5 stage A" [
@@ -7312,9 +7314,22 @@ let hunt3r5Tests =
             use early = shim "kill -INT $$; sleep 5" []
             Expect.isFalse (Weir.Session.CleanupShim.passedTrap early) "killed by INT before any trap"
 
-            use slow = shim "sleep 0.3; trap \"\" INT QUIT; exec sleep 0.2" []
-            System.Threading.Thread.Sleep 50
+            // stopped before its trap, so the ^C is pending when it resumes:
+            // no race with the shell's own start
+            use slow = shim "kill -STOP $$; trap \"\" INT QUIT; exec sleep 0.2" []
+
+            let stopped () =
+                let stat = System.IO.File.ReadAllText $"/proc/{slow.Id}/stat"
+                stat.Substring(stat.LastIndexOf ')' + 2).StartsWith "T"
+
+            let clock = System.Diagnostics.Stopwatch.StartNew()
+
+            while not (stopped ()) && clock.ElapsedMilliseconds < 10000L do
+                System.Threading.Thread.Sleep 5
+
+            Expect.isTrue (stopped ()) "the shim stopped itself"
             sigint slow.Id
+            signal "CONT" slow.Id
             Expect.isFalse (Weir.Session.CleanupShim.passedTrap slow) "a ^C before the trap"
 
             use ok = shim Weir.Session.CleanupShim.script [ "/bin/sleep"; "0.3" ]
