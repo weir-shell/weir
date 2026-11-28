@@ -6618,6 +6618,106 @@ let holeGenericTests =
     ]
 
 // `e |> try` / `e |> try result` [D:try-form] — a failure as a value
+let pendingMonoTests =
+    // what a nested let, a destructuring binder and `until r` may not
+    // generalize away [D:pending-stays-mono]
+    let run = errorMsgsIn "pm.weir"
+
+    let says (lines: string list) (needle: string) (label: string) =
+        Expect.exists (run lines) (fun (m: string) -> m.Contains needle) $"{label}: got {run lines}"
+
+    testList "what generalization keeps [D:pending-stays-mono]" [
+        test "a nested let's argv splice stays scalar-exact, as the top-level form's" {
+            says
+                [
+                    "let main () ="
+                    "    let f x = echo $x | text"
+                    "    f [1; 2]"
+                    "print (main ())"
+                ]
+                "command arguments must be"
+                "the block form"
+
+            says [ "print (let f x = $(echo $x) |> Seq.length in f 1.5)" ] "this one is float" "the inline form"
+
+            Expect.isEmpty
+                (run [
+                    "let main () ="
+                    "    let f x = echo $x | text"
+                    "    f \"a\" + f \"b\""
+                    "print (main ())"
+                ])
+                "a string still splices"
+        }
+        test "a nested point-free print keeps print's law" {
+            says
+                [
+                    "type R = { a: int }"
+                    "let main () ="
+                    "    let p = print"
+                    "    p { a = 1 }"
+                    "main ()"
+                ]
+                "print takes"
+                "a record is not printable"
+
+            Expect.isEmpty (run [ "let main () ="; "    let p = print"; "    p \"s\""; "main ()" ]) "a string prints"
+        }
+        test "a nested generic hole stays generic, and its node keeps the var" {
+            expectValue "let f x = $\"<{x}>\" in f 1 + f \"s\" + f [1; 2]" (VStr "<1><s><[1; 2]>")
+        }
+        test "until's binder has the body's type" {
+            says
+                [
+                    "let f x ="
+                    "    retry attempts=1"
+                    "        x"
+                    "    until r"
+                    "        Str.length r > 0"
+                    "print $\"{f 5}\""
+                ]
+                "expected string, got int"
+                "the body's type reaches the predicate"
+
+            Expect.isEmpty
+                (run [
+                    "let f x ="
+                    "    retry attempts=1"
+                    "        x"
+                    "    until r"
+                    "        Str.length r > 0"
+                    "print (f \"a\")"
+                ])
+                "a string body passes"
+        }
+        test "a constraint on a var two destructured names share rides both" {
+            let pair = [ "let mk cmp = (cmp, fun a b -> not (cmp a b))"; "let (eq, ne) = mk (==)" ]
+            says (pair @ [ "print (ne 0.1 0.1)" ]) "floats do not join" "the second name, at the top level"
+            says (pair @ [ "print (eq 0.1 0.1)" ]) "floats do not join" "the first name"
+            Expect.isEmpty (run (pair @ [ "print (eq 1 1)"; "print (ne \"a\" \"b\")" ])) "both stay generic over Eq"
+
+            says
+                [
+                    "let both f = (f, f)"
+                    "let (asc, also) = both Seq.sort"
+                    "print $\"{asc [2; 1]}\""
+                    "print $\"{also [(2, 1)]}\""
+                ]
+                "cannot be ordered"
+                "Ord"
+
+            says
+                [
+                    "let main () ="
+                    "    let (eq, ne) = ((==), (<>))"
+                    "    eq 1 1 && ne 0.1 0.2"
+                    "print (main ())"
+                ]
+                "floats do not join"
+                "the block form"
+        }
+    ]
+
 let tryTests =
     testList "|> try [D:try-form]" [
         test "the form types as Option, or Result with a string error" {
