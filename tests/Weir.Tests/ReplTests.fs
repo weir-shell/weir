@@ -2124,6 +2124,7 @@ let headSlotCompletionTests =
             Expect.equal
                 (sug "within serve s ")
                 [
+                    "bind="
                     "port="
                     "maxConcurrent="
                     "maxQueued="
@@ -2137,7 +2138,7 @@ let headSlotCompletionTests =
 
             Expect.equal
                 (sug "within serve s port=(Some 8080) handler=route ")
-                [ "maxConcurrent="; "maxQueued="; "bodyTimeout="; "maxBody=" ]
+                [ "bind="; "maxConcurrent="; "maxQueued="; "bodyTimeout="; "maxBody=" ]
                 "a given key is not offered again"
 
             Expect.isFalse (sug "within serve " |> List.contains "port=") "the name slot is not the key slot"

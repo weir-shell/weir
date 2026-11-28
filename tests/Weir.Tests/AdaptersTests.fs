@@ -6083,10 +6083,15 @@ let serveTests =
             (let w, io = System.Threading.ThreadPool.GetMinThreads()
              System.Threading.ThreadPool.SetMinThreads(max w 32, max io 32) |> ignore)
 
-    let serving (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (f: int -> 'a) : 'a =
+    let servingOn
+        (bind: Weir.Serve.Bind)
+        (maxBody: int64)
+        (answer: Weir.Serve.SReq -> Weir.Serve.SResp)
+        (f: int -> 'a)
+        : 'a =
         poolFloor.Force()
         let port = freePort ()
-        let h = Weir.Serve.start port (limits maxBody)
+        let h = Weir.Serve.start bind port (limits maxBody)
 
         let loop () =
             let mutable go = true
@@ -6121,6 +6126,9 @@ let serveTests =
             f port
         finally
             Weir.Serve.stop h 0
+
+    let serving (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (f: int -> 'a) : 'a =
+        servingOn Weir.Serve.Loopback maxBody answer f
 
     // read until `fin` holds on what arrived, the peer closes, or it goes
     // quiet: the first byte may wait on a cold server (JIT, a loaded CI
@@ -6289,6 +6297,7 @@ let serveTests =
             match v with
             | VRecord("ServerConfig", f) ->
                 let get n = f |> List.find (fst >> (=) n) |> snd
+                Expect.equal (get "bind") (VStr "loopback") "loopback unless asked otherwise [D:serve-bind]"
                 Expect.equal (get "port") (VUnion("None", None)) "a free port"
 
                 Expect.equal
@@ -6382,7 +6391,7 @@ let serveTests =
             clean
                 [
                     okHandler
-                    "let cfg = { port = None; maxConcurrent = 1; maxQueued = 8; bodyTimeout = 1s; maxBody = 1MiB; handler = h }"
+                    "let cfg = { bind = \"loopback\"; port = None; maxConcurrent = 1; maxQueued = 8; bodyTimeout = 1s; maxBody = 1MiB; handler = h }"
                     "within serve srv = { cfg with handler = h }"
                     "    print \"ok\""
                 ]
@@ -6513,12 +6522,12 @@ let serveTests =
 
                 Expect.stringContains
                     hv
-                    "keys: port: Option<int>, maxConcurrent: int, maxQueued: int, bodyTimeout: Duration, maxBody: Size, handler: HttpServerRequest -> HttpServerResponse"
+                    "keys: bind: string, port: Option<int>, maxConcurrent: int, maxQueued: int, bodyTimeout: Duration, maxBody: Size, handler: HttpServerRequest -> HttpServerResponse"
                     $"the keys, off ServerConfig: {lines}"
 
                 Expect.stringContains
                     hv
-                    $"defaults: port = None, maxConcurrent = {n}, maxQueued = {16 * n}, bodyTimeout = 30s, maxBody = 16 MiB, handler = <landing page>"
+                    $"defaults: bind = \"loopback\", port = None, maxConcurrent = {n}, maxQueued = {16 * n}, bodyTimeout = 30s, maxBody = 16 MiB, handler = <landing page>"
                     $"the defaults, off Server.defaults: {lines}"
 
             Expect.stringContains (hover [ "within" ] 1 3) "within <kind> — a scoped block" "the keyword alone"
@@ -6646,7 +6655,7 @@ let serveTests =
                 "one option where the name goes"
         }
         test "Serve.start 0 binds a free port and the handle reports the BOUND one [D:serve-port-option]" {
-            let h = Weir.Serve.start 0 (limits 1024L)
+            let h = Weir.Serve.start Weir.Serve.Loopback 0 (limits 1024L)
 
             try
                 Expect.isTrue (h.Port > 0) $"a real port, not 0: {h.Port}"
@@ -6667,7 +6676,7 @@ let serveTests =
         }
         test "Serve.start binds the port; stop frees it; stop is idempotent" {
             let lim = limits (16L * 1024L * 1024L)
-            let h = Weir.Serve.start 8199 lim
+            let h = Weir.Serve.start Weir.Serve.Loopback 8199 lim
             Expect.equal h.Port 8199 "the handle carries the port"
             Expect.isFalse h.Closed "open after start"
 
@@ -6680,7 +6689,7 @@ let serveTests =
                 $"no all-interfaces bind — the loopback posture holds: {h.Bound}"
 
             // a second bind on the held port fails (the socket is taken)
-            Expect.throwsC (fun () -> Weir.Serve.start 8199 lim |> ignore) (fun ex ->
+            Expect.throwsC (fun () -> Weir.Serve.start Weir.Serve.Loopback 8199 lim |> ignore) (fun ex ->
                 Expect.equal
                     ex.Message
                     "serve: cannot listen on 127.0.0.1:8199 — the port is already in use (another process holds it, or a server on it is still closing)"
@@ -6693,9 +6702,119 @@ let serveTests =
             Weir.Serve.stop h 0
 
             // the port frees — a fresh bind on it now succeeds
-            let h2 = Weir.Serve.start 8199 lim
+            let h2 = Weir.Serve.start Weir.Serve.Loopback 8199 lim
             Expect.isFalse h2.Closed "the second bind succeeds after the first freed"
             Weir.Serve.stop h2 0
+        }
+        test "bind: the two words and an IP literal; anything else is None [D:serve-bind]" {
+            Expect.equal (Weir.Serve.bindOf "loopback") (Some Weir.Serve.Loopback) "the default word"
+            Expect.equal (Weir.Serve.bindOf " Any ") (Some Weir.Serve.Any) "case and space do not matter"
+
+            Expect.equal
+                (Weir.Serve.bindOf "10.0.0.5")
+                (Some(Weir.Serve.Addr(System.Net.IPAddress.Parse "10.0.0.5")))
+                "a v4 literal"
+
+            Expect.equal (Weir.Serve.bindOf "::") (Some(Weir.Serve.Addr System.Net.IPAddress.IPv6Any)) "a v6 literal"
+
+            Expect.isNone (Weir.Serve.bindOf "0.0.0.0:8080") "no port in the address"
+            Expect.isNone (Weir.Serve.bindOf "my-svc") "no hostnames: an address is an address"
+            Expect.isNone (Weir.Serve.bindOf "") "empty is not loopback"
+            Expect.isNone (Weir.Serve.bindOf "8080") "an integer is a port typed in the wrong slot, not 0.0.31.144"
+            Expect.isNone (Weir.Serve.bindOf "127.1") "a short-form v4 address is not an address as written"
+
+            Expect.equal
+                (Weir.Serve.bindOf "::1")
+                (Some(Weir.Serve.Addr System.Net.IPAddress.IPv6Loopback))
+                "v6 has no dots to count"
+
+            Expect.equal (Weir.Serve.bindText Weir.Serve.Loopback) "localhost" "the announce names localhost"
+            Expect.equal (Weir.Serve.bindText Weir.Serve.Any) "0.0.0.0" "any shows as 0.0.0.0"
+
+            Expect.equal
+                (Weir.Serve.bindText (Weir.Serve.Addr System.Net.IPAddress.IPv6Any))
+                "[::]"
+                "a v6 literal is bracketed"
+        }
+        test "bind any is one dual-stack socket, and every Host reaches the handler [D:serve-bind]" {
+            let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp = {
+                Status = 200
+                Headers = []
+                Body = Weir.Serve.RText $"<{r.Path.TrimStart('/')}>"
+            }
+
+            let port = freePort ()
+            let h = Weir.Serve.start Weir.Serve.Any port (limits 1024L)
+
+            try
+                Expect.equal h.Bind Weir.Serve.Any "the handle carries the bind"
+                Expect.isFalse h.LoopbackOnly "an all-interfaces bind has no Host allowlist"
+
+                // :: dual-stack, or 0.0.0.0 where the host has no IPv6 —
+                // never both (the dual-mode socket owns the v4 side too)
+                Expect.isTrue (h.Bound = [ "::" ] || h.Bound = [ "0.0.0.0" ]) $"one all-interfaces socket: {h.Bound}"
+            finally
+                Weir.Serve.stop h 0
+
+            // the Host allowlist is the loopback posture's: a cluster name,
+            // a pod address and an absolute-form target all pass
+            servingOn Weir.Serve.Any 1024L answer (fun port ->
+                use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+
+                for host in [ "svc.cluster.local"; "10.42.3.7"; "localhost" ] do
+                    send c $"GET /n HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n"
+                    let r = readQuiet c
+
+                    Expect.isTrue
+                        (r.StartsWith "HTTP/1.1 200" && r.EndsWith "<n>")
+                        $"Host: {host} reaches the handler: {r}"
+
+                send c "GET http://svc.cluster.local/abs HTTP/1.1\r\nHost: svc.cluster.local\r\n\r\n"
+                let r = readQuiet c
+                Expect.isTrue (r.EndsWith "<abs>") $"an absolute-form foreign target is served: {r}")
+        }
+        test "bind a loopback literal listens there alone and keeps the Host allowlist [D:serve-bind]" {
+            let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp = {
+                Status = 200
+                Headers = []
+                Body = Weir.Serve.RText $"<{r.Path.TrimStart('/')}>"
+            }
+
+            let addr = Weir.Serve.Addr System.Net.IPAddress.Loopback
+            let port = freePort ()
+            let h = Weir.Serve.start addr port (limits 1024L)
+
+            try
+                Expect.equal h.Bound [ "127.0.0.1" ] $"the one address, no ::1 beside it: {h.Bound}"
+                Expect.isTrue h.LoopbackOnly "a loopback literal is the loopback posture, not a spelling"
+            finally
+                Weir.Serve.stop h 0
+
+            // the guard follows the address, not the word: a foreign Host
+            // is still refused, a loopback name still served
+            servingOn addr 1024L answer (fun port ->
+                use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+                send c $"GET /n HTTP/1.1\r\nHost: example.com:{port}\r\n\r\n"
+                let r = readQuiet c
+                Expect.isTrue (r.StartsWith "HTTP/1.1 404") $"a foreign Host is refused on a loopback literal: {r}"
+                Expect.isFalse (r.Contains "<n>") $"the handler did not run: {r}"
+                send c $"GET /n HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n"
+                let r2 = readQuiet c
+                Expect.isTrue (r2.EndsWith "<n>") $"a loopback name reaches the handler: {r2}")
+        }
+        test "a bind failure names the address asked for [D:serve-bind]" {
+            let port = freePort ()
+
+            Expect.throwsC
+                (fun () ->
+                    Weir.Serve.start (Weir.Serve.Addr(System.Net.IPAddress.Parse "203.0.113.9")) port (limits 1024L)
+                    |> ignore)
+                (fun ex ->
+                    Expect.stringContains
+                        ex.Message
+                        $"serve: cannot listen on 203.0.113.9:{port} — the listener could not open:"
+                        "the bind error names the address asked for")
+            |> ignore
         }
         test "pipelined requests on one connection are each answered, in order [D:serve-kestrel]" {
             let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp = {
@@ -6800,7 +6919,7 @@ let serveTests =
             }
 
             let port = freePort ()
-            let h = Weir.Serve.start port (limits 1024L)
+            let h = Weir.Serve.start Weir.Serve.Loopback port (limits 1024L)
             let v6 = h.Bound |> List.contains "::1"
             Weir.Serve.stop h 0
 
@@ -7192,7 +7311,7 @@ let serveTests =
         }
         // ---- F8: the stream-producer failure channel [D:serve-stream] ----
         test "a Stream producer raise records on the handle, not a raise out of the handler" {
-            let h = Weir.Serve.start 8207 (limits 1024L)
+            let h = Weir.Serve.start Weir.Serve.Loopback 8207 (limits 1024L)
             Expect.isEmpty (Weir.Serve.streamErrors h) "no errors before a failure"
             Weir.Serve.recordStreamError h "producer died"
             Weir.Serve.recordStreamError h "another"

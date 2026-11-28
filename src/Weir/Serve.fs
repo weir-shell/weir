@@ -73,6 +73,35 @@ type Limits = {
     MaxQueued: int
 }
 
+/// where the listener binds [D:serve-bind]: Loopback is the local
+/// posture (127.0.0.1 and ::1, a Host allowlist); Any is every interface
+/// (:: dual-stack, 0.0.0.0 without IPv6); Addr is one address as written
+type Bind =
+    | Loopback
+    | Any
+    | Addr of IPAddress
+
+/// the config's `bind` string as a Bind: the two words, or an IP literal
+let bindOf (s: string) : Bind option =
+    match s.Trim().ToLowerInvariant() with
+    | "loopback" -> Some Loopback
+    | "any" -> Some Any
+    | t ->
+        // an address as written: the parser also takes `8080` and `127.1`
+        // (an integer, a short form), which here are mistakes
+        match IPAddress.TryParse t with
+        | true, a when a.AddressFamily <> Sockets.AddressFamily.InterNetwork || t.Split('.').Length = 4 -> Some(Addr a)
+        | _ -> None
+
+/// the bind as the announce and the bind error show it: host form, an
+/// IPv6 literal bracketed
+let bindText (b: Bind) : string =
+    match b with
+    | Loopback -> "localhost"
+    | Any -> "0.0.0.0"
+    | Addr a when a.AddressFamily = Sockets.AddressFamily.InterNetworkV6 -> $"[{a}]"
+    | Addr a -> string a
+
 // the body as the request delegate read it, before any handler slot is
 // taken [D:serve-kestrel]: a slow or oversized body is settled here, so
 // it never holds one of maxConcurrent
@@ -106,13 +135,21 @@ type Handle = {
     // the port actually bound [D:serve-port-option] — read back from
     // the listener after start, so an asked-for free port is reported
     mutable Port: int
-    // the loopback addresses actually bound [D:serve-loopback-names]
+    // where the listener was asked to bind [D:serve-bind]
+    Bind: Bind
+    // the addresses actually bound [D:serve-loopback-names]
     Bound: string list
+    // every bound address is loopback — the Host allowlist's condition
+    // [D:serve-bind]: the word or a loopback literal, never the spelling
+    LoopbackOnly: bool
     mutable Closed: bool
     Queue: Channel<SCtx>
     // the requests parked on Queue and not yet accepted [D:serve-queue]
     // — counted here, a single-reader channel cannot be asked
     mutable Waiting: int
+    // the bodies being read, not yet parked [D:serve-queue]: they count
+    // toward maxQueued, or a peer holds one buffer per connection it opens
+    mutable Reading: int
     // every parked request whose delegate still awaits — what stop
     // detaches when the drain runs out [D:serve-drain]
     Live: Collections.Concurrent.ConcurrentDictionary<SCtx, unit>
@@ -143,9 +180,12 @@ let private detach (s: SCtx) : unit =
 /// whether a Host names this server [D:serve-loopback-names]: one of the
 /// loopback names, any port. A foreign name is refused before any handler
 /// runs — the loopback posture, which is also a DNS-rebinding guard
-/// [D:serve-kestrel]. An HTTP/1.0 request may omit Host.
-let private hostOk (authority: string) (http10: bool) : bool =
-    if String.IsNullOrEmpty authority then
+/// [D:serve-kestrel]. An HTTP/1.0 request may omit Host. A listener bound
+/// past loopback has no names of its own: every Host passes [D:serve-bind]
+let private hostOk (loopbackOnly: bool) (authority: string) (http10: bool) : bool =
+    if not loopbackOnly then
+        true
+    elif String.IsNullOrEmpty authority then
         http10
     else
         match HostString(authority).Host.ToLowerInvariant() with
@@ -279,16 +319,23 @@ let private onRequest (h: Handle) (lim: Limits) (features: IFeatureCollection) :
                 | Some u -> u.Authority
                 | None -> ""
 
-        if not (hostOk authority (http.Request.Protocol = "HTTP/1.0")) then
+        if not (hostOk h.LoopbackOnly authority (http.Request.Protocol = "HTTP/1.0")) then
             http.Response.StatusCode <- 404
             http.Response.ContentType <- "text/plain; charset=utf-8"
             http.Response.ContentLength <- Nullable 12L
             do! http.Response.WriteAsync "unknown host"
-        elif Volatile.Read(&h.Waiting) >= lim.MaxQueued then
+        elif Volatile.Read(&h.Waiting) + Interlocked.Increment(&h.Reading) > lim.MaxQueued then
             // full before the body is read: refuse without buffering it
+            Interlocked.Decrement(&h.Reading) |> ignore
             do! refuseBusy http true
         else
-            let! body = readBody http lim
+            let! body =
+                task {
+                    try
+                        return! readBody http lim
+                    finally
+                        Interlocked.Decrement(&h.Reading) |> ignore
+                }
 
             let s = {
                 Http = http
@@ -334,14 +381,15 @@ let private onRequest (h: Handle) (lim: Limits) (features: IFeatureCollection) :
             | None -> do! refuseBusy http s.CloseAfter
     }
 
-// a free loopback port, asked of the kernel [D:serve-port-option]: picked
-// up front so 127.0.0.1 and ::1 bind the SAME port (two `:0` listens
-// would pick two), then handed to the listener like an explicit one
-let private freePort () : int =
+// a free port, asked of the kernel [D:serve-port-option]: picked up
+// front so 127.0.0.1 and ::1 bind the SAME port (two `:0` listens would
+// pick two), then handed to the listener like an explicit one. Probed on
+// the bind's own address [D:serve-bind]
+let private freePort (probe: IPAddress) : int =
     use s =
-        new Sockets.Socket(Sockets.AddressFamily.InterNetwork, Sockets.SocketType.Stream, Sockets.ProtocolType.Tcp)
+        new Sockets.Socket(probe.AddressFamily, Sockets.SocketType.Stream, Sockets.ProtocolType.Tcp)
 
-    s.Bind(IPEndPoint(IPAddress.Loopback, 0))
+    s.Bind(IPEndPoint(probe, 0))
     (s.LocalEndPoint :?> IPEndPoint).Port
 
 let private socketErrorIn (codes: Sockets.SocketError list) (ex: exn) : bool =
@@ -356,17 +404,39 @@ let private socketErrorIn (codes: Sockets.SocketError list) (ex: exn) : bool =
 let private addressInUse (ex: exn) : bool =
     socketErrorIn [ Sockets.SocketError.AddressAlreadyInUse ] ex
 
-/// bind loopback:port and start serving; port 0 binds a free port, and
-/// the handle's Port is the one bound [D:serve-port-option]. Raises a
-/// worded error on a bind failure (a port already taken is the common one
-/// — the acceptance's "second bind succeeds after close" pins the
-/// inverse) [D:http-serve]
-let start (port: int) (lim: Limits) : Handle =
-    // loopback only — v1 is a reverse-proxy posture, no public bind,
-    // no TLS (TLS is the proxy's, a stated bounded-out) [D:http-serve].
-    // ::1 sits beside 127.0.0.1 [D:serve-loopback-names]; a host with no
-    // IPv6 loopback binds 127.0.0.1 alone.
-    let port = if port = 0 then freePort () else port
+/// bind bind:port and start serving; port 0 binds a free port, and the
+/// handle's Port is the one bound [D:serve-port-option]. Raises a worded
+/// error on a bind failure (a port already taken is the common one — the
+/// acceptance's "second bind succeeds after close" pins the inverse)
+/// [D:http-serve]
+let start (bind: Bind) (port: int) (lim: Limits) : Handle =
+    // loopback by default — a reverse-proxy posture, no TLS (TLS is the
+    // proxy's, a stated bounded-out) [D:http-serve]. ::1 sits beside
+    // 127.0.0.1 [D:serve-loopback-names]; a host with no IPv6 loopback
+    // binds 127.0.0.1 alone. Any is :: dual-stack, 0.0.0.0 without IPv6
+    // — one socket, both families; two would collide [D:serve-bind]
+    let probe =
+        match bind with
+        | Loopback -> IPAddress.Loopback
+        | Any -> IPAddress.Any
+        | Addr a -> a
+
+    // the address as the bind error names it
+    let where =
+        match bind with
+        | Loopback -> "127.0.0.1"
+        | b -> bindText b
+
+    // the probe binds the address too: one that is not this machine's
+    // fails here, and says so in the same words as the listen
+    let port =
+        if port <> 0 then
+            port
+        else
+            try
+                freePort probe
+            with ex ->
+                failwith $"serve: cannot listen on {where} — the listener could not open: {ex.Message}"
 
     let build (addrs: IPAddress list) =
         let opts = KestrelServerOptions()
@@ -388,13 +458,16 @@ let start (port: int) (lim: Limits) : Handle =
 
         new KestrelServer(Options.Create opts, transport, NullLoggerFactory.Instance)
 
-    let h0 server bound = {
+    let h0 server (addrs: IPAddress list) = {
         Server = server
         Port = port
-        Bound = bound
+        Bind = bind
+        Bound = addrs |> List.map string
+        LoopbackOnly = addrs |> List.forall IPAddress.IsLoopback
         Closed = false
         Queue = Channel.CreateUnbounded<SCtx>(UnboundedChannelOptions(SingleReader = true))
         Waiting = 0
+        Reading = 0
         Live = Collections.Concurrent.ConcurrentDictionary<SCtx, unit>(HashIdentity.Reference)
         LiveLock = obj ()
         StreamErrors = System.Collections.Generic.List<string>()
@@ -403,7 +476,7 @@ let start (port: int) (lim: Limits) : Handle =
 
     let run (addrs: IPAddress list) =
         let server = build addrs
-        let h = h0 server (addrs |> List.map string)
+        let h = h0 server addrs
 
         let app = {
             new IHttpApplication<IFeatureCollection> with
@@ -448,14 +521,22 @@ let start (port: int) (lim: Limits) : Handle =
             ]
             ex
 
-    try
+    // the v6-inclusive listen, with its v4-only stand-in where the host
+    // has no IPv6
+    let withV6 (v6: IPAddress list) (v4: IPAddress list) =
         if Sockets.Socket.OSSupportsIPv6 then
             try
-                run [ IPAddress.Loopback; IPAddress.IPv6Loopback ]
+                run v6
             with ex when v6Absent (unwrap ex) ->
-                run [ IPAddress.Loopback ]
+                run v4
         else
-            run [ IPAddress.Loopback ]
+            run v4
+
+    try
+        match bind with
+        | Loopback -> withV6 [ IPAddress.Loopback; IPAddress.IPv6Loopback ] [ IPAddress.Loopback ]
+        | Any -> withV6 [ IPAddress.IPv6Any ] [ IPAddress.Any ]
+        | Addr a -> run [ a ]
     with ex ->
         // the bind failure in its own words — the port is the fact the
         // caller needs; a taken port is named as such, never as the
@@ -466,7 +547,7 @@ let start (port: int) (lim: Limits) : Handle =
             else
                 $"the listener could not open: {(unwrap ex).Message}"
 
-        failwith $"serve: cannot listen on 127.0.0.1:{port} — {why}"
+        failwith $"serve: cannot listen on {where}:{port} — {why}"
 
 /// record a stream-producer failure on the handle [D:serve-stream] — the
 /// designated channel a Stream body's mid-flight raise reports through

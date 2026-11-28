@@ -2121,6 +2121,7 @@ The options, and what each one is when you leave it out:
 
 | Key | Default | Meaning |
 |---|---|---|
+| `bind` | `"loopback"` | where to listen: `"loopback"` (this machine only), `"any"` (every interface, for a container), or an IP address |
 | `port` | `None` | the port to listen on; `None` takes a free one, which `Server.port` reports |
 | `maxConcurrent` | the number of processors, at least 8 | how many requests are handled at once; the rest queue, the same way `Seq.pmapWith` limits parallel work |
 | `maxQueued` | 16 times the default `maxConcurrent` | how many requests may wait for a free handler; past that the server answers 503 with `Retry-After: 1` instead of queueing without limit |
@@ -2154,7 +2155,8 @@ partway). There's no `stop`: the server stops when the block ends.
 `until stopped` holds it open until Ctrl+C or SIGTERM, then lets
 running requests finish; without it, the server closes as soon as
 the block's body is done. It accepts connections from this machine
-only.
+only, unless `bind="any"` (every interface, as a container needs) or
+`bind="<ip>"` says otherwise.
 
 TLS, routing libraries and WebSockets are left out on purpose. Put a
 reverse proxy in front, `match` on the path, and use `Stream`
